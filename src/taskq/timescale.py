@@ -117,7 +117,7 @@ the event id sequence continues from the restored maximum.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -129,7 +129,6 @@ from taskq.constants import (
 from taskq.migrate import apply_pending
 
 if TYPE_CHECKING:
-    from taskq.backend._protocol import ConnLike
     from taskq.settings import WorkerSettings
 
 __all__ = [
@@ -139,7 +138,6 @@ __all__ = [
     "disable_hypertables",
     "enable_hypertables",
     "probe_timescale_capability",
-    "retention_policy_floor",
 ]
 
 logger = structlog.get_logger("taskq.timescale")
@@ -781,115 +779,6 @@ def _format_interval(td: timedelta) -> str:
     if hours and not rem:
         return f"{hours} hours"
     return f"{seconds} seconds"
-
-
-# One round trip answering both probe questions: is *schema.table* a
-# hypertable with a registered retention policy (the information views'
-# join), and if so what is the policy's own horizon.  The policy's
-# ``drop_after`` is read out of the registered job's ``config`` — the
-# EXACT interval the policy drops on, not a re-derivation from TaskQ's
-# settings, so a policy registered by any release with any interval is
-# honored as registered.  ``timescaledb_information.dimensions`` pins the
-# hypertable's time column to the caller's *partition_col*: the floor's
-# clock IS the partition column's, and a caller passing a column the
-# hypertable is not partitioned on gets None (fail-open) rather than a
-# floor drawn on the wrong clock.  Every value is $-bound — nothing here
-# is interpolated.  On vanilla Postgres the views do not exist and the
-# statement raises UndefinedTable: caught below, the fail-open.
-_RETENTION_POLICY_FLOOR_PROBE_SQL = """\
-SELECT MIN(((j.config)::text::jsonb ->> 'drop_after')::interval) AS drop_after,
-       MIN(statement_timestamp()) AS db_now
-FROM timescaledb_information.hypertables h
-JOIN timescaledb_information.jobs j
-  ON j.hypertable_schema = h.hypertable_schema
- AND j.hypertable_name = h.hypertable_name
-WHERE h.hypertable_schema = $1
-  AND h.hypertable_name = $2
-  AND j.proc_name = 'policy_retention'
-  AND EXISTS (
-      SELECT 1 FROM timescaledb_information.dimensions d
-      WHERE d.hypertable_schema = $1
-        AND d.hypertable_name = $2
-        AND d.column_name = $3
-        AND d.dimension_type = 'Time'
-  )
--- Aggregates (MIN), not LIMIT 1 without ORDER BY: the single-row answer is
--- deterministic no matter the catalog's physical order, and the no-policy
--- case still returns exactly one row of NULLs (the caller's None)."""
-
-
-async def retention_policy_floor(
-    conn: ConnLike,
-    schema: str,
-    table: str,
-    partition_col: str,
-    now: datetime | None = None,
-) -> datetime | None:
-    """The armed retention policy's own horizon for one hypertable, or
-    None when nothing owns the aged end.
-
-    Answers ONE catalog question per sweep run (never per batch): is
-    *schema.table* a hypertable with a ``policy_retention`` job registered
-    against it, and if so, when does that policy's ownership of the aged
-    end begin?  The answer is ``now - drop_after``, where *drop_after* is
-    parsed out of the registered policy's own config
-    (``timescaledb_information.jobs.config``) — the policy's EXACT
-    horizon, not a re-derivation from TaskQ's settings, so the floor and
-    the policy can never disagree about where the boundary sits.
-
-    *partition_col* is the table's partition column (``occurred_at`` for
-    ``job_events``, ``finished_at`` for ``jobs_archive``): the policy
-    drops chunks on that column's age, and the probe verifies through
-    ``timescaledb_information.dimensions`` that the hypertable really is
-    partitioned on it — a mismatch returns None (the caller's floor
-    semantics would be drawn on the wrong clock).
-
-    Returns None — and the caller's sweep then runs full-range, byte-
-    identical to vanilla behavior — when ANY of:
-
-    * the table is not a hypertable (no row in
-      ``timescaledb_information.hypertables``),
-    * the hypertable carries no ``policy_retention`` job (nothing owns
-      the aged end; the sweep must not skip a single row),
-    * the hypertable is partitioned on a column other than
-      *partition_col*,
-    * the probe fails for ANY reason — vanilla Postgres above all (the
-      ``timescaledb_information`` views do not exist there and the
-      statement raises on first execution), but also permission gaps,
-      extension upgrades, config shapes the cast cannot parse.
-
-    A probe failure must never break a sweep: the failure is logged at
-    debug and the sweep keeps today's exact behavior.  *now* overrides
-    the clock the floor is anchored to (test seam); by default the probe
-    query's own ``statement_timestamp()`` (read in the same round trip)
-    anchors it to the database's clock domain, the domain every retention
-    predicate in the sweeps runs in.
-
-    The floor is a BOUNDARY, not a deletion order: rows NEWER than ``now -
-    drop_after`` (inside the window) the calling sweep keeps deleting row-
-    exactly; rows OLDER than it the registered policy owns — silently, at
-    chunk granularity, without advancing any watermark (see
-    ``tests/test_timescale_retention_interplay.py``'s pinned boundary).
-    A row older than the floor but living in a young chunk is dropped by
-    the policy when the chunk itself ages past the boundary, at most one
-    chunk interval after the row crosses the floor — chunk granularity,
-    not row precision, is the trade.
-    """
-    try:
-        rows = await conn.fetch(_RETENTION_POLICY_FLOOR_PROBE_SQL, schema, table, partition_col)
-    except Exception as exc:  # Why: ANY probe failure must fail open to None — on vanilla Postgres this is the UndefinedTable the views' absence raises, and no probe error may ever break a sweep.
-        logger.debug(
-            "retention_policy_floor_probe_failed",
-            schema=schema,
-            table=table,
-            error=repr(exc),
-        )
-        return None
-    if not rows or rows[0]["drop_after"] is None:
-        return None
-    drop_after: timedelta = rows[0]["drop_after"]
-    floor_now: datetime = now if now is not None else rows[0]["db_now"]
-    return floor_now - drop_after
 
 
 def _vanilla_staging_schema(schema: str) -> str:

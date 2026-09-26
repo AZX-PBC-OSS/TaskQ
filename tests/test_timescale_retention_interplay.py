@@ -1002,7 +1002,9 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
     leave through the policy's own path. End state: identical, different
     work distribution.
     """
-    from taskq.timescale import retention_policy_floor
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract); the house pattern imports the private module where used.
+    )
     from taskq.worker import _leader_shared
 
     now = datetime.now(UTC)
@@ -1078,7 +1080,9 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     policy's own drops.
     """
     from taskq.backend import _sweeps as pg_sweeps
-    from taskq.timescale import retention_policy_floor
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract); the house pattern imports the private module where used.
+    )
 
     widened = timedelta(days=3)
     await ts_conn.execute(
@@ -1294,7 +1298,9 @@ async def test_vanilla_postgres_probe_fails_open_and_sweeps_run_full_range(
     This is the no-floor contract the whole fix rests on: every non-
     hypertable deployment's sweeps must be untouched.
     """
-    from taskq.timescale import retention_policy_floor
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract); the house pattern imports the private module where used.
+    )
 
     schema = "tsr_no_floor_" + new_uuid().hex[:12]
     conn = await asyncpg.connect(pg_dsn)
@@ -1358,7 +1364,9 @@ async def test_hypertable_without_a_policy_has_no_floor_and_the_sweep_stays_full
     policy is removed and the aged rows delete through the sweep, the
     carve-out at full strength again.
     """
-    from taskq.timescale import retention_policy_floor
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract); the house pattern imports the private module where used.
+    )
 
     now = datetime.now(UTC)
     # Armed: the floor is present and is EXACTLY the policy's horizon.
@@ -1404,3 +1412,52 @@ async def test_hypertable_without_a_policy_has_no_floor_and_the_sweep_stays_full
         "the carve-out holds at full strength when nothing owns the aged end"
     )
     assert aged_id not in surviving
+
+
+async def test_probe_row_without_the_drop_after_key_fails_open_and_the_sweep_runs_full_range() -> (
+    None
+):
+    """The parse-layer fail-open pin, the exact CI shape: a connection
+    whose ``fetch`` answers a row WITHOUT the probe's keys (the leader
+    tests' stub-conn shape — dict-like rows that know nothing of
+    ``drop_after``/``db_now``) must yield floor None, never the naked
+    ``KeyError: 'drop_after'`` the pre-fix parse raised from OUTSIDE the
+    fail-open try.  And the sweep built on that None must render the
+    FULL-RANGE statement — no floor conjunct, no floor parameter —
+    byte-identical to vanilla behavior (the fetch-level twin of H10a,
+    which pins the same contract on the real vanilla engine).
+    """
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract).
+    )
+
+    class _KeylessRowConn:
+        """A stub conn whose fetched rows carry none of the probe's keys."""
+
+        def __init__(self) -> None:
+            self.executes: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetch(self, sql: str, *args: object) -> list[dict[str, int]]:
+            return [{"rows_examined": 3}]  # no 'drop_after', no 'db_now'
+
+        async def execute(self, sql: str, *args: object) -> str:
+            self.executes.append((sql, args))
+            return "DELETE 0"
+
+    conn = _KeylessRowConn()
+    assert await retention_policy_floor(conn, "tsr_stub", "job_events", "occurred_at") is None, (
+        "the parse-layer fail-open: an unreadable row is 'no answer', not a KeyError"
+    )
+
+    deleted = await sweep_expired_events(
+        conn, schema="tsr_stub", retention=_TEST_EVENT_RETENTION, batch_size=100
+    )
+    assert deleted == 0
+    [(sql, args)] = conn.executes
+    assert len(args) == 2, (
+        "full-range: only the retention bound and the batch LIMIT ride as "
+        "parameters — the floor's $3 must be absent when the probe fails open"
+    )
+    assert "occurred_at >= $3" not in sql, (
+        "full-range: the floor conjunct must be absent from the rendered statement"
+    )

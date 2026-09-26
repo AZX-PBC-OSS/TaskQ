@@ -84,13 +84,16 @@ from taskq.backend._enqueue import (
     _enqueue_batch_fast,  # pyright: ignore[reportPrivateUsage]  # Why: the private function IS the COPY enqueue path; the bench measures it in place.
 )
 from taskq.backend._protocol import EnqueueArgs
+from taskq.backend._retention_floor import (
+    retention_policy_floor,  # pyright: ignore[reportPrivateUsage]
+)
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL
 from taskq.backend._sql_templates import render
 from taskq.backend._sweeps import sweep_expired_events  # pyright: ignore[reportPrivateUsage]
 from taskq.constants import DEFAULT_PRUNE_BATCH_SIZE
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
-from taskq.timescale import enable_hypertables, retention_policy_floor
+from taskq.timescale import enable_hypertables
 from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why: the admin module's own WHERE/order builders are the queries being measured; a hand-copied SQL shape would drift from the real page.
     _ARCHIVE_COLS,
     _LIVE_COLS,
@@ -893,7 +896,7 @@ async def bench_expiry() -> dict[str, Any]:
     Since the retention-policy floor, the two engines run DIFFERENT
     statements here by design — each is the exact statement production
     renders (``_compose_expiry_sql`` over
-    ``taskq.timescale.retention_policy_floor``, the same probe and
+    ``taskq.backend._retention_floor.retention_policy_floor``, the same probe and
     composition ``archive_expiry_sweep`` runs):
 
     * plain: no floor (the probe fails open — the timescale views do not

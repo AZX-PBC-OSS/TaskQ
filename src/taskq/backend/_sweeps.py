@@ -111,6 +111,7 @@ import structlog
 
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
+from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL, WAKE_NOTIFY_SQL
 from taskq.backend._sql_fragments import DEADLINE_EXCEEDED_MESSAGE
 from taskq.constants import (
@@ -132,7 +133,6 @@ from taskq.obs import (
     record_deadline_exceeded_swept,
     record_reclaimed_jobs,
 )
-from taskq.timescale import retention_policy_floor
 
 __all__ = [
     "_RECLAIM_DISPOSITIONS",
@@ -1039,7 +1039,7 @@ USING to_delete
 WHERE e.id = to_delete.id
 RETURNING e.id"""
 
-# The retention-policy floor (taskq.timescale.retention_policy_floor): on a
+# The retention-policy floor (taskq.backend._retention_floor.retention_policy_floor): on a
 # policy-armed hypertable, rows older than the policy's own drop_after
 # horizon are dropped by the policy's chunk runs anyway, and re-deleting
 # them row by row here pays the chunk-fan-out tax (the scale sweep measures
@@ -1983,7 +1983,7 @@ async def sweep_expired_events(
 
     The POLICY FLOOR (hypertable deployments only): when the connected
     server has a ``policy_retention`` job registered against
-    ``job_events`` (:func:`taskq.timescale.retention_policy_floor`,
+    ``job_events`` (:func:`taskq.backend._retention_floor.retention_policy_floor`,
     probed ONCE per call — never per batch — and failing open to None on
     any probe error), rows older than the policy's own ``drop_after``
     horizon gain the ``occurred_at >= $floor`` conjunct and are left to

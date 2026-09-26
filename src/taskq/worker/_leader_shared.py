@@ -21,6 +21,7 @@ import structlog
 from taskq._advisory import DEADLINE_ERRORS
 from taskq.backend._batch_sql import open_member_where
 from taskq.backend._protocol import Backend, ConnLike
+from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend._sweeps import (
     SweepBatchSizer,
@@ -49,7 +50,6 @@ from taskq.obs import (
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
-from taskq.timescale import retention_policy_floor
 from taskq.worker.deps import WorkerDeps
 
 __all__ = [
@@ -886,7 +886,7 @@ async def archive_expiry_sweep(
 
     The POLICY FLOOR (hypertable deployments only): when the connected
     server has a ``policy_retention`` job registered against
-    ``jobs_archive`` (:func:`taskq.timescale.retention_policy_floor`,
+    ``jobs_archive`` (:func:`taskq.backend._retention_floor.retention_policy_floor`,
     probed ONCE per run — before the batch loop, never per batch — and
     failing open to None on any probe error), rows older than the
     policy's own ``drop_after`` horizon gain the ``AND finished_at >=

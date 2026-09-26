@@ -231,7 +231,7 @@ fully passed its retention. Two consequences to know:
   everything".
 * **The sweeps still run — above the policy floor.** Each sweep probes the
   armed policy's own `drop_after` horizon once per run
-  (`retention_policy_floor` in `src/taskq/timescale.py`, one catalog query
+  (`retention_policy_floor` in `src/taskq/backend/_retention_floor.py`, one catalog query
   against `timescaledb_information`, failing open to "no floor" on vanilla
   Postgres or any probe error) and bounds its DELETE with it: rows older
   than the floor are the POLICY's — silently, chunk-granular, watermark-blind
