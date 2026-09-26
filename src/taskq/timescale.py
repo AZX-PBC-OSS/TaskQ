@@ -76,7 +76,7 @@ on whether hypertables are enabled.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -87,6 +87,7 @@ from taskq.constants import (
 )
 
 if TYPE_CHECKING:
+    from taskq.backend._protocol import ConnLike
     from taskq.settings import WorkerSettings
 
 __all__ = [
@@ -95,6 +96,7 @@ __all__ = [
     "TimescaleDBUnavailableError",
     "enable_hypertables",
     "probe_timescale_capability",
+    "retention_policy_floor",
 ]
 
 logger = structlog.get_logger("taskq.timescale")
@@ -238,7 +240,9 @@ async def enable_hypertables(
     support the feature, and it converges the schema to the current
     settings when it can (idempotent DDL, re-run on every deploy: chunk
     intervals re-asserted from the current retention settings, retention
-    policies re-registered, already-hypertable tables skipped).
+    policies re-registered, already-hypertable tables skipped). A
+    re-asserted interval shapes future chunks only: existing chunks keep
+    the interval they were created with.
 
     ``settings`` is the :class:`~taskq.settings.WorkerSettings` model
     because the retention intervals the policies derive from
@@ -342,6 +346,9 @@ async def _to_hypertable(
         table,
     )
     if is_hypertable:
+        # Convergence, not a rewrite: this re-asserts the interval from the
+        # current settings and returns. The interval shapes FUTURE chunks
+        # only - existing chunks keep the interval they were created with.
         await conn.execute(
             "SELECT set_chunk_time_interval($1::regclass, $2::interval)",
             f'"{schema}"."{table}"',
@@ -367,7 +374,14 @@ async def _convert_job_events(
 ) -> None:
     """``job_events`` on ``occurred_at``: PK widened to include the
     partition column, the ``jobs`` FK kept (hypertable-to-regular-table
-    foreign keys are supported)."""
+    foreign keys are supported).
+
+    Lock windows to size a deploy by: the pkey drop takes ACCESS
+    EXCLUSIVE (catalog-only, fast), and the unique add below takes ACCESS
+    EXCLUSIVE and full-scans the table to validate the uniqueness before
+    ``create_hypertable`` runs. On a populated table that scan is part of
+    the deploy window, not a footnote to it.
+    """
     await conn.execute(
         f'ALTER TABLE "{schema}".job_events DROP CONSTRAINT IF EXISTS job_events_pkey'
     )
@@ -402,6 +416,20 @@ async def _convert_archive_tables(
     widens to ``UNIQUE (id, finished_at)``; the re-archive guarantee the
     bare PK enforced is re-implemented as the archive write's explicit
     ``NOT EXISTS`` guard, so the prune's ghost semantics do not change.
+
+    Lock windows and one honest gap, same shape as
+    :func:`_convert_job_events`: the FK drop and the two pkey drops take
+    ACCESS EXCLUSIVE (catalog-only), and each unique add takes ACCESS
+    EXCLUSIVE and full-scans its table to validate - size a deploy window
+    for those scans plus the ``migrate_data`` copy together. The gap: the
+    statements run one per transaction on the deploy connection's
+    autocommit, and the migration advisory lock serializes migrators only
+    (workers never take it), so between a pkey drop and its unique add the
+    table carries no unique constraint on its id columns while workers
+    keep running. A duplicate insert landing in that window makes every
+    subsequent deploy fail on the unique add until the duplicates are
+    removed by hand; the deploy wants a maintenance window with no worker
+    archiving, or an operator who accepts the two-statement window.
     """
     chunk = _chunk_interval(settings.archive_retention_period)
     await conn.execute(
@@ -451,6 +479,23 @@ async def _register_retention_policies(
     force. ``event_retention_period = timedelta(0)`` is that setting's
     disable sentinel: keep every event, expressed as NO policy, so the
     sweep family's zero-means-off polarity carries over.
+
+    Two boundaries worth stating where the registration happens:
+
+    * The FIRST registration arms the mid-life backlog: every chunk older
+      than the retention interval is drop-eligible immediately, so the
+      first background policy run drops the whole aged tail in one sweep
+      (potentially GBs of IO) where vanilla mode would have expired it row
+      by row, in bounded batch deletes.
+    * On ``job_events`` the policy is a THIRD deleter the fail-visible gap
+      signal does not cover: migration 01.00.20_02's watermark contract
+      (``job_events_prune_state.pruned_through_id``, advanced by the two
+      sweep deleters in the same statement that deletes) is not kept here -
+      a chunk drop removes event ids WITHOUT advancing the watermark, so a
+      consumer cursor below the dropped ids reads as safe and loses them
+      silently. No watermark advance exists on this path; keep
+      ``watch_reclaims`` cursors strictly inside ``event_retention_period``
+      on hypertables.
     """
     registered: list[str] = []
     archive_retention = settings.archive_retention_period
@@ -490,3 +535,110 @@ def _format_interval(td: timedelta) -> str:
     if hours and not rem:
         return f"{hours} hours"
     return f"{seconds} seconds"
+
+
+# One round trip answering both probe questions: is *schema.table* a
+# hypertable with a registered retention policy (the information views'
+# join), and if so what is the policy's own horizon.  The policy's
+# ``drop_after`` is read out of the registered job's ``config`` — the
+# EXACT interval the policy drops on, not a re-derivation from TaskQ's
+# settings, so a policy registered by any release with any interval is
+# honored as registered.  ``timescaledb_information.dimensions`` pins the
+# hypertable's time column to the caller's *partition_col*: the floor's
+# clock IS the partition column's, and a caller passing a column the
+# hypertable is not partitioned on gets None (fail-open) rather than a
+# floor drawn on the wrong clock.  Every value is $-bound — nothing here
+# is interpolated.  On vanilla Postgres the views do not exist and the
+# statement raises UndefinedTable: caught below, the fail-open.
+_RETENTION_POLICY_FLOOR_PROBE_SQL = """\
+SELECT ((j.config)::text::jsonb ->> 'drop_after')::interval AS drop_after,
+       statement_timestamp() AS db_now
+FROM timescaledb_information.hypertables h
+JOIN timescaledb_information.jobs j
+  ON j.hypertable_schema = h.hypertable_schema
+ AND j.hypertable_name = h.hypertable_name
+WHERE h.hypertable_schema = $1
+  AND h.hypertable_name = $2
+  AND j.proc_name = 'policy_retention'
+  AND EXISTS (
+      SELECT 1 FROM timescaledb_information.dimensions d
+      WHERE d.hypertable_schema = $1
+        AND d.hypertable_name = $2
+        AND d.column_name = $3
+        AND d.dimension_type = 'Time'
+  )
+LIMIT 1"""
+
+
+async def retention_policy_floor(
+    conn: ConnLike,
+    schema: str,
+    table: str,
+    partition_col: str,
+    now: datetime | None = None,
+) -> datetime | None:
+    """The armed retention policy's own horizon for one hypertable, or
+    None when nothing owns the aged end.
+
+    Answers ONE catalog question per sweep run (never per batch): is
+    *schema.table* a hypertable with a ``policy_retention`` job registered
+    against it, and if so, when does that policy's ownership of the aged
+    end begin?  The answer is ``now - drop_after``, where *drop_after* is
+    parsed out of the registered policy's own config
+    (``timescaledb_information.jobs.config``) — the policy's EXACT
+    horizon, not a re-derivation from TaskQ's settings, so the floor and
+    the policy can never disagree about where the boundary sits.
+
+    *partition_col* is the table's partition column (``occurred_at`` for
+    ``job_events``, ``finished_at`` for ``jobs_archive``): the policy
+    drops chunks on that column's age, and the probe verifies through
+    ``timescaledb_information.dimensions`` that the hypertable really is
+    partitioned on it — a mismatch returns None (the caller's floor
+    semantics would be drawn on the wrong clock).
+
+    Returns None — and the caller's sweep then runs full-range, byte-
+    identical to vanilla behavior — when ANY of:
+
+    * the table is not a hypertable (no row in
+      ``timescaledb_information.hypertables``),
+    * the hypertable carries no ``policy_retention`` job (nothing owns
+      the aged end; the sweep must not skip a single row),
+    * the hypertable is partitioned on a column other than
+      *partition_col*,
+    * the probe fails for ANY reason — vanilla Postgres above all (the
+      ``timescaledb_information`` views do not exist there and the
+      statement raises on first execution), but also permission gaps,
+      extension upgrades, config shapes the cast cannot parse.
+
+    A probe failure must never break a sweep: the failure is logged at
+    debug and the sweep keeps today's exact behavior.  *now* overrides
+    the clock the floor is anchored to (test seam); by default the probe
+    query's own ``statement_timestamp()`` (read in the same round trip)
+    anchors it to the database's clock domain, the domain every retention
+    predicate in the sweeps runs in.
+
+    The floor is a BOUNDARY, not a deletion order: rows NEWER than ``now -
+    drop_after`` (inside the window) the calling sweep keeps deleting row-
+    exactly; rows OLDER than it the registered policy owns — silently, at
+    chunk granularity, without advancing any watermark (see
+    ``tests/test_timescale_retention_interplay.py``'s pinned boundary).
+    A row older than the floor but living in a young chunk is dropped by
+    the policy when the chunk itself ages past the boundary, at most one
+    chunk interval after the row crosses the floor — chunk granularity,
+    not row precision, is the trade.
+    """
+    try:
+        rows = await conn.fetch(_RETENTION_POLICY_FLOOR_PROBE_SQL, schema, table, partition_col)
+    except Exception as exc:  # Why: ANY probe failure must fail open to None — on vanilla Postgres this is the UndefinedTable the views' absence raises, and no probe error may ever break a sweep.
+        logger.debug(
+            "retention_policy_floor_probe_failed",
+            schema=schema,
+            table=table,
+            error=repr(exc),
+        )
+        return None
+    if not rows or rows[0]["drop_after"] is None:
+        return None
+    drop_after: timedelta = rows[0]["drop_after"]
+    floor_now: datetime = now if now is not None else rows[0]["db_now"]
+    return floor_now - drop_after

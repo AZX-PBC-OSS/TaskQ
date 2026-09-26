@@ -21,10 +21,13 @@ Five hypotheses, one test each (plus one divergence pin):
    ``kind='state_change' AND detail->>'reason'='lock_expired'`` rows to
    ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) the retention, but the
    hypertable policy drops their chunks at PLAIN retention (the policy's
-   ``drop_after`` IS ``event_retention_period``). Proven here: the carve-out
-   HOLDS inside the sweep (and against it) and is DEFEATED by the policy
-   run — an outbox event vanishes at ~1x retention with the sweep never
-   having had a say.
+   ``drop_after`` IS ``event_retention_period``). Proven here: on the
+   policy-armed hypertable the below-floor range is the policy's
+   WHOLESALE — the sweep (outbox arm included) stays out of it since the
+   retention-policy floor — and the policy run DEFEATS the carve-out at
+   ~1x retention, the sweep never having had a say. The carve-out's
+   positive leg (the sweep honors it on ranges it owns) is pinned by the
+   floor section's vanilla/policy-less/full-range tests.
 3. ARCHIVE CONSISTENCY — ``jobs_archive``'s policy (``drop_after`` =
    ``archive_retention_period`` on ``finished_at``) can drop a chunk while
    its rows' ``expire_at`` stamps are still far in the future: the expiry
@@ -54,6 +57,16 @@ drops, the hypertable mode re-archives a retried job where vanilla would
 fold, so the once-only archive invariant holds only while archive chunks
 live.
 
+And the floor pins (H7-H10): TaskQ's sweeps do not pay to re-delete the
+aged end the policy owns. When a ``policy_retention`` job is registered
+against the table, the sweeps probe its own ``drop_after`` horizon ONCE
+per run (``taskq.timescale.retention_policy_floor``) and bound their
+DELETEs below-nothing at it: above the floor the POLICY owns deletion
+(silent, chunk-granular, watermark-blind); below it the sweep owns
+deletion (row-exact, watermark-visible). On vanilla Postgres the probe
+fails open to None and the sweeps run full-range, byte-identical to the
+pre-floor behavior.
+
 Chunk-drop waits poll TimescaleDB's background worker (an external daemon
 no test clock can advance); the poll is bounded and asserts on the
 policy's own committed effect, mirroring the sibling module's pattern.
@@ -65,7 +78,8 @@ import asyncio
 import json
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -73,6 +87,9 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the interplay tests run the REAL event-TTL sweep statement; the house pattern imports it where used.
+    sweep_expired_events,
+)
 from taskq.constants import RECLAIM_OUTBOX_RETENTION_MULTIPLIER
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
@@ -266,6 +283,7 @@ async def _seed_event(
         occurred_at,
         json.dumps(detail),
     )
+    assert row is not None, "the INSERT ... RETURNING always yields exactly one row"
     return int(row["id"])
 
 
@@ -386,22 +404,23 @@ async def test_sweeps_after_chunk_drop_are_silent_noops(
 # ── H2: the reclaim-outbox carve-out vs the chunk policy ─────────────────
 
 
-async def test_reclaim_carveout_holds_in_sweep_and_falls_to_chunk_policy(
+async def test_reclaim_carveout_falls_to_chunk_policy_and_the_sweep_stays_out(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """H2: the crash-reclaim outbox carve-out is real in the sweep and
-    DEFEATED by the hypertable policy.
+    """H2: the crash-reclaim outbox carve-out is DEFEATED by the hypertable
+    policy, and — since the retention-policy floor — the sweep STAYS OUT of
+    the below-floor range entirely, outbox arm included.
 
-    With policies not yet fired, the event TTL sweep must honor the
-    carve-out on the hypertable exactly as on vanilla: the aged
-    ``lock_expired`` event (2.5 days, far inside its 100x = 100-day
-    carve-out window) survives the sweep while its aged ordinary sibling
-    is deleted. Then ONE real policy run drops the aged chunk outright:
-    the same event the sweep just spared vanishes at ~plain retention.
-    The policy's ``drop_after`` IS ``event_retention_period``, so on a
-    hypertable schema the carve-out's 100x window can never be honored
-    past roughly one chunk interval — the sweep's promise and the
-    policy's behavior disagree, and the policy wins.
+    With the policy armed (deferred, so the drop is the test's to trigger),
+    the floor makes the aged range the policy's wholesale: the sweep deletes
+    NOTHING aged — the ordinary event because it is past retention and below
+    the floor, the outbox event because the policy's ownership defeats the
+    carve-out below the floor anyway (an aged lock_expired event's chunk
+    drops at plain retention whether or not the sweep would have kept it to
+    100x). Then ONE real policy run drops the aged chunk outright. The
+    carve-out's positive leg — the sweep HONORS it on a range it owns — is
+    pinned full-range by H10a (vanilla) and H10b (policy-less hypertable),
+    and inside the window by H8's inside-row proof.
     """
     now = datetime.now(UTC)
     aged_outbox_id = await _seed_event(
@@ -428,15 +447,20 @@ async def test_reclaim_carveout_holds_in_sweep_and_falls_to_chunk_policy(
     deleted = await sweep_expired_events(
         ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
     )
-    assert deleted == 1, "only the aged ordinary event is past retention"
+    assert deleted == 0, (
+        "the aged range is the policy's (the floor is the policy's own "
+        "drop_after): the sweep does not pay to re-delete it, outbox arm "
+        "included — the policy's chunk drops defeat the carve-out below the "
+        "floor regardless"
+    )
     surviving = {
         int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")
     }
     assert aged_outbox_id in surviving, (
-        "the carve-out must hold in the sweep on the hypertable: the aged "
-        "lock_expired event is far inside its 100x window"
+        "the aged lock_expired event survives the sweep: below the floor it "
+        "is the policy's, and no sweep arm deletes it first"
     )
-    assert aged_ordinary_id not in surviving
+    assert aged_ordinary_id in surviving
     assert fresh_outbox_id in surviving
 
     # One real policy run: the aged chunk (the outbox event included) drops.
@@ -724,14 +748,19 @@ async def _parity_scenario(conn: asyncpg.Connection, schema: str) -> dict[str, A
 
 
 async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_dsn: str) -> None:
-    """H5: the sweeps' contracts hold on BOTH storage engines.
+    """H5: the sweeps' SQL is mode-agnostic — the same script produces
+    IDENTICAL observable outcomes on vanilla Postgres and on the hypertable
+    mode.
 
-    The same script on vanilla Postgres and on the hypertable mode
-    (policies present, deferred to the far future so no drop interferes):
-    identical prune counts, identical expiry counts, identical event-TTL
-    counts including the carve-out, identical survivors, identical
-    watermark. The sweeps' SQL is mode-agnostic — no runtime code branches
-    on hypertables, and the observable outcomes prove it end to end.
+    Run at the FULL-RANGE wiring (the floor probe patched to its always-
+    None counterfactual on both engines), because that is the claim this
+    hypothesis owns: the sweep statements themselves carry no
+    mode-conditional behavior — same counts, same survivors, same
+    watermark on both engines. With the floor LIVE on a policy-armed
+    hypertable, the aged range is the policy's and the outcomes
+    legitimately diverge (the sweeps skip what the policy will drop);
+    that composition's end-state parity is H9's proof, and the floor's
+    red/green is H7/H8.
     """
     outcomes: dict[str, dict[str, Any]] = {}
     for label, dsn in (("vanilla", pg_dsn), ("timescale", timescale_dsn)):
@@ -746,7 +775,10 @@ async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_ds
                 await _schedule_policies(
                     conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
                 )
-            outcomes[label] = await _parity_scenario(conn, schema)
+            # The full-range wiring on both engines: pin the SQL's
+            # mode-agnosticism, not the floor's composition (H9 owns that).
+            with _no_floor_patch():
+                outcomes[label] = await _parity_scenario(conn, schema)
         finally:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             await conn.close()
@@ -895,3 +927,465 @@ async def test_chunk_dropped_archive_row_loses_the_fold_guard(
     assert timescale["ghost_live_copies"] == 0
     assert timescale["prune_deleted"] == 1
     assert vanilla != timescale, "this test exists to pin the divergence"
+
+
+# ── H7-H10: the policy floor — the sweeps stop paying for the policy's range
+
+
+async def _no_floor(
+    conn: asyncpg.Connection,
+    schema: str,
+    table: str,
+    partition_col: str,
+    now: datetime | None = None,
+) -> None:
+    """The floor probe's counterfactual twin: always None (pre-fix behavior)."""
+    return None
+
+
+@contextmanager
+def _no_floor_patch() -> Generator[None, None, None]:
+    """Patch BOTH sweep modules' floor probe to the always-None
+    counterfactual for the enclosed block, restoring both bindings after.
+
+    The two sweeps import the probe by name into their own modules
+    (``taskq.backend._sweeps`` and ``taskq.worker._leader_shared``), so
+    the counterfactual must patch both bindings or one sweep would still
+    see the real floor.
+    """
+    from taskq.backend import _sweeps as pg_sweeps
+    from taskq.worker import _leader_shared
+
+    originals = (pg_sweeps.retention_policy_floor, _leader_shared.retention_policy_floor)  # pyright: ignore[reportPrivateImportUsage]  # Why: the sweeps bind the probe into their own modules by name; the counterfactual must patch both bindings.
+    pg_sweeps.retention_policy_floor = _no_floor  # type: ignore[assignment]  # pyright: ignore[reportPrivateImportUsage]
+    _leader_shared.retention_policy_floor = _no_floor  # type: ignore[assignment]  # pyright: ignore[reportPrivateImportUsage]
+    try:
+        yield
+    finally:
+        pg_sweeps.retention_policy_floor = originals[0]  # type: ignore[assignment]  # pyright: ignore[reportPrivateImportUsage]
+        _leader_shared.retention_policy_floor = originals[1]  # type: ignore[assignment]  # pyright: ignore[reportPrivateImportUsage]
+
+
+async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
+    ts_conn: asyncpg.Connection, ts_schema: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H7, RED/GREEN: with the archive policy armed, the expiry sweep's
+    deleted-count over the BELOW-FLOOR range is zero — and the counterfactual
+    (floor off, the pre-fix wiring) shows the sweep paying to delete exactly
+    those rows.
+
+    Three bands, all with ``expire_at`` in the past except the fresh one:
+
+    * aged (``finished_at`` 3.5d, below the 2-day floor): policy-owned.
+      RED deletes them (4 total); GREEN deletes none of them.
+    * inside the window (``finished_at`` 1d, above the floor): the
+      sweep's row-exact work below the policy's horizon — deleted in
+      BOTH runs. The floor never touches the young range.
+    * fresh (``expire_at`` future): never eligible, survives both.
+
+    Then one real policy run drops the aged chunk: the rows GREEN left
+    leave through the policy's own path. End state: identical, different
+    work distribution.
+    """
+    from taskq.timescale import retention_policy_floor
+    from taskq.worker import _leader_shared
+
+    now = datetime.now(UTC)
+    # The floor IS the policy's own horizon (its registered drop_after =
+    # _TEST_ARCHIVE_RETENTION), not a re-derivation.
+    floor = await retention_policy_floor(ts_conn, ts_schema, "jobs_archive", "finished_at", now=now)
+    assert floor == now - _TEST_ARCHIVE_RETENTION
+
+    def _seed(*, finished_at: datetime, expire_at: datetime) -> Any:
+        return _seed_archive_row(ts_conn, ts_schema, finished_at=finished_at, expire_at=expire_at)
+
+    aged_at = now - _AGED_ARCHIVE_FINISHED_AT
+    expired_at = now - timedelta(hours=1)
+    # ── RED: the floor off — the pre-fix sweep deletes the aged rows too.
+    aged_red = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
+    inside_red = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
+    monkeypatch.setattr(_leader_shared, "retention_policy_floor", _no_floor)
+    try:
+        pre_fix = await archive_expiry_sweep(ts_conn, schema=ts_schema, batch_size=100)
+    finally:
+        monkeypatch.undo()
+    assert pre_fix.total_deleted == 4, (
+        "the counterfactual: without the floor the sweep pays to delete the "
+        "aged (policy-owned) rows row by row"
+    )
+
+    # ── GREEN: the real floor — the sweep deletes exactly the inside-window
+    # row and stays out of the policy's range.
+    aged_green = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
+    inside_green = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
+    green = await archive_expiry_sweep(ts_conn, schema=ts_schema, batch_size=100)
+    assert green.total_deleted == 1, (
+        "the sweep owns exactly the window: the inside-row deletes row-exact, "
+        "the below-floor rows are left to the policy"
+    )
+    surviving = {r["id"] for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")}
+    assert set(aged_green).issubset(surviving), (
+        "the below-floor rows survive the sweep: the policy owns their deletion"
+    )
+    assert inside_green not in surviving
+    assert set(aged_red) & surviving == set()
+    assert inside_red not in surviving
+
+    # The policy's own run closes the loop: the below-floor rows leave
+    # through the chunk drop, at chunk granularity.
+    async def _aged_green_gone() -> bool:
+        ids = {r["id"] for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")}
+        return not (set(aged_green) & ids)
+
+    await _force_policies_now(ts_conn, ts_schema)
+    await _wait_for(
+        _aged_green_gone,
+        what="the policy to drop the below-floor chunk the sweep skipped",
+    )
+
+
+async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exact(
+    ts_conn: asyncpg.Connection, ts_schema: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H8, RED/GREEN on the event TTL sweep, with the floor read from a
+    policy whose ``drop_after`` (3 days) is deliberately LARGER than the
+    sweep's retention (1 day): the floor must come from the policy's
+    registered config, not from the sweep's retention argument —
+    otherwise the inside-window proof below is vacuous (the two bounds
+    would coincide and the window would be empty).
+
+    The outbox arm carries the floor too: below it the policy's chunk
+    drop defeats the carve-out anyway (H2), so the sweep does not pay to
+    re-delete what the policy owns, and above it the carve-out keeps its
+    full strength (pinned by the H2 test). The inside-window deletion
+    still advances the watermark — below the floor the sweep deletes
+    nothing, so the watermark stays put exactly as H4b pinned for the
+    policy's own drops.
+    """
+    from taskq.backend import _sweeps as pg_sweeps
+    from taskq.timescale import retention_policy_floor
+
+    widened = timedelta(days=3)
+    await ts_conn.execute(
+        "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
+        f'"{ts_schema}"."job_events"',
+    )
+    await ts_conn.execute(
+        "SELECT add_retention_policy($1::regclass, $2::interval, if_not_exists => TRUE)",
+        f'"{ts_schema}"."job_events"',
+        widened,
+    )
+    now = datetime.now(UTC)
+    floor = await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
+    assert floor == now - widened, (
+        "the floor is the policy's OWN horizon (drop_after from the "
+        "registered config), never a re-derivation from the sweep's retention"
+    )
+
+    below_at = now - timedelta(days=4.5)  # past retention AND below the 3d floor
+    # (the 4.5d-old event's chunk ENDS 4d ago — a full day strictly below
+    # the drop boundary, the half-chunk margin rule the module header pins;
+    # 3.5d would put the chunk's end exactly ON the boundary)
+    inside_at = now - timedelta(days=2)  # past retention, inside the window
+    below_red = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
+    inside_red = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
+
+    # ── RED: the floor off — the pre-fix sweep deletes the below-floor
+    # event too.
+    monkeypatch.setattr(pg_sweeps, "retention_policy_floor", _no_floor)
+    try:
+        pre_fix = await sweep_expired_events(
+            ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+        )
+    finally:
+        monkeypatch.undo()
+    assert pre_fix == 2, "the counterfactual: the pre-fix sweep re-deletes the policy's range"
+
+    # ── GREEN: the real floor — exactly the inside-window event deletes,
+    # row-exact, watermark-advancing.
+    below_green = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
+    inside_green = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
+    fresh_id = await _seed_event(ts_conn, ts_schema, occurred_at=now, detail={})
+    deleted = await sweep_expired_events(
+        ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+    )
+    assert deleted == 1, "the sweep owns exactly the inside-window row"
+    surviving = {
+        int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")
+    }
+    assert below_green in surviving, "the below-floor event is left to the policy"
+    assert below_red not in surviving and inside_red not in surviving
+    assert inside_green not in surviving and fresh_id in surviving
+    watermark = await _event_watermark(ts_conn, ts_schema)
+    assert watermark >= inside_green, (
+        "the inside-window deletion advances the watermark: below the floor "
+        "the sweep deletes nothing, so the watermark moves only over rows it "
+        "actually deleted"
+    )
+
+    # The policy closes the loop over the row it now owns.
+    async def _below_green_gone() -> bool:
+        ids = {int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")}
+        return below_green not in ids
+
+    await _force_policies_now(ts_conn, ts_schema)
+    await _wait_for(
+        _below_green_gone,
+        what="the policy to drop the below-floor event's chunk",
+    )
+
+
+async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn: str) -> None:
+    """H9, parity: policy-run + sweeps compose to the SAME end state with
+    the floor as without it — only the work distribution changes.
+
+    One seed script (aged+expired archive rows, aged ordinary events, an
+    aged outbox event, fresh survivors of each), run twice on two fresh
+    hypertable schemas:
+
+    * no-floor (today's pre-fix behavior): the sweeps row-delete the aged
+      range; the policy run then drops the aged chunks the sweeps
+      emptied (the outbox row's chunk included — H2).
+    * floor (the fix): the sweeps skip the below-floor range; the policy
+      run drops the aged chunks with the rows still in them.
+
+    The surviving ROW SETS are identical across the board. The one
+    bookkeeping row that legitimately differs is the event-prune
+    watermark: the no-floor scenario advanced it by deleting
+    (watermark-visible), the floor scenario's aged deletion went through
+    the policy, which advances nothing — H4b's pinned gap, not a new one.
+    """
+
+    async def run_scenario(*, use_floor: bool) -> dict[str, Any]:
+        schema = f"tsr_floor_parity_{str(use_floor).lower()}_{new_uuid().hex[:8]}"
+        conn = await asyncpg.connect(timescale_dsn)
+        try:
+            await _migrate(conn, schema)
+            await enable_hypertables(
+                conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+            )
+            await _schedule_policies(
+                conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+            )
+
+            now = datetime.now(UTC)
+            expired_at = now - timedelta(hours=1)
+            aged_archive = [
+                await _seed_archive_row(
+                    conn, schema, finished_at=now - _AGED_ARCHIVE_FINISHED_AT, expire_at=expired_at
+                )
+                for _ in range(3)
+            ]
+            fresh_archive = await _seed_archive_row(
+                conn, schema, finished_at=now, expire_at=now + timedelta(days=365)
+            )
+            aged_ordinary = [
+                await _seed_event(conn, schema, occurred_at=now - _AGED_EVENT_OCCURRENCE, detail={})
+                for _ in range(2)
+            ]
+            aged_outbox = await _seed_event(
+                conn,
+                schema,
+                occurred_at=now - _AGED_EVENT_OCCURRENCE,
+                detail={"reason": "lock_expired"},
+            )
+            fresh_event = await _seed_event(conn, schema, occurred_at=now, detail={})
+
+            async def _run_both_sweeps() -> None:
+                await archive_expiry_sweep(conn, schema=schema, batch_size=100)
+                await sweep_expired_events(
+                    conn, schema=schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+                )
+
+            if use_floor:
+                await _run_both_sweeps()
+            else:
+                # The pre-fix wiring: both sweeps probe through a stub that
+                # always answers None. Scoped patch, undone before the
+                # policy run so the real policies drive the drop.
+                with _no_floor_patch():
+                    await _run_both_sweeps()
+
+            # The policy run closes the aged end in BOTH scenarios: in the
+            # floor scenario it does the deleting (chunk drops), in the
+            # no-floor scenario the sweeps already did it row-exactly and
+            # the run finds aged chunks holding only the outbox row —
+            # which it drops too (H2).
+            await _force_policies_now(conn, schema)
+
+            async def _aged_gone() -> bool:
+                archive_ids = {
+                    r["id"] for r in await conn.fetch(f"SELECT id FROM {schema}.jobs_archive")
+                }
+                event_ids = {
+                    int(r["id"]) for r in await conn.fetch(f"SELECT id FROM {schema}.job_events")
+                }
+                return not (
+                    set(aged_archive) & archive_ids
+                    or (set(aged_ordinary) | {aged_outbox}) & event_ids
+                )
+
+            await _wait_for(_aged_gone, what="the policy to drop the aged chunks")
+
+            archive_ids = {
+                r["id"] for r in await conn.fetch(f"SELECT id FROM {schema}.jobs_archive")
+            }
+            event_ids = {
+                int(r["id"]) for r in await conn.fetch(f"SELECT id FROM {schema}.job_events")
+            }
+            return {
+                "aged_archive_alive": sorted(set(aged_archive) & archive_ids),
+                "fresh_archive_alive": fresh_archive in archive_ids,
+                "aged_ordinary_alive": sorted(set(aged_ordinary) & event_ids),
+                "aged_outbox_alive": aged_outbox in event_ids,
+                "fresh_event_alive": fresh_event in event_ids,
+                "watermark": await _event_watermark(conn, schema),
+            }
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+
+    vanilla_outcome = await run_scenario(use_floor=False)
+    floor_outcome = await run_scenario(use_floor=True)
+
+    for key in (
+        "aged_archive_alive",
+        "fresh_archive_alive",
+        "aged_ordinary_alive",
+        "aged_outbox_alive",
+        "fresh_event_alive",
+    ):
+        assert vanilla_outcome[key] == floor_outcome[key], (
+            f"end-state drift on {key}:\nno-floor={vanilla_outcome[key]}\nfloor={floor_outcome[key]}"
+        )
+    # The surviving data is identical; the watermark is the one pinned
+    # difference (H4b's gap, inherited — the policy never advances it).
+    assert vanilla_outcome["watermark"] > floor_outcome["watermark"], (
+        "the no-floor scenario advanced the watermark by deleting; the floor "
+        "scenario's aged deletion went through the watermark-blind policy"
+    )
+
+
+async def test_vanilla_postgres_probe_fails_open_and_sweeps_run_full_range(
+    pg_dsn: str,
+) -> None:
+    """H10a, the regression pin: on vanilla Postgres the floor probe fails
+    open to None (the ``timescaledb_information`` views do not exist — the
+    probe's very first execution raises UndefinedTable and the probe
+    answers None, logging at debug, never raising) and both sweeps run
+    FULL-RANGE, byte-identical to the pre-floor behavior: aged rows
+    delete, fresh rows survive, counts exact.
+
+    This is the no-floor contract the whole fix rests on: every non-
+    hypertable deployment's sweeps must be untouched.
+    """
+    from taskq.timescale import retention_policy_floor
+
+    schema = "tsr_no_floor_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _migrate(conn, schema)
+        assert await retention_policy_floor(conn, schema, "job_events", "occurred_at") is None
+        assert await retention_policy_floor(conn, schema, "jobs_archive", "finished_at") is None
+        # A table that does not exist at all: same fail-open.
+        assert await retention_policy_floor(conn, schema, "no_such_table", "x") is None
+
+        now = datetime.now(UTC)
+        expired_at = now - timedelta(hours=1)
+        aged_archive = [
+            await _seed_archive_row(
+                conn, schema, finished_at=now - _AGED_ARCHIVE_FINISHED_AT, expire_at=expired_at
+            )
+            for _ in range(3)
+        ]
+        fresh_archive = await _seed_archive_row(
+            conn, schema, finished_at=now, expire_at=now + timedelta(days=365)
+        )
+        aged_event = await _seed_event(
+            conn, schema, occurred_at=now - _AGED_EVENT_OCCURRENCE, detail={}
+        )
+        aged_outbox = await _seed_event(
+            conn,
+            schema,
+            occurred_at=now - _AGED_EVENT_OCCURRENCE,
+            detail={"reason": "lock_expired"},
+        )
+        fresh_event = await _seed_event(conn, schema, occurred_at=now, detail={})
+
+        expiry = await archive_expiry_sweep(conn, schema=schema, batch_size=100)
+        assert expiry.total_deleted == 3, "full-range: the aged rows delete exactly as before"
+        deleted = await sweep_expired_events(
+            conn, schema=schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+        )
+        assert deleted == 1, "full-range: the aged ordinary event deletes, the carve-out holds"
+
+        archive_ids = {r["id"] for r in await conn.fetch(f"SELECT id FROM {schema}.jobs_archive")}
+        event_ids = {int(r["id"]) for r in await conn.fetch(f"SELECT id FROM {schema}.job_events")}
+        assert archive_ids == {fresh_archive}
+        assert event_ids == {aged_outbox, fresh_event}
+        assert aged_archive and aged_event not in event_ids
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_hypertable_without_a_policy_has_no_floor_and_the_sweep_stays_full_range(
+    ts_conn: asyncpg.Connection, ts_schema: str
+) -> None:
+    """H10b, the probe's edge: a hypertable WITHOUT a registered policy
+    answers None — nothing owns the aged end, so the sweep must run
+    full-range (the H1 no-op only holds because a policy IS armed there).
+
+    Also pins the probe's other None paths on the real engine: a table
+    that is not a hypertable at all (``jobs`` — it is never converted),
+    and a partition-column name that does not match the hypertable's time
+    dimension (the floor's clock would be the wrong clock). Then the
+    policy is removed and the aged rows delete through the sweep, the
+    carve-out at full strength again.
+    """
+    from taskq.timescale import retention_policy_floor
+
+    now = datetime.now(UTC)
+    # Armed: the floor is present and is EXACTLY the policy's horizon.
+    floor = await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
+    assert floor == now - _TEST_EVENT_RETENTION
+    # Not a hypertable: no floor.
+    assert await retention_policy_floor(ts_conn, ts_schema, "jobs", "finished_at", now=now) is None
+    # Wrong partition column: the floor's clock would be the wrong clock.
+    assert (
+        await retention_policy_floor(ts_conn, ts_schema, "job_events", "finished_at", now=now)
+        is None
+    )
+
+    # Policy removed: nothing owns the aged end any more.
+    await ts_conn.execute(
+        "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
+        f'"{ts_schema}"."job_events"',
+    )
+    assert (
+        await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
+        is None
+    )
+
+    aged_id = await _seed_event(
+        ts_conn, ts_schema, occurred_at=now - _AGED_EVENT_OCCURRENCE, detail={}
+    )
+    outbox_id = await _seed_event(
+        ts_conn,
+        ts_schema,
+        occurred_at=now - _AGED_EVENT_OCCURRENCE,
+        detail={"reason": "lock_expired"},
+    )
+    fresh_id = await _seed_event(ts_conn, ts_schema, occurred_at=now, detail={})
+
+    deleted = await sweep_expired_events(
+        ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+    )
+    assert deleted == 1, "full-range on the policy-less hypertable: the aged ordinary event deletes"
+    surviving = {
+        int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")
+    }
+    assert surviving == {outbox_id, fresh_id}, (
+        "the carve-out holds at full strength when nothing owns the aged end"
+    )
+    assert aged_id not in surviving

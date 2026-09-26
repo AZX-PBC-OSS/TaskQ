@@ -86,7 +86,9 @@ The details that matter:
   ledger because the ledger applies each file exactly once, and opt-in happens
   at an arbitrary point in a database's life; re-running a deploy converges
   the schema instead (changed retention settings are honored on the next
-  deploy, already-converted tables are skipped).
+  deploy, already-converted tables are skipped). A changed chunk interval is
+  re-asserted the same way, but it shapes future chunks only: existing
+  chunks keep the interval they were created with.
 * **Uniqueness widens, semantics hold.** A hypertable requires the partition
   column in every unique constraint, so `jobs_archive`'s `PRIMARY KEY (id)`
   becomes `UNIQUE (id, finished_at)`. The re-archive guarantee the bare
@@ -94,13 +96,28 @@ The details that matter:
   in the archive write: a job id that already holds an archive row is never
   archived again. The same guard runs on vanilla Postgres, so the prune's
   ghost semantics (fold an already-archived id, never wedge, never duplicate)
-  are identical in both modes and pinned by the same tests.
+  are identical in both modes and pinned by the same tests. One stated edge:
+  the guard's promise is keyed to the archive row's existence, and a chunk
+  drop can remove that witness. When the ghost's archive chunk is gone, a
+  retried job's re-prune re-archives — fresh `archived_at`/`expire_at`
+  stamps, the live payload wins — where vanilla would still fold, because
+  the row outlives the chunk by the archive-to-expire margin. Bare-id
+  uniqueness would pin the invariant structurally, and a hypertable forbids
+  exactly that; "archived at most once" therefore holds only while the
+  archive chunk lives.
 * **One foreign key drops.** No table may reference a hypertable, so
   `job_attempts_archive`'s foreign key to `jobs_archive(id) ON DELETE CASCADE`
   is removed. Chunk retention replaces the cascade: both tables register
   policies from the same `archive_retention_period`. The alignment is by
   chunk, not by row: an attempt whose `started_at` precedes its job's
   `finished_at` can outlive the parent's chunk by up to one chunk interval.
+  And unlike the cascade it replaces, the chunk drop does not take the
+  attempts with the parent: when the parent's chunk drops first, the
+  parentless `job_attempts_archive` rows stay queryable until their own
+  chunk drops — at most one chunk interval later, capped at the clamp's
+  thirty days. Vanilla never shows a parentless attempt row (the cascade
+  removes them together); anything that queries attempts directly on the
+  hypertable mode should expect them in that window.
   `job_events`' foreign key to `jobs(id) ON DELETE CASCADE` is kept
   (hypertable-to-regular-table foreign keys are supported) and enforcement is
   unchanged.
@@ -108,6 +125,42 @@ The details that matter:
   `migrate_data`, which takes an access-exclusive lock and rewrites existing
   rows into chunks inside the deploy step. Size the deploy window for the
   archive's current row count; an empty or young schema converts in seconds.
+  The window does not start at the copy, though — the constraint surgery in
+  the next two bullets locks and scans the same tables first, and the first
+  background policy run after the deploy drops the whole aged tail in one
+  sweep.
+* **The constraint surgery takes its own access-exclusive locks.** Before
+  `create_hypertable` runs, the foreign-key drop, the primary-key drops, and
+  every `ADD CONSTRAINT ... UNIQUE` statement (one per table) each take
+  `ACCESS EXCLUSIVE` on their table, and each unique add full-scans that
+  table to validate the uniqueness it asserts. On a big archive those scans
+  are part of the deploy window, not a footnote to it: size the window for
+  the constraint scans and the `migrate_data` copy together.
+* **The primary key drops before the unique constraint lands.** These
+  statements run one per transaction on the deploy connection's autocommit,
+  and the migration advisory lock serializes migrators only — workers keep
+  running through the whole conversion. Between a table's primary-key drop
+  and its unique add, that table holds no unique constraint on its id
+  columns; a duplicate insert that lands in the window makes every
+  subsequent deploy fail on the unique add until the duplicates are removed
+  by hand. Run the enabling deploy in a maintenance window when no worker
+  archives, or accept the window: it spans two adjacent statements, so it is
+  tiny and bounded, but it is not zero.
+* **Bounded runs convert anyway.** `migrate up --phase pre`, `--target`, and
+  `--max-steps` all still run the conversion and re-register the policies
+  when the flag is on: the deploy step's flag check is independent of which
+  migrations a bounded run applies. A run intended to apply one unrelated
+  migration does the full hypertable work too — pinned as current behavior
+  by `tests/test_timescale_deploy_e2e.py::test_bounded_run_still_converts`.
+* **The first policy run drops the whole aged tail at once.** With policies
+  armed, every chunk older than the retention interval is drop-eligible
+  immediately: the first registration makes the entire historical backlog
+  drop-eligible the moment the enabling deploy finishes, because policy
+  deletion is chunk-granularity — whatever has fully aged past the interval
+  goes as whole-chunk drops. The first time Timescale's background workers
+  fire, that aged tail leaves in one sweep, potentially gigabytes of IO,
+  where vanilla mode expires the same rows gradually, row by row, in bounded
+  batch deletes. Size the post-deploy window for that first policy run too.
 
 ## Retention is owned by the policies, mostly
 
@@ -119,21 +172,101 @@ fully passed its retention. Two consequences to know:
   chunks drop on `finished_at` age; a row's `expire_at` stamp (archive time
   plus `archive_retention_period`) is always later than that, so hypertable
   retention is stricter than vanilla expiry by however long the row sat in
-  the hot table before archiving. `event_retention_period = 0` (the disable
+  the hot table before archiving. The aged-side rule, stated once: with
+  policies armed, `expire_at` is honored exactly inside chunk lifetime — the
+  expiry sweep still deletes a row whose `expire_at` passed while its chunk
+  is present — and the aged end is governed by the policy's
+  partition-column clock. That is the trade the feature makes for
+  chunk-drop performance. `event_retention_period = 0` (the disable
   sentinel, keep everything) registers no policy, which is exactly "keep
   everything".
-* **The sweeps still run.** Chunk granularity, not row granularity, governs
+* **The sweeps still run — above the policy floor.** Each sweep probes the
+  armed policy's own `drop_after` horizon once per run
+  (`retention_policy_floor` in `src/taskq/timescale.py`, one catalog query
+  against `timescaledb_information`, failing open to "no floor" on vanilla
+  Postgres or any probe error) and bounds its DELETE with it: rows older
+  than the floor are the POLICY's — silently, chunk-granular, watermark-blind
+  — and the sweep no longer pays the chunk-fan-out tax to re-delete them.
+  Below the floor the sweep owns deletion row-exactly: the event TTL sweep
+  honors the reclaim-outbox carve-out there, and the archive expiry sweep
+  honors `expire_at` exactly inside chunk lifetime (the policy's clock is
+  `finished_at` — the chunk alignment column — so the floor bounds
+  `finished_at` while `expire_at` stays the row-precise predicate inside the
+  window). Rows older than the floor but inside a young chunk leave at most
+  one chunk interval late, when the chunk itself ages past the boundary —
+  chunk granularity is the trade. The floor is read from the registered
+  policy's own `config` (`drop_after`), not re-derived from the settings, so
+  the sweep and the policy can never disagree about where the boundary sits.
+  Chunk granularity, not row granularity, governs
   the policy drops: the chunk containing the newest rows is dropped only when
-  its newest row ages out. Rows inside young chunks still age past the
-  retention setting, and the row-level sweeps keep honoring them: the event
-  TTL sweep deletes them (including the reclaim-outbox carve-out, honored
-  inside chunk lifetime), and the archive expiry sweep deletes rows whose
-  `expire_at` passed while their chunk is still present. The reclaim-outbox
+  its newest row ages out. The reclaim-outbox
   carve-out's 100x age cap is bounded by chunk drops, not by the sweep: a
   chunk ages out at plain retention regardless of its events' kind, so a
   `watch_reclaims` consumer must keep its lag inside
   `event_retention_period` (or one chunk interval, whichever is larger) on
   the hypertable mode.
+* **The chunk drop is a third deleter, and the gap signal does not see it.**
+  Migration 01.00.20_02's watermark (`job_events_prune_state.pruned_through_id`)
+  is what makes a stale consumer cursor fail visible with
+  `EventRetentionGapError` instead of silently skipping — and that contract
+  ("the watermark can never lag what is already gone") is kept by the two
+  sweep deleters only, each of which advances the watermark in the same
+  statement that deletes. The retention policy advances nothing: a chunk
+  drop removes event ids without moving `pruned_through_id`, so a consumer
+  cursor below the dropped ids still reads as safe (cursor at or above the
+  watermark) and silently loses the dropped events. No code advances the
+  watermark from the policy path today. That is why the lag rule in the
+  previous bullet is a hard requirement on this mode, not a comfort: on
+  hypertables, keep the `watch_reclaims` cursor strictly inside
+  `event_retention_period` — the chunk policy provides no gap signal.
+
+## Measured trade-offs: hypertables vs plain PostgreSQL
+
+Measured on this repo's own benchmark (`benchmarks/timescale_tradeoffs.py`,
+rerunnable end-to-end; 1,000,000 jobs / 400k archive / 400k events / 100k
+attempts seeded identically on both engines, three stable runs, every
+dashboard row identity-asserted cross-engine before any timing counted):
+
+**Retention drains (the sweeps' real batch shapes):**
+
+| Drain | plain | hypertable (before the floor) | hypertable (since) | ratio since |
+|---|---:|---:|---:|---:|
+| Prune 100k jobs → archive | 4.7 s | 38.4 s → 35.8 s | 35.8 s | ~8× slower (untouched: its DELETE runs on the plain `jobs` table) |
+| Event TTL (96k rows) | 0.4 s | 2.0 s | **0.1 s** | ~4× **faster** |
+| Archive expiry (100k rows) | 1.3 s | 2.5 s | **0.3 s** | ~4× **faster** |
+
+Before the retention-policy floor, every bounded batch DELETE fanned out
+over chunks and row-level retention throughput was the hypertable's cost
+(6.6× slower on the event TTL, 1.7× on archive expiry). The floor moved
+the aged end's deletion to the policy's chunk drops — the sweeps' cost on
+the hypertable collapsed to the floor probe plus the empty-window index
+scan, and the two TTL/expiry legs are now FASTER than plain, which still
+pays the row-level DELETEs. The trade is unchanged, only cheaper: the
+aged end leaves at chunk granularity (silently, watermark-blind), one
+chunk interval later at worst, instead of row-exactly.
+
+**The admin dashboard at 1M jobs - parity except the archive tab, which wins big:**
+
+| Query | plain p50 | hypertable p50 |
+|---|---:|---:|
+| Live jobs pages/counts (`jobs` is never a hypertable) | ±10% | parity |
+| Archive tab, newest-first page | 52.7 ms | **8.6 ms (6.1×)** |
+
+Chunk pruning serves "recent history" reads from the youngest chunk - the
+dashboard's most common archive read is the hypertable's best case.
+
+**Write path - no cliff:** ~3% enqueue tax (that table is plain in both
+modes - planning noise), ~6% on the hypertable `job_events` insert.
+
+**Aftermath:** dead tuples after row-level DELETEs are identical per
+engine - deleting buys no bloat relief on either. The hypertable's
+retention win lives in the chunk-drop path (whole-chunk, policy-
+driven, silent), and since the retention-policy floor the sweeps' aged-end
+DELETEs are gone from the hypertable entirely - the sweeps' remaining
+young-chunk work is small, precise, and row-exact. What the feature still
+trades away: the deletion guarantees above (expire_at exactness on the
+aged end, the gap signal, the fold guard) against the archive tab's read
+speed and the aged end's removal cost.
 
 ## Monitoring
 
@@ -167,4 +300,15 @@ real policy run dropping aged chunks while fresh rows survive; the sweeps'
 young-chunk behavior; the differential prune script agreeing between vanilla
 Postgres and the hypertable mode; and chunk pruning in a windowed
 `job_events` query's plan. The container legs skip with a reason when Docker
-is unreachable.
+is unreachable. `tests/test_timescale_deploy_e2e.py` runs the real
+`taskq migrate up` subprocess against TimescaleDB (conversion with data,
+preservation, the capability refusal, roll-forward-only, and the bounded-run
+interaction), and `tests/test_timescale_retention_interplay.py` pins the
+policy/sweep composition edges named above: the carve-out defeated by chunk
+drops, the watermark not advancing on a policy drop, the re-archive
+witness a chunk drop removes — and the retention-policy floor itself:
+the below-floor range deleted-count going to zero (with the pre-fix
+counterfactual), the inside-window rows still deleting row-exactly and
+watermark-visibly, the floor-or-not end-state parity, the vanilla probe
+failing open to full-range sweeps, and the policy-less hypertable owning
+no aged end at all.

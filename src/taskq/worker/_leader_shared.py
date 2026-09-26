@@ -49,6 +49,7 @@ from taskq.obs import (
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
+from taskq.timescale import retention_policy_floor
 from taskq.worker.deps import WorkerDeps
 
 __all__ = [
@@ -423,6 +424,17 @@ _ARCHIVE_CTE_SQL = (
     # guard replaces the wedge with a fold (the existing archive row
     # stands) in BOTH modes, so the prune converges identically and the
     # semantics are pinned by the same tests in both.
+    #
+    # Stated edge (pinned by tests/test_timescale_retention_interplay.py):
+    # this guard's witness is the archive ROW's existence, so "archived at
+    # most once" holds only while that row lives. On the hypertable mode a
+    # retention-policy chunk drop can remove the witness while vanilla
+    # still holds the row (expire_at is always later than the
+    # partition-column drop age), so a retried job's re-prune re-archives:
+    # fresh archived_at/expire_at stamps, the live payload wins. Pinning
+    # the invariant structurally would need bare-id uniqueness, which a
+    # hypertable forbids; the once-only archive is thus bounded by the
+    # archive chunk's lifetime, not absolute.
     '  AND NOT EXISTS (SELECT 1 FROM "{schema}".jobs_archive a WHERE a.id = j.id)'
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
@@ -505,6 +517,36 @@ _EXPIRY_CTE_SQL = (
     "  RETURNING id, status"
     ") SELECT status, count(*) AS cnt FROM deleted GROUP BY status"
 )
+
+# The retention-policy floor's conjunct (archive expiry variant): the
+# policy's clock is finished_at — the chunk alignment column — so the
+# floor bounds finished_at, while expire_at stays the row-precise
+# predicate INSIDE the window. Composed by anchored .replace (the
+# {name}-fragment mechanism _SWEEP_1_SQL uses, NOT str.format: the
+# no-floor rendering must stay byte-identical for every existing
+# .format(schema=...) caller — tests/test_index_audit.py,
+# tests/test_sweepaudit_bounded_writes.py, the benchmark — and an
+# un-substituted format field here would KeyError those callers).
+_EXPIRY_FLOOR_ANCHOR = "WHERE expire_at < statement_timestamp()"
+_EXPIRY_FLOOR_PRED = " AND finished_at >= $2::timestamptz"
+
+
+def _compose_expiry_sql(schema: str, floor: datetime | None) -> str:
+    """Render ``_EXPIRY_CTE_SQL`` with the optional policy floor.
+
+    *floor* is None on vanilla Postgres / policy-less hypertables:
+    byte-identical to the bare constant. With a floor, the window gains
+    ``AND finished_at >= $2`` — rows older than the policy's own horizon
+    are chunk-dropped by the policy anyway, and re-deleting them row by
+    row pays the chunk-fan-out tax for deletions that are not ours to
+    make. The bound is a parameter (a timestamptz), an eligible btree
+    Index Cond by the same STABLE-bound rule the expire_at bound follows.
+    """
+    sql = _EXPIRY_CTE_SQL.format(schema=schema)
+    if floor is None:
+        return sql
+    assert _EXPIRY_FLOOR_ANCHOR in sql, "expiry floor anchor drifted"
+    return sql.replace(_EXPIRY_FLOOR_ANCHOR, _EXPIRY_FLOOR_ANCHOR + _EXPIRY_FLOOR_PRED, 1)
 
 
 def _effective_prune_batch_size(batch_size: int, sizer: SweepBatchSizer | None) -> int:
@@ -841,6 +883,32 @@ async def archive_expiry_sweep(
     timeout/breaker contract. *drain_gate* is called before every batch;
     a ``False`` return stops the drain with the batches already
     committed.
+
+    The POLICY FLOOR (hypertable deployments only): when the connected
+    server has a ``policy_retention`` job registered against
+    ``jobs_archive`` (:func:`taskq.timescale.retention_policy_floor`,
+    probed ONCE per run — before the batch loop, never per batch — and
+    failing open to None on any probe error), rows older than the
+    policy's own ``drop_after`` horizon gain the ``AND finished_at >=
+    $floor`` conjunct and are left to the policy, which drops them
+    whole-chunk silently. THE BOUNDARY, stated honestly: OLDER than the
+    floor, the POLICY owns deletion (silent, chunk-granular,
+    watermark-blind — see the pinned boundary in
+    ``tests/test_timescale_retention_interplay.py``); NEWER than it
+    (inside the window), this sweep owns deletion (row-exact on
+    ``expire_at``, the stamp honored exactly inside the window — the
+    young chunk whose rows have passed ``expire_at`` while their chunk
+    survives is still this sweep's work, and remains so). The floor's
+    clock is the POLICY's clock
+    (``finished_at``, the chunk alignment column) and the floor's value
+    is the policy's OWN horizon (parsed from the registered config, not
+    re-derived), so a policy registered with a different interval than
+    the current setting still governs the aged end exactly. A row older
+    than the floor inside a young chunk is dropped when the chunk itself
+    ages past the boundary, at most one chunk interval late — chunk
+    granularity is the trade. On vanilla Postgres the probe fails open
+    to None and this sweep runs full-range, byte-identical to the
+    no-floor behavior.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -856,17 +924,23 @@ async def archive_expiry_sweep(
     # predicate's own clock domain, the sibling cutoffs above were
     # documented as display-only and then quietly grew a second consumer.
     expire_before: datetime = await conn.fetchval(_DB_NOW_SQL)
-    sql = _EXPIRY_CTE_SQL.format(schema=schema)
+    # ONE probe per sweep run, anchored to the clock domain the reported
+    # cutoff above already uses (the database's), never per batch.
+    floor = await retention_policy_floor(
+        conn, schema, "jobs_archive", "finished_at", now=expire_before
+    )
+    sql = _compose_expiry_sql(schema, floor)
 
     while True:
         if drain_gate is not None and not drain_gate():
             break
         size = _effective_prune_batch_size(batch_size, sizer)
         _record_prune_batch_size("archive_expiry", size, sizer)
+        args: tuple[object, ...] = (size,) if floor is None else (size, floor)
         rows = await _run_prune_batch(
             conn,
             sql,
-            size,
+            *args,
             statement_timeout_ms=statement_timeout_ms,
             sweep_name="archive_expiry",
             sizer=sizer,
