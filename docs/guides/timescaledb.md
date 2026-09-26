@@ -206,7 +206,7 @@ SELECT pg_reload_conf();
 ```
 
 (or set it on the workers' sessions; it is user-settable). The measured
-trade-offs: `benchmarks/timescale_compression.py` recorded a 6.18x
+trade-offs: `benchmarks/timescale_compression.py` recorded a 6.20x
 storage reduction on the 400k-row archive corpus, the cold archive reads
 4-9x faster over compressed chunks, the young chunk's hot page unchanged,
 and the id point lookup (a non-segmentby key) the documented weakness.
