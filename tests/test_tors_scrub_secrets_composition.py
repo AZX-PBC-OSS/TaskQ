@@ -41,7 +41,9 @@ _COMBINED = (
 )
 
 _SLACK_SHAPE = "notify failed: slack answered 403 for xoxb-123456789012-abc"
-_PEM_SHAPE = "cert load failed: -----BEGIN RSA PRIVATE KEY-----\nMIIEvQ\n-----END RSA PRIVATE KEY-----"
+_PEM_SHAPE = (
+    "cert load failed: -----BEGIN RSA PRIVATE KEY-----\nMIIEvQ\n-----END RSA PRIVATE KEY-----"
+)
 
 
 def test_composition_covers_both_layers_families() -> None:
@@ -109,7 +111,7 @@ def test_prefilter_arms_on_each_registered_family_head() -> None:
     # family's coverage).
     import taskq.obs._redact_exc as rx_mod
 
-    original = rx_mod.scrub_secrets
+    original = rx_mod.scrub_secrets  # pyright: ignore[reportPrivateImportUsage]  # Why: the test spies the pre-pass import seam; the attribute is the patch point.
     for head in rx._SECRET_HEAD_TRIGGERS:
         if head.startswith("--"):
             continue
@@ -120,11 +122,11 @@ def test_prefilter_arms_on_each_registered_family_head() -> None:
             seen.append(t)
             return t
 
-        rx_mod.scrub_secrets = _spy
+        rx_mod.scrub_secrets = _spy  # pyright: ignore[reportPrivateImportUsage]  # Why: the ignore belongs on the diagnostic line - a standalone comment line does nothing.
         try:
             rx_mod._scrub_text(text)
         finally:
-            rx_mod.scrub_secrets = original
+            rx_mod.scrub_secrets = original  # pyright: ignore[reportPrivateImportUsage]
         assert calls, f"head {head!r} did not arm the pass - the trigger list rotted"
 
 

@@ -32,6 +32,7 @@ This module pins the swap three ways:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import pytest
 from hypothesis import given, settings
@@ -110,7 +111,7 @@ _MIN_WIN_FACTOR = 3.0
 _AT_CAP_64K = "中" * 21845 + "x"  # a real 65536-byte multibyte result
 
 
-def _measure(fn, /) -> float:
+def _measure(fn: Callable[[], object], /) -> float:
     """min-of-N interleaved per-op cost, the house timing rules."""
     best = float("inf")
     for _ in range(_ROUNDS):
