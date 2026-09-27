@@ -41,6 +41,7 @@ import pytest
 import structlog.testing
 
 from taskq._ids import new_uuid
+from taskq.constants import CANCEL_ORIGIN_PENDING
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
@@ -1222,4 +1223,654 @@ class TestTwinCoverageIsPerSchedule:
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 62 + 60, (
             "the on-demand jobs are untouched: the schedule's fires coexist "
             "with them, no dedup, no displacement"
+        )
+
+
+class TestTwinCoverageSurvivesBeyondPendingScheduled:
+    """FINDING (red until fixed, GH issue #462): the coverage walk counts a
+    fold-1 twin only while it is ``pending``/``scheduled``, so any twin
+    that has left that pair by the time the walk runs DROPS OUT of the
+    covered prefix and the schedule re-fires its instant.
+
+    ``_skip_already_delivered_overlap_twins`` scoped its coverage query
+    with ``j.status IN ('pending', 'scheduled')``. A twin is not a
+    delivery promise that only exists in those two states:
+
+    - an operator-cancelled twin (``cancel_pending_scheduled`` terminalises
+      exactly that pair to ``cancelled``) is a delivery the operator
+      refused - re-firing it overrides the cancel;
+    - a claimed (``running``) or finished (``succeeded``) twin is a
+      delivery in progress or done - re-firing it is double delivery.
+
+    Both shapes need the walk to run while a twin sits outside the
+    pending/scheduled pair. The natural steady state cannot produce that
+    (the twins are pre-scheduled about an hour ahead of the fold-0 ticks
+    that create them), but a stall that drags ``next_fire_at`` through the
+    twin's own instant can: tick-budget exhaustion advances a suppressed
+    schedule one cadence per suppressed tick WITHOUT consulting twin
+    coverage (the suppression UPDATE writes ``next_fire_at`` directly,
+    cron_loop's tick-budget arm), so the walk can arrive at an instant
+    whose twin a worker claimed or finished in the meantime - and the
+    operator-cancel arm needs no timing argument at all, the cancel can
+    land at any moment before the walk.
+
+    The drive seeds that state directly (the harness's real clock precedes
+    the November overlap, the same honesty note
+    ``TestPartialTwinCoverageFoldHandoff`` carries): a schedule mid
+    fold-1 pass at 01:00 fold-1, pre-queued twins covering 01:05..01:59,
+    and the 01:30 twin moved past the pending/scheduled pair by the arm
+    under test. The walk must advance through the transformed twin's
+    instant like any other covered one: no second enqueue at 01:30
+    fold-1, ``next_fire_at`` lands past the range, the transformed twin
+    keeps its own status.
+    """
+
+    @staticmethod
+    async def _cancel_scheduled_twin(
+        conn: asyncpg.Connection, schema: str, scheduled_at: datetime, schedule_id: UUID
+    ) -> None:
+        """Operator-cancel the schedule's twin at *scheduled_at*.
+
+        Mirrors the exact SET ``cancel_pending_scheduled``
+        (``_sql_templates.py``) leaves on a pending/scheduled row:
+        terminal ``cancelled`` with ``finished_at`` stamped and the
+        ``CancelledBeforeStart`` cancel-origin marker on the row. The
+        cancel writes themselves are pinned by the cancel suite; this pin
+        is about what the coverage walk owes a row they leave behind.
+        """
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = 'cancelled'::\"{schema}\".job_status, "
+            "finished_at = clock_timestamp(), "
+            f"error_class = '{CANCEL_ORIGIN_PENDING}' "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            scheduled_at,
+        )
+
+    @staticmethod
+    async def _restate_twin(
+        conn: asyncpg.Connection,
+        schema: str,
+        scheduled_at: datetime,
+        schedule_id: UUID,
+        status: str,
+    ) -> None:
+        """Move the schedule's twin at *scheduled_at* to *status*.
+
+        The state a claim (``running``, dispatch's own write) or a
+        finished run (``succeeded``, ``mark_succeeded``'s write) leaves;
+        the walk reads the status column and nothing else about the row.
+        """
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = '{status}'::\"{schema}\".job_status "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            scheduled_at,
+        )
+
+    @staticmethod
+    async def _cancel_running_twin(
+        conn: asyncpg.Connection, schema: str, scheduled_at: datetime, schedule_id: UUID
+    ) -> None:
+        """Mid-drain cancel the schedule's twin at *scheduled_at*.
+
+        The EXACT SET ``cancel_running`` (``_sql_templates.py``) stamps on
+        a claimed row: ``cancel_requested_at`` + ``cancel_phase = 1``, the
+        row STAYS ``running`` while the cooperative drain runs.  The
+        cancel suite pins that statement; this pin is about what the
+        coverage walk owes a twin the operator has asked to cancel but
+        that has not reached a terminal status yet.
+        """
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = 'running'::\"{schema}\".job_status, "
+            "cancel_requested_at = clock_timestamp(), cancel_phase = 1 "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            scheduled_at,
+        )
+
+    async def _drive_fold1_pass_with_one_transformed_twin(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        transform: str,
+    ) -> UUID:
+        """The shared drive: schedule mid fold-1 pass, twins 01:05..01:59
+        fold-1, the 01:30 twin transformed per *transform*, the pass
+        ticked through 01:30 fold-1."""
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name=f"twin-{transform}",
+            cron_expr=_MINUTELY,
+            timezone=_OVERLAP_TZ,
+            dst_strategy="allof",
+            next_fire_at=_FOLD1_TICKS_UTC[0],
+            identity_key=f"twin-{transform}",
+        )
+        transformed_at = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 fold-1
+        for minute in range(5, 60):
+            instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
+        assert transform in (
+            "cancelled",
+            "cancel-running",
+            "running",
+            "succeeded",
+        )
+        if transform == "cancelled":
+            await self._cancel_scheduled_twin(clean_pg_conn, schema, transformed_at, schedule_id)
+        elif transform == "cancel-running":
+            await self._cancel_running_twin(clean_pg_conn, schema, transformed_at, schedule_id)
+        else:
+            await self._restate_twin(clean_pg_conn, schema, transformed_at, schedule_id, transform)
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        # Ticks 06:00..06:04 fire the uncovered 01:00..01:04 fold-1
+        # occurrences; the 06:04 tick's walk must advance THROUGH the
+        # transformed twin's instant to the first instant nothing holds.
+        for minute in range(5):
+            due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            assert fired == 1, (
+                f"the {due.isoformat()} tick owes the uncovered fold-1 "
+                "occurrence - a failure here is setup, not the finding"
+            )
+        return schedule_id
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("transform", "why"),
+        [
+            ("cancelled", "operator-cancelled"),
+            ("cancel-running", "mid-drain cancel requested"),
+            ("running", "claimed"),
+            ("succeeded", "finished"),
+        ],
+    )
+    async def test_transformed_twin_never_refires(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        transform: str,
+        why: str,
+    ) -> None:
+        """A twin beyond the pending/scheduled pair must not stall the walk.
+
+        The 01:30 fold-1 twin is {why}; the walk must count its instant as
+        covered and land ``next_fire_at`` past the range. While the
+        coverage query counts only pending/scheduled twins, the walk
+        stalls ON the transformed instant, the schedule sits due there,
+        and the 06:30 tick enqueues a SECOND job for an occurrence that
+        was already delivered ({why}) - or that the operator refused.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        transformed_at = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 fold-1
+        schedule_id = await self._drive_fold1_pass_with_one_transformed_twin(
+            clean_pg_conn, module_pg_schema, transform
+        )
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == _AFTER_RANGE_UTC, (
+            f"the walk must advance through the {why} twin's instant: every "
+            "fold-1 slot through 01:59 is held by a job, so the schedule owes "
+            f"nothing until 02:00 local ({_AFTER_RANGE_UTC.isoformat()}) - "
+            f"got {row['next_fire_at'].isoformat()}"
+        )
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        # The walk stalled (red) -> the schedule sits due at 06:30 and this
+        # tick re-fires the transformed instant; walked past (fixed) -> the
+        # schedule is not due and this tick fires nothing.
+        fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=transformed_at)
+        assert fired == 0, (
+            f"the {transformed_at.isoformat()} tick re-fired the 01:30 fold-1 "
+            f"occurrence ({why} twin) - a {why} twin is its delivery or the "
+            "operator's refusal of it, never an owed occurrence"
+        )
+
+        at_instant = await clean_pg_conn.fetch(
+            f'SELECT status FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            transformed_at,
+        )
+        assert len(at_instant) == 1, (
+            f"exactly one job may hold the 01:30 fold-1 instant: the {why} "
+            f"twin - a second enqueue there is a re-fired occurrence, got "
+            f"{[dict(r) for r in at_instant]}"
+        )
+        # 'cancel-running' is the protocol's phase-1 stamp: the row STAYS
+        # 'running' (cancel_running's contract) until the drain lands it.
+        expected_status = "running" if transform == "cancel-running" else transform
+        assert at_instant[0]["status"] == expected_status, (
+            f"the fix must not touch the twin's own write path: the {why} "
+            f"twin keeps its status, got {at_instant[0]['status']}"
+        )
+
+        assert await _count_schedule_jobs(clean_pg_conn, schema, _OPEN_ACTOR, schedule_id) == 60, (
+            "5 schedule-delivered occurrences + 55 held twins, the transformed "
+            "one included - no occurrence delivered twice, none conjured away"
+        )
+
+
+class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
+    """The predicate's NEGATIVE side, pinned so a future widening cannot
+    silently drop the owed re-fire (GH issue #462's at-least-once arm).
+
+    ``_skip_already_delivered_overlap_twins`` counts six statuses as
+    coverage and deliberately leaves out ``failed`` and ``crashed``: both
+    are terminal-NOT-delivered (``VALID_TRANSITIONS`` gives each an empty
+    transition set - no recovery path ever re-pends a row resting there;
+    the only re-pend writers, the reclaim sweeps and ``retry_job``, move
+    ``scheduled_at`` forward when they re-pend, and the sweep re-pends
+    straight from ``running`` without ever resting on ``failed``/
+    ``crashed``).  A fold-1 twin resting on either status owns NOTHING:
+    no retry will ever deliver its instant, so the instant stays
+    uncovered and the schedule's own later fire is the only deliverer
+    left - the walk must stay OFF that instant and every later tick must
+    re-fire the range's remainder, one cadence each.
+
+    If a future change widens the predicate to count a terminal-not-
+    delivered status, the re-fires below go silent and the occurrence is
+    lost forever - the one failure mode strictly worse than a double.
+    """
+
+    @staticmethod
+    async def _drive_fold1_pass_with_terminal_twins(
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        status: str,
+    ) -> UUID:
+        """Schedule mid fold-1 pass at 01:00 fold-1, twins 01:05..01:59
+        fold-1 all resting at *status*, the pass ticked through 01:59."""
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name=f"terminal-twin-{status}",
+            cron_expr=_MINUTELY,
+            timezone=_OVERLAP_TZ,
+            dst_strategy="allof",
+            next_fire_at=_FOLD1_TICKS_UTC[0],
+            identity_key=f"terminal-twin-{status}",
+        )
+        for minute in range(5, 60):
+            instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = '{status}'::\"{schema}\".job_status, "
+            "finished_at = clock_timestamp() "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2",
+            _OPEN_ACTOR,
+            str(schedule_id),
+        )
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        # Every fold-1 instant is uncovered (terminal-not-delivered holds
+        # nothing), so every tick 06:00..06:59 fires its own occurrence:
+        # 01:00..01:04 fresh, 01:05..01:59 the owed re-fire of a
+        # genuinely-not-delivered instant.
+        for minute in range(60):
+            due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            assert fired == 1, (
+                f"the {due.isoformat()} tick owes the fold-1 occurrence: a "
+                f"'{status}' twin delivered nothing and no retry will ever "
+                "deliver it, so the schedule's own fire is the only "
+                "deliverer left - suppressing it is silent job loss"
+            )
+        return schedule_id
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("status", "why"),
+        [
+            ("failed", "retries exhausted"),
+            ("crashed", "holder died without budget"),
+        ],
+    )
+    async def test_terminal_not_delivered_twin_refires_exactly_once(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        status: str,
+        why: str,
+    ) -> None:
+        """A '{status}' twin owns nothing: the walk stays off its instant
+        and the schedule re-fires every fold-1 slot exactly once."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await self._drive_fold1_pass_with_terminal_twins(
+            clean_pg_conn, module_pg_schema, status
+        )
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == _AFTER_RANGE_UTC, (
+            "the traversal must spend the whole range and land past it "
+            f"({_AFTER_RANGE_UTC.isoformat()}), got "
+            f"{row['next_fire_at'].isoformat()}"
+        )
+
+        # The re-fired schedule jobs are enqueued for immediate delivery
+        # (a fire's own job carries the SERVER clock as its scheduled_at,
+        # not the occurrence instant - only pre-scheduled twins carry the
+        # fold instant), so the census is by count, not per-instant
+        # duplication: 60 fires (5 fresh + 55 re-fires, the owed
+        # at-least-once delivery a genuinely-not-delivered occurrence
+        # gets) plus the 55 '{status}' twins, untouched at their instants.
+        fired_jobs = await clean_pg_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at < $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            _FOLD1_TICKS_UTC[0],
+        )
+        assert fired_jobs == 60, (
+            "every fold-1 slot must be fired exactly once - the 55 twins "
+            f"resting '{status}' ({why}) own nothing, so the schedule's own "
+            f"fire is the only deliverer each has; got {fired_jobs}"
+        )
+        twins = await clean_pg_conn.fetch(
+            f'SELECT scheduled_at, status FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at >= $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            _FOLD1_TICKS_UTC[0] + timedelta(minutes=5),
+        )
+        assert len(twins) == 55, (
+            f"the 55 '{status}' twins must still hold their fold instants, got {len(twins)}"
+        )
+        assert all(r["status"] == status for r in twins), (
+            f"the walk must not touch the twins' own write path: every "
+            f"twin keeps its '{status}' status"
+        )
+        assert await _count_schedule_jobs(clean_pg_conn, schema, _OPEN_ACTOR, schedule_id) == 115, (
+            f"60 fired occurrences + 55 '{status}' twins - every owed "
+            "re-fire landed, none delivered twice"
+        )
+
+
+class TestTwinAtRangeEndIsNotCoverage:
+    """The coverage range is ``[from_ts, to_ts)`` - a twin sitting EXACTLY
+    at ``to_ts`` (02:00 local, the first instant past the repeated range)
+    is not a fold occurrence and must neither extend the covered prefix
+    nor stall the walk.
+
+    The shape is unreachable in a natural run (the steady-state pin
+    proves the fold-0 pass pre-schedules exactly the 60 in-range fold-1
+    twins and nothing past the range), so the twin at ``to_ts`` here is a
+    synthetic probe of the boundary's exclusivity: the walk must land
+    ``next_fire_at`` ON ``to_ts`` regardless of the job sitting there,
+    and the schedule's own post-range tick must deliver the 02:00
+    occurrence (in a natural run that delivery is the occurrence's only
+    job; here the synthetic twin makes it a documented second).
+    """
+
+    async def test_walk_lands_on_to_ts_despite_a_twin_sitting_there(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name="twin-at-range-end",
+            cron_expr=_MINUTELY,
+            timezone=_OVERLAP_TZ,
+            dst_strategy="allof",
+            next_fire_at=_FOLD1_TICKS_UTC[0],
+            identity_key="twin-at-range-end",
+        )
+        # The covered prefix 01:05..01:59 fold-1 plus the synthetic twin
+        # exactly AT the range's exclusive end (02:00 local = 07:00 UTC).
+        for minute in range(5, 60):
+            instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
+        await _seed_scheduled_twin(
+            clean_pg_conn, schema, _OPEN_ACTOR, _AFTER_RANGE_UTC, schedule_id
+        )
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        for minute in range(5):
+            due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            assert fired == 1, f"the {due.isoformat()} tick owes the uncovered fold-1 occurrence"
+
+        # The walk's boundary pin: the covered prefix ends at 01:59, the
+        # twin at 02:00 covers no fold instant, so the walk lands
+        # next_fire_at exactly on the range end.
+        fired = await _tick(
+            clean_pg_conn,
+            settings,
+            schema,
+            no_policies,
+            due_as_of=_FOLD1_TICKS_UTC[0] + timedelta(minutes=5),
+        )
+        assert fired == 0, (
+            "the 01:05 fold-1 slot is twin-covered - the walk must advance "
+            "past the covered prefix, not fire it again"
+        )
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == _AFTER_RANGE_UTC, (
+            "a twin sitting exactly at to_ts is not coverage of anything: "
+            "the walk must land next_fire_at ON the range end "
+            f"({_AFTER_RANGE_UTC.isoformat()}), got "
+            f"{row['next_fire_at'].isoformat()}"
+        )
+
+        # The schedule's own post-range tick delivers 02:00 - the delivery
+        # a natural run owes (the synthetic twin beside it documents the
+        # boundary's exclusivity, nothing more).
+        fired = await _tick(
+            clean_pg_conn, settings, schema, no_policies, due_as_of=_AFTER_RANGE_UTC
+        )
+        assert fired == 1, "the 02:00 local occurrence is owed on its own tick"
+
+
+class TestFoldParityBeyondNewYork:
+    """The coverage walk's parity family beyond America/New_York.
+
+    The fix's drives all use the New York 2026-11-01 fall-back; the walk
+    itself is timezone-generic wall arithmetic (``repeated_range_bounds``
+    walks the ambiguous wall minute by minute), and these three zones
+    stress the shapes New York cannot reach:
+
+    - **America/Havana** falls back AT local midnight (01:00 CDT ->
+      00:00 CST): the repeated range ``[00:00, 01:00)`` starts exactly on
+      a local date boundary, so the fold-0 pass crosses local midnight
+      and both passes' walls carry the SAME local date.
+    - **Australia/Sydney** falls back in APRIL (03:00 AEDT -> 02:00
+      AEST, repeated range ``[02:00, 03:00)``): the southern-hemisphere
+      season the northern-hemisphere drives never exercise.
+    - **Australia/Lord_Howe** falls back by HALF AN HOUR (02:00 +11 ->
+      01:30 +10:30, repeated range ``[01:30, 02:00)``): a non-hour
+      repeat width - 30 fold slots per pass, not 60.
+
+    Each drive runs the NATURAL steady state (no seeded twins): the
+    fold-0 pass fires every slot exactly once and pre-schedules the
+    fold-1 twins, ``next_fire_at`` lands on the range end, every fold-1
+    tick fires nothing, and no instant holds two jobs.
+    """
+
+    async def _drive_steady_state_fold(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        *,
+        zone: str,
+        identity: str,
+        seed_utc: datetime,
+        last_fold0_tick_utc: datetime,
+        fold1_first_utc: datetime,
+        fold1_slots: int,
+        after_range_utc: datetime,
+    ) -> None:
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name=identity,
+            cron_expr=_MINUTELY,
+            timezone=zone,
+            dst_strategy="allof",
+            next_fire_at=seed_utc,
+            identity_key=identity,
+        )
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+
+        fired_total = 0
+        due = seed_utc
+        while due <= last_fold0_tick_utc:
+            fired_total += await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            due += timedelta(minutes=1)
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == after_range_utc, (
+            f"{zone}: the fold-0 pass is spent and every fold-1 slot is "
+            "twin-covered, so the schedule owes nothing until the range "
+            f"end ({after_range_utc.isoformat()}), got "
+            f"{row['next_fire_at'].isoformat()}"
+        )
+
+        # The fold-1 pass: every slot is delivered by its pre-scheduled
+        # twin, the schedule must not fire any of them a second time.
+        for offset in range(fold1_slots):
+            due = fold1_first_utc + timedelta(minutes=offset)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            assert fired == 0, (
+                f"{zone}: the {due.isoformat()} tick re-fired a fold-1 slot "
+                "its pre-scheduled twin already delivers - double delivery "
+                "inside the repeated range"
+            )
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == after_range_utc, (
+            f"{zone}: the fold-1 pass is spent; next_fire_at must stay on "
+            f"the range end, got {row['next_fire_at'].isoformat()}"
+        )
+
+        # No instant anywhere in the window holding two jobs.
+        duplicates = await clean_pg_conn.fetch(
+            f'SELECT scheduled_at, count(*) AS n FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            "WHERE actor = $1 "
+            "  AND scheduled_at >= $2 AND scheduled_at < $3 "
+            "GROUP BY scheduled_at HAVING count(*) > 1",
+            _OPEN_ACTOR,
+            seed_utc,
+            after_range_utc + timedelta(hours=2),
+        )
+        assert duplicates == [], (
+            f"{zone}: no instant may hold two jobs - duplicates mean a "
+            f"fold slot was scheduled twice: {duplicates}"
+        )
+        expected_jobs = fired_total + fold1_slots
+        assert (
+            await _count_schedule_jobs(clean_pg_conn, schema, _OPEN_ACTOR, schedule_id)
+            == expected_jobs
+        ), (
+            f"{zone}: {fired_total} fold-0 fires + {fold1_slots} fold-1 twins, "
+            "every owed slot exactly once"
+        )
+
+    @pytest.mark.integration
+    async def test_havana_fold_starts_at_local_midnight(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """America/Havana 2026-11-01: 01:00 CDT -> 00:00 CST, the repeated
+        range ``[00:00, 01:00)`` starts exactly on the local date boundary.
+        """
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone="America/Havana",
+            identity="parity-havana-midnight-fold",
+            # 23:58 CDT Oct 31 - two pre-fold slots cross local midnight.
+            seed_utc=datetime(2026, 11, 1, 3, 58, tzinfo=UTC),
+            # 00:59 CDT, the last fold-0 slot.
+            last_fold0_tick_utc=datetime(2026, 11, 1, 4, 59, tzinfo=UTC),
+            # 00:00 CST, the fold-1 pass's first slot.
+            fold1_first_utc=datetime(2026, 11, 1, 5, 0, tzinfo=UTC),
+            fold1_slots=60,
+            # 01:00 CST.
+            after_range_utc=datetime(2026, 11, 1, 6, 0, tzinfo=UTC),
+        )
+
+    @pytest.mark.integration
+    async def test_sydney_southern_hemisphere_april_fold(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """Australia/Sydney 2026-04-05: 03:00 AEDT -> 02:00 AEST, the
+        southern-hemisphere April fall-back, repeated range ``[02:00,
+        03:00)``."""
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone="Australia/Sydney",
+            identity="parity-sydney-april-fold",
+            # 00:58 AEDT Apr 5.
+            seed_utc=datetime(2026, 4, 4, 13, 58, tzinfo=UTC),
+            # 02:59 AEDT, the last fold-0 slot.
+            last_fold0_tick_utc=datetime(2026, 4, 4, 15, 59, tzinfo=UTC),
+            # 02:00 AEST, the fold-1 pass's first slot.
+            fold1_first_utc=datetime(2026, 4, 4, 16, 0, tzinfo=UTC),
+            fold1_slots=60,
+            # 03:00 AEST.
+            after_range_utc=datetime(2026, 4, 4, 17, 0, tzinfo=UTC),
+        )
+
+    @pytest.mark.integration
+    async def test_lord_howe_half_hour_fold(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """Australia/Lord_Howe 2026-04-05: 02:00 +11 -> 01:30 +10:30, a
+        HALF-HOUR repeated range ``[01:30, 02:00)`` - 30 fold slots per
+        pass, the non-hour width ``repeated_range_bounds``' minute walk
+        exists for."""
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone="Australia/Lord_Howe",
+            identity="parity-lord-howe-half-hour-fold",
+            # 01:28 +11.
+            seed_utc=datetime(2026, 4, 4, 14, 28, tzinfo=UTC),
+            # 01:59 +11, the last fold-0 slot.
+            last_fold0_tick_utc=datetime(2026, 4, 4, 14, 59, tzinfo=UTC),
+            # 01:30 +10:30, the fold-1 pass's first slot.
+            fold1_first_utc=datetime(2026, 4, 4, 15, 0, tzinfo=UTC),
+            fold1_slots=30,
+            # 02:00 +10:30.
+            after_range_utc=datetime(2026, 4, 4, 15, 30, tzinfo=UTC),
         )

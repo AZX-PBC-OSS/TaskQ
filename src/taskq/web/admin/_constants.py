@@ -1,8 +1,9 @@
 """Shared constants and helpers for admin list pages with keyset pagination."""
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from taskq._json import check_no_nul_str
 from taskq.client._args import (
@@ -130,3 +131,25 @@ def parse_job_tags(raw: str | None) -> list[str] | None:
             seen.add(t)
             deduped.append(t)
     return deduped or None
+
+
+def reject_unknown_query_params(request: Request, allowed: Collection[str]) -> None:
+    """Refuse query parameters the page does not declare with a clean 400.
+
+    FastAPI drops undeclared query parameters, so a mistyped filter
+    (``actr`` typed for ``actor``) used to render the page 200-UNFILTERED:
+    the operator's ask was silently ignored, and the unfiltered render
+    read as the answer to it. The admin pages refuse instead -- the same
+    clean-400 contract the declared filters' own parsers serve -- naming
+    the offending keys and what the page accepts.
+    """
+    unknown = sorted(set(request.query_params) - set(allowed))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown filter parameter(s): {unknown!r}; accepted: "
+                f"{sorted(allowed)!r}. A filter the page does not declare is "
+                "refused, never silently ignored."
+            ),
+        )
