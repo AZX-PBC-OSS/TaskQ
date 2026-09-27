@@ -125,7 +125,15 @@ def labeled_pids(labels: Mapping[str, str]) -> list[int]:
 # Images, commands, sweep policy
 # ============================================================================================
 
-_PG_IMAGE = "postgres:18-alpine"
+# The shared pair's Postgres image. Overridable via ``TASKQ_TEST_PG_IMAGE`` so
+# CI's version-matrix legs (and a developer verifying the window locally) can
+# point the SAME suite at another major: the supported-PG-window claim in
+# README/docs is proven by running this harness against postgres:15/16/17, not
+# asserted. Must stay a full ``name:tag`` ref and keep the ``-alpine`` tag
+# family: the sweep-prefix list below is derived from THIS value, so an
+# overridden image is sweepable exactly when the default is.
+_PG_IMAGE_DEFAULT = "postgres:18-alpine"
+_PG_IMAGE = os.environ.get("TASKQ_TEST_PG_IMAGE", _PG_IMAGE_DEFAULT)
 _PG_USERNAME = "taskq"
 _PG_PASSWORD = "taskq"  # noqa: S105 # Why: throwaway test-container credential; matches the repo's compose/test defaults.
 _PG_DBNAME = "taskq"
@@ -176,7 +184,14 @@ DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
 REDIS_DB_POOL_SIZE = 1024
 
 # Only containers running these EXACT images are sweep candidates: the shared pair and
-# TaskQ's disposable chaos containers all use them. Deliberately not a bare
+# TaskQ's disposable chaos containers all use them. The PG entries are the CONFIGURED
+# image (``_PG_IMAGE``, ``TASKQ_TEST_PG_IMAGE``-overridable) AND the default, so a
+# version-matrix leg's containers are swept by the same rule as the default's — and a
+# flip between the override and the default (the seam's stated developer workflow, a
+# version-matrix leg on a dev box) can never strand the other one's crashed-run
+# leftovers: the prefix check precedes the ``SWEEP_AGE_LIMIT`` backstop, so an image
+# outside this list is an ETERNAL leak, not a delayed sweep. Under the default env the
+# two PG entries coincide. Deliberately not a bare
 # ``postgres`` repository prefix, the docker-compose dev stack runs versioned
 # ``postgres:18.x`` tags (same repository, different tag), and a repository-wide
 # prefix would make the sweep a hazard to it (the fixed ``container_name: taskq-*``
@@ -193,7 +208,8 @@ REDIS_DB_POOL_SIZE = 1024
 # alongside the compose guard: the dev stack's containers are name-protected
 # (``taskq-*``) and run different images.
 _SWEEP_IMAGE_PREFIXES = (
-    "postgres:18-alpine",
+    _PG_IMAGE,
+    _PG_IMAGE_DEFAULT,
     "docker.dragonflydb.io/dragonflydb/",
     "taskq-e2e-worker",
 )
