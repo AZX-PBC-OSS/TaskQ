@@ -169,6 +169,11 @@ than a fraction of a tick belongs in the job the schedule enqueues); the remedy 
 lever below: tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the funded budget, and
 such a factory's timeouts become the strike-and-drain path.
 
+The same honesty applies one window wider: a sparse expression whose catch-up window
+lapses re-anchors to the next **real** occurrence and consumes it as the immediate fire,
+so a monthly schedule's phase can shift — `0 0 31 * *` can fire its October 31st
+occurrence weeks early as the catch-up, with December 31st the next scheduled fire.
+
 A deferred schedule advances `next_fire_at` by one leader tick (~1 second): a retry,
 NOT a skip to the next cron slot, because the owed slot is still perfectly landable;
 only its funding was missing. How long the retry lasts depends entirely on the

@@ -640,3 +640,39 @@ def test_remaining_emit_sites_record_their_exact_documented_labels(
     assert len(drain_rows) == 1
     assert drain_rows[0].attributes == {}, "the rows counter carries no labels"
     assert drain_rows[0].value == 7
+
+
+def test_reservation_reclaim_heal_failure_records_its_exact_label(
+    meter_reader: Any,
+) -> None:
+    """The keyed-reclaim HEAL failure counter - the last of the reclaim
+    trio's siblings. The heal is the AVAILABILITY arm (a failed
+    re-materialisation denies new admissions for the bucket); the drain
+    failures above are STORAGE. The docstring forbids the two sharing a
+    counter, so an exact-label pin on the heal's own instrument is what
+    keeps a refactor from folding them back together.
+    """
+    otel_mod.record_reservation_reclaim_heal_failure("KeyError")
+
+    heal = counter_data_points(meter_reader, "taskq.ratelimit.reclaim_heal_failures")
+    assert len(heal) == 1
+    assert heal[0].attributes == {"error_type": "KeyError"}
+    assert heal[0].value == 1
+
+
+def test_error_reporter_failure_counter_records_its_exact_label(
+    meter_reader: Any,
+) -> None:
+    """The singleton emit the real-path reporter test above exercises
+    through ``invoke_error_reporter``, pinned at the instrument itself:
+    ``taskq.error_reporter.failures`` carries exactly
+    ``{"reporter_type": <class name>}``. A rename of the label key or an
+    unbounded reporter-type value breaks the pin before it breaks the
+    cardinality budget.
+    """
+    otel_mod.record_error_reporter_failure("_BoomReporter")
+
+    points = counter_data_points(meter_reader, "taskq.error_reporter.failures")
+    assert len(points) == 1
+    assert points[0].attributes == {"reporter_type": "_BoomReporter"}
+    assert points[0].value == 1

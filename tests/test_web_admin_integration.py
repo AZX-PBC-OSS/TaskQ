@@ -33,6 +33,9 @@ from taskq.constants import (
 )
 from taskq.migrate import apply_pending
 from taskq.web.admin import create_router, setup_admin_state
+from taskq.web.admin._factory import (  # pyright: ignore[reportPrivateUsage]  # Why: the badge tests pin the internal health-cache seams; no public surface exists for them.
+    _redis_health_cache,
+)
 
 pytestmark = [pytest.mark.fastapi]
 
@@ -795,13 +798,56 @@ async def test_polling_badge_no_redis(pool: asyncpg.Pool) -> None:
 
 
 # ── Real-time badge with Redis ────────────────────────────────────
+#
+# The badge's server-side probe (``get_realtime_mode``'s 0.5 s
+# ``wait_for(ping())``) races the SHARED, co-tenanted broker: under
+# ``-n 2`` leg load a ping that loses the race renders
+# "polling-degraded" and the "real-time mode" assertion reds. The mode
+# logic is therefore tested through its two deterministic seams - the
+# 5 s health cache and the client's own ``ping`` - never through the
+# shared broker's latency. The cache is MODULE-LEVEL (process-wide),
+# so every test that touches it pins both fields with monkeypatch,
+# which restores them at teardown: no cross-test leakage.
+
+
+class _RedisPingStub:
+    """Redis-client double whose ping outcome (and call count) the test owns.
+
+    ``get_realtime_mode`` only does ``is not None`` on the client and
+    awaits ``ping()`` under a 0.5 s ``wait_for``, so the double needs
+    exactly one method; the stub answers (or fails) instantly - no
+    broker, no network, no race.
+    """
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.ping_calls = 0
+        self._fail = fail
+
+    async def ping(self) -> bool:
+        self.ping_calls += 1
+        if self._fail:
+            raise ConnectionError("stub: redis unreachable")
+        return True
 
 
 @pytest.mark.asyncio
 @pytest.mark.redis
-async def test_realtime_badge_with_redis(pool: asyncpg.Pool, redis_url: str) -> None:
-    """Real-time badge present and no meta-refresh when redis_client is set."""
+async def test_realtime_badge_with_redis(
+    pool: asyncpg.Pool, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real-time badge present and no meta-refresh when redis_client is set.
+
+    The health cache is pre-warmed with ``ok=True`` and a far-future
+    ``expires_at``, so the route skips the live ping entirely and the
+    badge renders from the cache deterministically - the shared
+    broker's latency cannot reach the assertion. The real client
+    construction is kept: the route's premise is a redis_client that is
+    not None.
+    """
     import redis.asyncio as aioredis
+
+    monkeypatch.setattr(_redis_health_cache, "ok", True)
+    monkeypatch.setattr(_redis_health_cache, "expires_at", float("inf"))
 
     redis_client = aioredis.from_url(redis_url, socket_timeout=None)
     try:
@@ -813,6 +859,58 @@ async def test_realtime_badge_with_redis(pool: asyncpg.Pool, redis_url: str) -> 
     html = resp.text
     assert "real-time mode" in html
     assert '<meta http-equiv="refresh"' not in html
+
+
+@pytest.mark.asyncio
+async def test_realtime_badge_degrades_when_ping_raises(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client whose ping RAISES renders 'polling mode (Redis unavailable)'
+    with the meta-refresh fallback present - instantly, deterministically.
+
+    The stub's ping fails without touching a broker, so the probe cannot
+    lose the 0.5 s race against leg load: this pins the probe's
+    except-arm directly. The cache is pinned expired (its dataclass
+    default) so the live probe - and only the except-arm - runs.
+    """
+    stub = _RedisPingStub(fail=True)
+    monkeypatch.setattr(_redis_health_cache, "ok", False)
+    monkeypatch.setattr(_redis_health_cache, "expires_at", 0.0)
+
+    resp = await _get(_make_app(pool, redis_client=stub), "/admin/queues")
+
+    assert resp.status_code == 200
+    html = resp.text
+    assert "polling mode (Redis unavailable)" in html
+    assert '<meta http-equiv="refresh" content="2">' in html
+    assert stub.ping_calls == 1, "the expired cache must probe exactly once"
+
+
+@pytest.mark.asyncio
+async def test_realtime_badge_repings_once_after_cache_expiry(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached-ok badge whose expires_at has passed re-pings on the next
+    request - exactly once - then serves the second request from the
+    re-warmed cache without another ping.
+    """
+    stub = _RedisPingStub()
+    # Cached-ok but expired: the stale ok=True must NOT short-circuit -
+    # expiry forces the probe to run again.
+    monkeypatch.setattr(_redis_health_cache, "ok", True)
+    monkeypatch.setattr(_redis_health_cache, "expires_at", 0.0)
+
+    app = _make_app(pool, redis_client=stub)
+
+    first = await _get(app, "/admin/queues")
+    assert first.status_code == 200
+    assert "real-time mode" in first.text
+    assert stub.ping_calls == 1, "an expired cache must re-ping exactly once"
+
+    second = await _get(app, "/admin/queues")
+    assert second.status_code == 200
+    assert "real-time mode" in second.text
+    assert stub.ping_calls == 1, "the probe's own cache write must serve the next request"
 
 
 # ── Valid auth_dependency returns 200 ─────────────────────────────

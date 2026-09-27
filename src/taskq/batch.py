@@ -290,7 +290,11 @@ def decide_batch_status(
             return status
         if on_empty == "ok":
             return status
-        raise EmptyBatchError(batch_id, expected=1, actual=0)
+        # expected=None, not a fabricated minimum: no batches row means
+        # nobody recorded an expectation, so the error states the truth
+        # (empty or unknown to this client) instead of inventing "at least
+        # 1". See EmptyBatchError's None arm.
+        raise EmptyBatchError(batch_id, expected=None, actual=0)
 
     # Case 7-8: jobs exist, if pending > 0, caller decides Snooze vs block
     return status

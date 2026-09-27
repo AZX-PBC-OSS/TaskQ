@@ -394,8 +394,15 @@ class TestExpectAtLeast:
         with pytest.raises(EmptyBatchError) as exc_info:
             await in_memory_wait_for_batch(backend, batch_id)
 
-        assert exc_info.value.expected == 1
+        # expected is None, not a fabricated minimum: with no batches row
+        # nobody recorded an expectation, so the error must not invent
+        # "expected at least 1" and send an operator hunting for a size
+        # they never set. The message states the truth - the batch is
+        # empty or unknown to this client.
+        assert exc_info.value.expected is None
         assert exc_info.value.actual == 0
+        assert "empty or unknown to this client" in str(exc_info.value)
+        assert "expected at least" not in str(exc_info.value)
 
     async def test_empty_batch_without_row_ok_with_on_empty_ok(self) -> None:
         backend = _make_backend()

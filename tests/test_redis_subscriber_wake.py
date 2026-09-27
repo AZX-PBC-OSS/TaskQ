@@ -42,7 +42,7 @@ from taskq.context import JobContext
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import StubActorConfig
-from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.fixtures import ModulePgSchema, redis_url_for
 from taskq.testing.pg import truncate_schema
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -575,21 +575,34 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
 @pytest.mark.redis
 async def test_redis_reconnection_subscriber_recovers(
     module_pg_schema: ModulePgSchema,
-    clean_redis_url: str,
+    killable_redis_container: object,
 ) -> None:
     """Redis subscriber reconnects after closing and reopening the
     pubsub connection. Two independent subscriptions on different jobs
     demonstrate that a subscriber can reconnect and receive events.
 
     PG progress_seq confirms the polling fallback stores state durably.
+
+    Why a PRIVATE container instead of ``clean_redis_url``: this test's
+    contract is "reconnect recovers and events flow", which needs a
+    RESPONSIVE broker, and both phases block in ``pubsub.listen()`` with
+    ``socket_timeout=None``. On the shared broker a co-tenant stall
+    (30+s under ``-n 2`` leg load) is indistinguishable from a lost
+    event and eats the 30s wait. Only this test has failed on that
+    lottery (its sibling arms' 30s waits have never), so it alone moves
+    to its own Dragonfly (~1s boot), leaving the shared-broker weather
+    to the tests whose contracts tolerate it.
     """
     import redis.asyncio as redis_async
+
+    # Why: redis_url_for resolves the mapped port via docker HTTP - off-loop.
+    redis_url = await asyncio.to_thread(redis_url_for, killable_redis_container)
 
     pg_dsn: str = module_pg_schema.pg_dsn
     schema: str = module_pg_schema.schema_name
 
     await _truncate_dynamic_tables(pg_dsn, schema)
-    stack, deps, backend = await _setup_worker(pg_dsn, clean_redis_url, schema=schema)
+    stack, deps, backend = await _setup_worker(pg_dsn, redis_url, schema=schema)
 
     try:
         # ── Phase 1: first subscription ──────────────────────────────────
@@ -599,7 +612,7 @@ async def test_redis_reconnection_subscriber_recovers(
         job_row1 = await _dispatch_one(backend, deps, wid1)
         channel1 = progress_channel(schema, job_id1)
 
-        client1 = redis_async.from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
+        client1 = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
         received1: list[dict[str, object]] = []
         try:
             pubsub1 = client1.pubsub()
@@ -642,7 +655,7 @@ async def test_redis_reconnection_subscriber_recovers(
         job_row2 = await _dispatch_one(backend, deps, wid2)
         channel2 = progress_channel(schema, job_id2)
 
-        client2 = redis_async.from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
+        client2 = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
         received2: list[dict[str, object]] = []
         try:
             pubsub2 = client2.pubsub()

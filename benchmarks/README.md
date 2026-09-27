@@ -8,6 +8,7 @@ regression testing; see the harness docstrings for how individual benches work.
 | File | Role |
 |---|---|
 | `bench_hotspots.py` | The A/B harness itself (19 benches + stall probes + cProfile mode) |
+| `latency_ladder.py` | The ops-promised latency ladder: claim-to-start / SSE first frame / e2e completion at a concurrency ladder, notify vs poll arms, interleaved batches with correctness asserted |
 | `stress_dispatch.py` | ~20s per-job CPU-path stress (no Postgres), prints jobs/sec |
 | `gil_sample.py` | In-process GIL sampler + flamegraph (py-spy fallback for macOS) |
 | `run_bench.py` | CLI runner: structured JSON, baselines, regression gate |

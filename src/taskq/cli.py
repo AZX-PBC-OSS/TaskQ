@@ -18,6 +18,7 @@ from the directory the operator ran the command in.
 
 import asyncio
 import contextlib
+import difflib
 import importlib
 import os
 import re
@@ -83,7 +84,7 @@ from taskq.exceptions import (
     EmptyFilterError,
 )
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
-from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 from taskq.timescale import TimescaleDBUnavailableError, disable_hypertables, enable_hypertables
 from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
@@ -1600,12 +1601,75 @@ async def _list_worker_stall_tallies(
     return tallies
 
 
+def _taskq_env_var_names() -> frozenset[str]:
+    """Every ``TASKQ_*`` env-var name the settings models define.
+
+    Derived from the models' own field registries (``get_fields``) with the
+    same mapping ``WorkerSettings.post_load`` uses for its empty-env
+    messages: ``FieldInfo.alias`` when one is set, else
+    ``env_prefix + FIELD_NAME.upper()``. ``WorkerSettings``' registry
+    includes every inherited ``TaskQSettings`` field; the base model and
+    the SSO sub-configs are unioned in explicitly so a legitimate
+    ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` variable is never flagged unknown.
+    """
+    names: set[str] = set()
+    for model in (TaskQSettings, WorkerSettings, OIDCSettings, SAMLSettings):
+        for field_name, (_field_type, field_info) in model.get_fields().items():
+            names.add(
+                field_info.alias if field_info.alias else f"{model.env_prefix}{field_name.upper()}"
+            )
+    return frozenset(names)
+
+
+def _unknown_taskq_env_vars(env: Mapping[str, str] | None = None) -> list[str]:
+    """The ``TASKQ_``-prefixed names in *env* (default ``os.environ``) that
+    match no settings field.
+
+    This is the config-drift trap the settings loader cannot catch: it
+    reads only the names it defines, so a typo'd variable
+    (``TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS``) loads nothing, raises nothing,
+    and the intended field applies its documented default. ``doctor`` is
+    the loud surface for it. Sorted for a deterministic report.
+    """
+    known = _taskq_env_var_names()
+    names = os.environ if env is None else env
+    return sorted(name for name in names if name.startswith("TASKQ_") and name not in known)
+
+
+def _unknown_env_findings(unknown_env_vars: Sequence[str]) -> list[str]:
+    """The report lines for the unknown-``TASKQ_-variable`` family.
+
+    Each line names the offender, states the silent-default consequence,
+    and offers the closest real setting name (``difflib``) as the remedy
+    hint - a typo is nearly always a one-character drift from its target.
+    The similarity cutoff is deliberately above ``difflib``'s default: a
+    name with no real setting behind it must get the "no similar name"
+    remedy, not a bogus suggestion.
+    """
+    known = _taskq_env_var_names()
+    findings: list[str] = []
+    for name in unknown_env_vars:
+        closest = difflib.get_close_matches(name, known, n=1, cutoff=0.75)
+        remedy = (
+            f"did you mean {closest[0]}?"
+            if closest
+            else "no similar setting name exists; check the field tables in "
+            "docs/guides/configuration.md"
+        )
+        findings.append(
+            f"unknown TASKQ_ setting: {name} - a typo applies defaults silently, "
+            f"the intended field loads its documented default. {remedy}"
+        )
+    return findings
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
     queues: list[QueueRow],
     stranded: list[_StrandedActorJobs],
     worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
+    unknown_env_vars: Sequence[str] | None = None,
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
@@ -1617,9 +1681,19 @@ def _doctor_findings(
     ``worker_stalls`` carries each live worker's stall tally as read from
     its ``workers`` row metadata (``(worker_id, loop_stalls)``): the
     attributed event-loop stalls that worker's lag watchdog recorded.
+
+    ``unknown_env_vars`` carries the ``TASKQ_``-prefixed environment names
+    that match no settings field (``_unknown_taskq_env_vars``): each is a
+    configuration typo applying its intended setting's default silently.
     """
     stored_by_actor = {row.actor: row for row in rows}
     findings: list[str] = []
+
+    # The environment family first: a typo'd TASKQ_ variable is upstream of
+    # every stored-row condition below - the wrong value was in force before
+    # any worker registered. Nothing errors at load (the loader reads only
+    # the names it defines), so this report is the only surface that names it.
+    findings.extend(_unknown_env_findings(unknown_env_vars or []))
 
     # The dispatch capacity gate joins actor_config, so a registered actor
     # with no row is not merely uncapped, it is never a candidate.
@@ -1789,7 +1863,17 @@ async def _doctor(
     if not rows:
         typer.echo("  (no stored actor_config rows)")
 
-    findings = _doctor_findings(registry, rows, queues, stranded, worker_stalls)
+    # Scanned from the process environment the operator ran doctor in: the
+    # settings load itself cannot see a name it does not define, which is
+    # exactly why the scan lives here (see _unknown_taskq_env_vars).
+    findings = _doctor_findings(
+        registry,
+        rows,
+        queues,
+        stranded,
+        worker_stalls,
+        unknown_env_vars=_unknown_taskq_env_vars(),
+    )
 
     # The one finding that needs an operator-supplied number: the platform's
     # stop grace (Kubernetes terminationGracePeriodSeconds, ACA/ECS stop

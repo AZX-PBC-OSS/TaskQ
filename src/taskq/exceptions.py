@@ -1207,18 +1207,35 @@ class BatchAbortedError(TaskQError):
 
 
 class EmptyBatchError(TaskQError):
-    """A batch has fewer jobs than the expected minimum.
+    """A batch has fewer jobs than the expected minimum, or is unknown.
 
     This can happen when jobs were pruned before ``wait_for_batch`` ran,
-    or when ``expected_size`` was set but jobs were never created.  Pass
-    ``on_empty="ok"`` to ``wait_for_batch`` to suppress the no-batch-row
-    variant of this error.
+    when ``expected_size`` was set but jobs were never created, or when
+    ``wait_for_batch`` is given a ``batch_id`` this client never
+    enqueued (no jobs and no batches row: the ``expected=None`` arm,
+    whose message names the truth instead of a fabricated minimum).
+    Pass ``on_empty="ok"`` to ``wait_for_batch`` to suppress the
+    no-batch-row variant of this error.
     """
 
-    def __init__(self, batch_id: UUID, expected: int, actual: int) -> None:
+    def __init__(self, batch_id: UUID, expected: int | None, actual: int) -> None:
         self.batch_id = batch_id
         self.expected = expected
         self.actual = actual
+        if expected is None:
+            # The no-batch-row arm (wait_for_batch on a batch_id this client
+            # never enqueued, or whose every member was pruned): there is no
+            # expectation to quote. The old message fabricated
+            # "expected at least 1" from nothing, an operator reading it
+            # went hunting for a size they never set. State the truth: the
+            # batch is empty or unknown to this client.
+            super().__init__(
+                f"batch {batch_id} is empty or unknown to this client: no jobs "
+                "found and no batches row (the batch_id was never enqueued, or "
+                'its members were already pruned); pass on_empty="ok" to '
+                "suppress this error"
+            )
+            return
         super().__init__(
             f"batch {batch_id} has {actual} jobs, expected at least {expected}"
             + (

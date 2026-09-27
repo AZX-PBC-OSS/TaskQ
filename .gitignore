@@ -89,3 +89,6 @@ coverage/
 
 # pytest-gremlins incremental mutation cache
 .gremlins_cache/
+
+# Stray runner logs (scale-sweep output etc.); root-level only
+/*.log
