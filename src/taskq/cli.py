@@ -85,7 +85,14 @@ from taskq.exceptions import (
 )
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
-from taskq.timescale import TimescaleDBUnavailableError, disable_hypertables, enable_hypertables
+from taskq.timescale import (
+    STORAGE_MODE_SUMMARY,
+    StorageMode,
+    TimescaleDBUnavailableError,
+    detect_storage_mode,
+    disable_hypertables,
+    enable_hypertables,
+)
 from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
@@ -1663,6 +1670,38 @@ def _unknown_env_findings(unknown_env_vars: Sequence[str]) -> list[str]:
     return findings
 
 
+def _storage_mode_findings(
+    mode: StorageMode,
+    *,
+    flag_on: bool,
+) -> list[str]:
+    """The report lines for the storage-mode family, the FIRST family in
+    every doctor report: the mode the connected server was DETECTED in
+    (``taskq.timescale.detect_storage_mode`` — the extension catalog, then
+    ``timescaledb.license``, never the settings) plus that mode's
+    capability consequences in one glance, from
+    ``taskq.timescale.STORAGE_MODE_SUMMARY``.
+
+    Green line: every mode is a supported configuration — the line is
+    information, not a defect. The one red arm: the flag on in an
+    environment whose server detects vanilla, because that contradiction
+    is not workable — the next ``taskq migrate up`` refuses.
+    """
+    findings = [
+        f"storage mode: {mode.value} - {STORAGE_MODE_SUMMARY[mode]} "
+        "(the mode x capability matrix: docs/guides/timescaledb.md)"
+    ]
+    if flag_on and mode is StorageMode.VANILLA:
+        findings.append(
+            "storage mode drift: TASKQ_TIMESCALEDB_HYPERTABLES=true but this "
+            "server detects vanilla (no timescaledb extension installed) - the "
+            "next `taskq migrate up` refuses with TimescaleDBUnavailableError. "
+            "Unset the flag in this environment, or enable the extension on the "
+            "server first (docs/guides/timescaledb.md)."
+        )
+    return findings
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
@@ -1670,6 +1709,8 @@ def _doctor_findings(
     stranded: list[_StrandedActorJobs],
     worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
     unknown_env_vars: Sequence[str] | None = None,
+    storage_mode: StorageMode | None = None,
+    timescaledb_flag: bool = False,
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
@@ -1685,11 +1726,26 @@ def _doctor_findings(
     ``unknown_env_vars`` carries the ``TASKQ_``-prefixed environment names
     that match no settings field (``_unknown_taskq_env_vars``): each is a
     configuration typo applying its intended setting's default silently.
+
+    ``storage_mode`` is the server's detected storage mode
+    (:func:`taskq.timescale.detect_storage_mode`, read while the report's
+    connection is open) — the first finding family, the mode and its
+    capability consequences in one glance. ``timescaledb_flag`` is the
+    flag as this environment loaded it, for the family's one red arm: the
+    flag on against a vanilla-detected server.
     """
     stored_by_actor = {row.actor: row for row in rows}
     findings: list[str] = []
 
-    # The environment family first: a typo'd TASKQ_ variable is upstream of
+    # The storage mode leads every report: it is the ground the rest of
+    # the report stands on (which retention mechanisms exist, what the
+    # sweeps own), it is detected from the server rather than read from
+    # settings, and its one contradiction (the flag on, the server
+    # vanilla) is upstream of the deploy step's own refusal.
+    if storage_mode is not None:
+        findings.extend(_storage_mode_findings(storage_mode, flag_on=timescaledb_flag))
+
+    # The environment family next: a typo'd TASKQ_ variable is upstream of
     # every stored-row condition below - the wrong value was in force before
     # any worker registered. Nothing errors at load (the loader reads only
     # the names it defines), so this report is the only surface that names it.
@@ -1830,6 +1886,11 @@ def doctor(
     nothing consumes waits forever. Each one's only symptom is work that
     does not happen. This is the one command that names them together.
 
+    The report leads with the DETECTED storage mode (vanilla,
+    timescale-apache, or timescale-tsl - detected from the server, not
+    read from settings) and that mode's capability consequences in one
+    glance.
+
     Read-only: it issues no writing statement, so it is safe to run
     against production mid-incident.
 
@@ -1854,6 +1915,9 @@ async def _doctor(
         queues = await list_queues(conn, schema=settings.schema_name)
         stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
         worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
+        # The detected storage mode, read on the report's own connection
+        # while it is open: the first finding family renders from it.
+        storage_mode = await detect_storage_mode(conn)
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
 
@@ -1873,6 +1937,8 @@ async def _doctor(
         stranded,
         worker_stalls,
         unknown_env_vars=_unknown_taskq_env_vars(),
+        storage_mode=storage_mode,
+        timescaledb_flag=settings.timescaledb_hypertables,
     )
 
     # The one finding that needs an operator-supplied number: the platform's

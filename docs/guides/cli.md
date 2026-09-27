@@ -482,6 +482,16 @@ anywhere:
 taskq doctor --actors myapp.actors:registry
 ```
 
+The report's **first finding family is the detected storage mode** —
+`vanilla`, `timescale-apache`, or `timescale-tsl`, detected from the
+connected server (the extension catalog, then the extension's
+`timescaledb.license` setting), never read from settings — with that
+mode's capability consequences in one glance (which retention mechanisms
+exist, what the sweeps own). It is also the family's one red arm: the
+flag on in an environment whose server detects `vanilla` gets named as
+drift, because the next `taskq migrate up` refuses. The mode × capability
+matrix is [timescaledb.md's support matrix](timescaledb.md#the-three-storage-modes-the-support-matrix).
+
 TaskQ refuses boot only on structural stored-config drift, so a whole
 family of capacity and configuration problems fails silently, so their only
 symptom is work that quietly does not happen. `doctor` names them together:

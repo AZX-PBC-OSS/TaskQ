@@ -18,6 +18,49 @@ drops instead of long-window `DELETE`s. This is an opt-in feature:
 Vanilla Postgres remains fully supported and is the default. Nothing in this
 document is required to run TaskQ.
 
+## The three storage modes (the support matrix)
+
+TaskQ supports three first-class storage modes. The mode is **detected from
+the connected server** — `taskq.timescale.detect_storage_mode` in
+`src/taskq/timescale.py`: the extension catalog first (`pg_extension` — a
+server that offers the extension but has not created it *is* a vanilla
+server), then the extension's own `timescaledb.license` setting, which
+states which feature set is in force (`timescale` — older builds spell it
+`tsl` — for the full Timescale-license feature set, `apache` for the
+Apache-2 feature set, whether that is a separate Apache-edition build or a
+TSL-capable build configured down with
+`ALTER SYSTEM SET timescaledb.license = 'apache'`). Nothing in the settings
+influences the verdict. `taskq doctor` renders the detected mode as the
+**first finding family** of every report, with the mode's capability
+consequences in one glance — run it on any environment to see which mode
+that database actually presents.
+
+The matrix — every cell is the behavior the detection and the deploy step's
+branches actually implement, not aspiration:
+
+| Capability | `timescale-tsl` | `timescale-apache` | `vanilla` |
+|---|---|---|---|
+| Detected by | extension installed, license `timescale`/`tsl` | extension installed, license `apache` | no extension installed |
+| Hypertables (the three retention tables) | **yes** | **yes** (conversion itself is Apache-licensed) | **no** — plain tables |
+| Columnstore (compression) on the archives | **yes** — the two archive tables; `job_events` stays rowstore by measurement | **no** — a Timescale-license feature; the server refuses every compression API (measured on 2.30.1: `FeatureNotSupportedError`) | **no** |
+| Policy-driven chunk-drop retention | **yes** — retention + compression policies registered per deploy | **no** — the policies are *also* Timescale-license features; the server refuses `add_retention_policy` under the license (measured on 2.30.1) | **no** |
+| What retention does instead | the row-level sweeps still expire inside young chunks (below the policy floor); `expire_at` exact only there | the row-level sweeps own **all** of retention: bounded batch deletes, `expire_at` exact everywhere, the event-prune watermark kept | the row-level sweeps own **all** of retention: bounded batch deletes, `expire_at` exact everywhere, the event-prune watermark kept |
+| `enable_hypertables` with the flag on | converts all three tables, registers retention + compression policies | converts all three tables, registers **nothing**, reports the skip in `HypertableReport.policies_skipped` and logs `hypertable-policy-registration-skipped` | refuses loudly (`TimescaleDBUnavailableError`) |
+| `taskq migrate disable-hypertables` | full mirror: policies removed, vanilla shapes restored | mirror without the policy-removal calls (none can exist); the loud surviving-policy check stays | zero-statement no-op |
+
+Two readings of the matrix worth stating:
+
+* **`timescale-apache` and `vanilla` differ in exactly one cell** — the
+  hypertables. Everything retention-related (the mechanism, the guarantees,
+  the watermark) behaves identically in the two modes; the apache mode's
+  hypertables add chunk partitioning and faster recent-history reads without
+  the policy machinery. They are distinct modes because the schema differs,
+  not because the retention contract does.
+* **The doctor line, this matrix, and the behavior share one source.** The
+  one-glance summaries live in `STORAGE_MODE_SUMMARY` next to the
+  detection code; this table is their prose form. A mode's capabilities
+  change only when that code changes — the same commit updates all three.
+
 ## The opt-in flag
 
 | Setting | Default | Meaning |
@@ -26,7 +69,13 @@ document is required to run TaskQ.
 
 The flag is read by the deploy step only. Workers and clients never consult
 it, and no runtime code path branches on it: the sweeps keep running unchanged
-on both modes (see "The sweeps still run" below).
+on both modes (see "The sweeps still run" below). What the deploy step does
+with the flag depends on the **detected storage mode** (see the matrix above):
+on `timescale-tsl` it converts and registers every policy; on
+`timescale-apache` it converts and registers nothing (the policies and the
+columnstore are Timescale-license features the server refuses), reporting the
+skip loudly; on `vanilla` it refuses — that contradiction between the flag and
+the server is what `TimescaleDBUnavailableError` names.
 
 ## Enabling on Azure Database for PostgreSQL Flexible Server
 
@@ -164,6 +213,12 @@ The details that matter:
 
 ## The columnstore (compression) is adopted for the archive tables
 
+**`timescale-tsl` mode only** (the matrix above): under the
+`timescale-apache` license the server refuses every compression API —
+`FeatureNotSupportedError` — so this whole section is inapplicable there,
+and the archive tables stay rowstore with the row-level sweeps owning
+expiry exactly.
+
 The deploy step arms the columnstore on the two archive tables when it
 converts them (and on every deploy after, converging like the retention
 policies do):
@@ -251,6 +306,13 @@ is exactly the stalled-policy signal.
 
 ## Retention is owned by the policies, mostly
 
+**`timescale-tsl` mode only.** In `timescale-apache` and `vanilla` the
+policies cannot exist (the apache license refuses them; vanilla has no
+extension): retention is the row-level sweeps alone, full-range,
+`expire_at` exact, the event-prune watermark kept on every deletion — the
+pre-floor behavior, unchanged. The rest of this section describes the
+`timescale-tsl` mode.
+
 Once the tables are hypertables, the aged end of the timeline is owned by
 Timescale's background workers: each policy drops chunks whose time range
 fully passed its retention. Two consequences to know:
@@ -313,6 +375,13 @@ fully passed its retention. Two consequences to know:
   `event_retention_period` — the chunk policy provides no gap signal.
 
 ## Measured trade-offs: hypertables vs plain PostgreSQL
+
+(The compression figures in this section — the 6.20x storage reduction and
+the cold-read wins — are **`timescale-tsl` mode only**: the columnstore
+they measure does not exist in the `timescale-apache` or `vanilla` modes.
+The drain table's hypertable column is likewise the policy-armed TSL
+mode; in the other two modes the "plain" column IS the mode's behavior.
+See the support matrix above.)
 
 Measured on this repo's own benchmark (`benchmarks/timescale_tradeoffs.py`,
 rerunnable end-to-end; 1,000,000 jobs / 400k archive / 400k events / 100k
@@ -511,3 +580,19 @@ either commits before the lock and is absorbed by the twin-guard, or
 queues behind it and wakes to the relation gone — either way the trash
 is gone and every row is accounted
 (`test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer`).
+
+The three-mode work has its own pins: `tests/test_storage_mode_detection.py`
+pins the detection verdict arm by arm (extension absent → `vanilla` even
+when the server offers the extension; the license GUC's three spellings —
+`timescale`, `tsl`, `apache` — each classified; the GUC-absent fallback to
+the compression machinery's presence), `tests/test_cli_doctor.py` pins the
+doctor's first finding family (each mode's one-glance rendering, the
+flag-on-vanilla drift arm, the read-only property preserved with the
+family in place), and
+`tests/test_timescale_three_mode_lifecycle.py` runs the FULL lifecycle —
+`taskq migrate up` (real subprocess), operate, the disable round-trip,
+the retention drain — against all three configurations on real containers:
+`timescale/timescaledb:2.30.1-pg18` for `timescale-tsl`, the same image
+started with `-c timescaledb.license=apache` for `timescale-apache`, and
+plain `postgres:18` for `vanilla`, asserting each mode's documented
+matrix cell.

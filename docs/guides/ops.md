@@ -1383,6 +1383,38 @@ rules are [timescaledb.md](timescaledb.md)'s subject. This section is the **deci
 (`benchmarks/timescale_tradeoffs.py` and `benchmarks/timescale_compression.py`, results in
 `benchmarks/results/timescale-*.json`; every number below is read off those artifacts).
 
+### The mode dimension: three first-class storage modes
+
+Every trade in this section sits on a dimension the section used to leave implicit: the
+**detected storage mode**. TaskQ detects it from the connected server (never from settings) —
+`vanilla` (no extension installed), `timescale-apache` (extension installed, license `apache`),
+or `timescale-tsl` (extension installed, full Timescale-license feature set) — and
+`taskq doctor` leads every report with the detected mode and its capability consequences. The
+full mode × capability matrix, cited from the detection code, is
+[timescaledb.md's support matrix](timescaledb.md#the-three-storage-modes-the-support-matrix)
+and mirrored in [deployment.md](deployment.md#storage-engine-plain-postgres-or-timescaledb).
+The cells that matter to the decision framework below:
+
+* **Compression exists in exactly one mode.** The columnstore — and therefore every compression
+  number in this section (the 6.20x storage reduction, the 4.6x/9.3x cold-read wins, the
+  decompression GUC prerequisite, the first-tick DML-decompression catch-up) — is
+  **`timescale-tsl` only**. Under the `timescale-apache` license the server refuses every
+  compression API (measured on 2.30.1), and `vanilla` has no extension at all: in both, the
+  archive tables stay rowstore.
+* **Policy-driven chunk-drop retention also exists in exactly one mode.** The retention
+  policies — and therefore the policy floor, the faster drains, the first-run aged-tail drop,
+  and the watermark gap — are **`timescale-tsl` only** too: the apache license refuses
+  `add_retention_policy` alongside the compression APIs (measured on 2.30.1).
+* **In `timescale-apache` and `vanilla`, retention is the row-level sweeps, full-range** —
+  bounded batch deletes, `expire_at` honored exactly, the event-prune watermark kept on every
+  deletion. The two modes differ in one cell only: the apache mode's hypertables (faster
+  recent-history reads, chunk partitioning) with no policy machinery on top.
+
+So when reading the decision table below: its "hypertable" column is the `timescale-tsl`
+mode's behavior; if your server detects `timescale-apache`, take the table's *read* column
+(where it cites hypertable reads — those hold, the partitioning is Apache-licensed) but the
+*plain* column for every retention-drain and compression row.
+
 ### The decision table
 
 | Your situation | Decision | The measured evidence |
