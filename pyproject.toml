@@ -496,6 +496,11 @@ ignore = [
 "tests/test_ratelimit_reservation.py" = ["ASYNC109"]
 "tests/test_reservation_denial_retry_hint.py" = ["ASYNC109"]
 "tests/test_worker_bootstrap_reservation_slots.py" = ["ASYNC109"]
+# The ops-flow walkthroughs spawn the documented CLI as real subprocesses and
+# probe the real scrape endpoint from async tests - the blocking calls ARE the
+# subject (the docs' procedures run verbatim); waits are delegated to threads,
+# and the timeout kwarg mirrors subprocess.run's own signature.
+"tests/test_ops_flow_walkthroughs.py" = ["ASYNC109", "ASYNC210", "ASYNC220", "ASYNC240"]
 # ASYNC109: the stub pool's acquire mirrors asyncpg.Pool.acquire's `timeout`
 # kwarg; the feed double passes it through wait_for exactly as
 # listen_with_reconnect does.
