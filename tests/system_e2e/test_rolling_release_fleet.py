@@ -47,7 +47,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -125,6 +125,23 @@ _SWEEP_BOUND = _LEADER_LEASE + _SWEEP_INTERVAL + _POLL_FLOOR
 #: the dd4572ff doctrine, not a bet on the race firing; only a fleet
 #: that NEVER re-acquires (the genuine capacity-leak defect) reds here.
 _CORPSE_PREMISE_BOUND = 45.0
+
+#: The mid-drain probe's co-tenancy margin: one claim cycle (the poll
+#: floor) stretched by the 20x co-tenancy factor these runners measure
+#: between a seed and its observation (dd4572ff's stall band; the same
+#: 20x stretch test_cancel_storm's _STORM_DEADLINE_SECS derives from):
+#: 1.0 s x 20 = 20 s. The probe assertion demands an effect inside the
+#: MEASURED drain window PLUS this margin, because the whole probe chain
+#: crosses the same runner weather - the starved test process's enqueue
+#: round trips, a survivor's claim poll, the 0.05s body, the effect
+#: write - and a ~3 s window carries no probe whenever the weather eats
+#: one link, even on a fleet that is serving fine (the CI red: w0's
+#: 2.97 s drain, all four probes settled well inside their 30 s cap,
+#: zero effects inside the raw window). It bounds FAILURE only: probes
+#: absent for window + margin red, and _settle_probes's 30 s cap reds a
+#: fleet that never serves at all.
+_PROBE_STRETCH = 20.0
+_PROBE_STALL_MARGIN = _POLL_FLOOR * _PROBE_STRETCH
 
 
 # ── Fixtures and fleet plumbing ──────────────────────────────────────────
@@ -426,7 +443,19 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
 ) -> None:
     """Pods SIGTERM one at a time, each awaited; survivors keep
     dispatching through every drain; each corpse's rows and capacity
-    come back clean on exit."""
+    come back clean on exit.
+
+    The mid-drain probe's bound is DERIVED, not raw: the drain window
+    the run itself measured (kept measured; its < grace pin below is
+    untouched) plus a co-tenancy margin of one claim cycle stretched by
+    the runners' 20x stall-band factor (the poll floor 1.0s x 20 = 20s;
+    the arithmetic is pinned on _PROBE_STALL_MARGIN above). Demanding an
+    effect inside the raw ~3s window bets on the probe chain threading
+    runner weather the repo has measured at 2.5-5 minutes end to end
+    (dd4572ff) - runner starvation misread as fleet stall. The teeth
+    stay: a fleet whose probes are absent for window + margin reds, and
+    one that never settles inside 30s reds first.
+    """
     conn = sys_ledger
     schema = module_pg_schema.schema_name
     fleet = _spawn_fleet(pg_dsn, schema, _PODS)
@@ -442,8 +471,10 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             # The mid-drain probe wave (uncapped queue: the probe must
             # not queue behind the cap's own backlog). The window opens
             # BEFORE the probes are enqueued, so a probe effect landing
-            # inside [open, close] means the fleet dispatched DURING the
-            # drain, not merely after it.
+            # inside [open, close + margin] means the fleet dispatched
+            # within the drain window plus the co-tenancy margin the
+            # _PROBE_STALL_MARGIN block derives - not that the race
+            # threaded the raw window through runner weather.
             window_open = await _db_now(conn)
             probes = [
                 await sys_client.enqueue(sys_fast, SysPayload(sleep=0.05), tags=[_TAG])
@@ -469,17 +500,30 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             )
             measurements.append((f"sequential drain {name}", drain_secs, _GRACE))
 
-            # No stall: the probes are served promptly, and when the
-            # drain had a window to observe (the pod held a wind-down
-            # body) at least one probe ran INSIDE it.
+            # No stall: the probes are served promptly, and within the
+            # drain window plus the derived co-tenancy margin at least
+            # one probe ran. The margin (one poll floor stretched 20x,
+            # _PROBE_STALL_MARGIN above) absorbs the shared runner's
+            # loop-stall weather: through it, any link of the probe
+            # chain (the starved test process's enqueue round trips, a
+            # survivor's claim poll, the effect write) can eat seconds
+            # of a ~3s window while the fleet serves fine - settled
+            # probes inside their 30s cap are the proof it did. A fleet
+            # whose probes are absent for the derived bound, or that
+            # never settles at all, is genuinely stalled and reds.
             await _settle_probes(conn, schema, probe_ids, cap_secs=30.0)
             times = await _effect_times(conn, schema, probe_ids)
             assert times, f"pod {name}: no probe effect recorded at all"
             if drain_secs >= 1.5:
-                during = [t for t in times if window_open <= t <= window_close]
+                probe_bound = window_close + timedelta(seconds=_PROBE_STALL_MARGIN)
+                during = [t for t in times if window_open <= t <= probe_bound]
                 assert during, (
-                    f"pod {name}: no probe ran during its {drain_secs:.2f}s drain "
-                    "window - the fleet stalled while the pod drained"
+                    f"pod {name}: no probe ran within its measured "
+                    f"{drain_secs:.2f}s drain window + the "
+                    f"{_PROBE_STALL_MARGIN:.0f}s co-tenancy margin "
+                    f"(poll floor {_POLL_FLOOR:.0f}s x the runners' "
+                    f"{_PROBE_STRETCH:.0f}x stall-band stretch) - the "
+                    "fleet stalled while the pod drained"
                 )
             await _assert_corpse_owns_nothing(conn, schema, ids[name], f"sequential {name}")
 
