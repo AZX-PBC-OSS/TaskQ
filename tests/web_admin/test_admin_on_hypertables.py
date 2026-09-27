@@ -47,6 +47,30 @@ schema and proves every surface the audit names:
    behavioral half: the watchdog's ``loop_stalls`` tally reaches the
    workers page through ``workers.metadata`` and must render on the
    converted schema.
+7. The mutation actions, driven through the REAL router with a REAL
+   ``PostgresBackend`` (route census, ``@router.post`` over
+   ``src/taskq/web/admin``: job cancel, job retry, schedule
+   enable/disable/skip/run-now, rate-limit reset, actor deregister —
+   there are NO bulk-cancel, actor-config-edit, or queue
+   set-mode/set-max-concurrent routes to test): each action lands on
+   both engines at once and the resulting rows, the audit-trail rows
+   (``admin_audit``, written because the dev env enables
+   ``admin_actions_enabled``), and the re-rendered pages are identical.
+8. The job detail view under the parentless-attempt window: a job
+   whose archived attempts span chunks (one aged 31 days) renders its
+   full attempt history honestly, and a parentless attempt row stays
+   invisible-and-harmless to every other job's page.
+9. Pagination across chunk boundaries: with a synthetic 1-day chunk
+   grid on ``jobs_archive``, the archive tab's keyset walk — plain and
+   with a time-window filter CARRIED THROUGH the page turns (the
+   render's own Next link drops ``time_from``/``time_to``, so the walk
+   constructs the cursor URLs the server must honor) — crosses the
+   chunk seams with no skipped rows and no duplicates, and the count
+   endpoint with the same window proves chunk exclusion ate nothing.
+10. The failure renderings: a missing job, a hand-edited (malformed)
+    cursor, a partial/invalid history cursor, a garbage time filter, a
+    NUL filter, an invalid status, disabled admin actions — every
+    error status and body identical across engines.
 
 THE PARENTLESS-ATTEMPT WINDOW (the conversion's one honest behavioral
 change the admin surface can see): dropping
@@ -85,7 +109,16 @@ pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 from fastapi import FastAPI  # Why: importorskip guards the optional extra first.
 
 from taskq._ids import new_job_id, new_uuid
-from taskq.constants import events_channel, progress_channel
+from taskq.backend.clock import SystemClock
+from taskq.backend.postgres import PostgresBackend
+from taskq.constants import (
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_RESULT_BYTES,
+    events_channel,
+    progress_channel,
+)
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import (
@@ -94,6 +127,10 @@ from taskq.testing._shared_containers import (
 )
 from taskq.timescale import enable_hypertables
 from taskq.web.admin import create_router, setup_admin_state
+from taskq.web.admin.auth import IdentityClaims
+from taskq.web.admin.ops import (  # pyright: ignore[reportPrivateUsage]  # Why: the run-now differential must wait out the real cooldown constant, not a drifting copy.
+    _SCHEDULE_RUN_COOLDOWN_SECONDS,  # pyright: ignore[reportPrivateUsage]
+)
 
 pytestmark = pytest.mark.integration
 
@@ -486,6 +523,12 @@ class _Lab:
     ht: _Engine
     redis_url: str
     ht_redis_app: FastAPI
+    # The mutation surface mounts the REAL PostgresBackend and a fixed
+    # authenticated principal (the dev no-auth principal is "anonymous" —
+    # the audit trail's own tier proves that path); the read-only apps
+    # above stay backend-less so their differentials stay page-pure.
+    vanilla_actions: FastAPI
+    ht_actions: FastAPI
 
 
 @pytest.fixture(scope="module")
@@ -561,6 +604,23 @@ async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
             app.include_router(bundle.router, prefix="/admin")
             return app
 
+        def _mount_actions(pool: asyncpg.Pool, schema: str) -> FastAPI:
+            """The same real router with the real PG backend + a fixed
+            authenticated principal — the mutation surface's mount
+            (tests/test_admin_audit_trail.py's idiom)."""
+            bundle = create_router(
+                pool,
+                schema=schema,
+                redis_client=None,
+                base_path="/admin",
+                backend=_make_backend(pool, schema),
+                auth_dependency=_fixed_auth(),
+            )
+            app = FastAPI()
+            setup_admin_state(app, bundle)
+            app.include_router(bundle.router, prefix="/admin")
+            return app
+
         van_pool = await asyncpg.create_pool(ts_dsn, min_size=1, max_size=8)
         ht_pool = await asyncpg.create_pool(ts_dsn, min_size=1, max_size=8)
         import redis.asyncio as redis_asyncio
@@ -577,6 +637,8 @@ async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
             redis_url=f"redis://{redis_broker.get_container_host_ip()}:"
             f"{redis_broker.get_exposed_port(6379)}/0",
             ht_redis_app=_mount(ht_pool, ht_schema, redis_client=redis_client),
+            vanilla_actions=_mount_actions(van_pool, van_schema),
+            ht_actions=_mount_actions(ht_pool, ht_schema),
         )
         yield lab
         await van_pool.close()
@@ -1464,3 +1526,1158 @@ async def test_watchdog_stall_tally_renders_on_converted_schema(lab: _Lab) -> No
         "descending inside the parens) through the workers page on the "
         "hypertable schema"
     )
+
+
+# ── 7. The mutation actions, engine-differential ─────────────────────────
+#
+# Route census (every ``@router.post`` in src/taskq/web/admin): job
+# cancel (jobs.py), job retry + schedule enable/disable/skip/run-now +
+# rate-limit reset (ops.py), actor deregister (actors.py). The admin
+# surface has NO bulk-cancel, NO actor-config-edit, and NO queue
+# set-mode/set-max-concurrent routes — there is nothing to differential
+# on those names. The rate-limit reset targets ``rate_limit_buckets``
+# (never a converted table) and needs a mounted registry — out of this
+# module's scope. The converted-schema-relevant mutation kinds are
+# proven below: each test drives the SAME action against the SAME
+# freshly-planted twin on BOTH engines through the real router + the
+# real ``PostgresBackend``, then diffs the resulting job row, the
+# audit-trail rows, and the re-rendered page.
+#
+# ORDER-INDEPENDENCE (pytest-randomly runs this module shuffled): every
+# test here plants its OWN twin rows and removes every residue in a
+# ``finally`` — jobs, events, attempts, schedules, actor_config, and
+# audit rows — because the module's earlier exact-population
+# assertions (63 live rows, 115 history rows, the seed-plan walks) hold
+# against the planted seed plan alone, whatever order the tests run in.
+
+# The fixed authenticated operator the action apps run under (the
+# audit trail's e2e tier's principal): the folded cancel-event detail
+# and every rendered audit entry name this subject, so both engines'
+# rows are byte-comparable.
+_OPERATOR = IdentityClaims(subject="ops-admin@example.com", email=None, groups=frozenset(), raw={})
+
+
+def _fixed_auth() -> Any:
+    async def _dependency() -> IdentityClaims:
+        return _OPERATOR
+
+    return _dependency
+
+
+class _BackendSettings:
+    """Satisfies the declared ``BackendSettings`` protocol (the audit
+    trail e2e tier's double)."""
+
+    schema_name: str
+    dispatch_oversample: int = 2
+    dispatcher_command_timeout: float = 5.0
+    result_max_bytes: int = MAX_RESULT_BYTES
+    event_writer_batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    event_writer_statement_timeout_ms: float = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
+    event_writer_reduced_batch_divisor: int = 4
+    sweep_breaker_failure_threshold: int = 3
+    sweep_breaker_window_secs: float = 600.0
+    max_pending_lock_timeout_ms: float = 5000.0
+    unique_for_lock_timeout_ms: float = 5000.0
+    idempotency_lock_timeout_ms: float = 5000.0
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
+
+    def __init__(self, schema_name: str) -> None:
+        self.schema_name = schema_name
+
+
+class _BackendDeps:
+    settings: _BackendSettings
+    worker_pool: asyncpg.Pool
+    heartbeat_pool: asyncpg.Pool
+    dispatcher_pool: asyncpg.Pool | None = None
+
+    def __init__(self, schema: str, pool: asyncpg.Pool) -> None:
+        self.settings = _BackendSettings(schema)
+        self.worker_pool = pool
+        self.heartbeat_pool = pool
+
+
+def _make_backend(pool: asyncpg.Pool, schema: str) -> PostgresBackend:
+    return PostgresBackend(
+        _BackendDeps(schema, pool),  # pyright: ignore[reportArgumentType]  # Why: the protocol double declares every field the routes read (tests/test_admin_audit_trail.py's idiom).
+        clock=SystemClock(),
+        cancellation_grace_period=timedelta(seconds=5),
+        cleanup_grace_period=timedelta(seconds=5),
+    )
+
+
+async def _action_post(
+    app: FastAPI,
+    get_url: str,
+    post_url: str,
+    data: dict[str, str] | None = None,
+) -> httpx.Response:
+    """POST a mutation through the real router with the synchronizer-token
+    CSRF handshake: GET first to arm the cookie, then post the token
+    (tests/test_admin_audit_trail.py's ``_get_csrf_then_post``)."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        get_resp = await client.get(get_url)
+        assert get_resp.status_code == 200, f"{get_url} -> {get_resp.status_code}"
+        token = client.cookies.get("taskq_csrf_token", "")
+        assert token, "GET must set the taskq_csrf_token cookie"
+        return await client.post(post_url, data={"csrf_token": token, **(data or {})})
+
+
+async def _job_row(engine: _Engine, jid: uuid.UUID, *, table: str = "jobs") -> dict[str, Any]:
+    async with engine.pool.acquire() as conn:
+        row = await conn.fetchrow(f'SELECT * FROM "{engine.schema}".{table} WHERE id = $1', jid)
+    return dict(row) if row is not None else {}
+
+
+def _project(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {k: row.get(k) for k in keys}
+
+
+def _jsonb(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+# ── Residue management (order independence) ──────────────────────────────
+
+
+async def _plant_live_jobs(lab: _Lab, specs: list[dict[str, Any]]) -> list[uuid.UUID]:
+    """Insert fresh live jobs, IDENTICALLY on both engines, and return
+    their ids (the residue key)."""
+    ids: list[uuid.UUID] = [new_job_id() for _ in specs]
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.executemany(
+                f"""INSERT INTO "{engine.schema}".jobs (id, actor, queue, payload,
+                    max_attempts, retry_kind, status, attempt, created_at, scheduled_at,
+                    started_at, finished_at, error_class, error_message)
+                VALUES ($1, 'mutation_probe', 'bulk', '{{"v":1}}'::jsonb, 3, 'transient',
+                    $2, 1, $3, $3, $4, $5, $6, 'boom')""",
+                [
+                    (
+                        jid,
+                        spec["status"],
+                        spec["created_at"],
+                        spec.get("started_at"),
+                        spec.get("finished_at"),
+                        spec.get("error_class"),
+                    )
+                    for jid, spec in zip(ids, specs, strict=True)
+                ],
+            )
+    finally:
+        await conn.close()
+    return ids
+
+
+async def _cleanup_live_jobs(lab: _Lab, ids: list[uuid.UUID]) -> None:
+    """Remove planted live jobs and everything hanging off them (events,
+    attempts) from BOTH engines — job_events carries the FK, so children
+    first."""
+    if not ids:
+        return
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f"""DELETE FROM "{engine.schema}".job_events WHERE job_id = ANY($1)""",
+                ids,
+            )
+            await conn.execute(
+                f"""DELETE FROM "{engine.schema}".job_attempts WHERE job_id = ANY($1)""",
+                ids,
+            )
+            await conn.execute(
+                f"""DELETE FROM "{engine.schema}".jobs WHERE id = ANY($1)""",
+                ids,
+            )
+    finally:
+        await conn.close()
+
+
+async def _cleanup_archive_rows(lab: _Lab, ids: list[uuid.UUID]) -> None:
+    """Remove planted archive jobs (and their attempts) from both engines."""
+    if not ids:
+        return
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f'DELETE FROM "{engine.schema}".job_attempts_archive WHERE job_id = ANY($1)',
+                ids,
+            )
+            await conn.execute(
+                f'DELETE FROM "{engine.schema}".jobs_archive WHERE id = ANY($1)', ids
+            )
+    finally:
+        await conn.close()
+
+
+async def _cleanup_audit(
+    lab: _Lab,
+    *,
+    target_type: str,
+    target_ids: list[str],
+) -> None:
+    """Remove the audit rows the mutations under test wrote — the trail
+    is append-only in production, but the module's other differentials
+    must not see a later run's residue, whatever the order."""
+    if not target_ids:
+        return
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f'DELETE FROM "{engine.schema}".admin_audit '
+                "WHERE target_type = $1 AND target_id = ANY($2)",
+                target_type,
+                target_ids,
+            )
+    finally:
+        await conn.close()
+
+
+_AUDIT_COLS_SQL = (
+    "SELECT principal_subject, action, target_type, target_id, reason, detail, occurred_at "
+    'FROM "{schema}".admin_audit '
+    "WHERE action = $1 AND ($2::text IS NULL OR target_id = $2) ORDER BY id"
+)
+
+
+async def _audit_rows(
+    engine: _Engine,
+    action: str,
+    target_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The audit-trail rows for one action, normalized for the
+    differential: the ``occurred_at`` db-clock stamp is dropped (the two
+    POSTs cannot share a clock reading), everything else must be
+    dict-equal."""
+    async with engine.pool.acquire() as conn:
+        rows = await conn.fetch(_AUDIT_COLS_SQL.format(schema=engine.schema), action, target_id)
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d.pop("occurred_at")
+        d["detail"] = _jsonb(d["detail"])
+        out.append(d)
+    return out
+
+
+async def _job_events_of_kind(engine: _Engine, jid: uuid.UUID, kind: str) -> list[dict[str, Any]]:
+    async with engine.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT kind, detail FROM "{engine.schema}".job_events '
+            "WHERE job_id = $1 AND kind = $2 ORDER BY id",
+            jid,
+            kind,
+        )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["detail"] = _jsonb(d["detail"])
+        out.append(d)
+    return out
+
+
+def _planted_job_specs() -> dict[str, list[dict[str, Any]]]:
+    """The fresh mutation targets, one per action kind, built per-test so
+    no test ever shares rows with another (pytest-randomly)."""
+    base = _BASE + timedelta(days=2)
+    return {
+        "retryable": [
+            {
+                "status": "crashed",
+                "created_at": base,
+                "started_at": base + timedelta(minutes=1),
+                "finished_at": base + timedelta(minutes=5),
+                "error_class": "WorkerCrashed",
+            }
+        ],
+        "cancellable": [
+            {
+                "status": "scheduled",
+                "created_at": base + timedelta(minutes=10),
+                "started_at": None,
+                "finished_at": None,
+            }
+        ],
+        "running": [
+            {
+                "status": "running",
+                "created_at": base + timedelta(minutes=20),
+                "started_at": base + timedelta(minutes=21),
+            }
+        ],
+        "terminal": [
+            {
+                "status": "succeeded",
+                "created_at": base + timedelta(minutes=30),
+                "started_at": base + timedelta(minutes=31),
+                "finished_at": base + timedelta(minutes=35),
+            }
+        ],
+    }
+
+
+async def test_retry_action_lands_identically_on_hypertables(lab: _Lab) -> None:
+    """Operator question: when I press Retry on a crashed job, does the
+    hypertable-converted schema re-pend the row into EXACTLY the state
+    vanilla re-pends it to — and does the audit trail record who pressed
+    it, identically? The retry re-pends status='pending', clears every
+    error column, and keeps the attempt counter — all compared row-exact."""
+    ids = await _plant_live_jobs(lab, _planted_job_specs()["retryable"])
+    jid = ids[0]
+    try:
+        assert (await _job_row(lab.vanilla, jid))["status"] == "crashed"
+        assert (await _job_row(lab.ht, jid))["status"] == "crashed"
+
+        resp_v = await _action_post(lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{jid}/retry")
+        resp_h = await _action_post(lab.ht_actions, "/admin/jobs", f"/admin/jobs/{jid}/retry")
+        assert resp_v.status_code == resp_h.status_code == 303, (
+            f"vanilla={resp_v.status_code} hypertable={resp_h.status_code}"
+        )
+
+        van = await _job_row(lab.vanilla, jid)
+        ht = await _job_row(lab.ht, jid)
+        # The transition columns, exact: re-pended status, the untouched
+        # attempt counter, the re-armed budget, and every error column
+        # NULL. The db-clock stamps (scheduled_at) are excluded — the
+        # re-pend is server-clock stamped by design.
+        keys = (
+            "status",
+            "attempt",
+            "max_attempts",
+            "finished_at",
+            "error_class",
+            "error_message",
+            "error_traceback",
+            "cancel_phase",
+            "result",
+        )
+        _diff("retry row transition", _project(van, keys), _project(ht, keys))
+        assert van["status"] == "pending" and van["finished_at"] is None
+        assert van["error_class"] is None and van["error_message"] is None
+
+        # The audit trail: one job.retry row per engine, dict-equal
+        # modulo the db-clock stamp.
+        van_audit = await _audit_rows(lab.vanilla, "job.retry", str(jid))
+        ht_audit = await _audit_rows(lab.ht, "job.retry", str(jid))
+        _diff("retry audit rows", van_audit, ht_audit)
+        assert len(van_audit) == 1
+        assert van_audit[0]["principal_subject"] == "ops-admin@example.com"
+        assert van_audit[0]["target_type"] == "job"
+
+        # Rendered: the job detail page (now with the audit section) is
+        # HTML-identical modulo the db clock on both engines.
+        van_html = await _html(lab.vanilla.app, f"/admin/jobs/{jid}")
+        ht_html = await _html(lab.ht.app, f"/admin/jobs/{jid}")
+        _diff("retry detail page", _stable_html(van_html), _stable_html(ht_html))
+        assert "ops-admin@example.com" in ht_html
+    finally:
+        await _cleanup_live_jobs(lab, ids)
+        await _cleanup_audit(lab, target_type="job", target_ids=[str(j) for j in ids])
+
+
+async def test_cancel_action_lands_identically_on_hypertables(lab: _Lab) -> None:
+    """Operator question: does Cancel on a scheduled job terminalize the
+    row the same way on hypertables, and does the cancel_request event —
+    with the operator's reason AND identity folded into its detail jsonb
+    — land byte-identically in the converted ``job_events`` hypertable?"""
+    ids = await _plant_live_jobs(lab, _planted_job_specs()["cancellable"])
+    jid = ids[0]
+    try:
+        resp_v = await _action_post(
+            lab.vanilla_actions,
+            "/admin/jobs",
+            f"/admin/jobs/{jid}/cancel",
+            data={"reason": "dup run"},
+        )
+        resp_h = await _action_post(
+            lab.ht_actions,
+            "/admin/jobs",
+            f"/admin/jobs/{jid}/cancel",
+            data={"reason": "dup run"},
+        )
+        assert resp_v.status_code == resp_h.status_code == 303
+
+        van = await _job_row(lab.vanilla, jid)
+        ht = await _job_row(lab.ht, jid)
+        # The pending/scheduled cancel arm terminalizes DIRECTLY (status
+        # 'cancelled' from the cancel_request statement's own arm) — it
+        # does NOT stamp cancel_requested_at, which is the RUNNING arm's
+        # in-flight marker. The db-clock stamp (finished_at) is compared
+        # as not-NULL; everything else is exact.
+        keys = ("status", "cancel_phase", "error_class", "error_message")
+        _diff("cancel row transition", _project(van, keys), _project(ht, keys))
+        assert van["status"] == "cancelled"
+        assert van["cancel_requested_at"] is None and ht["cancel_requested_at"] is None
+        assert van["finished_at"] is not None and ht["finished_at"] is not None
+
+        # The events: cancel_request (with reason + folded principal) and
+        # the state_change — dict-equal across engines, written into the
+        # hypertable's widened-PK (id, occurred_at) shape.
+        van_events = await _job_events_of_kind(lab.vanilla, jid, "cancel_request")
+        ht_events = await _job_events_of_kind(lab.ht, jid, "cancel_request")
+        _diff("cancel_request events", van_events, ht_events)
+        assert len(van_events) == 1
+        assert van_events[0]["detail"]["reason"] == "dup run"
+        assert van_events[0]["detail"]["principal_subject"] == "ops-admin@example.com"
+        _diff(
+            "cancel state_change events",
+            await _job_events_of_kind(lab.vanilla, jid, "state_change"),
+            await _job_events_of_kind(lab.ht, jid, "state_change"),
+        )
+
+        # The audit trail, dict-equal modulo the clock.
+        van_audit = await _audit_rows(lab.vanilla, "job.cancel", str(jid))
+        ht_audit = await _audit_rows(lab.ht, "job.cancel", str(jid))
+        _diff("cancel audit rows", van_audit, ht_audit)
+        assert len(van_audit) == 1 and van_audit[0]["reason"] == "dup run"
+
+        # Rendered: the detail page carries the audit entries and the
+        # folded event, identically.
+        van_html = await _html(lab.vanilla.app, f"/admin/jobs/{jid}")
+        ht_html = await _html(lab.ht.app, f"/admin/jobs/{jid}")
+        _diff("cancel detail page", _stable_html(van_html), _stable_html(ht_html))
+        assert "ops-admin@example.com" in ht_html
+    finally:
+        await _cleanup_live_jobs(lab, ids)
+        await _cleanup_audit(lab, target_type="job", target_ids=[str(j) for j in ids])
+
+
+async def test_mutation_refusals_render_identically_on_hypertables(lab: _Lab) -> None:
+    """Operator question: when the UI refuses me (retry a running job,
+    cancel a terminal one, act on a job that does not exist), is the
+    refusal the SAME status and the SAME body on hypertables — and does
+    a refused action write NO audit row on either engine?"""
+    specs = _planted_job_specs()
+    ids = await _plant_live_jobs(lab, [*specs["running"], *specs["terminal"]])
+    running, done = ids[0], ids[1]
+    ghost = new_job_id()
+    try:
+        # Retry a RUNNING job: the one exclusion (a live attempt must
+        # not race its own terminal write) — 409, identical body.
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{running}/retry"
+        )
+        resp_h = await _action_post(lab.ht_actions, "/admin/jobs", f"/admin/jobs/{running}/retry")
+        assert resp_v.status_code == resp_h.status_code == 409
+        _diff("retry-running refusal body", resp_v.text, resp_h.text)
+
+        # Cancel an already-terminal job: 409, identical body, and NO
+        # audit row for the refused target on either engine.
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{done}/cancel"
+        )
+        resp_h = await _action_post(lab.ht_actions, "/admin/jobs", f"/admin/jobs/{done}/cancel")
+        assert resp_v.status_code == resp_h.status_code == 409
+        _diff("cancel-terminal refusal body", resp_v.text, resp_h.text)
+        _diff(
+            "refused-cancel audit silence",
+            await _audit_rows(lab.vanilla, "job.cancel", str(done)),
+            await _audit_rows(lab.ht, "job.cancel", str(done)),
+        )
+
+        # A missing job: 404 with the identical detail on both engines.
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{ghost}/retry"
+        )
+        resp_h = await _action_post(lab.ht_actions, "/admin/jobs", f"/admin/jobs/{ghost}/retry")
+        assert resp_v.status_code == resp_h.status_code == 404
+        _diff("missing-job refusal body", resp_v.text, resp_h.text)
+    finally:
+        await _cleanup_live_jobs(lab, ids)
+        await _cleanup_audit(lab, target_type="job", target_ids=[str(j) for j in [*ids, ghost]])
+
+
+async def _plant_schedule(lab: _Lab, actor: str) -> uuid.UUID:
+    """A fresh schedule row, identical on both engines (the plan's
+    schedule stays untouched — other tests' pages read it)."""
+    sid = new_uuid()
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f"""INSERT INTO "{engine.schema}".cron_schedules
+                    (id, actor, cron_expr, timezone, next_fire_at, enabled)
+                VALUES ($1, $2, '*/5 * * * *', 'UTC', $3, true)""",
+                sid,
+                actor,
+                # A realistic next fire, ONE HOUR ahead of the wall clock:
+                # the skip handler recomputes forward from THIS stamp in
+                # bounded 1000-step cron arithmetic (a sentinel-far one
+                # overflows; a past one exhausts the budget -> 400). This
+                # stamp is the skip's starting point only — the
+                # differential never compares it, it compares the row the
+                # skip WROTE against the db clock.
+                datetime.now(UTC) + timedelta(hours=1),
+            )
+    finally:
+        await conn.close()
+    return sid
+
+
+async def _cleanup_schedules_and_actor(lab: _Lab, sids: list[uuid.UUID], actor: str) -> None:
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f'DELETE FROM "{engine.schema}".cron_schedules WHERE id = ANY($1)', sids
+            )
+            await conn.execute(
+                f'DELETE FROM "{engine.schema}".actor_config WHERE actor = $1', actor
+            )
+    finally:
+        await conn.close()
+
+
+async def test_schedule_enable_disable_skip_lands_identically(lab: _Lab) -> None:
+    """Operator question: do the schedule toggles flip ``cron_schedules``
+    identically on the converted schema, and does the audit trail record
+    each toggle (enable/disable/skip) dict-equal?"""
+    sid = await _plant_schedule(lab, "runnow_actor")
+    sid_text = str(sid)
+    try:
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/disable"
+        )
+        resp_h = await _action_post(
+            lab.ht_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/disable"
+        )
+        assert resp_v.status_code == resp_h.status_code == 303
+        for engine in (lab.vanilla, lab.ht):
+            async with engine.pool.acquire() as conn:
+                enabled = await conn.fetchval(
+                    f'SELECT enabled FROM "{engine.schema}".cron_schedules WHERE id = $1', sid
+                )
+            assert enabled is False
+        _diff(
+            "disable audit rows",
+            await _audit_rows(lab.vanilla, "schedule.disable", sid_text),
+            await _audit_rows(lab.ht, "schedule.disable", sid_text),
+        )
+
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/enable"
+        )
+        resp_h = await _action_post(
+            lab.ht_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/enable"
+        )
+        assert resp_v.status_code == resp_h.status_code == 303
+        for engine in (lab.vanilla, lab.ht):
+            async with engine.pool.acquire() as conn:
+                enabled = await conn.fetchval(
+                    f'SELECT enabled FROM "{engine.schema}".cron_schedules WHERE id = $1', sid
+                )
+            assert enabled is True
+        _diff(
+            "enable audit rows",
+            await _audit_rows(lab.vanilla, "schedule.enable", sid_text),
+            await _audit_rows(lab.ht, "schedule.enable", sid_text),
+        )
+
+        # Skip: next_fire_at is computed from the database clock (the DB
+        # is the arbiter; the two POSTs cannot be compared row-exact for
+        # a now()-derived stamp) — so the differential asserts the row
+        # MOVED past the real clock on BOTH engines and that each
+        # engine's audit detail names exactly the row value it wrote.
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/skip"
+        )
+        resp_h = await _action_post(
+            lab.ht_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/skip"
+        )
+        assert resp_v.status_code == resp_h.status_code == 303
+        now = datetime.now(UTC)
+        for engine in (lab.vanilla, lab.ht):
+            async with engine.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'SELECT enabled, next_fire_at FROM "{engine.schema}".cron_schedules '
+                    "WHERE id = $1",
+                    sid,
+                )
+            assert row is not None and row["enabled"] is True
+            assert row["next_fire_at"] > now, "skip must move next_fire_at past the db clock"
+            audit = await _audit_rows(engine, "schedule.skip", sid_text)
+            assert len(audit) == 1
+            assert audit[0]["detail"]["next_fire_at"] == row["next_fire_at"].isoformat(), (
+                "the audit detail must name the exact next_fire_at the skip wrote"
+            )
+    finally:
+        await _cleanup_schedules_and_actor(lab, [sid], "runnow_actor")
+        await _cleanup_audit(lab, target_type="schedule", target_ids=[sid_text])
+
+
+async def test_schedule_run_now_enqueues_identically(lab: _Lab) -> None:
+    """Operator question: does Run-now on a schedule fire the SAME job —
+    same actor, queue, payload, retry curve, and the ``cron_schedule_id``
+    provenance stamp — through the converted schema, with the audit row
+    naming the enqueued job id on both engines?
+
+    The two fires use the SAME schedule id on both engines (per-engine
+    twins would differ in id), so the process-global run-now cooldown
+    (ops.py's ``_last_schedule_run`` map, keyed by schedule id, shared
+    by every app in this process) is waited out between the two POSTs —
+    the same defer-to-the-clock determinism the policy fixtures
+    apply."""
+    # Run-now fires the PLAN's own schedule (actor 'bulk_actor'): the
+    # (actor, name) unique admits one schedule per actor, so a fresh
+    # twin schedule for 'bulk_actor' would collide with the seeded one.
+    sid = lab.plan.schedule_id
+    sid_text = str(sid)
+    enqueued: list[uuid.UUID] = []
+    try:
+        # Run-now resolves the actor's STORED config: seed the twin
+        # actor_config row identically on both engines.
+        conn = await asyncpg.connect(lab.dsn)
+        try:
+            for engine in (lab.vanilla, lab.ht):
+                await conn.execute(
+                    f"""INSERT INTO "{engine.schema}".actor_config
+                        (actor, queue, max_attempts, retry_kind, max_concurrent)
+                    VALUES ('bulk_actor', 'bulk', 5, 'transient', 2)"""
+                )
+        finally:
+            await conn.close()
+
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/run"
+        )
+        assert resp_v.status_code == 303, resp_v.text
+        van_audit = await _audit_rows(lab.vanilla, "schedule.run", sid_text)
+        assert len(van_audit) == 1, "run-now must write exactly one schedule.run audit row"
+        van_job_id = uuid.UUID(van_audit[0]["detail"]["enqueued_job_id"])
+        van_row = await _job_row(lab.vanilla, van_job_id)
+        assert van_row, "the run-now fire must have enqueued a real job row"
+
+        # Wait out the process-global cooldown, then fire the same
+        # schedule on the hypertable engine.
+        await asyncio.sleep(_SCHEDULE_RUN_COOLDOWN_SECONDS + 0.5)
+        resp_h = await _action_post(
+            lab.ht_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/run"
+        )
+        assert resp_h.status_code == 303, resp_h.text
+        ht_audit = await _audit_rows(lab.ht, "schedule.run", sid_text)
+        assert len(ht_audit) == 1
+        ht_job_id = uuid.UUID(ht_audit[0]["detail"]["enqueued_job_id"])
+        ht_row = await _job_row(lab.ht, ht_job_id)
+        assert ht_row
+        enqueued = [van_job_id, ht_job_id]
+
+        # The resulting rows: everything the OPERATOR set is dict-equal
+        # (ids and the db-clock stamps differ by construction — the
+        # handler generates the job id and the server stamps the
+        # clocks). The provenance metadata carries the same schedule id
+        # on both engines.
+        keys = (
+            "actor",
+            "queue",
+            "status",
+            "attempt",
+            "max_attempts",
+            "retry_kind",
+            "priority",
+            "retry_base_seconds",
+            "retry_cap_seconds",
+            "retry_backoff",
+            "retry_jitter",
+        )
+
+        def _proj(row: dict[str, Any]) -> dict[str, Any]:
+            metadata = _jsonb(row["metadata"])
+            return _project(row, keys) | {
+                "payload": _jsonb(row["payload"]),
+                "metadata": {k: v for k, v in metadata.items() if k != "cron_schedule_id"},
+                "cron_schedule_id": metadata["cron_schedule_id"],
+            }
+
+        _diff("run-now enqueued job shape", _proj(van_row), _proj(ht_row))
+        assert _proj(van_row)["cron_schedule_id"] == sid_text
+        assert _proj(van_row)["status"] == "pending"
+        assert _proj(van_row)["actor"] == "bulk_actor" and _proj(van_row)["queue"] == "bulk"
+
+        # The audit rows: identical modulo the per-engine enqueued job
+        # id, each of which is exactly the row that engine's jobs table
+        # holds.
+        def _strip_id(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                {**a, "detail": {k: v for k, v in a["detail"].items() if k != "enqueued_job_id"}}
+                for a in rows
+            ]
+
+        _diff("run-now audit rows (modulo enqueued id)", _strip_id(van_audit), _strip_id(ht_audit))
+
+        # Rendered: each engine's live tab finds the new pending row by
+        # id search (the same text-search shape the filters differential
+        # uses).
+        for engine, jid in ((lab.vanilla, van_job_id), (lab.ht, ht_job_id)):
+            html = await _html(engine.app, f"/admin/jobs?tab=live&search={jid}")
+            assert str(jid) in html, "the run-now job must render on the live tab"
+    finally:
+        await _cleanup_live_jobs(lab, enqueued)
+        # NOT the plan's schedule — only the actor_config twin this test
+        # planted and the audit rows this fire wrote.
+        await _cleanup_schedules_and_actor(lab, [], "bulk_actor")
+        await _cleanup_audit(lab, target_type="schedule", target_ids=[sid_text])
+
+
+async def test_actor_deregister_lands_identically(lab: _Lab) -> None:
+    """Operator question: does deregistering an actor remove the config
+    row and record the DESTRUCTIVE SCOPE (force/purge flags, queue, row
+    counts) identically in the audit trail on the converted schema?"""
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f"""INSERT INTO "{engine.schema}".actor_config
+                    (actor, queue, max_attempts, retry_kind, max_concurrent)
+                VALUES ('dereg_actor', 'bulk', 2, 'transient', 1)"""
+            )
+    finally:
+        await conn.close()
+
+    try:
+        resp_v = await _action_post(
+            lab.vanilla_actions, "/admin/actors", "/admin/actors/dereg_actor/deregister"
+        )
+        resp_h = await _action_post(
+            lab.ht_actions, "/admin/actors", "/admin/actors/dereg_actor/deregister"
+        )
+        assert resp_v.status_code == resp_h.status_code == 303
+
+        for engine in (lab.vanilla, lab.ht):
+            async with engine.pool.acquire() as conn:
+                n = await conn.fetchval(
+                    f'SELECT count(*) FROM "{engine.schema}".actor_config WHERE actor = $1',
+                    "dereg_actor",
+                )
+            assert n == 0, "the config row must be gone on both engines"
+
+        van_audit = await _audit_rows(lab.vanilla, "actor.deregister", "dereg_actor")
+        ht_audit = await _audit_rows(lab.ht, "actor.deregister", "dereg_actor")
+        _diff("deregister audit rows", van_audit, ht_audit)
+        assert len(van_audit) == 1
+        # The scope record: nothing to purge or cancel on this actor,
+        # and the trail says so exactly, on both engines.
+        assert van_audit[0]["detail"] == {
+            "force": False,
+            "purge_queue": False,
+            "queue": "bulk",
+            "queue_purged": False,
+            "jobs_cancelled": 0,
+            "schedules_disabled": 0,
+            "terminal_jobs_remaining": 0,
+        }
+
+        # Rendered: the actors page (notice banner, config row gone) is
+        # identical modulo the db clock.
+        van_html = await _html(lab.vanilla.app, "/admin/actors?notice=deregistered")
+        ht_html = await _html(lab.ht.app, "/admin/actors?notice=deregistered")
+        _diff("deregister actors page", _stable_html(van_html), _stable_html(ht_html))
+        assert "dereg_actor" not in ht_html
+    finally:
+        await _cleanup_audit(lab, target_type="actor", target_ids=["dereg_actor"])
+        await _cleanup_schedules_and_actor(lab, [], "dereg_actor")
+
+
+async def test_disabled_admin_actions_refuse_identically(
+    lab: _Lab,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operator question: with ``TASKQ_ADMIN_ACTIONS_ENABLED`` false, is
+    the 403 refusal — the exact body, and the no-audit-row silence — the
+    same on a hypertable-mounted router as on a vanilla one?"""
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "false")
+
+    def _mount_disabled(pool: asyncpg.Pool, schema: str) -> FastAPI:
+        bundle = create_router(pool, schema=schema, redis_client=None, base_path="/admin")
+        app = FastAPI()
+        setup_admin_state(app, bundle)
+        app.include_router(bundle.router, prefix="/admin")
+        return app
+
+    van_app = _mount_disabled(lab.vanilla.pool, lab.vanilla.schema)
+    ht_app = _mount_disabled(lab.ht.pool, lab.ht.schema)
+
+    ids = await _plant_live_jobs(lab, _planted_job_specs()["cancellable"])
+    jid = ids[0]
+    try:
+        resp_v = await _action_post(van_app, "/admin/jobs", f"/admin/jobs/{jid}/cancel")
+        resp_h = await _action_post(ht_app, "/admin/jobs", f"/admin/jobs/{jid}/cancel")
+        assert resp_v.status_code == resp_h.status_code == 403
+        _diff("disabled-actions 403 body", resp_v.text, resp_h.text)
+        _diff(
+            "disabled-actions audit silence",
+            await _audit_rows(lab.vanilla, "job.cancel", str(jid)),
+            await _audit_rows(lab.ht, "job.cancel", str(jid)),
+        )
+    finally:
+        await _cleanup_live_jobs(lab, ids)
+
+
+# ── 8. The job detail view under the parentless-attempt window ───────────
+
+
+async def test_job_detail_renders_attempts_spanning_the_parentless_window(
+    lab: _Lab,
+    ts_dsn: str,
+) -> None:
+    """Operator question: an archived job's attempts now chunk on
+    ``started_at`` while the job itself chunks on ``finished_at`` — when
+    one attempt sits in an AGED chunk (31 days back) and the parentless
+    window lets attempt rows outlive parents entirely, does the detail
+    page still render the FULL attempt history, honestly counted,
+    without breaking?"""
+    job = lab.plan.archive[5]  # inside the seeded attempts population
+    orphan = new_job_id()  # deliberately NEVER seeded as a job row
+    conn = await asyncpg.connect(ts_dsn)
+    try:
+        # Attempt 2 for the job, started 31 days before the seed base —
+        # a different ``started_at`` chunk of the hypertable than the
+        # attempt-1 row. Identical on both engines (the differential);
+        # only the hypertable's storage shape differs underneath.
+        for engine in (lab.vanilla, lab.ht):
+            await conn.execute(
+                f"""INSERT INTO "{engine.schema}".job_attempts_archive
+                    (job_id, attempt, started_at, finished_at, outcome, error_class, error_message)
+                VALUES ($1, 2, $2, $3, 'failed', 'FarChunkProbe', 'aged chunk probe')""",
+                job.id,
+                _FAR_PAST,
+                _FAR_PAST + timedelta(minutes=4),
+            )
+        # The parentless-attempt direction, pinned both ways: vanilla
+        # REFUSES (the FK stands there), the hypertable accepts (the FK
+        # is dropped) — and the orphan row must not disturb ANY job page.
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await conn.execute(
+                f"""INSERT INTO "{lab.vanilla.schema}".job_attempts_archive
+                    (job_id, attempt, started_at, finished_at, outcome)
+                VALUES ($1, 1, $2, $3, 'failed')""",
+                new_job_id(),
+                _BASE,
+                _BASE + timedelta(minutes=4),
+            )
+        await conn.execute(
+            f"""INSERT INTO "{lab.ht.schema}".job_attempts_archive
+                (job_id, attempt, started_at, finished_at, outcome)
+            VALUES ($1, 1, $2, $3, 'failed')""",
+            orphan,
+            _BASE,
+            _BASE + timedelta(minutes=4),
+        )
+    finally:
+        await conn.close()
+
+    try:
+        van_html = await _html(lab.vanilla.app, f"/admin/jobs/{job.id}")
+        ht_html = await _html(lab.ht.app, f"/admin/jobs/{job.id}")
+        _diff("spanning-attempts detail page", _stable_html(van_html), _stable_html(ht_html))
+        assert "Attempt History" in ht_html
+        # Honest count: the aged attempt renders, exactly once — the
+        # page served BOTH attempts (the aged-chunk one and the
+        # fresh-chunk one).
+        assert ht_html.count("FarChunkProbe") == 1
+
+        # The parentless attempt's own "job page" is a clean 404 on BOTH
+        # engines (the parent row does not exist there either),
+        # identical.
+        resp_v = await _get(lab.vanilla.app, f"/admin/jobs/{orphan}")
+        resp_h = await _get(lab.ht.app, f"/admin/jobs/{orphan}")
+        assert resp_v.status_code == resp_h.status_code == 404
+        _diff("orphan-attempt job page", resp_v.text, resp_h.text)
+    finally:
+        # No residue: the module's other differentials assume the seeded
+        # attempt population, whatever order the tests run in.
+        conn = await asyncpg.connect(ts_dsn)
+        try:
+            for engine in (lab.vanilla, lab.ht):
+                await conn.execute(
+                    f"""DELETE FROM "{engine.schema}".job_attempts_archive
+                    WHERE (job_id = $1 AND attempt = 2) OR job_id = $2""",
+                    job.id,
+                    orphan,
+                )
+        finally:
+            await conn.close()
+
+
+# ── 9. Pagination across chunk boundaries ─────────────────────────────────
+
+_N_PER_STAMP = 9
+_BOUNDARY_FIRST_MIDNIGHT = datetime(2026, 9, 21, 0, 0, 0, tzinfo=UTC)
+_N_BOUNDARIES = 10
+
+
+def _boundary_rows() -> list[_JobRow]:
+    """The chunk-boundary population plan (ids generated fresh per test,
+    timestamps fixed): each pair of stamps brackets a UTC midnight —
+    1 h either side — so on a 1-day chunk grid every midnight inside
+    the span is a REAL chunk boundary at a KNOWN timestamp, and the rows
+    page across seams both with the sort column (``finished_at`` IS the
+    partition column) and with the created_at time-window filter."""
+    rows: list[_JobRow] = []
+    for k in range(_N_BOUNDARIES):
+        midnight = _BOUNDARY_FIRST_MIDNIGHT + timedelta(days=k)
+        for delta in (timedelta(hours=-1), timedelta(hours=1)):
+            stamp = midnight + delta
+            for _ in range(_N_PER_STAMP):
+                rows.append(
+                    _JobRow(
+                        id=new_job_id(),
+                        actor="boundary_actor",
+                        queue="bulk",
+                        status="succeeded",
+                        created_at=stamp - timedelta(minutes=30),
+                        finished_at=stamp,
+                        tags=["boundary"],
+                    )
+                )
+    rows.sort(key=lambda r: (r.finished_at, r.id))  # insertion order = walk order
+    return rows
+
+
+async def _plant_boundary_population(
+    lab: _Lab,
+    rows: list[_JobRow],
+    conn: asyncpg.Connection,
+) -> None:
+    """Sharpen the hypertable's grid to 1-day chunks (future chunks
+    only; existing ones keep their interval and every policy is
+    deferred 10 years by the module fixture), then plant the boundary
+    rows identically on both engines."""
+
+    def _archive_tuple(r: _JobRow) -> tuple[Any, ...]:
+        finished = r.finished_at
+        assert finished is not None  # Why: every boundary row is terminal-dated by construction.
+        return (
+            r.id,
+            r.tags,
+            r.created_at,
+            r.created_at + timedelta(minutes=1),
+            finished,
+            finished + timedelta(minutes=1),
+            finished + timedelta(days=365),
+        )
+
+    await conn.execute(
+        f"""SELECT set_chunk_time_interval(
+                '"{lab.ht.schema}".jobs_archive'::regclass, INTERVAL '1 day')"""
+    )
+    for engine in (lab.vanilla, lab.ht):
+        await conn.executemany(
+            f"""INSERT INTO "{engine.schema}".jobs_archive
+                (id, actor, queue, payload, max_attempts, retry_kind, status, attempt,
+                 tags, created_at, scheduled_at, started_at, finished_at, archived_at, expire_at)
+            VALUES ($1, 'boundary_actor', 'bulk', '{{"v":1}}'::jsonb, 3, 'transient',
+                'succeeded', 1, $2::text[], $3, $3, $4, $5, $6, $7)""",
+            [_archive_tuple(r) for r in rows],
+        )
+    # The premise, pinned against the catalog: the planted span covers
+    # at least two chunks of the hypertable — a real seam inside the
+    # walk, not a hypothetical one.
+    stamps = [r.finished_at for r in rows if r.finished_at is not None]
+    n_chunks = await conn.fetchval(
+        f"""SELECT count(*) FROM show_chunks('"{lab.ht.schema}".jobs_archive'::regclass,
+            older_than => $1::timestamptz, newer_than => $2::timestamptz)""",
+        max(stamps) + timedelta(minutes=5),
+        min(stamps) - timedelta(minutes=5),
+    )
+    assert n_chunks >= 2, f"the planted span must cover >= 2 chunks, got {n_chunks}"
+
+
+async def test_archive_keyset_walk_is_exact_across_chunk_boundaries(lab: _Lab) -> None:
+    """Operator question: with ``jobs_archive`` chunked on the very
+    column the archive tab sorts and keys on, does the keyset walk cross
+    the chunk seams with NO skipped rows and NO duplicates — the
+    walk-oracle, over a population whose seams are real chunks?"""
+    planted = _boundary_rows()
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        await _plant_boundary_population(lab, planted, conn)
+    finally:
+        await conn.close()
+
+    try:
+        population = [*lab.plan.archive, *planted]
+        expected = _expected_archived_order(population)
+        assert len(expected) == len(population) == 235  # Why: 55 seed + 180 boundary rows.
+
+        van = await _walk(lab.vanilla.app, "/admin/jobs?tab=archived")
+        ht = await _walk(lab.ht.app, "/admin/jobs?tab=archived")
+        _diff("chunk-boundary archive walk", van, ht)
+        assert ht == expected, (
+            "the archive walk across chunk boundaries must reproduce the "
+            "(finished_at DESC, id DESC) order exactly — every row once, no gaps"
+        )
+    finally:
+        await _cleanup_archive_rows(lab, [r.id for r in planted])
+
+
+async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab) -> None:
+    """Operator question: the render's own Next link drops the absolute
+    ``time_from``/``time_to`` window on page turn (the pagination
+    macro's known gap) — when the window IS carried through the cursor
+    URLs the server honors, does the keyset seam survive the filter
+    across chunk boundaries, with chunk exclusion eating NO in-window
+    row? Walked to exhaustion on both engines against the Python
+    oracle, plus the count endpoint with the same windows."""
+    planted = _boundary_rows()
+    conn = await asyncpg.connect(lab.dsn)
+    try:
+        await _plant_boundary_population(lab, planted, conn)
+    finally:
+        await conn.close()
+
+    try:
+        population = [*lab.plan.archive, *planted]
+        by_id = {str(r.id): r for r in population}
+
+        def _window_rows(time_from: datetime, time_to: datetime) -> list[_JobRow]:
+            return [r for r in population if time_from <= r.created_at <= time_to]
+
+        async def _windowed_walk(
+            engine: _Engine, time_from: datetime, time_to: datetime
+        ) -> list[str]:
+            """Walk the archive tab carrying the window through EVERY
+            page turn: each turn's cursor is built from the row the
+            ordering just served (the exact values the rendered Next
+            link would carry, had the macro not dropped the window)."""
+            q_from = quote_plus(time_from.isoformat())
+            q_to = quote_plus(time_to.isoformat())
+            expected = _expected_archived_order(_window_rows(time_from, time_to))
+            got: list[str] = []
+            cursor: tuple[str, str] | None = None
+            pages = 0
+            while True:
+                url = f"/admin/jobs?tab=archived&time_from={q_from}&time_to={q_to}"
+                if cursor is not None:
+                    url += (
+                        f"&cursor_at={quote_plus(cursor[0])}&cursor_id={cursor[1]}&cursor_dir=next"
+                    )
+                ids = _ordered_job_ids(await _html(engine.app, url))
+                want = expected[len(got) : len(got) + 50]
+                assert ids == want, (
+                    f"page {pages + 1} of the windowed walk broke the seam: "
+                    f"served {ids!r}, want {want!r}"
+                )
+                got.extend(ids)
+                if len(ids) < 50:
+                    break
+                last = by_id[ids[-1]]
+                assert last.finished_at is not None
+                cursor = (last.finished_at.isoformat(), ids[-1])
+                pages += 1
+                assert pages < 20, "the windowed walk did not terminate"
+            return got
+
+        windows = [
+            # Spans four UTC-midnight chunk seams; the in-window
+            # population (90 rows) runs past one full page -> a real
+            # page turn with the seam inside the chunk neighbourhood.
+            (datetime(2026, 9, 22, tzinfo=UTC), datetime(2026, 9, 25, tzinfo=UTC)),
+            # Ends INSIDE a chunk (a window boundary that prunes nothing
+            # the keyset still has to serve); 15 rows, one page.
+            (
+                datetime(2026, 9, 23, 12, 0, 0, tzinfo=UTC),
+                datetime(2026, 9, 23, 23, 59, tzinfo=UTC),
+            ),
+        ]
+        for time_from, time_to in windows:
+            van = await _windowed_walk(lab.vanilla, time_from, time_to)
+            ht = await _windowed_walk(lab.ht, time_from, time_to)
+            _diff(f"windowed walk {time_from}..{time_to}", van, ht)
+            assert len(van) == len(_window_rows(time_from, time_to)), (
+                "the windowed walk must serve every in-window row exactly once"
+            )
+            if time_from == windows[0][0]:
+                assert len(van) > 50, "the first window must force at least one page turn"
+
+            # The count endpoint with the same window: chunk exclusion
+            # must not eat in-window rows — the count IS the walk's
+            # length.
+            count_path = (
+                f"/admin/jobs/count?tab=archived&time_from={quote_plus(time_from.isoformat())}"
+                f"&time_to={quote_plus(time_to.isoformat())}"
+            )
+            _diff(
+                f"windowed count {time_from}..{time_to}",
+                await _json(lab.vanilla.app, count_path),
+                await _json(lab.ht.app, count_path),
+            )
+            assert await _json(lab.ht.app, count_path) == {"count": len(van)}
+    finally:
+        await _cleanup_archive_rows(lab, [r.id for r in planted])
+
+
+# ── 10. The failure renderings ────────────────────────────────────────────
+
+
+async def test_invalid_cursors_and_filters_render_identically(lab: _Lab) -> None:
+    """Operator question: when the URL is broken — a hand-edited cursor
+    (the shape that 500'd every page turn pre-fix), a partial or invalid
+    history cursor, a garbage or NUL-carrier filter — is every error
+    status and body IDENTICAL on the converted schema, and does the
+    malformed-cursor fallback still serve the honest first page?"""
+    # A malformed jobs-list cursor falls back to the first page (200):
+    # the page must be identical to the unpaged first page, on both
+    # engines.
+    plain = _stable_html(await _html(lab.ht.app, "/admin/jobs?tab=archived"))
+    for bad in ("not-a-uuid", ""):
+        fallback = _stable_html(
+            await _html(lab.ht.app, f"/admin/jobs?tab=archived&cursor_id={quote_plus(bad)}")
+        )
+        assert fallback == plain, f"cursor_id={bad!r} must fall back to the first page"
+        van_fallback = _stable_html(
+            await _html(lab.vanilla.app, f"/admin/jobs?tab=archived&cursor_id={quote_plus(bad)}")
+        )
+        _diff(f"malformed cursor fallback {bad!r}", van_fallback, fallback)
+
+    # The history page's cursor family: partial -> 400, bad timestamp
+    # -> 400, bad uuid -> 400. Bodies identical cross-engine.
+    history_bads = [
+        "/admin/history?cursor_at=2026-09-20T00%3A00%3A00%2B00%3A00",  # partial
+        "/admin/history?cursor_at=not-a-timestamp&cursor_created=2026-09-20T00%3A00%3A00%2B00%3A00&cursor_id=00000000-0000-0000-0000-000000000000",
+        "/admin/history?cursor_at=2026-09-20T00%3A00%3A00%2B00%3A00&cursor_created=2026-09-20T00%3A00%3A00%2B00%3A00&cursor_id=nope",
+    ]
+    for path in history_bads:
+        resp_v = await _get(lab.vanilla.app, path)
+        resp_h = await _get(lab.ht.app, path)
+        assert resp_v.status_code == resp_h.status_code == 400, path
+        _diff(f"history 400 body {path}", resp_v.text, resp_h.text)
+
+    # The jobs list filter family: garbage absolute time (the clean-400
+    # fix — pre-fix an opaque driver 500), a NUL-carrier text filter,
+    # an invalid status. Bodies identical cross-engine.
+    filter_bads: list[dict[str, str]] = [
+        {"time_from": "garbage"},
+        {"time_to": "2026-13-45 99:99"},
+        {"actor": "a\x00b"},
+        {"search": "x\x00y"},
+    ]
+    for params in filter_bads:
+        resp_v = await _get(lab.vanilla.app, "/admin/jobs", params=params)
+        resp_h = await _get(lab.ht.app, "/admin/jobs", params=params)
+        assert resp_v.status_code == resp_h.status_code == 400, params
+        _diff(f"filter 400 body {params}", resp_v.text, resp_h.text)
+
+    resp_v = await _get(lab.vanilla.app, "/admin/jobs", params={"status": "banana"})
+    resp_h = await _get(lab.ht.app, "/admin/jobs", params={"status": "banana"})
+    assert resp_v.status_code == resp_h.status_code == 400
+    _diff("invalid status 400 body", resp_v.text, resp_h.text)
+
+
+async def test_missing_job_detail_renders_identically(lab: _Lab) -> None:
+    """Operator question: an id that exists on neither engine (pruned,
+    mistyped) must answer the same 404 on hypertables — the detail
+    route's archive fallthrough terminates in the identical error."""
+    ghost = new_job_id()
+    resp_v = await _get(lab.vanilla.app, f"/admin/jobs/{ghost}")
+    resp_h = await _get(lab.ht.app, f"/admin/jobs/{ghost}")
+    assert resp_v.status_code == resp_h.status_code == 404
+    _diff("missing job 404 body", resp_v.text, resp_h.text)

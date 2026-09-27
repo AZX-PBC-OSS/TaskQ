@@ -36,7 +36,7 @@
 {% endmacro %}
 
 {% if jobs %}
-<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+<div id="job-table-container" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
     <div class="overflow-x-auto">
         <table class="w-full text-sm">
             <thead>
@@ -201,7 +201,7 @@
     {% endif %}
 </div>
 {% else %}
-<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+<div id="job-table-container" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
     <i data-lucide="inbox" class="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-3"></i>
     <p class="text-slate-500 dark:text-slate-400 text-sm">
         No jobs found matching the current filters.

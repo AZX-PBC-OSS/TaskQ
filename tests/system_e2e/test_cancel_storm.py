@@ -154,7 +154,16 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
                         batch_size=2,
                         schema=schema,
                     )
-                    await asyncio.sleep(0.3)
+                    # The tick is a SCENARIO KNOB, not a product constant, and
+                    # it must be slower than the retrier's 0.5s: the retrier
+                    # has to beat the archiver to a terminal row often enough
+                    # for a retry to fire (the scenario's premise, here by
+                    # construction rather than by runner weather - a faster
+                    # tick let the archiver consume every terminal row before
+                    # the retrier ever saw one on loaded runners). The
+                    # archiver still archives plenty (its cohort is the 6
+                    # sys_fast jobs) and the storm deadline bounds failure.
+                    await asyncio.sleep(0.9)
             finally:
                 await aconn.close()
 
@@ -166,39 +175,48 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
         # archiver's comments up top are this module's own rule).
         pconn = await asyncpg.connect(pg_dsn)
         try:
-            async with asyncio.timeout(_STORM_DEADLINE_SECS):
-                while True:
-                    # The vacuousness premises, read from the ledger the
-                    # assertions below re-read: the race is provably fired in
-                    # every direction before the storm stops.
-                    premises = await pconn.fetchrow(
-                        "SELECT ("
-                        f'SELECT max(attempt)::int FROM "{schema}".jobs '
-                        "WHERE tags @> ARRAY[$1::text]) AS max_live_attempt, ("
-                        f'SELECT max(attempt)::int FROM "{schema}".jobs_archive '
-                        "WHERE tags @> ARRAY[$1::text]) AS max_archived_attempt, ("
-                        f'SELECT count(*)::int FROM "{schema}".jobs '
-                        "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
-                        ") + ("
-                        f'SELECT count(*)::int FROM "{schema}".jobs_archive '
-                        "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
-                        ") AS cancelled, ("
-                        f'SELECT count(*)::int FROM "{schema}".jobs_archive '
-                        "WHERE tags @> ARRAY[$1::text]) AS archived",
-                        _TAG,
-                    )
-                    assert premises is not None
-                    if (
-                        max(
-                            premises["max_live_attempt"] or 0,
-                            premises["max_archived_attempt"] or 0,
+            try:
+                async with asyncio.timeout(_STORM_DEADLINE_SECS):
+                    while True:
+                        # The vacuousness premises, read from the ledger the
+                        # assertions below re-read: the race is provably fired in
+                        # every direction before the storm stops.
+                        premises = await pconn.fetchrow(
+                            "SELECT ("
+                            f'SELECT max(attempt)::int FROM "{schema}".jobs '
+                            "WHERE tags @> ARRAY[$1::text]) AS max_live_attempt, ("
+                            f'SELECT max(attempt)::int FROM "{schema}".jobs_archive '
+                            "WHERE tags @> ARRAY[$1::text]) AS max_archived_attempt, ("
+                            f'SELECT count(*)::int FROM "{schema}".jobs '
+                            "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
+                            ") + ("
+                            f'SELECT count(*)::int FROM "{schema}".jobs_archive '
+                            "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
+                            ") AS cancelled, ("
+                            f'SELECT count(*)::int FROM "{schema}".jobs_archive '
+                            "WHERE tags @> ARRAY[$1::text]) AS archived",
+                            _TAG,
                         )
-                        >= 2
-                        and premises["cancelled"] >= 1
-                        and premises["archived"] > 0
-                    ):
-                        break
-                    await asyncio.sleep(0.25)
+                        assert premises is not None
+                        if (
+                            max(
+                                premises["max_live_attempt"] or 0,
+                                premises["max_archived_attempt"] or 0,
+                            )
+                            >= 2
+                            and premises["cancelled"] >= 1
+                            and premises["archived"] > 0
+                        ):
+                            break
+                        await asyncio.sleep(0.25)
+            except TimeoutError:
+                # The premises never landed in the deadline: the
+                # assertions below red with the vacuous-race message -
+                # but the storm's tasks still get their stop, exactly the
+                # normal teardown path. The TimeoutError must NOT
+                # propagate up past stop.set(): it would skip the
+                # cancel/gather and leak every operator task.
+                pass
         finally:
             await pconn.close()
         stop.set()
