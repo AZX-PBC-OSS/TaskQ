@@ -536,9 +536,9 @@ def _diff_served_page(label: str, van_html: str, ht_html: str) -> None:
 # vanilla-served and hypertable-served data.
 
 
-def _run_node(harness: str, js_path: Path, scenario: str, page: dict[str, Any]) -> dict[
-    str, list[str]
-]:
+def _run_node(
+    harness: str, js_path: Path, scenario: str, page: dict[str, Any]
+) -> dict[str, list[str]]:
     node = shutil.which("node")
     if node is None:
         if os.environ.get("CI"):
@@ -904,21 +904,26 @@ async def _served_detail_page(app: FastAPI, job_id: uuid.UUID) -> dict[str, Any]
     (the exact cursor + state the template rendered) and the poll cadence."""
     html = await _html(app, f"/admin/jobs/{job_id}")
     section = _section(html)
+    poll_match = _POLL_MS_RE.search(html)
+    base_path_match = _BASE_PATH_RE.search(html)
+    assert poll_match is not None and base_path_match is not None, (
+        "the detail page must carry the poll cadence and the base path"
+    )
     return {
         "mode": _badge(html)[0],
         "jobId": section["job_id"],
         "seq": section["seq"],
         "stateJson": section["state_json"],
         "state": json.loads(section["state_json"]),
-        "pollIntervalMs": int(_POLL_MS_RE.search(html).group(1)),
-        "basePath": _BASE_PATH_RE.search(html).group(1),
+        "pollIntervalMs": int(poll_match.group(1)),
+        "basePath": base_path_match.group(1),
         "html": html,
     }
 
 
-def _admin_page(served: dict[str, Any], *, ticks: int, notify: dict[str, Any] | None = None) -> dict[
-    str, Any
-]:
+def _admin_page(
+    served: dict[str, Any], *, ticks: int, notify: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "configScript": served["configScript"],
         "fragment": served["fragment"],
@@ -929,8 +934,13 @@ def _admin_page(served: dict[str, Any], *, ticks: int, notify: dict[str, Any] | 
     }
 
 
-def _rt_page(app_page: dict[str, Any], *, flow: str, polls: list[Any] | None = None, frames:
-    list[Any] | None = None) -> dict[str, Any]:
+def _rt_page(
+    app_page: dict[str, Any],
+    *,
+    flow: str,
+    polls: list[Any] | None = None,
+    frames: list[Any] | None = None,
+) -> dict[str, Any]:
     """The realtime harness's page input, seeded from the SERVED detail page
     (the big html key is dropped — the harness needs the seed, not the page)."""
     return {
@@ -1015,7 +1025,7 @@ async def test_served_jobs_page_configures_the_component_identically(lab: _Lab) 
     # row count moves when other tests enqueue; the AGREEMENT is the pin).
     assert state["totalRows"] == len(ht["rows"])
     assert state["pollIntervalMs"] > 0
-    assert json.loads(log["net"][-1][len("verdict:") :]) == {"polling": True, "sse": True}
+    assert _verdict(log) == {"polling": True, "sse": True}
 
 
 async def test_a_stalled_broker_leaves_the_poll_carrying_identical_swaps(lab: _Lab) -> None:
@@ -1028,19 +1038,15 @@ async def test_a_stalled_broker_leaves_the_poll_carrying_identical_swaps(lab: _L
     van = await _served_jobs_page(lab.vanilla.app)
     ht = await _served_jobs_page(lab.ht.app)
 
-    van_log = _run_node(
-        _ADMIN_HARNESS, ADMIN_JS, "stalled-broker-calm", _admin_page(van, ticks=3)
-    )
-    ht_log = _run_node(
-        _ADMIN_HARNESS, ADMIN_JS, "stalled-broker-calm", _admin_page(ht, ticks=3)
-    )
+    van_log = _run_node(_ADMIN_HARNESS, ADMIN_JS, "stalled-broker-calm", _admin_page(van, ticks=3))
+    ht_log = _run_node(_ADMIN_HARNESS, ADMIN_JS, "stalled-broker-calm", _admin_page(ht, ticks=3))
     _diff_logs("stalled-broker swaps", van_log, ht_log)
 
     assert "sse-close" not in ht_log["net"], (
         "a stalled broker must not have its EventSource closed behind the page's back"
     )
     assert ht_log["net"].count("fetch:/admin/jobs") == 3, ht_log["net"]
-    assert json.loads(ht_log["net"][-1][len("verdict:") :]) == {"polling": True, "sse": True}
+    assert _verdict(ht_log) == {"polling": True, "sse": True}
     swaps = _swap_payloads(ht_log)
     assert len(swaps) == 3, "every poll tick swaps the served fragment in"
     assert swaps[0] == swaps[1] == swaps[2], (
@@ -1190,14 +1196,20 @@ async def test_the_progress_cadence_on_served_bodies_is_calm_and_identical(lab: 
     # durable UPDATE on both engines); the real 200 body is the tick's input
     # and the fingerprint gate must drop it before any DOM work.
     await _set_running_progress(lab, base_seq + 1, _R_STATE)
-    van_body2 = (await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.running}/state")).json()
+    van_body2 = (
+        await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.running}/state")
+    ).json()
     ht_body2 = (await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.running}/state")).json()
     _diff("re-flush body", van_body2, ht_body2)
     assert ht_body2["progress_seq"] == base_seq + 1
 
     # Poll 3: a real change (percent 42 -> 55, the timestamptz/null shapes kept).
-    await _set_running_progress(lab, base_seq + 2, _R_STATE.replace('"percent": 42', '"percent": 55'))
-    van_body3 = (await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.running}/state")).json()
+    await _set_running_progress(
+        lab, base_seq + 2, _R_STATE.replace('"percent": 42', '"percent": 55')
+    )
+    van_body3 = (
+        await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.running}/state")
+    ).json()
     ht_body3 = (await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.running}/state")).json()
     _diff("changed body", van_body3, ht_body3)
     assert ht_body3["progress_state"]["percent"] == 55
@@ -1306,7 +1318,11 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
     terminal state is one the page has NOT already server-rendered."""
     van_page = await _served_detail_page(lab.vanilla.app, lab.plan.late_terminal)
     ht_page = await _served_detail_page(lab.ht.app, lab.plan.late_terminal)
-    _diff("late-terminal section seed", (van_page["seq"], van_page["state"]), (ht_page["seq"], ht_page["state"]))
+    _diff(
+        "late-terminal section seed",
+        (van_page["seq"], van_page["state"]),
+        (ht_page["seq"], ht_page["state"]),
+    )
     assert ht_page["state"]["percent"] == 10
 
     # The job finishes under the open page: a durable terminal write on BOTH
@@ -1329,9 +1345,7 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
     van_body = (
         await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.late_terminal}/state")
     ).json()
-    ht_body = (
-        await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.late_terminal}/state")
-    ).json()
+    ht_body = (await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.late_terminal}/state")).json()
     _diff("terminal body", van_body, ht_body)
     assert ht_body["status"] == "succeeded"
     etag = f'"{ht_body["progress_seq"]}"'
@@ -1370,9 +1384,7 @@ async def test_the_empty_progress_terminal_writes_nothing_and_stops_identically(
     van_body = (
         await _get(lab.vanilla.app, f"/admin/jobs/api/job/{lab.plan.terminal_null}/state")
     ).json()
-    ht_body = (
-        await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.terminal_null}/state")
-    ).json()
+    ht_body = (await _get(lab.ht.app, f"/admin/jobs/api/job/{lab.plan.terminal_null}/state")).json()
     _diff("empty-state terminal body", van_body, ht_body)
     assert ht_body["progress_state"] == {}, "the seeded empty-progress shape must survive the wire"
 
@@ -1400,9 +1412,9 @@ async def test_the_empty_progress_terminal_writes_nothing_and_stops_identically(
     )
     # The machine stood down on the first downloaded terminal body: three
     # ticks, one fetch.
-    assert ht_log["net"].count(
-        f"fetch:/admin/jobs/api/job/{lab.plan.terminal_null}/state"
-    ) == 1, ht_log["net"]
+    assert ht_log["net"].count(f"fetch:/admin/jobs/api/job/{lab.plan.terminal_null}/state") == 1, (
+        ht_log["net"]
+    )
 
 
 async def test_the_bigint_cursor_boundary_renders_identically(lab: _Lab) -> None:
@@ -1496,7 +1508,9 @@ async def test_the_state_endpoint_is_engine_identical(lab: _Lab) -> None:
     ht_t = await _get(lab.ht.app, f"/admin/jobs/api/job/{terminal}/state")
     term_etag = ht_t.headers["etag"]
     van_t304 = await _get(
-        lab.vanilla.app, f"/admin/jobs/api/job/{terminal}/state", headers={"If-None-Match": term_etag}
+        lab.vanilla.app,
+        f"/admin/jobs/api/job/{terminal}/state",
+        headers={"If-None-Match": term_etag},
     )
     ht_t304 = await _get(
         lab.ht.app, f"/admin/jobs/api/job/{terminal}/state", headers={"If-None-Match": term_etag}
@@ -1539,9 +1553,9 @@ async def test_the_progress_stream_is_engine_identical(lab: _Lab) -> None:
     VERBATIM, the same ``event:``/``id:``/``data:`` framing? Both engines'
     captured byte streams must be equal."""
     running = lab.plan.running
-    current_seq = (
-        await _get(lab.ht.app, f"/admin/jobs/api/job/{running}/state")
-    ).json()["progress_seq"]
+    current_seq = (await _get(lab.ht.app, f"/admin/jobs/api/job/{running}/state")).json()[
+        "progress_seq"
+    ]
     live_seq = current_seq + 1
     envelope = json.dumps(
         {
@@ -1614,9 +1628,9 @@ async def test_the_stream_reconnects_at_the_cursor_identically(lab: _Lab) -> Non
     replay exactly one catch-up frame from PG, and the query-parameter form
     must behave identically to the header. Engine-identical bytes."""
     running = lab.plan.running
-    current_seq = (
-        await _get(lab.ht.app, f"/admin/jobs/api/job/{running}/state")
-    ).json()["progress_seq"]
+    current_seq = (await _get(lab.ht.app, f"/admin/jobs/api/job/{running}/state")).json()[
+        "progress_seq"
+    ]
 
     # Cursor current: no catch-up frame — the first thing on the wire is a
     # keepalive comment.
@@ -1678,9 +1692,9 @@ async def test_the_terminal_stream_closes_itself_identically(lab: _Lab) -> None:
     terminal snapshot frame, then ``event: done``, then END BY ITSELF (the
     generator returns — no client hangup needed), byte-identically."""
     terminal = lab.plan.terminal_progress
-    terminal_seq = (
-        await _get(lab.ht.app, f"/admin/jobs/api/job/{terminal}/state")
-    ).json()["progress_seq"]
+    terminal_seq = (await _get(lab.ht.app, f"/admin/jobs/api/job/{terminal}/state")).json()[
+        "progress_seq"
+    ]
     van = await _stream_request(
         lab.van_redis_app, f"/admin/jobs/api/job/{terminal}/progress/stream", b"event: done"
     )
