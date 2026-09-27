@@ -21,7 +21,17 @@ render what comes back — including the confounds the module documents:
   instead of rendering an eta (eta=0 would read as "already drained");
 * the cron ledger renders the runaway trend as a badge, which by the
   module's two-window rule can only render when fires outran clearance
-  in BOTH the current and the prior window.
+  in BOTH the current and the prior window;
+* the page renders only after ALL six reads return — a read that fails
+  (a legacy schema whose archive drifted) fails the whole request
+  loudly, never a half-rendered page that reads as a healthy fleet;
+* the two fleet-sized tables (per-actor wait groups, actor backlog) are
+  capped at the actors page's ``STATS_LIMIT`` with a visible note; the
+  per-queue verdict sections stay uncapped, because a cap there could
+  hide the very badge the page exists to show;
+* the page resolves the deployment's realtime mode like every sibling
+  page — the header badge and the meta-refresh decision tell the same
+  story as the rest of the admin UI.
 """
 
 from datetime import timedelta
@@ -41,9 +51,11 @@ from taskq.insights import (
 )
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web.admin._actor_stats import STATS_LIMIT
 from taskq.web.admin._constants import reject_unknown_query_params
 from taskq.web.admin._factory import (
     get_admin_pool,
+    get_realtime_ctx,
     get_schema,
     get_settings,
     get_templates,
@@ -120,6 +132,7 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         settings: TaskQSettings = Depends(get_settings),
+        realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         window: str = Query(default=_DEFAULT_WINDOW),
         per_actor: str = Query(default="false"),
     ) -> HTMLResponse:
@@ -249,15 +262,36 @@ def register(router: APIRouter) -> None:
             for r in ledger_rows
         ]
 
+        # The render cap, the actors page's STATS_LIMIT discipline: the
+        # two fleet-sized tables (per-actor wait groups, actor backlog)
+        # grow with the ACTORS, not with the pathology — uncapped, a
+        # 500-actor fleet renders a thousand rows into the operator's
+        # browser.  The cap is announced, never silent; the per-queue
+        # verdict sections (imbalance, drain, overprovisioning) stay
+        # uncapped on purpose — a cap there could hide the very badge
+        # the page exists to show.
+        waits_truncated = len(waits) > STATS_LIMIT
+        if waits_truncated:
+            waits = waits[:STATS_LIMIT]
+        backlog_truncated = len(backlog) > STATS_LIMIT
+        if backlog_truncated:
+            backlog = backlog[:STATS_LIMIT]
+
+        realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("insights.html").render(
             window=window,
             windows=list(INSIGHTS_WINDOWS),
             per_actor=per_actor_on,
             waits=waits,
-            imbalance=imbalance,
+            waits_truncated=waits_truncated,
             backlog=backlog,
+            backlog_truncated=backlog_truncated,
+            render_limit=STATS_LIMIT,
+            imbalance=imbalance,
             overprovisioning=overprovisioning,
             drains=drains,
             ledger=ledger,
+            realtime_mode=realtime_mode,
+            mode_label=mode_label,
         )
         return HTMLResponse(content=html)
