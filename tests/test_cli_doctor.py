@@ -24,7 +24,7 @@ following ``tests/test_cli_actor_config_diff_exit_code.py``.
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -89,6 +89,7 @@ def _patch_db(
     stranded_rows: list[dict[str, Any]] | None = None,
     worker_rows: list[dict[str, Any]] | None = None,
     storage_mode: StorageMode | None = StorageMode.VANILLA,
+    downgraded_policies: Sequence[str] = (),
 ) -> list[str]:
     """Fake the doctor's reads at the ``taskq.cli`` boundary.
 
@@ -106,6 +107,13 @@ def _patch_db(
     pins below inject each mode; the mode's DETECTION against real
     servers is pinned in ``test_storage_mode_detection.py`` and the
     three-mode lifecycle module.
+
+    ``downgraded_policies`` fakes the license-downgrade probe
+    (``taskq.cli.probe_registered_policy_jobs``, patched here): the
+    ``"proc:table"`` strings of the TimescaleDB policy jobs still
+    registered on a server whose license was downgraded to apache after
+    an earlier timescale-license deployment - the downgrade-drift arm's
+    input. Empty (the default) on every healthy deployment.
     """
     executed: list[str] = []
     stranded = [] if stranded_rows is None else stranded_rows
@@ -141,6 +149,10 @@ def _patch_db(
         executed.append("fake: detect_storage_mode")
         return storage_mode
 
+    async def fake_probe_registered_policy_jobs(conn: Any, schema: str) -> tuple[str, ...]:
+        executed.append("fake: probe_registered_policy_jobs")
+        return tuple(downgraded_policies)
+
     async def fake_list_actor_configs(conn: Any, **kwargs: Any) -> list[ActorConfigRow]:
         return actor_rows
 
@@ -151,6 +163,7 @@ def _patch_db(
     monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
     monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
     monkeypatch.setattr("taskq.cli.detect_storage_mode", fake_detect_storage_mode)
+    monkeypatch.setattr("taskq.cli.probe_registered_policy_jobs", fake_probe_registered_policy_jobs)
     return executed
 
 
@@ -740,6 +753,51 @@ def test_doctor_leads_with_the_detected_storage_mode_apache(
         "(bounded batch deletes)" in result.output
     )
     assert "storage mode drift" not in result.output
+
+
+def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The family's second red arm, measured on real 2.30.1: a server
+    converted under the full TSL license and then downgraded to apache
+    keeps its five policy jobs registered - and they FAIL on every
+    background run under the downgraded license (measured
+    ``sqlerrcode 0A000``, retried forever), while the row-level sweeps
+    defer the aged end to them (the retention-policy floor). Rows older
+    than the dead policies' horizon strand: nothing deletes them. A
+    doctor that renders only the mode's healthy summary ("retention is
+    the row-level sweeps") LIES on this server - the drift arm must name
+    the stranded state, its mechanism, and the honest remedy (restore the
+    license; the policies cannot be removed under apache - every removal
+    API refuses too)."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_APACHE,
+        downgraded_policies=(
+            "policy_retention:job_events",
+            "policy_retention:jobs_archive",
+            "policy_retention:job_attempts_archive",
+            "policy_compression:jobs_archive",
+            "policy_compression:job_attempts_archive",
+        ),
+    )
+
+    result = _invoke()
+
+    assert (
+        "storage mode drift: this server's timescaledb.license is 'apache' but 5 "
+        "TimescaleDB policy job(s) from an earlier timescale-license deployment are "
+        "still registered" in result.output
+    ), result.output
+    # The mechanism, named so the operator believes it: the policies fail on
+    # every run AND the sweeps defer to them - the strand is real, not cosmetic.
+    assert "fail on every" in result.output
+    assert "strand" in result.output
+    # The honest remedy: the license cannot be worked around - the removal
+    # APIs refuse under apache too - so the way out is the license restore.
+    assert "ALTER SYSTEM SET timescaledb.license = 'timescale'" in result.output
 
 
 def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(

@@ -307,11 +307,25 @@ is exactly the stalled-policy signal.
 ## Retention is owned by the policies, mostly
 
 **`timescale-tsl` mode only.** In `timescale-apache` and `vanilla` the
-policies cannot exist (the apache license refuses them; vanilla has no
-extension): retention is the row-level sweeps alone, full-range,
-`expire_at` exact, the event-prune watermark kept on every deletion — the
-pre-floor behavior, unchanged. The rest of this section describes the
-`timescale-tsl` mode.
+policies cannot be REGISTERED (the apache license refuses the policy APIs;
+vanilla has no extension): retention is the row-level sweeps alone,
+full-range, `expire_at` exact, the event-prune watermark kept on every
+deletion — the pre-floor behavior, unchanged. The rest of this section
+describes the `timescale-tsl` mode.
+
+One honest exception, measured on 2.30.1: policies registered under the
+full TSL license SURVIVE a later downgrade to `timescale-apache` (the
+license cannot remove them — every removal API refuses too), and under the
+downgraded license they fail on every background run. The compound effect
+strands rows: the sweeps defer the aged end to the policies' floor (see
+below), the policies cannot run, so rows older than the dead policies'
+horizon are deleted by nobody. The doctor's storage-mode family names this
+state as drift (an apache-licensed server with live policy jobs is
+downgrade debris, since the healthy apache mode registers nothing) with
+the only remedy — restore the timescale license
+(`ALTER SYSTEM SET timescaledb.license = 'timescale'` and reload), re-run
+`taskq migrate up` to converge, then flip and disable properly. The
+disable path refuses the same state loudly for the same reason.
 
 Once the tables are hypertables, the aged end of the timeline is owned by
 Timescale's background workers: each policy drops chunks whose time range

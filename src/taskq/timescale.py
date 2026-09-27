@@ -141,6 +141,7 @@ __all__ = [
     "detect_storage_mode",
     "disable_hypertables",
     "enable_hypertables",
+    "probe_registered_policy_jobs",
     "probe_timescale_capability",
 ]
 
@@ -346,7 +347,21 @@ async def probe_timescale_capability(conn: asyncpg.Connection) -> TimescaleCapab
         "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = $1)",
         _TIMESCALE_EXTENSION_NAME,
     )
-    preload = await conn.fetchval("SELECT current_setting('shared_preload_libraries', true)")
+    try:
+        preload = await conn.fetchval("SELECT current_setting('shared_preload_libraries', true)")
+    except asyncpg.InsufficientPrivilegeError:
+        # Measured on PG18 (the 2.30.1 image): examining this GUC is
+        # restricted to the pg_read_all_settings role - a restricted
+        # role's read raises, missing_ok or not, because the setting
+        # EXISTS. The preload FACT is then unknown, and the guard it
+        # feeds is advisory: it exists to convert create_hypertable's
+        # confusing error into a named one, and the DDL's own error is
+        # the loud backstop when the preload really is missing. Reading
+        # the unknown as "loaded" keeps the doctor's mode detection (the
+        # mode needs only installed + license - both PUBLIC reads,
+        # measured) working for unprivileged operators, and never blocks
+        # a deployment on a privilege gap the DDL would name anyway.
+        preload = _TIMESCALE_EXTENSION_NAME
     preloaded = preload is not None and _TIMESCALE_EXTENSION_NAME in preload.split(",")
     license_value = await conn.fetchval("SELECT current_setting('timescaledb.license', true)")
     return TimescaleCapability(
@@ -400,6 +415,38 @@ async def _classify_storage_mode(
         return StorageMode.TIMESCALE_TSL
     compress = await conn.fetchval("SELECT to_regproc('compress_chunk')")
     return StorageMode.TIMESCALE_TSL if compress is not None else StorageMode.TIMESCALE_APACHE
+
+
+async def probe_registered_policy_jobs(conn: asyncpg.Connection, schema: str) -> tuple[str, ...]:
+    """The ``"proc:table"`` strings of every TimescaleDB policy job
+    registered in *schema*, fail-open to ``()``.
+
+    The license-downgrade probe behind ``taskq doctor``'s second storage-
+    mode drift arm: on a server whose ``timescaledb.license`` was
+    downgraded to apache after an earlier timescale-license deployment,
+    the conversion-era policies are still registered - measured on 2.30.1
+    they now FAIL on every background run (``sqlerrcode 0A000``, retried
+    forever), and the row-level sweeps defer the aged end to them (the
+    retention-policy floor), so rows older than their horizon strand. The
+    healthy apache mode registers nothing, so ANY answer here on an
+    apache-licensed server is downgrade debris. Never raises: a probe or
+    permission failure degrades to ``()`` - the doctor is a diagnostic
+    and must not crash for it (the disable path's own loud check, which
+    DOES raise, is the backstop when the schema is disabled).
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT proc_name, hypertable_name FROM timescaledb_information.jobs
+            WHERE hypertable_schema = $1
+              AND proc_name IN ('policy_retention', 'policy_compression', 'policy_columnstore')
+            """,
+            schema,
+        )
+    except Exception as exc:  # Why: fail-open - a diagnostic probe may never break the doctor; the information views' absence or a permission gap reads as "nothing registered".
+        logger.debug("registered-policy-jobs-probe-failed", schema=schema, error=repr(exc))
+        return ()
+    return tuple(sorted(f"{r['proc_name']}:{r['hypertable_name']}" for r in rows))
 
 
 def _chunk_interval(retention: timedelta) -> timedelta:
@@ -1088,9 +1135,30 @@ async def _remove_registered_policies(
         schema,
     )
     if remaining:
+        left = [(r["proc_name"], r["hypertable_name"]) for r in remaining]
+        if mode is StorageMode.TIMESCALE_APACHE:
+            # The apache-mode arm: the removals above were SKIPPED, never
+            # attempted - under this license every removal API refuses
+            # (measured on 2.30.1), which is also why nothing could have
+            # been removed here. The surviving policies are a license
+            # DOWNGRADE's debris (converted under the full TSL license,
+            # then downgraded), and the honest refusal names that: the
+            # license is why they are still there, and the license restore
+            # is the only way out - nothing under apache can remove them.
+            raise RuntimeError(
+                f"could not disable the hypertables for schema {schema!r}: this server's "
+                f"timescaledb.license is 'apache' and {len(left)} TimescaleDB policy job(s) "
+                f"from an earlier timescale-license deployment are still registered ({left}) "
+                "- the policy removal APIs were never attempted (they are refused under "
+                "this license, so nothing here could remove them), and the swap refuses "
+                "to run under a live policy. Restore the timescale license (ALTER SYSTEM "
+                "SET timescaledb.license = 'timescale' and reload), re-run "
+                "`taskq migrate up` if the policies need converging, then disable under "
+                "it (see docs/guides/timescaledb.md)."
+            )
         raise RuntimeError(
             f"could not remove the registered policies for schema {schema!r}: "
-            f"{[(r['proc_name'], r['hypertable_name']) for r in remaining]} survived "
+            f"{left} survived "
             "the removal APIs; refusing to swap tables under a live policy"
         )
     retention = tuple(

@@ -121,6 +121,25 @@ async def test_extension_installed_without_the_license_guc_falls_back_to_compres
     assert await detect_storage_mode(apache) == "timescale-apache"
 
 
+@pytest.mark.parametrize(
+    "bogus",
+    ["", "bogus", "Apache", "timescaledb"],
+    ids=["empty", "garbage", "case", "unknown-future-spelling"],
+)
+async def test_an_unrecognized_license_value_cannot_masquerade(bogus: str) -> None:
+    """A license value outside the three known spellings cannot masquerade
+    as either mode by SPELLING: it falls to the machinery probe, whose
+    verdict tracks what the server can actually do. (On a healthy server
+    this corner is unreachable - the GUC is an enum the extension
+    validates - so the pin is the fallback's honesty for an unknown
+    future spelling or a forged setting: never trust the string, trust
+    the machinery.)"""
+    tsl = _ProbeConn(available=True, installed=True, license=bogus, compress_chunk="compress_chunk")
+    assert await detect_storage_mode(tsl) == "timescale-tsl"
+    apache = _ProbeConn(available=True, installed=True, license=bogus, compress_chunk=None)
+    assert await detect_storage_mode(apache) == "timescale-apache"
+
+
 async def test_probe_carries_the_license_on_the_capability() -> None:
     """The capability probe reports the license GUC verbatim (missing_ok:
     ``None``, never an error) so callers that already probed - the deploy
@@ -130,3 +149,46 @@ async def test_probe_carries_the_license_on_the_capability() -> None:
     assert isinstance(capability, TimescaleCapability)
     assert capability.installed is True
     assert capability.license == "apache"
+
+
+class _RestrictedRoleConn:
+    """A conn speaking for a RESTRICTED role on PG18 (measured on 2.30.1):
+    every mode-deciding read is PUBLIC, but examining
+    ``shared_preload_libraries`` raises ``InsufficientPrivilegeError``
+    (the setting exists, so missing_ok cannot apply)."""
+
+    def __init__(self, *, installed: bool, license: str | None) -> None:
+        self.installed = installed
+        self.license = license
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        if "pg_available_extensions" in query:
+            return True
+        if "pg_extension" in query:
+            return self.installed
+        if "shared_preload_libraries" in query:
+            import asyncpg
+
+            raise asyncpg.InsufficientPrivilegeError(
+                'permission denied to examine "shared_preload_libraries"'
+            )
+        if "timescaledb.license" in query:
+            return self.license
+        if "to_regproc" in query:
+            return "compress_chunk"
+        raise AssertionError(f"unexpected probe query: {query}")
+
+
+async def test_the_preload_reads_privilege_gap_never_breaks_detection() -> None:
+    """The one privilege-gated probe read (PG18 restricts examining
+    ``shared_preload_libraries`` to pg_read_all_settings - MEASURED on
+    2.30.1 with a CONNECT-only role) must degrade to its advisory
+    default, never break the mode classification: the mode decides from
+    installed + license, both PUBLIC, so the doctor's first family works
+    for an unprivileged operator. (The enable path's preload GUARD keeps
+    its teeth where it matters: the DDL's own error is the backstop when
+    the preload really is missing.)"""
+    conn = _RestrictedRoleConn(installed=True, license="timescale")
+    capability = await probe_timescale_capability(conn)
+    assert capability.license == "timescale"
+    assert await detect_storage_mode(conn) == "timescale-tsl"

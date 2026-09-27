@@ -487,9 +487,14 @@ The report's **first finding family is the detected storage mode** —
 connected server (the extension catalog, then the extension's
 `timescaledb.license` setting), never read from settings — with that
 mode's capability consequences in one glance (which retention mechanisms
-exist, what the sweeps own). It is also the family's one red arm: the
-flag on in an environment whose server detects `vanilla` gets named as
-drift, because the next `taskq migrate up` refuses. The mode × capability
+exist, what the sweeps own). The family's red arms: the flag on in an
+environment whose server detects `vanilla` gets named as drift, because
+the next `taskq migrate up` refuses; and a license downgrade — an
+apache-licensed server still carrying conversion-era policy jobs from an
+earlier timescale-license deployment (they fail on every run under the
+downgraded license, and the sweeps defer the aged end to them, so aged
+rows strand) gets named as drift with the license-restore remedy. The
+mode × capability
 matrix is [timescaledb.md's support matrix](timescaledb.md#the-three-storage-modes-the-support-matrix).
 
 TaskQ refuses boot only on structural stored-config drift, so a whole
