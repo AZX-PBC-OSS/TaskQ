@@ -531,6 +531,14 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     """
     stack = pgbouncer_stack
     ledger = await _migrated_conn(stack.direct_dsn, probe_schema)
+    # The admin lane gets its OWN direct connection: the concurrency this
+    # leg proves is the admin reads running simultaneously with the pooled/
+    # direct job traffic, not two tasks sharing one conn — asyncpg forbids
+    # concurrent operations on a single connection (the main lane issues
+    # pg_notify on ``ledger`` while the admin loop is mid-fetch), and the
+    # product never shares a conn across tasks either. Closed in the outer
+    # finally, before ``ledger``.
+    admin_conn = await asyncpg.connect(stack.direct_dsn)
     admin_reads = 0
     try:
         async with _open_split(
@@ -568,10 +576,11 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
             async def _admin_reads() -> None:
                 """The admin path's direct read shape, running while pooled
                 traffic churns: never blocked by the pooler, never routed
-                through it."""
+                through it. Rides ``admin_conn`` — a dedicated direct conn,
+                since the main lane drives ``ledger`` concurrently."""
                 nonlocal admin_reads
                 for _ in range(20):
-                    rows = await ledger.fetch(f'SELECT count(*) FROM "{probe_schema}".jobs')
+                    rows = await admin_conn.fetch(f'SELECT count(*) FROM "{probe_schema}".jobs')
                     admin_reads += int(rows[0][0])
                     await asyncio.sleep(0.005)
 
@@ -645,6 +654,7 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
                 f"(direct p50={statistics.median(t_direct) * 1000:.2f} mean={statistics.mean(t_direct) * 1000:.2f})"
             )
     finally:
+        await admin_conn.close()
         await ledger.close()
         await _drop_schema(stack.direct_dsn, probe_schema)
 

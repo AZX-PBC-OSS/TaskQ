@@ -61,6 +61,7 @@ from __future__ import annotations
 
 # ruff: noqa: S608  # Why: every interpolated identifier is the module fixture's schema name, fixture-derived, not user input; all values are $-bound.
 import asyncio
+import math
 from datetime import timedelta
 from uuid import UUID
 
@@ -168,6 +169,14 @@ _EVENTS_TIMEOUT_MS = 30_000
 # re-drives instead of failing when the shared runner's weather cancels a
 # legitimate bounded pass.
 _EVENTS_REDRIVE_ATTEMPTS = 5
+
+# The reclaim curve the herd's rows are stamped with (the RetryPolicy
+# columns in _HERD_INSERT_SQL): the raw backoff base with its cap and the
+# jitter fraction, whose band [base*(1-j), min(base*(1+j), cap)] =
+# [2.5 s, 7.5 s] the re-pend census's arithmetic is derived from.
+_RETRY_BASE_S = 5.0
+_RETRY_CAP_S = 10.0
+_RETRY_JITTER = 0.5
 
 # Cohort sizes.
 _HERD_BUDGET = 7_000  # re-pend arm
@@ -318,7 +327,7 @@ SELECT substr(md5('{tag}' || n::text), 1, 32)::uuid,
        -- ~1 h 59 m 30 s of the jump.
        clock_timestamp() - interval '2 hours' + interval '30 seconds',
        {cancel_phase}, {cancel_requested_at},
-       5.0, 10.0, 'exponential', 0.5
+       {retry_base}, {retry_cap}, 'exponential', {retry_jitter}
 FROM generate_series(1, {n}) AS n"""
 
 
@@ -334,6 +343,9 @@ async def _seed_running_herd(conn: asyncpg.Connection, schema: str, worker_id: U
                 cancel_phase=0,
                 cancel_requested_at="NULL",
                 n=_HERD_BUDGET,
+                retry_base=_RETRY_BASE_S,
+                retry_cap=_RETRY_CAP_S,
+                retry_jitter=_RETRY_JITTER,
             ),
             worker_id,
         )
@@ -346,6 +358,9 @@ async def _seed_running_herd(conn: asyncpg.Connection, schema: str, worker_id: U
                 cancel_phase=0,
                 cancel_requested_at="NULL",
                 n=_HERD_EXHAUSTED,
+                retry_base=_RETRY_BASE_S,
+                retry_cap=_RETRY_CAP_S,
+                retry_jitter=_RETRY_JITTER,
             ),
             worker_id,
         )
@@ -358,6 +373,9 @@ async def _seed_running_herd(conn: asyncpg.Connection, schema: str, worker_id: U
                 cancel_phase=1,
                 cancel_requested_at="clock_timestamp() - interval '2 hours'",
                 n=_HERD_CANCEL,
+                retry_base=_RETRY_BASE_S,
+                retry_cap=_RETRY_CAP_S,
+                retry_jitter=_RETRY_JITTER,
             ),
             worker_id,
         )
@@ -557,8 +575,36 @@ async def test_reclaim_herd_batches_stay_bounded_and_ledger_conserved(
         )
         assert spread is not None
         assert spread["n"] == _HERD_BUDGET
-        assert spread["distinct_n"] >= _HERD_BUDGET - 10
         assert float(spread["spread_s"]) >= 2.0
+
+        # The distinct-instant tolerance is DERIVED, not a free float, and
+        # not an in-flight allowance: by this line the drain terminated on
+        # a clean tick and a second drain re-claimed nothing, so no writer
+        # is in flight - the census is quiescent by construction.
+        #
+        # What the census counts: scheduled_at is a microsecond-precision
+        # timestamptz, so the jitter band holds
+        # (upper - lower) * 1e6 distinct wake instants, and the cohort's
+        # jitter draw (md5(id:attempt) -> uint32/2**32, ~860 distinct
+        # fractions per microsecond bin) lands n of them independently:
+        # the deficit n - distinct_n is a birthday-collision count,
+        # Poisson with lambda = n*(n-1) / (2 * bins) - 4.9 for this seed
+        # (7000 rows over the 5 s band's 5e6 bins). The bare 10 this
+        # replaces was under-derived against that mean (~2.3 sigma): the
+        # CI 3.13 leg red at a deficit of 11, and an exact-statement
+        # Monte Carlo (the product's own re-pend stamp, ids re-rolled,
+        # 300 trials) measured mean 4.99, p99 12, max 14, with 2.3% of
+        # trials clearing 10. Six sigma of the Poisson bounds the tail
+        # at P(over) ~ 1e-7 - roughly one red leg in ten million - while
+        # staying maximally discriminative: the mutation this tooth
+        # exists to catch (a flat or withdrawn jitter collapsing the
+        # band) drives the deficit to ~n, thousands past the bound.
+        band_lower_s = _RETRY_BASE_S * (1.0 - _RETRY_JITTER)
+        band_upper_s = min(_RETRY_BASE_S * (1.0 + _RETRY_JITTER), _RETRY_CAP_S)
+        bins = (band_upper_s - band_lower_s) * 1_000_000.0
+        lambda_collisions = _HERD_BUDGET * (_HERD_BUDGET - 1) / (2.0 * bins)
+        deficit_bound = math.ceil(lambda_collisions + 6.0 * math.sqrt(lambda_collisions))
+        assert spread["distinct_n"] >= _HERD_BUDGET - deficit_bound
     finally:
         await conn.close()
 
@@ -584,6 +630,9 @@ async def test_reclaim_wake_is_one_notify_per_batch(
                 cancel_phase=0,
                 cancel_requested_at="NULL",
                 n=_BATCH,
+                retry_base=_RETRY_BASE_S,
+                retry_cap=_RETRY_CAP_S,
+                retry_jitter=_RETRY_JITTER,
             ),
             worker_id,
         )
