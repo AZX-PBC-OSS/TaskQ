@@ -347,7 +347,7 @@ async def test_archive_first_page_is_index_served(
         index_names = [
             n.get("Index Name", "") for n in _walk(plan) if "Index" in n.get("Node Type", "")
         ]
-        assert any("jobs_archive_page_idx" in name for name in index_names), (
+        assert "jobs_archive_page_idx" in index_names, (
             f"the archive tab's first page does not run on jobs_archive_page_idx: {index_names}"
         )
     finally:
