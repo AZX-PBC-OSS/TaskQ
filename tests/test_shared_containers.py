@@ -342,8 +342,8 @@ def test_under_the_image_override_the_default_image_stays_sweepable() -> None:
         "}\n"
         "print(repr(decided))\n"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", code],  # Why: fixed argv, project interpreter; the override must be read at import.
+    proc = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and script paths are this file's own constants.
+        [sys.executable, "-c", code],
         capture_output=True,
         env={**os.environ, "TASKQ_TEST_PG_IMAGE": override},
         check=True,
