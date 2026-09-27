@@ -170,6 +170,40 @@ def test_principal_subject_clean_strings_run_unmasked() -> None:
     assert principal_subject("ops-admin@example.com") == "ops-admin@example.com"
 
 
+def test_typed_subject_is_detected_loudly_but_bound_verbatim() -> None:
+    """(#463 round 2) The typed path binds ``.subject`` verbatim (the
+    identity contract -- masking honest identity is its own falsification),
+    but NOT silently: a credential-shaped typed subject fires the same
+    loud event the string path fires, so a dependency that wraps the
+    credential in a claims object is never a quiet leak. The warning
+    carries no token material itself."""
+    import structlog.testing
+
+    claims = IdentityClaims(subject=f"Bearer {_JWT_TOKEN}", email=None, groups=frozenset(), raw={})
+    with structlog.testing.capture_logs() as logs:
+        subject = principal_subject(claims)
+    assert any(log["event"] == "admin-audit-principal-credential-redacted" for log in logs), (
+        f"the typed credential-shaped subject was detected silently: {logs}"
+    )
+    for log in logs:
+        assert _JWT_TOKEN not in str(log), "the loud log leaked the token it detected"
+    # The identity contract holds: the subject field binds verbatim.
+    assert subject == f"Bearer {_JWT_TOKEN}"
+
+
+def test_typed_subject_honest_identity_warns_nothing() -> None:
+    """The typed detection must not cry wolf on honest identity: a claims
+    object whose subject is a real identity fires no event (a false
+    positive here would page on every request of a legitimately-named
+    principal)."""
+    import structlog.testing
+
+    with structlog.testing.capture_logs() as logs:
+        subject = principal_subject(_CLAIMS)
+    assert logs == [], f"honest typed identity was flagged: {logs}"
+    assert subject == "ops-admin@example.com"
+
+
 def test_credential_principal_never_reaches_the_audit_bind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

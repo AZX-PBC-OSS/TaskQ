@@ -120,10 +120,13 @@ def _bound_untyped_subject(raw: str) -> str:
     from the log (the log line carries no token material itself).
 
     The typed path (:func:`principal_subject` reading a ``.subject``
-    attribute) deliberately skips this: a claims object's ``subject`` is by
-    contract the identity field, and over-redacting identity is its own
-    falsification. A HOSTILE ``.subject`` is still bounded and
-    control-escaped by :func:`_bound_subject`.
+    attribute) deliberately skips the MASK -- a claims object's ``subject``
+    is by contract the identity field, and over-redacting identity is its
+    own falsification -- but not the DETECTION: the same mask chain runs
+    on the subject and a credential-shaped one is logged with the same
+    loud event, so the operator learns of the leak either way (#463). A
+    HOSTILE ``.subject`` is still bounded and control-escaped by
+    :func:`_bound_subject`.
     """
     masked = mask_credentials(raw)
     if masked != raw:
@@ -137,6 +140,27 @@ def _bound_untyped_subject(raw: str) -> str:
             ),
         )
     return _bound_subject(masked)
+
+
+def _warn_typed_subject_credential_shaped(subject: str) -> None:
+    """The typed-path detection half of :func:`_bound_untyped_subject`.
+
+    Same mask chain, same loud event -- but the bind stays verbatim (the
+    subject field IS the identity; masking it is the over-redaction the
+    typed path exists to avoid). The detail tells that truth: the row
+    carries what arrived, and the operator must fix the dependency.
+    """
+    if mask_credentials(subject) != subject:
+        logger.warning(
+            "admin-audit-principal-credential-redacted",
+            detail=(
+                "the auth dependency returned a claims principal whose "
+                ".subject is credential-shaped (bearer/JWT-shaped token "
+                "material); the subject field is bound verbatim by the "
+                "identity contract. Fix the dependency to return a subject, "
+                "not the credential."
+            ),
+        )
 
 
 # ── Closed-set action names ──────────────────────────────────────────────
@@ -204,12 +228,15 @@ def principal_subject(principal: Any) -> str:
     (``admin-audit-principal-credential-redacted``) instead of storing the
     operator's bearer token verbatim in a table that is never pruned and
     is rendered on the job detail page. A typed subject-bearing principal
-    binds its ``subject`` field.
+    binds its ``subject`` field -- verbatim (the identity contract), but
+    with the same loud detection log when the field is credential-shaped
+    (:func:`_warn_typed_subject_credential_shaped`).
     """
     if principal is None:
         return ANONYMOUS_SUBJECT
     subject = getattr(principal, "subject", None)
     if isinstance(subject, str) and subject:
+        _warn_typed_subject_credential_shaped(subject)
         return _bound_subject(subject)
     if isinstance(principal, str) and principal:
         return _bound_untyped_subject(principal)
