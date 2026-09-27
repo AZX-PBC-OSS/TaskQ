@@ -9,6 +9,17 @@ cd examples
 docker compose up
 ```
 
+Faster repeated runs: pre-build the image once under its content hash and
+compose skips the docker build on every subsequent `up` (see
+`benchmarks/example_image_spec.py` and the Container section of the
+deployment guide):
+
+```bash
+export TASKQ_EXAMPLE_IMAGE="$(uv run python benchmarks/example_image_spec.py --print-tag)"
+uv run python benchmarks/example_image_spec.py          # build if the hash is new
+cd examples && docker compose up                        # no docker build paid
+```
+
 Open your browser:
 
 - **Trigger UI** — <http://localhost:8000> — one card per actor with an enqueue form.

@@ -61,6 +61,26 @@ COPY myapp/ myapp/
 CMD ["taskq", "worker", "--actors", "myapp.actors:registry"]
 ```
 
+TaskQ's image surfaces are also expressible as
+[containerspec](https://github.com/AZX-PBC-OSS/containerspec) `ImageSpec`
+chains — fluent, content-hashed specs whose hash is the build's cache key.
+The examples Compose stack uses this opt-in today:
+`benchmarks/example_image_spec.py` expresses `examples/Dockerfile` as a spec
+(byte-equal output, verified) and builds it under a content-hashed tag;
+`examples/docker-compose.yml` picks that tag up from `TASKQ_EXAMPLE_IMAGE`,
+so repeated compose runs skip the docker build entirely — including after a
+BuildKit cache prune, where the warm run drops from tens of seconds to about
+one. Set it before `docker compose up` (no `--build`):
+
+```bash
+export TASKQ_EXAMPLE_IMAGE="$(uv run python benchmarks/example_image_spec.py)"
+docker compose -f examples/docker-compose.yml up -d
+```
+
+The production `Dockerfile` is deliberately NOT spec-expressed: containerspec
+cannot render its `HEALTHCHECK`, and its release-tag-only build cadence has
+no repeated-run cost for a content hash to amortize.
+
 ### systemd
 
 ```ini

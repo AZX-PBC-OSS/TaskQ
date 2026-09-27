@@ -21,6 +21,11 @@ services:
       retries: 15
 
   worker-1:
+    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
+    # benchmarks/example_image_spec.py): when set and present locally, compose
+    # skips the docker build entirely. Unset, this is the stock behavior
+    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
       dockerfile: examples/Dockerfile
@@ -38,6 +43,11 @@ services:
       TASKQ_QUEUES: examples
 
   worker-2:
+    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
+    # benchmarks/example_image_spec.py): when set and present locally, compose
+    # skips the docker build entirely. Unset, this is the stock behavior
+    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
       dockerfile: examples/Dockerfile
@@ -55,6 +65,11 @@ services:
       TASKQ_QUEUES: examples
 
   app:
+    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
+    # benchmarks/example_image_spec.py): when set and present locally, compose
+    # skips the docker build entirely. Unset, this is the stock behavior
+    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
       dockerfile: examples/Dockerfile
@@ -76,6 +91,11 @@ services:
       TASKQ_MIGRATE_ON_START: "true"
 
   admin:
+    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
+    # benchmarks/example_image_spec.py): when set and present locally, compose
+    # skips the docker build entirely. Unset, this is the stock behavior
+    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
       dockerfile: examples/Dockerfile
@@ -97,6 +117,11 @@ services:
 
   fastapi-app:
     profiles: [example]
+    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
+    # benchmarks/example_image_spec.py): when set and present locally, compose
+    # skips the docker build entirely. Unset, this is the stock behavior
+    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
       dockerfile: examples/Dockerfile
