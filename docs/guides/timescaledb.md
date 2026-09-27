@@ -226,6 +226,25 @@ time: the same insert vanilla accepts is rejected with
 walk's NULL-sentinel cursor range is unreachable — harmless — on
 hypertable mode.
 
+**The census is a point-in-time gate, not a lock.** It counts in its own
+autocommit transaction, and the conversion's statements each commit
+separately after it, so a row written with a NULL `finished_at` between
+the census and `jobs_archive`'s `create_hypertable` re-enters the
+mid-`migrate_data` failure and can strand the half-converted schema the
+census exists to prevent. No lock taken at census time can close that
+window: the conversion is deliberately per-statement autocommit DDL —
+each statement independently re-runnable, the same discipline the
+constraint surgery relies on — so nothing acquired by a lone `SELECT`
+spans it. What closes it in practice is the same maintenance window rule
+the constraint surgery already requires: no TaskQ writer can produce a
+NULL `finished_at` row (see above), so the only writer that can poison
+the window is direct SQL against the database during the enabling
+deploy. Run the enabling deploy with no writers against the schema, as
+the pkey-drop window above already requires. If it happens anyway, the
+refusal's own remediations still converge the wreck: discard (or
+complete) the NULL rows and re-run `taskq migrate up` — the census
+counts whenever the table is still vanilla, wrecked or not.
+
 ## The columnstore (compression) is adopted for the archive tables
 
 The deploy step arms the columnstore on the two archive tables when it

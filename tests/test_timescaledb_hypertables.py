@@ -28,6 +28,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -2346,3 +2347,445 @@ async def test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer(
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
         await writer_conn.close()
+
+
+# ── The census under attack: race window, skip premise, remediation arms ──
+
+_DOCS = Path(__file__).resolve().parent.parent / "docs"
+
+
+class _CensusRaceWriterConn:
+    """A forwarding proxy that opens the census's race window on purpose.
+
+    The census is a point-in-time autocommit SELECT; the conversion's DDL
+    runs in separate transactions after it. This proxy proves the window
+    deterministically, without timing luck: when ``jobs_archive``'s
+    ``create_hypertable`` statement arrives — the census LONG committed,
+    and the whole ``job_events`` conversion between — it fires a REAL
+    concurrent ``INSERT`` of a NULL ``finished_at`` row into the still-
+    vanilla archive from a SECOND connection. This is the honest posture,
+    pinned, not endorsed: no TaskQ writer can produce that row (every
+    production arm stamps ``finished_at``; the only archive INSERT is the
+    prune's COPY, gated on non-NULL ``finished_at``; nothing updates the
+    archive), so the only writer that can poison the window is direct SQL
+    during the enabling deploy — exactly the writer the deploy window's
+    documented maintenance-window exclusivity excludes.
+    """
+
+    def __init__(self, inner: asyncpg.Connection, writer: asyncpg.Connection, schema: str) -> None:
+        self._inner = inner
+        self._writer = writer
+        self._schema = schema
+        self.fired = False
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        if (
+            not self.fired
+            and "create_hypertable" in sql
+            and any("jobs_archive" in str(a) for a in args)
+        ):
+            self.fired = True
+            await self._writer.execute(
+                f"""INSERT INTO "{self._schema}".jobs_archive (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    scheduled_at, finished_at, archived_at, expire_at)
+                VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                    now(), NULL, now(), now() + interval '365 days')""",
+                new_uuid(),
+            )
+        return await self._inner.execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return await self._inner.fetch(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_census_race_window_reenters_the_mid_migrate_data_failure(
+    timescale_dsn: str,
+) -> None:
+    """The census's race window: pinned as REAL, with the recovery.
+
+    The census counts in its own autocommit transaction and every DDL
+    statement commits separately, so a NULL ``finished_at`` row written
+    between the census and ``jobs_archive``'s ``create_hypertable`` re-
+    enters the pre-fix failure shape: ``NotNullViolationError`` mid-
+    ``migrate_data``, stranding the half-converted schema (``job_events``
+    converted, the archive's primary key already dropped). A lock cannot
+    close the window — the conversion is deliberately per-statement
+    autocommit DDL, so no lock taken at census time can span it — and no
+    TaskQ writer can fire it (see the proxy's docstring), so the honest
+    posture is the deploy window's documented exclusivity: no writers
+    against the schema during the enabling deploy. Pinned here so the
+    window's size and the stranded state it produces are FACTS, never
+    assumptions — and so the recovery is too: the refusal's own
+    remediation, applied to the stranded schema, converges it on the
+    re-run (the census counts the table whenever it is still vanilla,
+    wrecked or not).
+    """
+    schema = "tsrace_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    writer = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        # Real volume so the window is the deploy-shaped one (job_events
+        # converts whole before the archive's create_hypertable), though
+        # the proxy makes the interleaving deterministic at any size.
+        parents = [new_uuid() for _ in range(20)]
+        await conn.executemany(
+            f"""INSERT INTO {schema}.jobs (id, actor, queue, payload, max_attempts,
+                retry_kind, status, scheduled_at)
+            VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded', now())""",
+            [(p,) for p in parents],
+        )
+        await conn.execute(
+            f"""INSERT INTO {schema}.job_events (job_id, occurred_at, kind)
+            SELECT p.id, now() - (g || ' minutes')::interval, 'state_change'
+            FROM generate_series(1, 2000) g
+            JOIN (SELECT id, row_number() OVER (ORDER BY id) - 1 AS n
+                  FROM {schema}.jobs) p ON p.n = g % 20"""
+        )
+
+        proxy = _CensusRaceWriterConn(conn, writer, schema)
+        with pytest.raises(asyncpg.NotNullViolationError, match="finished_at"):
+            await enable_hypertables(
+                proxy,  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+                schema=schema,
+                settings=_ts_settings(timescale_dsn, schema),
+            )
+        assert proxy.fired, "the census-race write must have fired inside the window"
+
+        # The pre-fix stranded state, exactly: job_events converted whole,
+        # the archive's pkey dropped, the poison row inside the table.
+        ht = await conn.fetch(
+            "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            schema,
+        )
+        assert {r["table_name"] for r in ht} == {"job_events"}
+        pkey = await conn.fetchval(
+            """SELECT count(*) FROM pg_constraint con
+               JOIN pg_class c ON c.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = $1 AND c.relname = 'jobs_archive' AND con.contype = 'p'""",
+            schema,
+        )
+        assert pkey == 0, "the mid-migrate_data failure must have dropped the archive pkey"
+        n_null = await conn.fetchval(
+            f"SELECT count(*) FROM {schema}.jobs_archive WHERE finished_at IS NULL"
+        )
+        assert n_null == 1, "the racing writer's poison row must be in the stranded table"
+
+        # The recovery is the refusal's own remediation, applied to the
+        # wreck: discard the debris, re-run, and the stragglers convert.
+        await conn.execute(f"DELETE FROM {schema}.jobs_archive WHERE finished_at IS NULL")
+        report = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert set(report.converted) == {"jobs_archive", "job_attempts_archive"}
+        assert await _hypertable_names(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+        await writer.close()
+
+
+async def test_converted_partition_columns_are_not_null_and_dml_rejects_null(
+    ts_conn: asyncpg.Connection,
+    ts_schema: str,
+) -> None:
+    """The already-hypertable skip's premise, probed in the catalogs.
+
+    The census counts only while ``jobs_archive`` is still vanilla; on a
+    converted schema it skips. That skip hides a live failure ONLY IF a
+    converted schema could carry a NULL partition key. It cannot, twice
+    over: ``create_hypertable`` leaves every partition column ``NOT NULL``
+    in ``pg_attribute`` (the archive's nullable ``finished_at`` included —
+    the conversion itself tightens the column), and DML into the converted
+    table rejects a NULL partition key with ``NotNullViolationError``. The
+    skip therefore skips only a schema where the NULL shape is structurally
+    impossible.
+    """
+    nn = await ts_conn.fetch(
+        """SELECT c.relname AS tbl, a.attname, a.attnotnull
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1
+             AND (c.relname, a.attname) IN (
+                 ('jobs_archive', 'finished_at'),
+                 ('job_attempts_archive', 'started_at'),
+                 ('job_events', 'occurred_at'))
+             AND a.attnum > 0 AND NOT a.attisdropped""",
+        ts_schema,
+    )
+    got = {r["tbl"]: r["attnotnull"] for r in nn}
+    assert got == {
+        "jobs_archive": True,
+        "job_attempts_archive": True,
+        "job_events": True,
+    }, f"every converted partition column must be NOT NULL, got {got}"
+
+    # The enforcement backstop: the NULL insert vanilla accepts (the
+    # archive mirrors jobs, where finished_at is NULL until terminal) is
+    # rejected at DML time on the converted schema.
+    with pytest.raises(asyncpg.NotNullViolationError):
+        await ts_conn.execute(
+            f"""INSERT INTO {ts_schema}.jobs_archive (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                scheduled_at, finished_at, archived_at, expire_at)
+            VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                now(), NULL, now(), now() + interval '365 days')""",
+            new_uuid(),
+        )
+
+
+async def test_census_absent_table_skip_fails_loudly_downstream(
+    timescale_dsn: str,
+) -> None:
+    """The absent-table census skip never turns a missing schema into a
+    silent success.
+
+    In the product path the ordering question is settled by the deploy
+    wiring: ``taskq migrate up`` applies pending migrations BEFORE
+    ``enable_hypertables``, inside the same advisory lock, so the archive
+    table always exists when the census runs (the deploy E2E's fresh-schema
+    path pins that). The skip only guards a pathological direct caller on
+    a schema nothing migrated — and for that caller the DDL path fails
+    LOUDLY immediately after (``UndefinedTableError`` on the first
+    conversion statement), never a quiet "nothing to do".
+    """
+    schema = "tsabsent_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        with pytest.raises(asyncpg.UndefinedTableError):
+            await enable_hypertables(
+                conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+            )
+        ht = await conn.fetch(
+            "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            schema,
+        )
+        assert ht == [], "nothing may convert on a schema that was never migrated"
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_remediation_arms_survive_hostile_debris_and_the_delete_cascades(
+    timescale_dsn: str,
+    ts_schema: str,
+) -> None:
+    """Both documented remediations work on the DEBRIS shapes, verified.
+
+    * The UPDATE arm's source can never be NULL: ``archived_at`` is
+      ``timestamptz NOT NULL DEFAULT now()`` since the initial migration,
+      so a hand-inserted debris row that omits it defaults it (an explicit
+      NULL is a NOT NULL violation) — there is no archive row on the
+      bundled schema whose completion stamps NULL back.
+    * The DELETE arm is the vanilla schema's own cascade: at census time
+      the attempts FK is still in place, so discarding a debris job takes
+      its ``job_attempts_archive`` rows with it — the operator's "discard"
+      discards the attempts history too, which is what the word means.
+    Either arm leaves the census counting zero and the re-run converts.
+    """
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+
+        # Hostile debris: omit archived_at entirely (the shape a hand
+        # INSERT without the column produces) — it defaults, non-NULL.
+        await conn.execute(
+            f"""INSERT INTO {ts_schema}.jobs_archive (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                scheduled_at, finished_at, expire_at)
+            VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                now(), NULL, now() + interval '365 days')""",
+            new_uuid(),
+        )
+        bad = await conn.fetchval(
+            f"SELECT count(*) FROM {ts_schema}.jobs_archive "
+            "WHERE finished_at IS NULL AND archived_at IS NULL"
+        )
+        assert bad == 0, (
+            "archived_at NOT NULL DEFAULT now() must keep the UPDATE arm's source non-NULL"
+        )
+        # And an explicit NULL archived_at is refused outright.
+        with pytest.raises(asyncpg.NotNullViolationError):
+            await conn.execute(
+                f"""INSERT INTO {ts_schema}.jobs_archive (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    scheduled_at, finished_at, archived_at, expire_at)
+                VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                    now(), NULL, NULL, now() + interval '365 days')""",
+                new_uuid(),
+            )
+
+        # The DELETE arm on debris that carries attempts history: the
+        # vanilla FK is still in place at census time (the refusal fired
+        # before any DDL), so discard cascades.
+        debris_id = new_uuid()
+        await conn.execute(
+            f"""INSERT INTO {ts_schema}.jobs_archive (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                scheduled_at, finished_at, archived_at, expire_at)
+            VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                now(), NULL, now(), now() + interval '365 days')""",
+            debris_id,
+        )
+        await conn.execute(
+            f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt, started_at)
+            VALUES ($1, 1, now())""",
+            debris_id,
+        )
+        attempts_before = await conn.fetchval(
+            f"SELECT count(*) FROM {ts_schema}.job_attempts_archive WHERE job_id = $1", debris_id
+        )
+        assert attempts_before == 1
+        refused = 0
+        try:
+            await enable_hypertables(
+                conn, schema=ts_schema, settings=_ts_settings(timescale_dsn, ts_schema)
+            )
+        except TimescaleDBUnavailableError:
+            refused = 1
+        assert refused == 1, "the census must refuse while the debris (and its attempts) exist"
+        await conn.execute(f"DELETE FROM {ts_schema}.jobs_archive WHERE finished_at IS NULL")
+        attempts_after = await conn.fetchval(
+            f"SELECT count(*) FROM {ts_schema}.job_attempts_archive WHERE job_id = $1", debris_id
+        )
+        assert attempts_after == 0, "discarding the debris job must cascade to its attempts history"
+
+        # Either way the re-run converts: the census counts remaining
+        # NULLs only.
+        report = await enable_hypertables(
+            conn, schema=ts_schema, settings=_ts_settings(timescale_dsn, ts_schema)
+        )
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()
+
+
+async def test_disable_round_trip_after_refusal_path_enable(timescale_dsn: str) -> None:
+    """The disable mirror on a schema that enabled VIA the refusal: the
+    byte-equal convergence holds.
+
+    The refusal-path enable is the same conversion once the census passes;
+    the mirror must not be able to tell the difference. migrate -> debris
+    -> refused -> the message's UPDATE arm -> enable -> seed -> disable:
+    zero hypertables, the vanilla shape byte-equal to a fresh migration's,
+    every row present."""
+    schema = "tsdisr_" + new_uuid().hex[:12]
+    fresh = "tsfresh_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        # Two debris rows, refused loudly, then the documented cure.
+        for _ in range(2):
+            await conn.execute(
+                f"""INSERT INTO {schema}.jobs_archive (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    scheduled_at, finished_at, archived_at, expire_at)
+                VALUES ($1, 'a', 'q', '{{}}'::jsonb, 3, 'transient', 'succeeded',
+                    now(), NULL, now(), now() + interval '365 days')""",
+                new_uuid(),
+            )
+        with pytest.raises(
+            TimescaleDBUnavailableError, match=r"2 row\(s\) whose finished_at is NULL"
+        ):
+            await enable_hypertables(
+                conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+            )
+        await conn.execute(
+            f"UPDATE {schema}.jobs_archive SET finished_at = archived_at WHERE finished_at IS NULL"
+        )
+
+        report = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
+
+        disabled = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert set(disabled.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        assert await _hypertable_names(conn, schema) == set()
+        await _migrate(conn, fresh)
+        for table in ("job_events", "jobs_archive", "job_attempts_archive"):
+            disabled_shape = await _shape_of(conn, schema, table)
+            fresh_shape = await _shape_of(conn, fresh, table)
+            assert disabled_shape == fresh_shape, (
+                f"the refusal-path schema's restored {table} must be byte-equal to a "
+                f"fresh vanilla migration's shape:\nrestored={disabled_shape}\nfresh={fresh_shape}"
+            )
+        for table, count in seeded.items():
+            expected = count + (2 if table == "jobs_archive" else 0)
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == expected, (
+                "every seeded row plus the two COMPLETED debris rows (the UPDATE "
+                "arm keeps them, stamped) must survive the whole round trip"
+            )
+        # And the remediated debris rows carry no NULLs after all of it.
+        assert (
+            await conn.fetchval(
+                f"SELECT count(*) FROM {schema}.jobs_archive WHERE finished_at IS NULL"
+            )
+            == 0
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{fresh}" CASCADE')
+        await conn.close()
+
+
+def test_census_point_in_time_posture_is_documented() -> None:
+    """The docs state the census's honest posture: a point-in-time gate,
+    not a lock — and what closes its window.
+
+    The census counts in one transaction and the conversion commits
+    statement by statement, so a NULL ``finished_at`` row written after
+    the census (by the one writer that can produce it — direct SQL during
+    the enabling deploy) re-enters the mid-``migrate_data`` failure. An
+    operator reading the refusal section must not conclude the refusal is
+    atomic against writers; the docs must name the window, the deploy
+    window's exclusivity that covers it, and the recovery.
+    """
+    text = (_DOCS / "guides" / "timescaledb.md").read_text()
+    section = text.split("## The NULL `finished_at` tail", 1)[1]
+    section = section.split("## ", 1)[0]  # the census section only
+    assert "point-in-time" in section, (
+        "the census section must state that the census is a point-in-time gate, not a lock"
+    )
+    assert "autocommit" in section, (
+        "the per-statement autocommit discipline is WHY no census-time lock can span the conversion"
+    )
+    assert "direct SQL" in section, (
+        "the section must name the only writer that can poison the window"
+    )
+    assert "maintenance window" in section, (
+        "the deploy window's exclusivity is what closes the window in practice"
+    )
+    assert "re-run" in section, "the recovery (remediate, re-run) must stay named"
