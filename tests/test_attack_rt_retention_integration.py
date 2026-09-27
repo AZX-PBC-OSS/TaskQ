@@ -549,7 +549,19 @@ async def test_expiry_sweep_vs_chunk_drop_no_double_delete_no_resurrection(
     old chunk wholesale (hand-set future expire_at stamps force the
     collision - the write's own stamping contract is pinned separately).
     Every row must be deleted exactly once, nothing may resurrect, and a
-    final sweep must be a no-op."""
+    final sweep must be a no-op.
+
+    Only the RETENTION policies are pulled to now (the house
+    ``_force_policies_now`` filter, not the all-policy default): arming
+    the compression policy at the same instant deadlocks the retention
+    worker - observed live as ``deadlock detected`` between
+    ``policy_retention`` (waiting for AccessExclusiveLock on the chunk it
+    is about to drop) and ``policy_compression`` (holding it mid-columnstore
+    swap) - so the retention job fails and retries 5 minutes later, the
+    old chunk outlives the settle window, and the test reports rows
+    "surviving both mechanisms" that neither ever got to delete. The
+    compression policy stays deferred at ``_migrate_ts``'s horizon, like
+    every sweep leg in the sibling module."""
     conn = await asyncpg.connect(timescale_dsn)
     try:
         await _migrate_ts(conn, ts_schema, timescale_dsn, flag=True)
@@ -578,7 +590,13 @@ async def test_expiry_sweep_vs_chunk_drop_no_double_delete_no_resurrection(
                 )
                 seeded.append(jid)
 
-        await _schedule_policies(conn, ts_schema, next_start=datetime.now(UTC))
+        # Arm ONLY the retention policies (the compression policy stays at
+        # _migrate_ts's deferred horizon): see the docstring - a ~now
+        # compression run deadlocks the retention worker mid-drop and the
+        # chunk outlives every window this test polls.
+        await _schedule_policies(
+            conn, ts_schema, next_start=datetime.now(UTC), proc_name="policy_retention"
+        )
         sweep_totals: list[int] = []
         for _ in range(4):
             result = await archive_expiry_sweep(conn, schema=ts_schema, batch_size=3)
@@ -598,12 +616,17 @@ async def test_expiry_sweep_vs_chunk_drop_no_double_delete_no_resurrection(
         final_sweep = await archive_expiry_sweep(conn, schema=ts_schema, batch_size=100)
         assert final_sweep.total_deleted == 0
         assert await conn.fetchval(f"SELECT count(*) FROM {ts_schema}.jobs_archive") == 0
-        # The sweep actually raced: the four young-chunk past-expire rows
-        # are ONLY reachable by the sweep (their chunk is policy-kept), so
-        # its deletions across the rounds are bounded below by them; the
-        # four old-chunk past-expire rows it caught depend on how the
-        # chunk drop interleaved.
-        assert 4 <= sum(sweep_totals) <= 8, f"sweep deletions: {sweep_totals}"
+        # The composed work distribution, exact and quiescent by
+        # construction: the four young-chunk past-expire rows are ONLY
+        # reachable by the sweep (their chunk is policy-kept), and the
+        # four old-chunk past-expire rows are below the policy's floor -
+        # the sweep never pays for them (the sibling module's H7 pins the
+        # floor), so the first round drains exactly those four and the
+        # remaining rounds find the window empty. The old chunk's eight
+        # rows' fates: the four past-expire were left for the policy, the
+        # four future-expire were never the sweep's, and the whole chunk
+        # leaves through the policy's drop - asserted by the count above.
+        assert sum(sweep_totals) == 4, f"sweep deletions: {sweep_totals}"
     finally:
         await conn.close()
 

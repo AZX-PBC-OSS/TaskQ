@@ -13,7 +13,7 @@ regression testing; see the harness docstrings for how individual benches work.
 | `run_bench.py` | CLI runner: structured JSON, baselines, regression gate |
 | `profile_hotspot.py` | Profile one named bench under cProfile / pyinstrument / gil-sampler |
 | `run_matrix.sh` | Run the suite across Python 3.12/3.13/3.14 via uv |
-| `results/` | Run history + baselines + profile artifacts (mostly gitignored) |
+| `results/` | Run history + baselines + profile artifacts (mostly gitignored; the `timescale-*.json` A/B runs are tracked — the docs' numbers cite them) |
 
 ## Quick spot-check
 

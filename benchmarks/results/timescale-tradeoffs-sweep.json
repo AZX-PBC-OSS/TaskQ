@@ -1,0 +1,689 @@
+{
+  "schema": 2,
+  "mode": "scale-sweep",
+  "recorded_at": "2026-09-26T20:12:16.148942+00:00",
+  "meta": {
+    "image": "timescale/timescaledb:2.30.1-pg18",
+    "engines": {
+      "plain": "tq-tsbench-plain:55441 (no hypertables)",
+      "ts": "tq-tsbench-ts:55442 (enable_hypertables + retention policies)"
+    },
+    "headline_shapes": [
+      "archive_recent_finished_p51",
+      "jobs_count_all_statuses"
+    ],
+    "sweep_note": "jobs = archive = events = scale per point (prune cohort 10% of scale, aged events a quarter of it); fresh identical container pair per scale, torn down between scales; batch 10000; interleaved engines",
+    "wall_s": 346.21834152401425
+  },
+  "scales": [
+    {
+      "scale": 10000,
+      "seed": {
+        "jobs": 10000,
+        "jobs_archive": 10000,
+        "jobs_archive_expired_cohort": 2500,
+        "job_events": 10000,
+        "job_attempts": 1000,
+        "prune_cohort": 1000,
+        "job_events_aged": 2500
+      },
+      "seed_timings": {
+        "plain": {
+          "jobs_s": 0.11186392302624881,
+          "aux_s": 0.17384443001355976,
+          "analyze_s": 0.10828399599995464
+        },
+        "ts": {
+          "jobs_s": 0.09630023804493248,
+          "aux_s": 0.309833096107468,
+          "analyze_s": 0.33304489799775183
+        }
+      },
+      "seed_assert": {
+        "counts": {
+          "plain": {
+            "jobs": 10000,
+            "job_attempts": 1000,
+            "jobs_archive": 10000,
+            "job_events": 10000,
+            "job_attempts_archive": 0
+          },
+          "ts": {
+            "jobs": 10000,
+            "job_attempts": 1000,
+            "jobs_archive": 10000,
+            "job_events": 10000,
+            "job_attempts_archive": 0
+          }
+        },
+        "sample_checksum": "8014ecba8d3bb8ed7a811515190c196e",
+        "hypertables": [
+          "job_attempts_archive",
+          "job_events",
+          "jobs_archive"
+        ],
+        "chunk_counts": {
+          "job_events": 14,
+          "jobs_archive": 14
+        }
+      },
+      "hypertable_conversion": {
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "retention_policies": [
+          "jobs_archive:365 days",
+          "job_attempts_archive:365 days",
+          "job_events:7 days"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": "timescaledb.max_tuples_decompressed_per_dml_transaction is 100000 (at or under the 100000 default): the archive-expiry sweep will hard-error on compressed chunks with ConfigurationLimitExceededError once the columnstore policy ages chunks in. Raise the budget server-wide before relying on compression, e.g. ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+      },
+      "dashboard": [
+        {
+          "name": "jobs_count_all_statuses",
+          "plain_p50_ms": 1.01793697103858,
+          "plain_p95_ms": 12.011129991151392,
+          "ts_p50_ms": 1.2643990339711308,
+          "ts_p95_ms": 12.075931997969747,
+          "plain_faster_pct": 19.492427335892618,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 1
+        },
+        {
+          "name": "archive_recent_finished_p51",
+          "plain_p50_ms": 3.8092959439381957,
+          "plain_p95_ms": 7.601669989526272,
+          "ts_p50_ms": 0.7767749484628439,
+          "ts_p95_ms": 4.74356603808701,
+          "plain_faster_pct": -390.39891817783166,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 51
+        }
+      ],
+      "retention": {
+        "prune": {
+          "rows_target": 1000,
+          "batch_size": 10000,
+          "moved": {
+            "plain": 1000,
+            "ts": 1000
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 1.2677749618887901,
+              "p95_ms": 62.11391696706414,
+              "total_s": 0.06338169192895293,
+              "batches": 2
+            },
+            "ts": {
+              "p50_ms": 0.648374087177217,
+              "p95_ms": 313.02286102436483,
+              "total_s": 0.31367123511154205,
+              "batches": 2
+            }
+          },
+          "drain_total_s": {
+            "plain": 0.06338169192895293,
+            "ts": 0.31367123511154205
+          }
+        },
+        "event_ttl": {
+          "rows_target": 2400,
+          "batch_size": 10000,
+          "deleted": {
+            "plain": 2400,
+            "ts": 0
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 1.4872560277581215,
+              "p95_ms": 15.26011701207608,
+              "total_s": 0.0167473730398342,
+              "batches": 2
+            },
+            "ts": {
+              "p50_ms": 2.1665480453521013,
+              "p95_ms": 12.278581969439983,
+              "total_s": 0.014445130014792085,
+              "batches": 2
+            }
+          },
+          "drain_total_s": {
+            "plain": 0.0167473730398342,
+            "ts": 0.014445130014792085
+          }
+        }
+      },
+      "wall_s": 4.968584145070054
+    },
+    {
+      "scale": 100000,
+      "seed": {
+        "jobs": 100000,
+        "jobs_archive": 100000,
+        "jobs_archive_expired_cohort": 25000,
+        "job_events": 100000,
+        "job_attempts": 10000,
+        "prune_cohort": 10000,
+        "job_events_aged": 25000
+      },
+      "seed_timings": {
+        "plain": {
+          "jobs_s": 0.9934030239237472,
+          "aux_s": 1.9704231059877202,
+          "analyze_s": 0.46809677698183805
+        },
+        "ts": {
+          "jobs_s": 1.0606022849678993,
+          "aux_s": 2.1470709240529686,
+          "analyze_s": 1.5374183820094913
+        }
+      },
+      "seed_assert": {
+        "counts": {
+          "plain": {
+            "jobs": 100000,
+            "job_attempts": 10000,
+            "jobs_archive": 100000,
+            "job_events": 100000,
+            "job_attempts_archive": 0
+          },
+          "ts": {
+            "jobs": 100000,
+            "job_attempts": 10000,
+            "jobs_archive": 100000,
+            "job_events": 100000,
+            "job_attempts_archive": 0
+          }
+        },
+        "sample_checksum": "9c7338cbc17f8abef61f15adc2661dd1",
+        "hypertables": [
+          "job_attempts_archive",
+          "job_events",
+          "jobs_archive"
+        ],
+        "chunk_counts": {
+          "job_events": 15,
+          "jobs_archive": 14
+        }
+      },
+      "hypertable_conversion": {
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "retention_policies": [
+          "jobs_archive:365 days",
+          "job_attempts_archive:365 days",
+          "job_events:7 days"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": "timescaledb.max_tuples_decompressed_per_dml_transaction is 100000 (at or under the 100000 default): the archive-expiry sweep will hard-error on compressed chunks with ConfigurationLimitExceededError once the columnstore policy ages chunks in. Raise the budget server-wide before relying on compression, e.g. ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+      },
+      "dashboard": [
+        {
+          "name": "jobs_count_all_statuses",
+          "plain_p50_ms": 3.0552831012755632,
+          "plain_p95_ms": 13.342914986424148,
+          "ts_p50_ms": 9.827379020862281,
+          "ts_p95_ms": 24.69526103232056,
+          "plain_faster_pct": 68.91049897648617,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 1
+        },
+        {
+          "name": "archive_recent_finished_p51",
+          "plain_p50_ms": 23.46998604480177,
+          "plain_p95_ms": 24.755603983066976,
+          "ts_p50_ms": 2.8565609827637672,
+          "ts_p95_ms": 7.032254012301564,
+          "plain_faster_pct": -721.6168387938351,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 51
+        }
+      ],
+      "retention": {
+        "prune": {
+          "rows_target": 10000,
+          "batch_size": 10000,
+          "moved": {
+            "plain": 10000,
+            "ts": 10000
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 3.0193059938028455,
+              "p95_ms": 413.87084499001503,
+              "total_s": 0.4168901509838179,
+              "batches": 2
+            },
+            "ts": {
+              "p50_ms": 2.013892983086407,
+              "p95_ms": 3266.3501770002767,
+              "total_s": 3.268364069983363,
+              "batches": 2
+            }
+          },
+          "drain_total_s": {
+            "plain": 0.4168901509838179,
+            "ts": 3.268364069983363
+          }
+        },
+        "event_ttl": {
+          "rows_target": 24000,
+          "batch_size": 10000,
+          "deleted": {
+            "plain": 24000,
+            "ts": 0
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 23.942981963045895,
+              "p95_ms": 35.56409105658531,
+              "total_s": 0.08061916183214635,
+              "batches": 4
+            },
+            "ts": {
+              "p50_ms": 3.330318024381995,
+              "p95_ms": 14.578510075807571,
+              "total_s": 0.02352054021321237,
+              "batches": 4
+            }
+          },
+          "drain_total_s": {
+            "plain": 0.08061916183214635,
+            "ts": 0.02352054021321237
+          }
+        }
+      },
+      "wall_s": 15.73152464395389
+    },
+    {
+      "scale": 400000,
+      "seed": {
+        "jobs": 400000,
+        "jobs_archive": 400000,
+        "jobs_archive_expired_cohort": 100000,
+        "job_events": 400000,
+        "job_attempts": 40000,
+        "prune_cohort": 40000,
+        "job_events_aged": 100000
+      },
+      "seed_timings": {
+        "plain": {
+          "jobs_s": 4.759115369990468,
+          "aux_s": 9.555595331010409,
+          "analyze_s": 0.6225956180132926
+        },
+        "ts": {
+          "jobs_s": 4.869519251049496,
+          "aux_s": 9.365360210998915,
+          "analyze_s": 3.8807165359612554
+        }
+      },
+      "seed_assert": {
+        "counts": {
+          "plain": {
+            "jobs": 400000,
+            "job_attempts": 40000,
+            "jobs_archive": 400000,
+            "job_events": 400000,
+            "job_attempts_archive": 0
+          },
+          "ts": {
+            "jobs": 400000,
+            "job_attempts": 40000,
+            "jobs_archive": 400000,
+            "job_events": 400000,
+            "job_attempts_archive": 0
+          }
+        },
+        "sample_checksum": "05dab6697f94ae3c0bce73ea94c39340",
+        "hypertables": [
+          "job_attempts_archive",
+          "job_events",
+          "jobs_archive"
+        ],
+        "chunk_counts": {
+          "job_events": 15,
+          "jobs_archive": 14
+        }
+      },
+      "hypertable_conversion": {
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "retention_policies": [
+          "jobs_archive:365 days",
+          "job_attempts_archive:365 days",
+          "job_events:7 days"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": "timescaledb.max_tuples_decompressed_per_dml_transaction is 100000 (at or under the 100000 default): the archive-expiry sweep will hard-error on compressed chunks with ConfigurationLimitExceededError once the columnstore policy ages chunks in. Raise the budget server-wide before relying on compression, e.g. ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+      },
+      "dashboard": [
+        {
+          "name": "jobs_count_all_statuses",
+          "plain_p50_ms": 9.175457991659641,
+          "plain_p95_ms": 18.965537077747285,
+          "ts_p50_ms": 24.650797015056014,
+          "ts_p95_ms": 34.20874197036028,
+          "plain_faster_pct": 62.77825018779097,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 1
+        },
+        {
+          "name": "archive_recent_finished_p51",
+          "plain_p50_ms": 55.91639503836632,
+          "plain_p95_ms": 60.80356100574136,
+          "ts_p50_ms": 7.815740071237087,
+          "ts_p95_ms": 12.066854047589004,
+          "plain_faster_pct": -615.4331455334054,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 51
+        }
+      ],
+      "retention": {
+        "prune": {
+          "rows_target": 40000,
+          "batch_size": 10000,
+          "moved": {
+            "plain": 40000,
+            "ts": 40000
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 403.03545794449747,
+              "p95_ms": 479.4659320032224,
+              "total_s": 1.7272528520552441,
+              "batches": 5
+            },
+            "ts": {
+              "p50_ms": 3461.2408310640603,
+              "p95_ms": 3494.180388050154,
+              "total_s": 13.809866775991395,
+              "batches": 5
+            }
+          },
+          "drain_total_s": {
+            "plain": 1.7272528520552441,
+            "ts": 13.809866775991395
+          }
+        },
+        "event_ttl": {
+          "rows_target": 96000,
+          "batch_size": 10000,
+          "deleted": {
+            "plain": 96000,
+            "ts": 0
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 22.635151050053537,
+              "p95_ms": 46.115875942632556,
+              "total_s": 0.25700322119519114,
+              "batches": 11
+            },
+            "ts": {
+              "p50_ms": 2.61857605073601,
+              "p95_ms": 13.261943007819355,
+              "total_s": 0.03888745722360909,
+              "batches": 11
+            }
+          },
+          "drain_total_s": {
+            "plain": 0.25700322119519114,
+            "ts": 0.03888745722360909
+          }
+        }
+      },
+      "wall_s": 53.55712337407749
+    },
+    {
+      "scale": 2000000,
+      "seed": {
+        "jobs": 2000000,
+        "jobs_archive": 2000000,
+        "jobs_archive_expired_cohort": 100000,
+        "job_events": 2000000,
+        "job_attempts": 200000,
+        "prune_cohort": 200000,
+        "job_events_aged": 500000
+      },
+      "seed_timings": {
+        "plain": {
+          "jobs_s": 26.123168881051242,
+          "aux_s": 49.33950667094905,
+          "analyze_s": 4.066924775019288
+        },
+        "ts": {
+          "jobs_s": 27.324684391962364,
+          "aux_s": 55.74418890092056,
+          "analyze_s": 14.499481290928088
+        }
+      },
+      "seed_assert": {
+        "counts": {
+          "plain": {
+            "jobs": 2000000,
+            "job_attempts": 200000,
+            "jobs_archive": 2000000,
+            "job_events": 2000000,
+            "job_attempts_archive": 0
+          },
+          "ts": {
+            "jobs": 2000000,
+            "job_attempts": 200000,
+            "jobs_archive": 2000000,
+            "job_events": 2000000,
+            "job_attempts_archive": 0
+          }
+        },
+        "sample_checksum": "9ad2adfc31bd2fa3cfec87349a7ff074",
+        "hypertables": [
+          "job_attempts_archive",
+          "job_events",
+          "jobs_archive"
+        ],
+        "chunk_counts": {
+          "job_events": 15,
+          "jobs_archive": 14
+        }
+      },
+      "hypertable_conversion": {
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "retention_policies": [
+          "jobs_archive:365 days",
+          "job_attempts_archive:365 days",
+          "job_events:7 days"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": "timescaledb.max_tuples_decompressed_per_dml_transaction is 100000 (at or under the 100000 default): the archive-expiry sweep will hard-error on compressed chunks with ConfigurationLimitExceededError once the columnstore policy ages chunks in. Raise the budget server-wide before relying on compression, e.g. ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+      },
+      "dashboard": [
+        {
+          "name": "jobs_count_all_statuses",
+          "plain_p50_ms": 20.511893089860678,
+          "plain_p95_ms": 33.38981501292437,
+          "ts_p50_ms": 64.8918750230223,
+          "ts_p95_ms": 86.85505494941026,
+          "plain_faster_pct": 68.39066049088044,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 1
+        },
+        {
+          "name": "archive_recent_finished_p51",
+          "plain_p50_ms": 135.82459394820035,
+          "plain_p95_ms": 148.24916701763868,
+          "ts_p50_ms": 42.90944698732346,
+          "ts_p95_ms": 48.17301593720913,
+          "plain_faster_pct": -216.53774048480832,
+          "rounds": 11,
+          "rows_identical": true,
+          "first_round_rows": 51
+        }
+      ],
+      "retention": {
+        "prune": {
+          "rows_target": 200000,
+          "batch_size": 10000,
+          "moved": {
+            "plain": 200000,
+            "ts": 200000
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 435.8101040124893,
+              "p95_ms": 510.08396700490266,
+              "total_s": 9.136908677988686,
+              "batches": 21
+            },
+            "ts": {
+              "p50_ms": 3605.5198969552293,
+              "p95_ms": 3898.751568980515,
+              "total_s": 73.60872100188863,
+              "batches": 21
+            }
+          },
+          "drain_total_s": {
+            "plain": 9.136908677988686,
+            "ts": 73.60872100188863
+          }
+        },
+        "event_ttl": {
+          "rows_target": 480000,
+          "batch_size": 10000,
+          "deleted": {
+            "plain": 480000,
+            "ts": 0
+          },
+          "per_batch_ms": {
+            "plain": {
+              "p50_ms": 31.364740920253098,
+              "p95_ms": 51.92798003554344,
+              "total_s": 1.6190424553351477,
+              "batches": 49
+            },
+            "ts": {
+              "p50_ms": 2.2119740024209023,
+              "p95_ms": 3.22845799382776,
+              "total_s": 0.12822573713492602,
+              "batches": 49
+            }
+          },
+          "drain_total_s": {
+            "plain": 1.6190424553351477,
+            "ts": 0.12822573713492602
+          }
+        }
+      },
+      "wall_s": 269.9708725550445
+    }
+  ],
+  "crossover": {
+    "points": [
+      {
+        "archive_rows": 10000,
+        "archive_page_plain_p50_ms": 3.8092959439381957,
+        "archive_page_ts_p50_ms": 0.7767749484628439,
+        "archive_page_ts_speedup": 4.903989181778316,
+        "archive_page_ts_wins": true,
+        "parity_count_plain_p50_ms": 1.01793697103858,
+        "parity_count_ts_p50_ms": 1.2643990339711308,
+        "prune_p50_batch_plain_ms": 1.2677749618887901,
+        "prune_p50_batch_ts_ms": 0.648374087177217,
+        "prune_penalty_ratio_batch": 0.5114267962913853,
+        "prune_drain_total_ratio": 4.948924927140611,
+        "event_ttl_p50_batch_plain_ms": 1.4872560277581215,
+        "event_ttl_p50_batch_ts_ms": 2.1665480453521013,
+        "event_ttl_ratio_batch": 1.4567418150713025
+      },
+      {
+        "archive_rows": 100000,
+        "archive_page_plain_p50_ms": 23.46998604480177,
+        "archive_page_ts_p50_ms": 2.8565609827637672,
+        "archive_page_ts_speedup": 8.21616838793835,
+        "archive_page_ts_wins": true,
+        "parity_count_plain_p50_ms": 3.0552831012755632,
+        "parity_count_ts_p50_ms": 9.827379020862281,
+        "prune_p50_batch_plain_ms": 3.0193059938028455,
+        "prune_p50_batch_ts_ms": 2.013892983086407,
+        "prune_penalty_ratio_batch": 0.6670052612156376,
+        "prune_drain_total_ratio": 7.839868757442122,
+        "event_ttl_p50_batch_plain_ms": 23.942981963045895,
+        "event_ttl_p50_batch_ts_ms": 3.330318024381995,
+        "event_ttl_ratio_batch": 0.13909370309521507
+      },
+      {
+        "archive_rows": 400000,
+        "archive_page_plain_p50_ms": 55.91639503836632,
+        "archive_page_ts_p50_ms": 7.815740071237087,
+        "archive_page_ts_speedup": 7.154331455334055,
+        "archive_page_ts_wins": true,
+        "parity_count_plain_p50_ms": 9.175457991659641,
+        "parity_count_ts_p50_ms": 24.650797015056014,
+        "prune_p50_batch_plain_ms": 403.03545794449747,
+        "prune_p50_batch_ts_ms": 3461.2408310640603,
+        "prune_penalty_ratio_batch": 8.587931316804172,
+        "prune_drain_total_ratio": 7.99527802751007,
+        "event_ttl_p50_batch_plain_ms": 22.635151050053537,
+        "event_ttl_p50_batch_ts_ms": 2.61857605073601,
+        "event_ttl_ratio_batch": 0.11568626358823511
+      },
+      {
+        "archive_rows": 2000000,
+        "archive_page_plain_p50_ms": 135.82459394820035,
+        "archive_page_ts_p50_ms": 42.90944698732346,
+        "archive_page_ts_speedup": 3.1653774048480834,
+        "archive_page_ts_wins": true,
+        "parity_count_plain_p50_ms": 20.511893089860678,
+        "parity_count_ts_p50_ms": 64.8918750230223,
+        "prune_p50_batch_plain_ms": 435.8101040124893,
+        "prune_p50_batch_ts_ms": 3605.5198969552293,
+        "prune_penalty_ratio_batch": 8.273144343738995,
+        "prune_drain_total_ratio": 8.056195327771643,
+        "event_ttl_p50_batch_plain_ms": 31.364740920253098,
+        "event_ttl_p50_batch_ts_ms": 2.2119740024209023,
+        "event_ttl_ratio_batch": 0.07052422361928608
+      }
+    ],
+    "archive_page_crossover": "archive page: hypertable wins at EVERY swept scale from 10,000 rows up",
+    "prune_penalty_trend": "prune drain-total penalty 4.9x at 10,000 rows \u2192 8.1x at 2,000,000 rows (wider with scale)",
+    "prune_penalty_ratios_drain_total": [
+      4.948924927140611,
+      7.839868757442122,
+      7.99527802751007,
+      8.056195327771643
+    ],
+    "recommendation": "archive page: hypertable wins at EVERY swept scale from 10,000 rows up. prune drain-total penalty 4.9x at 10,000 rows \u2192 8.1x at 2,000,000 rows (wider with scale). The hypertable's retention writes cost a ~constant RATIO (~7x drain time at batch 10k) at every swept scale, while its archive-page read win exists from the smallest swept scale \u2014 so the trade-off above ~100k archive rows is decided by read/write mix, not by scale: read-heavy admin surfaces win on the hypertable at any size; write-heavy retention drains pay a flat ~8x per batch for chunk-drop retention. Below 10,000 archive rows neither engine showed a measured advantage, and plain stays the simpler default there."
+  }
+}

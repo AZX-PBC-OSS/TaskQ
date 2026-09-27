@@ -22,6 +22,13 @@ Scope, stated directly:
 * Every ``SqlTemplates`` dataclass field, rendered per schema through the
   module's own ``render()`` (``taskq.backend._sql_templates``). The two
   column-list tuple fields are not statements and drop out by type.
+* Capability-PROBE statements whose PLAN depends on a catalog only some
+  deployments answer are carved out of the PLAN demand only - keyed on
+  the statement's own text (``_PLAN_ON_VANILLA_BY_DESIGN`` below), never
+  a count. The carve-out's subject, the retention-policy floor probe,
+  still parses here; its failure to plan on vanilla IS the designed
+  fail-open input, and the syntax teeth stay on (a syntax error in the
+  probe reds exactly like any other statement).
 * Every module-level string constant under ``taskq.backend``,
   ``taskq.worker`` and ``taskq.ratelimit`` whose text carries a SQL
   statement keyword - walked, not listed, so a new statement fails here
@@ -347,6 +354,56 @@ _NOT_PG_SQL: Final[dict[str, tuple[str, str]]] = {
     ),
 }
 
+# ── The plan-on-vanilla carve-out: capability probes ──────────────────
+#
+# Statements keyed by a distinctive substring of the statement's OWN TEXT
+# (never a count, never a name that can drift silently - the completeness
+# test below fails a marker nothing renders to) that are exempted from the
+# PLAN demand only.  A capability probe's whole job is to ASK the catalog
+# a question some deployments cannot answer: the entry below,
+# ``_RETENTION_POLICY_FLOOR_PROBE_SQL``, references
+# ``timescaledb_information.hypertables`` - a view that exists ONLY on
+# TimescaleDB - so its prepare on a fully migrated VANILLA schema raises
+# ``UndefinedTableError``.  That is the probe's shape, not a defect: the
+# UndefinedTable is the runtime's designed fail-open INPUT, caught by the
+# probe's own try in ``taskq.backend._retention_floor.retention_policy_floor``
+# (the asyncpg-free module the floor moved into out of ``taskq.timescale``)
+# - ``except Exception`` → debug log → None → the caller's sweep runs
+# full-range, byte-identical to vanilla behavior.  That runtime contract is
+# pinned where it lives: ``tests/test_timescale_retention_interplay.py``'s
+# H10a (real vanilla engine: UndefinedTable → None → full-range sweeps) and
+# the parse-layer fail-open pin (a row without the probe's keys reads as
+# "no answer").
+#
+# The smoke guard keeps its PARSE teeth on the probe: asyncpg's ``prepare``
+# fuses parse and plan, and PostgreSQL reports a syntax error before it
+# ever resolves a missing relation - so on vanilla the probe's very
+# ``UndefinedTableError`` is proof its parse succeeded, and any OTHER
+# error (a ``PostgresSyntaxError`` above all, but also a permission gap or
+# anything not the designed catalog-missing input) reds below exactly like
+# an ordinary statement's failure.  What the probe is excused from is only
+# the demand that it PLAN against a catalog it exists to discover is
+# absent.
+_PLAN_ON_VANILLA_BY_DESIGN: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "timescaledb_information.hypertables",
+        "taskq.backend._retention_floor:_RETENTION_POLICY_FLOOR_PROBE_SQL - "
+        "the retention-policy floor capability probe; its UndefinedTable on "
+        "vanilla is the runtime's designed fail-open INPUT (retention_policy_floor's "
+        "except Exception → debug log → None), pinned by "
+        "test_timescale_retention_interplay.py's H10a and the parse-layer pin",
+    ),
+)
+
+
+def _plan_carve_out_reason(sql: str) -> str | None:
+    """The carve-out entry whose marker *sql* carries, or ``None`` when the
+    statement owes the ordinary plan guarantee."""
+    for marker, reason in _PLAN_ON_VANILLA_BY_DESIGN:
+        if marker in sql:
+            return reason
+    return None
+
 
 def _extract_stranded_detector_sql() -> str:
     """The exact ``_stranded_sql`` literal ``_stranded_jobs_loop`` renders.
@@ -441,18 +498,39 @@ async def test_every_shipped_statement_parses_and_plans_against_a_live_schema(
     syntax error (the class the mocked-connection suites cannot see) fails
     here at authoring time, naming the statement and every source constant
     that renders to it.
+
+    The one carve-out, keyed on the statement's own text
+    (``_PLAN_ON_VANILLA_BY_DESIGN``): a capability PROBE is exempt from the
+    PLAN demand only, because failing to plan against a catalog it exists to
+    discover is absent is the probe's designed input to the runtime's
+    fail-open.  Its parse is still demanded - on vanilla the probe's
+    ``UndefinedTableError`` is itself that proof (PostgreSQL reports a
+    syntax error before it resolves a missing relation), and any other
+    error reds like an ordinary statement's.
     """
     inventory = _build_inventory(module_pg_schema.schema_name)
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     failures: list[str] = []
     try:
         for sql, sources in sorted(inventory.items()):
+            carve_out = _plan_carve_out_reason(sql)
             try:
                 await conn.prepare(sql)
+            except asyncpg.exceptions.UndefinedTableError as exc:
+                if carve_out is None:
+                    failures.append(
+                        f"  {type(exc).__name__}: {str(exc).splitlines()[0]}\n"
+                        f"    rendered by: {', '.join(sources)}"
+                    )
+                # The carved-out probe's DESIGNED vanilla input: the missing
+                # catalog is the fail-open's own question, and reaching name
+                # resolution proves the parse succeeded.
+                continue
             except asyncpg.exceptions.PostgresError as exc:
                 first_line = str(exc).splitlines()[0]
                 failures.append(
                     f"  {type(exc).__name__}: {first_line}\n    rendered by: {', '.join(sources)}"
+                    + (f"\n    plan carve-out: {carve_out}" if carve_out else "")
                 )
     finally:
         await conn.close()
@@ -572,6 +650,23 @@ def test_the_guard_has_no_silent_gaps() -> None:
         "Non-PG registrations whose marker no longer matches - the string "
         "changed kind; re-review whether PostgreSQL validation now applies:\n  "
         + "\n  ".join(marker_drift)
+    )
+
+    # The plan carve-out is keyed on the statement's own text, so its
+    # liveness is checkable the same way: every marker must still render
+    # to at least one inventory statement.  A marker nothing renders to
+    # any more (the probe renamed, its SQL rewritten to name different
+    # views) is a carve-out with no subject - delete it, or re-point it at
+    # the new probe.
+    unmatched_carveouts = [
+        marker
+        for marker, _reason in _PLAN_ON_VANILLA_BY_DESIGN
+        if not any(marker in sql for sql in inventory)
+    ]
+    assert not unmatched_carveouts, (
+        "Plan-on-vanilla carve-out markers that no longer match any "
+        "prepared statement - the probe was renamed or its SQL changed; "
+        "delete the entry or re-point the marker:\n  " + "\n  ".join(unmatched_carveouts)
     )
 
     no_longer_prefix = [

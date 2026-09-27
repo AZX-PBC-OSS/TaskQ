@@ -1586,6 +1586,16 @@ class _FakeConnForPrune(FakeConn):
                     f"the window returned {pending_ids!r}"
                 )
             return pending if pending is not None else []
+        # The retention-policy floor probe (the catalog read against
+        # timescaledb_information that precedes the batch loop): the fake
+        # answers the stub row shape that reached CI — dict-like rows
+        # carrying NONE of the probe's keys — so the probe's parse-layer
+        # fail-open (a row without 'drop_after' → None → the sweep runs
+        # full-range) is exercised on every expiry test here, and the
+        # probe consumes no scripted batch (it is a probe, not a batch
+        # statement; the scripted batches belong to the sweep itself).
+        if "timescaledb_information" in sql:
+            return [_FakeRecord({"rows_examined": 1})]
         # The expiry sweep is one statement per batch: the scripted batch
         # is the statement's own result.
         if "WITH expired AS MATERIALIZED" in sql:

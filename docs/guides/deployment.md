@@ -14,6 +14,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 ## Production Checklist
 
 - [ ] **Postgres**: dedicated database or schema with `taskq migrate up` applied
+- [ ] **Storage engine**: plain Postgres (the default) or TimescaleDB hypertables, a deliberate per-environment opt-in via `TASKQ_TIMESCALEDB_HYPERTABLES`; if enabled, verify the conversion landed after the first deploy — three hypertables, three retention policies, one chunk (see [Storage engine](#storage-engine-plain-postgres-or-timescaledb))
 - [ ] **Direct DSN**: `TASKQ_PG_DSN` (or `TASKQ_PG_DSN_DIRECT`) points at Postgres directly, **not** a transaction-mode PgBouncer
 - [ ] **Migrations**: `taskq migrate up` run before workers start (or `TASKQ_MIGRATE_ON_START=true` for the admin UI)
 - [ ] **Worker supervisor**: systemd unit, Docker container, or Kubernetes Deployment
@@ -132,6 +133,106 @@ TASKQ_SCHEMA_NAME=taskq_notifications TASKQ_PG_DSN=postgresql://app:secret@postg
 ```
 
 Each schema gets its own migration set, NOTIFY channels (derived from a hash of the schema name; see [architecture.md](../architecture.md#notify-wake-mechanism)), and advisory-lock keyspace. Must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 63 characters.
+
+### Storage engine: plain Postgres or TimescaleDB?
+
+TaskQ runs on plain Postgres by default, and that is the right default for most fleets. On a server with the TimescaleDB extension available, the three retention tables (`jobs_archive`, `job_attempts_archive`, `job_events`) can convert to hypertables with Timescale-managed retention policies and a columnstore on the two archive tables, so aged data leaves the database as whole-chunk drops instead of long-window `DELETE`s, and the admin archive's newest-first reads get several times faster. Whether that trade suits your fleet is a decision with its own measured decision table and guarantee gradient — see [ops.md §13: plain Postgres or hypertables?](ops.md#13-timescaledb-plain-postgres-or-hypertables); the conversion mechanics, the DDL, and the retention-interplay rules live in [timescaledb.md](timescaledb.md). This section is the deployment story: what to set, what the deploy does, what to verify afterwards, and how to go back.
+
+**The flag** is `TASKQ_TIMESCALEDB_HYPERTABLES` (default `false`), and the `taskq migrate up` deploy step is the only thing that reads it: workers and clients never consult it, and no runtime code path branches on it. The deploy step loads the worker settings model, so the deploy environment and the workers' environment cannot disagree about the retention settings the chunk intervals and policies derive from (`TASKQ_ARCHIVE_RETENTION_PERIOD`, `TASKQ_EVENT_RETENTION_PERIOD`).
+
+What the deploy does with it:
+
+- **Flag off (the default):** zero new statements — no probe, no extension query, no DDL. Behavior is identical to plain Postgres.
+- **Flag on:** the conversion runs inside the migration advisory lock, after pending migrations apply, and refuses loudly with `TimescaleDBUnavailableError` when the server cannot honor the feature (no extension offered, no privilege to create it, or the extension installed but absent from `shared_preload_libraries`). It is idempotent converging DDL, re-run on every deploy, not a migration in the checksummed ledger — already-converted tables are skipped, changed retention settings are honored on the next deploy.
+
+**Fresh vs mid-life.** A fresh or young schema converts in seconds. On a populated schema the same deploy rewrites what is already there, and the enabling deploy window has three parts to size (the full worksheet is [ops.md §13, "Planning the enabling deploy"](ops.md#planning-the-enabling-deploy)):
+
+1. **The constraint surgery.** The foreign-key drop, the primary-key drops, and one `ADD CONSTRAINT ... UNIQUE` per table each take `ACCESS EXCLUSIVE` and full-scan their table to validate the uniqueness asserted. On a big archive those scans are part of the deploy window, not a footnote to it.
+2. **The `migrate_data` copy.** The conversion rewrites existing rows into chunks under the same access-exclusive lock: size the window for the constraint scans and the copy together, against the archive's current row count.
+3. **The first policy run.** Every chunk older than the retention interval is drop-eligible the moment the enabling deploy finishes, so the first background policy run drops the whole aged tail in one sweep — potentially gigabytes of IO where vanilla expires the same rows gradually, row by row. Size the post-deploy window for that run too.
+
+Run the enabling deploy in a maintenance window when no worker archives: between a table's primary-key drop and its unique add, a duplicate insert lands unguarded and wedges every later deploy until the duplicates are removed by hand. The window is two adjacent statements — tiny and bounded, but not zero. And note bounded runs convert anyway: `migrate up --phase pre`, `--target`, and `--max-steps` all run the full hypertable work and re-register the policies when the flag is on; do not aim a bounded run at a fleet's schema casually.
+
+!!! tip "Local dev: the Compose service"
+    The suite pins `timescale/timescaledb:2.30.1-pg18` (the newest tagged
+    release matching the suite's Postgres 18 image). Swap it in for the
+    dev Compose file's `postgres` service — the image preloads the
+    extension (`shared_preload_libraries=timescaledb`), and the explicit
+    `command` flag keeps that requirement visible in the file:
+
+    ```yaml
+      postgres:
+        image: timescale/timescaledb:2.30.1-pg18
+        container_name: taskq-postgres
+        restart: unless-stopped
+        environment:
+          POSTGRES_USER: taskq
+          POSTGRES_PASSWORD: taskq
+          POSTGRES_DB: taskq
+          POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+        # The image already sets shared_preload_libraries=timescaledb; the
+        # flag below makes the requirement explicit (and copy-paste-safe).
+        command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
+        ports:
+          - "5432:5432"
+        volumes:
+          - postgres-data:/var/lib/postgresql
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U taskq -d taskq"]
+          interval: 2s
+          timeout: 3s
+          retries: 20
+          start_period: 5s
+    ```
+
+    Then opt in and deploy: `TASKQ_TIMESCALEDB_HYPERTABLES=true taskq migrate up`. See [timescaledb.md: Local development](timescaledb.md#local-development).
+
+!!! warning "On Azure, allow-list the extension before the deploy"
+    On Azure Database for PostgreSQL Flexible Server the extension must be
+    allow-listed on the server before a flag-on deploy can succeed: add
+    `timescaledb` to the `azure.extensions` server parameter, create it once
+    with an administrative role (`CREATE EXTENSION IF NOT EXISTS timescaledb;`),
+    and let the restart apply the preload. Without the allow-list there is no
+    `timescaledb` row in `pg_available_extensions` and the deploy refuses
+    with `TimescaleDBUnavailableError`, naming the setting and the parameter.
+
+!!! warning "The columnstore prerequisite: raise the decompression budget"
+    The same deploy arms the columnstore (compression) on the two archive
+    tables, and compression puts chunks in the archive-expiry sweep's DML
+    path. `timescaledb.max_tuples_decompressed_per_dml_transaction` defaults
+    to 100000, and at that default the sweep hard-errors on compressed chunks
+    with `ConfigurationLimitExceededError` (measured: one 10k-row expiry batch
+    decompressed 356633 tuples). The deploy probes the setting and logs
+    `hypertable-decompression-budget-at-default` when it sees the default.
+    Raise the budget server-wide before relying on the columnstore:
+
+    ```sql
+    ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0';  -- 0 = unlimited
+    SELECT pg_reload_conf();
+    ```
+
+After the first flag-on deploy, verify the conversion landed (substitute your `TASKQ_SCHEMA_NAME`; the default schema is `taskq`):
+
+```sql
+-- Three hypertables: job_events, job_attempts_archive, jobs_archive
+SELECT hypertable_name FROM timescaledb_information.hypertables
+WHERE hypertable_schema = 'taskq' ORDER BY hypertable_name;
+
+-- Three retention policies (proc_name = 'policy_retention'), plus the two
+-- archive tables' compression policies ('policy_compression', or
+-- 'policy_columnstore' on some extension versions)
+SELECT hypertable_name, proc_name, config FROM timescaledb_information.jobs
+WHERE hypertable_schema = 'taskq' AND proc_name IN
+  ('policy_retention', 'policy_compression', 'policy_columnstore')
+ORDER BY hypertable_name, proc_name;
+
+-- At least one chunk exists once events have landed
+SELECT show_chunks('"taskq".job_events');
+```
+
+Expect exactly three rows from the first query, three `policy_retention` rows plus the archives' two compression policies from the second, and at least one chunk from the third once the worker has enqueued anything. A policy that stops firing later shows up as chunk counts that grow without bound on the aged end; the day-2 watch list is [ops.md §13, "What to watch after enabling"](ops.md#what-to-watch-after-enabling).
+
+**Turning it off** is a two-step, forward-only story. Flipping `TASKQ_TIMESCALEDB_HYPERTABLES=false` is a no-op by design: the deploy issues zero statements again, but the converted schema keeps its hypertables and policies at the last-registered intervals — nothing degrades a live fleet between the flip and the disable. The way back to plain tables is the explicit disable path, `taskq migrate disable-hypertables`, run **after** flipping the flag off (with the flag still true the command refuses loudly, and the library-level gate is a zero-statement no-op): it removes every registered policy, restores each table to a vanilla shape cloned from the bundled migrations' own output, count-verifies every row at each hand-off, and restores the traded-away behaviors (bare primary keys, the attempts cascade). It is idempotent, safe mid-life, and a crashed run converges on the re-run; see [timescaledb.md: Turning it back off](timescaledb.md#turning-it-back-off).
 
 ### Migration strategy
 

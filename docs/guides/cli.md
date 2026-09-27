@@ -187,6 +187,46 @@ taskq migrate up --phase pre --target 01.01.00_01
 
 ---
 
+## `taskq migrate disable-hypertables`
+
+Converts the TimescaleDB hypertables back to plain vanilla tables — the disable mirror of the `migrate up` deploy step's conversion. See [TimescaleDB: turning it back off](timescaledb.md#turning-it-back-off) for the full mechanics and the crash-safety guarantees.
+
+```shell
+taskq migrate disable-hypertables
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--pg-credential-provider` | `str \| None` | `None` | Same as `migrate up`'s. |
+
+**The gate:** flip `TASKQ_TIMESCALEDB_HYPERTABLES=false` first. With the flag still true the command exits 1 with the remedy (the library-level gate it wraps is a zero-statement no-op, and the CLI refuses to let a mistyped invocation look like a completed disable). On a server without the extension it is a no-op success (nothing to disable).
+
+The command runs under the same migration advisory lock `migrate up` holds, re-reads the same settings cascade the workers run with, and on failure prints the same self-diagnosing report (exit 1, never a traceback). A crashed run converges on the re-run.
+
+**Example output:**
+
+```
+disabled hypertables on 3 table(s):
+  restored to plain: jobs_archive
+  restored to plain: job_attempts_archive
+  restored to plain: job_events
+  removed retention policy: jobs_archive:365 days
+  removed retention policy: job_attempts_archive:365 days
+  removed retention policy: job_events:7 days
+  removed compression policy: jobs_archive
+  removed compression policy: job_attempts_archive
+```
+
+When there is nothing to disable:
+
+```
+no hypertables to disable: the retention tables are already plain
+```
+
+---
+
 ## `taskq worker`
 
 Starts a TaskQ worker process. Blocks until SIGTERM or SIGINT.

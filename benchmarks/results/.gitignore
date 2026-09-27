@@ -1,5 +1,7 @@
 # Everything here is throwaway history or profiling output except
-# the canonical baseline, which is the tracked regression-gate input.
+# the canonical baseline and the committed TimescaleDB A/B runs (the
+# docs' cited evidence), which are the tracked regression-gate inputs.
 *
 !.gitignore
 !baseline.json
+!timescale-*.json

@@ -286,6 +286,11 @@ ignore = [
 # caller-controlled value uses $N parameter binding. The file's SQL is the
 # audit-trail red-team's own setup and assertion DDL (test-local triggers).
 "tests/test_audit_redteam.py" = ["S608"]
+# Same rationale as tests/e2e and migrate.py: only the schema identifier is
+# interpolated (a test-generated, fixture-owned name), and every
+# caller-controlled value uses $N parameter binding. The file's SQL is the
+# deploy-step E2E's seed and assertion DDL.
+"tests/test_timescale_deploy_e2e.py" = ["S608"]
 "tests/test_workgroup.py" = ["S108", "ASYNC110"]
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
