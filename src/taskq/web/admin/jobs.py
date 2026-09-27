@@ -839,6 +839,12 @@ def register(router: APIRouter) -> None:
             mode_label=mode_label,
             csrf_token=csrf_token,
             error_text=error_text,
+            # realtime.js is this page's transport in EVERY mode (the
+            # script block below: the stream in real-time mode, the state
+            # poll everywhere else). The meta refresh alongside it was the
+            # #337 double-fetch on this page - a full-document reload
+            # racing the driver's own poll every interval.
+            suppress_refresh=True,
         )
         return HTMLResponse(content=html)
 
