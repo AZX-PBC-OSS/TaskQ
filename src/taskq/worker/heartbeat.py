@@ -358,6 +358,25 @@ _tick_duration = _meter.create_histogram(
     name="taskq.heartbeat.tick_duration_seconds",
     unit="s",
     description="Wall-clock seconds for one heartbeat tick.",
+    # Sub-second scaled: a healthy tick is a few statements (the tick's
+    # own budget is heartbeat_command_timeout); the SDK's default
+    # 0..10000 boundaries render every healthy tick as one le=5 sample.
+    explicit_bucket_boundaries_advisory=(
+        0.0005,
+        0.001,
+        0.0025,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+    ),
 )
 
 

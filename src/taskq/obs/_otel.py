@@ -585,6 +585,25 @@ _dispatch_duration = get_meter().create_histogram(
         "(capped -- see _bounded_queue)."
     ),
     unit="s",
+    # Seconds-scaled buckets: TaskQDispatchLatencyHigh reads p99 off this
+    # histogram at a 50ms threshold, and the SDK's default boundaries are
+    # the 0..10000 set (unit-agnostic), which renders every healthy
+    # sub-50ms dispatch as a ~4.95s p99 - the alert firing on a healthy
+    # fleet (review proven: mass in the le=5s bucket quantiles to 4.95).
+    explicit_bucket_boundaries_advisory=(
+        0.001,
+        0.0025,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+    ),
 )
 
 
@@ -610,6 +629,24 @@ _pool_acquire_duration = get_meter().create_histogram(
         "pods running healthy SQL."
     ),
     unit="s",
+    # Seconds-scaled: healthy waits are sub-second, pool exhaustion runs
+    # to the dispatcher command timeout; the SDK's default 0..10000
+    # boundaries cannot express that range usefully.
+    explicit_bucket_boundaries_advisory=(
+        0.001,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+    ),
 )
 
 
@@ -815,6 +852,28 @@ _process_duration = get_meter().create_histogram(
         "success distribution."
     ),
     unit="s",
+    # Seconds-scaled buckets: the ops playbook reads p95/p50 off the
+    # outcome-split distributions ("p95 far above p50"), and the SDK's
+    # default 0..10000 boundaries render every sub-5s attempt as a ~4.95s
+    # quantile - the documented read impossible.
+    explicit_bucket_boundaries_advisory=(
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+    ),
 )
 
 
@@ -829,7 +888,8 @@ def record_process_duration(
     a failure at whatever it took, and either would drag a success
     percentile if the distributions were shared.
     Respects ``_otel_enabled``, no-op when False.
-    Custom buckets are the operator's responsibility via SDK Views.
+    Finer resolution is an operator's SDK View away (the shipped
+    boundaries are seconds-scaled, not operator-tuned).
     """
     if not _otel_enabled:
         return
@@ -860,6 +920,30 @@ def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
             "_bounded_queue)."
         ),
         unit="s",
+        # Seconds-scaled: the ops playbook reads this histogram's p99
+        # ("queue_wait p99 rises with flat depth is dispatch starvation");
+        # sub-second waits need sub-second buckets.
+        boundaries=(
+            0.001,
+            0.005,
+            0.01,
+            0.025,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            1.0,
+            2.5,
+            5.0,
+            10.0,
+            30.0,
+            60.0,
+            120.0,
+            300.0,
+            600.0,
+            1200.0,
+            3600.0,
+        ),
     ).record(waited_seconds, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
@@ -1498,12 +1582,27 @@ def _lazy_counter(name: str, *, description: str) -> Counter:
     )
 
 
-def _lazy_histogram(name: str, *, description: str, unit: str) -> Histogram:
-    """The histogram sibling of :func:`_lazy_counter` (see there for why)."""
+def _lazy_histogram(
+    name: str, *, description: str, unit: str, boundaries: tuple[float, ...] = ()
+) -> Histogram:
+    """The histogram sibling of :func:`_lazy_counter` (see there for why).
+
+    *boundaries* forwards ``explicit_bucket_boundaries_advisory`` when
+    non-empty: a seconds-unit histogram whose documented read is a
+    percentile needs buckets scaled to its unit, or every sub-5s sample
+    collapses into the SDK's default ``le=5`` bucket (the SDK's default
+    boundaries are the unit-agnostic 0..10000 set) and the quantile reads
+    the bucket edge, not the data.
+    """
     return _cached_lazy_instrument(
         name,
         _lazy_histograms,
-        lambda meter: meter.create_histogram(name, description=description, unit=unit),
+        lambda meter: meter.create_histogram(
+            name,
+            description=description,
+            unit=unit,
+            explicit_bucket_boundaries_advisory=boundaries or None,
+        ),
     )
 
 

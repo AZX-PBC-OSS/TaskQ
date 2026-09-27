@@ -137,6 +137,26 @@ _event_loop_lag = _meter.create_histogram(
     "observed so far when the terminal tier trips. The continuous signal "
     "below the warn/trip thresholds: a rising p99 is a loop being blocked "
     "before it is blocked long enough to page. No dimensions.",
+    # Microsecond-to-seconds scaled: healthy beats are microseconds and
+    # the documented read is a rising p99; the SDK's default 0..10000
+    # boundaries cannot distinguish a healthy microsecond beat from a
+    # 5-second stall (both quantile to the le=5 bucket edge).
+    explicit_bucket_boundaries_advisory=(
+        0.000005,
+        0.00001,
+        0.00005,
+        0.0001,
+        0.0005,
+        0.001,
+        0.005,
+        0.01,
+        0.05,
+        0.1,
+        0.5,
+        1.0,
+        5.0,
+        30.0,
+    ),
 )
 
 # Tick-age observable gauge follows the codebase's cache + callback

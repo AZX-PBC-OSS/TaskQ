@@ -1,0 +1,915 @@
+"""Shared harness for the Prometheus metrics review suites.
+
+Three pieces the review suites need and no other test provides:
+
+- :func:`parse_exposition`: a Prometheus text-exposition parser (the real
+  scrape text, not OTel SDK objects) so assertions are made against what a
+  Prometheus server actually ingests.
+- :func:`run_worker_probe` / :func:`run_hostile_probe`: the subprocess
+  drivers that run the REAL worker bootstrap (the shipped ``taskq worker``
+  boot order: ``WorkerSettings.load`` → ``configure_exporters`` →
+  ``worker._main``) against real Postgres, drive real jobs / cron / a real
+  transient-Postgres failure, and dump the exposition served by both real
+  scrape paths (the ``/jobs/health/metrics`` bridge router and the
+  ``TASKQ_METRICS_PORT`` pull listener).
+- :func:`run_promtool_rule_tests`: the honest alert-rule evaluator. Writes
+  a ``promtool test rules`` unit-test file whose input series carry the
+  metric names and label sets captured from the real probe's exposition,
+  then evaluates the shipped rules.yaml inside the ``prom/prometheus``
+  container image's own promtool. Skips cleanly when Docker is not
+  reachable, mirroring the e2e tier's contract.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).parent.parent
+
+PROMTOOL_IMAGE = "prom/prometheus:v3.7.2"
+
+#: Scrubbed from the probe subprocess environment: an ambient OTEL_* or
+#: TASKQ_* variable would change which exporter wiring branch runs (the
+#: documented quick-start sets neither; the probe sets its own TASKQ_*).
+_SCRUBBED_ENV_PREFIXES = ("OTEL_", "TASKQ_")
+
+
+def probe_env(**extra: str) -> dict[str, str]:
+    """A clean environment for the probe subprocess: no ambient OTEL_/TASKQ_*
+    configuration, no developer dotfiles (the suite-wide DOTENV_DIR guard's
+    value does not survive a fresh env dict, so set it explicitly)."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(_SCRUBBED_ENV_PREFIXES) and key not in ("DOTENV_DIR", "PYTHONPATH")
+    }
+    env["DOTENV_DIR"] = str(_dotenv_guard_dir())
+    env.update(extra)
+    return env
+
+
+def _dotenv_guard_dir() -> str:
+    # An empty directory that exists: see the suite conftest's
+    # _no_developer_dotfiles fixture for why WorkerSettings.load must see
+    # zero dotfiles. Lives in the system temp area, never in the repo (a
+    # directory created at import time would dirty every checkout).
+    path = Path(tempfile.gettempdir()) / "taskq_prom_probe_no_dotfiles"
+    path.mkdir(exist_ok=True)
+    return str(path)
+
+
+# ── exposition parsing ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Sample:
+    """One exposition line: family name, labels, value."""
+
+    name: str
+    labels: dict[str, str]
+    value: float
+
+
+@dataclass(frozen=True)
+class Exposition:
+    """Parsed scrape text, indexed the two ways the assertions need."""
+
+    samples: tuple[Sample, ...]
+    by_name: dict[str, list[Sample]] = field(default_factory=dict)
+
+    def series(self, name: str) -> list[Sample]:
+        return self.by_name.get(name, [])
+
+    def names(self) -> set[str]:
+        return set(self.by_name)
+
+    def label_values(self, name: str, label: str) -> set[str]:
+        return {s.labels[label] for s in self.series(name) if label in s.labels}
+
+
+_LABEL_RE = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+
+
+def parse_exposition(text: str) -> Exposition:
+    """Parse Prometheus text format (version 0.0.4) into samples.
+
+    Deliberately reads the wire text, not the SDK: the wire text is the
+    contract a Prometheus server ingests, and the bridge's rendering of
+    names/labels is exactly what this review is auditing.
+    """
+    samples: list[Sample] = []
+    by_name: dict[str, list[Sample]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name_blob, _, value_blob = line.rpartition(" ")
+        if not name_blob:
+            continue
+        try:
+            value = float(value_blob)
+        except ValueError:
+            continue
+        m = re.match(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*)?$", name_blob)
+        if m is None:
+            continue
+        name = m.group(1)
+        labels = dict(_LABEL_RE.findall(m.group(2) or ""))
+        sample = Sample(name=name, labels=labels, value=value)
+        samples.append(sample)
+        by_name.setdefault(name, []).append(sample)
+    return Exposition(samples=tuple(samples), by_name=by_name)
+
+
+# ── the probe scripts (subprocess payloads) ─────────────────────────
+
+_CRON_FACTORY_MODULE = '''
+"""A cron payload factory that always fails (the three-strike pathology)
+and one that succeeds slowly (the budget-monopolizer pathology)."""
+
+
+def failing_factory() -> dict:
+    raise RuntimeError("factory boom (prometheus review probe)")
+
+
+def slow_factory() -> dict:
+    # 1.2s: under the probe's TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT=2 grant
+    # (never strikes), but three of these per tick burn the tick's funded
+    # budget (dispatcher_command_timeout 5s x 0.9) below the minimum
+    # fundable grant - the fourth schedule defers, the exact
+    # TaskQCronBudgetDeferrals pathology.
+    import time
+
+    time.sleep(1.2)
+    return {"value": 1}
+'''
+
+_WORKER_PROBE = '''
+"""Real worker probe: the shipped worker bootstrap against real Postgres,
+real jobs (success / terminal failure / retryable failure / timeout /
+backpressure refusal / unserved queue / missing actor_config), a real
+failing cron schedule (three-strike auto-disable), then a dump of the
+exposition served by both real scrape paths while RUNNING and after a
+clean SIGTERM shutdown."""
+
+import asyncio
+import os
+import signal
+import sys
+import urllib.request
+from datetime import timedelta
+
+PROBE_DIR = os.environ["PROBE_DIR"]
+sys.path.insert(0, PROBE_DIR)
+
+PG_DSN = os.environ["PROBE_PG_DSN"]
+SCHEMA = os.environ["PROBE_SCHEMA"]
+METRICS_PORT = int(os.environ["PROBE_METRICS_PORT"])
+
+from pydantic import BaseModel
+
+from taskq import JobContext, RetryPolicy, TaskQ, actor
+from taskq.cron import cron
+from taskq.ratelimit import TokenBucket
+
+
+class P(BaseModel):
+    value: int = 1
+
+
+@actor(name="probe_ok_actor", queue="probe_queue")
+async def probe_ok_actor(payload: P, ctx: JobContext[P]) -> None:
+    await asyncio.sleep(0.05)
+
+
+@actor(
+    name="probe_slow_actor",
+    queue="probe_queue",
+    start_to_close=timedelta(seconds=60),
+)
+async def probe_slow_actor(payload: P, ctx: JobContext[P]) -> None:
+    # Long enough that the heartbeat renews its lock while it runs: the
+    # lock_expires_in_seconds histogram is stamped by renewals only.
+    await asyncio.sleep(float(os.environ.get("PROBE_SLOW_SECS", "12")))
+
+
+@actor(
+    name="probe_timeout_actor",
+    queue="probe_queue",
+    start_to_close=timedelta(seconds=1),
+)
+async def probe_timeout_actor(payload: P, ctx: JobContext[P]) -> None:
+    await asyncio.sleep(30)
+
+
+@actor(
+    name="probe_fail_actor",
+    queue="probe_queue",
+    retry=RetryPolicy(kind="transient", max_attempts=1),
+)
+async def probe_fail_actor(payload: P, ctx: JobContext[P]) -> None:
+    raise ValueError("terminal boom")
+
+
+@actor(
+    name="probe_retry_actor",
+    queue="probe_queue",
+    retry=RetryPolicy(
+        kind="transient", max_attempts=3, base=timedelta(seconds=1), jitter=0.0
+    ),
+)
+async def probe_retry_actor(payload: P, ctx: JobContext[P]) -> None:
+    raise ConnectionError("retryable boom")
+
+
+@actor(name="probe_backpressure_actor", queue="bp_queue", max_pending=0)
+async def probe_backpressure_actor(payload: P, ctx: JobContext[P]) -> None:
+    pass
+
+
+@actor(name="probe_ghost_actor", queue="ghost_queue")
+async def probe_ghost_actor(payload: P, ctx: JobContext[P]) -> None:
+    pass
+
+
+@actor(
+    name="probe_ratelimited_actor",
+    queue="probe_queue",
+    rate_limits=[TokenBucket(name="probe_limiter", capacity=1.0, refill_per_second=1.0)],
+)
+async def probe_ratelimited_actor(payload: P, ctx: JobContext[P]) -> None:
+    await asyncio.sleep(0.05)
+
+
+@actor(name="probe_progress_actor", queue="probe_queue")
+async def probe_progress_actor(payload: P, ctx: JobContext[P]) -> None:
+    # The progress-publish pathology: real ctx.progress calls whose Redis
+    # publishes fail (the probe's TASKQ_REDIS_URL points at a closed
+    # port), driving taskq_progress_publish_failures_total end to end.
+    for i in range(5):
+        await ctx.progress(percent=i * 20.0)
+        await asyncio.sleep(0.2)
+
+
+@actor(name="probe_uncancellable_actor", queue="probe_queue")
+async def probe_uncancellable_actor(payload: P, ctx: JobContext[P]) -> None:
+    # The abandonment pathology: an actor that swallows cancellation for
+    # ~10s (shield + catch-and-continue), so the operator cancel's two
+    # grace periods both lapse while the attempt still holds the slot -
+    # mark_abandoned takes it, exactly the shape TaskQAbandonedJobs reads.
+    import time as _time
+
+    deadline = _time.monotonic() + 10.0
+    while _time.monotonic() < deadline:
+        try:
+            await asyncio.shield(asyncio.sleep(1))
+        except asyncio.CancelledError:
+            continue
+
+
+_PROBE_CRON_SPEC = cron(
+    "* * * * *",
+    actor="probe_fail_actor",
+    payload_factory="probe_cron_factory.failing_factory",
+    name="probe-failing-cron",
+)
+_PROBE_SLOW_CRON_SPECS = [
+    cron(
+        "* * * * *",
+        actor="probe_fail_actor",
+        payload_factory="probe_cron_factory.slow_factory",
+        name=f"probe-slow-cron-{i}",
+    )
+    for i in range(4)
+]
+
+ACTORS = {
+    ref.name: ref
+    for ref in (
+        probe_ok_actor,
+        probe_slow_actor,
+        probe_timeout_actor,
+        probe_fail_actor,
+        probe_retry_actor,
+        probe_backpressure_actor,
+        probe_ghost_actor,
+        probe_progress_actor,
+        probe_ratelimited_actor,
+        probe_uncancellable_actor,
+    )
+}
+
+#: The job handle the abandonment pathology cancels, set by _run() before
+#: the worker starts and read by the shape coroutine once the worker has
+#: claimed the job.
+_abandon_handle: "object | None" = None
+
+
+async def _scrape_bridge() -> str:
+    # The real bridge path: the router exactly as `taskq ui serve` mounts
+    # it. The worker's provider (wired from TASKQ_METRICS_PORT at boot)
+    # already bridges the default registry, so the route detects the
+    # bridge and serves the same exposition the pull listener serves.
+    import fastapi
+    from fastapi.testclient import TestClient
+
+    from taskq.contrib.prometheus import create_metrics_router
+
+    app = fastapi.FastAPI()
+    app.include_router(create_metrics_router(None), prefix="/jobs/health")
+    resp = TestClient(app).get("/jobs/health/metrics")
+    assert resp.status_code == 200, resp.status_code
+    return resp.text
+
+
+async def _fetch_port(port: int) -> str:
+    with urllib.request.urlopen(  # noqa: S310
+        f"http://127.0.0.1:{port}/metrics", timeout=10
+    ) as r:
+        return r.read().decode()
+
+
+async def _scrape_port() -> str:
+    return await _fetch_port(METRICS_PORT)
+
+
+async def _dump(tag: str) -> None:
+    if tag == "FOLLOWER":
+        # The follower mounts no bridge router: its exposition is its
+        # own TASKQ_METRICS_PORT pull listener (port 19465).
+        text = await _fetch_port(19465)
+        with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
+            fh.write(text)
+        print(f"SCRAPED:{tag}:port={len(text)}", flush=True)
+        return
+    bridge = await _scrape_bridge()
+    with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.bridge", "w") as fh:
+        fh.write(bridge)
+    port = await _scrape_port()
+    with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
+        fh.write(port)
+    print(f"SCRAPED:{tag}:bridge={len(bridge)}:port={len(port)}", flush=True)
+
+
+async def _run() -> None:
+    if os.environ.get("PROBE_FOLLOWER") == "1":
+        # Follower mode: a second worker in the same fleet while the
+        # first holds leadership. Its first election attempt observes a
+        # holder that is not itself - the losing side's real
+        # lock-contention emission - and its exposition is scraped by
+        # the parent probe below.
+        from taskq.obs import configure_exporters as _cfg
+        from taskq.settings import WorkerSettings as _WS
+        from taskq.worker.run import _main as _main_fn
+
+        f_settings = _WS.load()
+        _cfg(f_settings)
+        code = await _main_fn(f_settings, actor_registry=ACTORS)
+        print("FOLLOWER_EXIT:", code, flush=True)
+        return
+
+    import asyncpg
+
+    from taskq.obs import configure_exporters
+    from taskq.settings import WorkerSettings
+
+    settings = WorkerSettings.load()
+    # The shipped worker boot order (cli.py): exporter wiring exists
+    # before anything records - pre-provider measurements are dropped.
+    configure_exporters(settings)
+
+    global _abandon_handle
+    async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+        for i in range(3):
+            await tq.enqueue(probe_ok_actor, P(value=i))
+        await tq.enqueue(probe_slow_actor, P())
+        await tq.enqueue(probe_timeout_actor, P())
+        await tq.enqueue(probe_fail_actor, P())
+        await tq.enqueue(probe_retry_actor, P())
+        await tq.enqueue(probe_progress_actor, P())
+        await tq.enqueue(probe_ratelimited_actor, P())
+        _abandon_handle = await tq.enqueue(probe_uncancellable_actor, P())
+        for _ in range(3):
+            try:
+                await tq.enqueue(probe_backpressure_actor, P())
+                print("BP_NO_REFUSAL", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"BP_REFUSED:{type(exc).__name__}", flush=True)
+        for i in range(2):
+            # ghost_queue is in no worker's TASKQ_QUEUES: the unserved /
+            # stranded unserved_queue shape, produced by real enqueue.
+            await tq.enqueue(probe_ghost_actor, P(value=i))
+
+        await tq.create_schedule(
+            "probe_fail_actor",
+            "* * * * *",
+            payload_factory="probe_cron_factory.failing_factory",
+            name="probe-failing-cron",
+        )
+        for i in range(4):
+            await tq.create_schedule(
+                "probe_fail_actor",
+                "* * * * *",
+                payload_factory="probe_cron_factory.slow_factory",
+                name=f"probe-slow-cron-{i}",
+            )
+
+    from taskq.worker.run import _main
+
+    window = float(os.environ.get("PROBE_WORKER_SECS", "80"))
+
+    async def _worker_task() -> int:
+        return await _main(settings, actor_registry=ACTORS)
+
+    async def _follower() -> None:
+        # Spawn a second worker while this probe's worker holds
+        # leadership: the fleet-handover shape whose losing side records
+        # the maintenance-lock contention counter. The follower's
+        # exposition (its own metrics port) carries it. Spawned AFTER the
+        # LIVE dump on purpose: its boot re-registers the deleted
+        # actor_config row (real recovery) and adds a second live worker,
+        # both of which would legitimately change the leader gauges the
+        # LIVE assertions read.
+        await asyncio.sleep(window - 15)
+        follower_env = dict(os.environ)
+        follower_env["PROBE_FOLLOWER"] = "1"
+        follower_env["TASKQ_METRICS_PORT"] = "19465"
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(PROBE_DIR + "/probe_worker.py"),
+            env=follower_env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        print("FOLLOWER_SPAWNED", flush=True)
+        await asyncio.sleep(10)
+        await _dump("FOLLOWER")
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=20)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+    async def _no_actor_config_shape() -> None:
+        # After boot (the worker re-registers every actor_config row at
+        # startup), delete the ok actor's row and enqueue more work for
+        # it: pending rows whose actor has no actor_config - the
+        # stranded no_actor_config shape, produced by real paths. And
+        # once the worker has claimed the uncancellable job, cancel it:
+        # the operator cancel outlasts both (1s) graces against the
+        # swallowing actor - the real abandonment pathology.
+        try:
+            await asyncio.sleep(3)
+            async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+                await tq.cancel(_abandon_handle.job_id)  # type: ignore[union-attr]
+            print("CANCEL_REQUESTED:OK", flush=True)
+            await asyncio.sleep(5)
+            conn = await asyncpg.connect(PG_DSN)
+            try:
+                await conn.execute(
+                    f'DELETE FROM "{SCHEMA}".actor_config WHERE actor = $1',
+                    "probe_ok_actor",
+                )
+                # Break the rate limiter's PG fallback (the store behind
+                # the dead Redis): a NOT VALID CHECK constraint passes
+                # validation of the existing rows but fails every new
+                # write, so the fallback's bucket-row upsert fails and
+                # the acquire fails closed - the dependency-outage
+                # pathology.
+                await conn.execute(
+                    f'ALTER TABLE "{SCHEMA}".rate_limit_buckets '
+                    "ADD CONSTRAINT probe_check CHECK (false) NOT VALID"
+                )
+            finally:
+                await conn.close()
+            async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+                for i in range(2):
+                    await tq.enqueue(probe_ok_actor, P(value=i))
+                await tq.enqueue(probe_ratelimited_actor, P())
+
+            # The cron pathologies fire on the NEXT MINUTE boundary
+            # otherwise; pull the schedules due NOW (inside the catch-up
+            # window): the failing schedule accrues its three strikes
+            # within seconds, and the four slow-factory schedules' 10
+            # minute backlog drains one fire per tick, the monopolizer
+            # shape that defers the fourth schedule's fires every tick.
+            conn = await asyncpg.connect(PG_DSN)
+            try:
+                await conn.execute(
+                    f'UPDATE "{SCHEMA}".cron_schedules '
+                    "SET next_fire_at = statement_timestamp() - interval "
+                    f"'1 second' WHERE name = 'probe-failing-cron'"
+                )
+                await conn.execute(
+                    f'UPDATE "{SCHEMA}".cron_schedules '
+                    "SET next_fire_at = statement_timestamp() - interval "
+                    # Two minutes of backlog: two drain ticks (~9s), so the
+                    # failing schedule's own strikes land well before the
+                    # live scrape; a longer backlog pushes the strikes past it.
+                    f"'2 minutes' WHERE name LIKE 'probe-slow-cron-%'"
+                )
+            finally:
+                await conn.close()
+            # Hold the cron advisory lock's own key at session level for
+            # 3s: every leader tick's try-lock loses inside the window -
+            # the real cron-lock-contention emission (the name the
+            # production lock probe hashes).
+            lock_conn = await asyncpg.connect(PG_DSN)
+            try:
+                await lock_conn.execute(
+                    "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+                    f"taskq:cron:{SCHEMA}",
+                )
+                await asyncio.sleep(3)
+                await lock_conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                    f"taskq:cron:{SCHEMA}",
+                )
+            finally:
+                await lock_conn.close()
+            print("NO_ACTOR_CONFIG_SHAPE:OK", flush=True)
+            await asyncio.sleep(4)
+            conn = await asyncpg.connect(PG_DSN)
+            try:
+                # Heal: the limiter recovers on the job's next dispatch.
+                await conn.execute(
+                    f'ALTER TABLE "{SCHEMA}".rate_limit_buckets '
+                    "DROP CONSTRAINT probe_check"
+                )
+            finally:
+                await conn.close()
+        except Exception as exc:  # noqa: BLE001
+            # Loud, not swallowed: the shape's absence is a review failure.
+            print(f"NO_ACTOR_CONFIG_SHAPE:FAILED:{type(exc).__name__}:{exc}", flush=True)
+            raise
+
+    async def _live_scrape_and_stop() -> None:
+        await asyncio.sleep(window - 20)
+        await _dump("LIVE")
+        await asyncio.sleep(19)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    results = await asyncio.gather(
+        _worker_task(),
+        _no_actor_config_shape(),
+        _live_scrape_and_stop(),
+        _follower(),
+        return_exceptions=True,
+    )
+    for entry in results:
+        if isinstance(entry, BaseException):
+            print(f"PROBE_TASK_FAILED:{type(entry).__name__}:{entry}", flush=True)
+    print("WORKER_EXIT:", results[0], flush=True)
+
+    await asyncio.sleep(0.5)
+    await _dump("FINAL")
+
+
+if __name__ == "__main__":
+    asyncio.run(_run())
+'''
+
+_HOSTILE_PROBE = '''
+"""Hostile probe: a real transient Postgres failure - the server's own
+connection termination, fired repeatedly across several heartbeat ticks -
+drives the heartbeat-failure arm end to end, then dumps the exposition."""
+
+import asyncio
+import os
+import signal
+import urllib.request
+
+PG_DSN = os.environ["PROBE_PG_DSN"]
+SCHEMA = os.environ["PROBE_SCHEMA"]
+METRICS_PORT = int(os.environ["PROBE_METRICS_PORT"])
+
+from pydantic import BaseModel
+
+from taskq import JobContext, TaskQ, actor
+
+
+class P(BaseModel):
+    value: int = 1
+
+
+@actor(name="hostile_ok_actor", queue="probe_queue")
+async def hostile_ok_actor(payload: P, ctx: JobContext[P]) -> None:
+    await asyncio.sleep(0.05)
+
+
+ACTORS = {hostile_ok_actor.name: hostile_ok_actor}
+
+
+async def _kill_all_backends(admin: "asyncpg.Connection") -> int:
+    rows = await admin.fetch(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+        "AND application_name <> 'probe_admin'"
+    )
+    return len(rows)
+
+
+async def _scrape() -> str:
+    with urllib.request.urlopen(  # noqa: S310
+        f"http://127.0.0.1:{METRICS_PORT}/metrics", timeout=10
+    ) as r:
+        return r.read().decode()
+
+
+async def _run() -> None:
+    import asyncpg
+
+    from taskq.obs import configure_exporters
+    from taskq.settings import WorkerSettings
+    from taskq.worker.run import _main
+
+    settings = WorkerSettings.load()
+    configure_exporters(settings)
+
+    async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+        for i in range(2):
+            await tq.enqueue(hostile_ok_actor, P(value=i))
+
+    window = float(os.environ.get("PROBE_WORKER_SECS", "45"))
+
+    async def _worker_task() -> int:
+        return await _main(settings, actor_registry=ACTORS)
+
+    async def _chaos() -> None:
+        # One persistent admin connection killing every backend every few
+        # milliseconds for ~8s: the per-tick failure window (pool acquire
+        # -> first statement) is tens of milliseconds, so a storm this
+        # dense fails heartbeat ticks with near certainty while the admin
+        # connection itself survives (filtered from its own kill set by
+        # application_name).
+        await asyncio.sleep(15)
+        admin = await asyncpg.connect(
+            PG_DSN, server_settings={"application_name": "probe_admin"}
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 8.0
+            while loop.time() < deadline:
+                await _kill_all_backends(admin)
+                await asyncio.sleep(0.005)
+        finally:
+            await admin.close()
+        print("CHAOS_DONE", flush=True)
+
+    async def _scrape_to(path: str) -> None:
+        text = await _scrape()
+        with open(path, "w") as fh:
+            fh.write(text)
+        print("SCRAPED:", path, len(text), flush=True)
+
+    async def _live_scrape_and_stop() -> None:
+        # Mid-chaos: the misses counter has moved.
+        await asyncio.sleep(20)
+        await _scrape_to(os.environ["PROBE_SCRAPE_PATH"])
+        # Long after the last kill: a successful tick resets the
+        # consecutive-failures gauge to 0 (the reset-on-success contract,
+        # read off the served exposition).
+        await asyncio.sleep(16)
+        await _scrape_to(os.environ["PROBE_SCRAPE_PATH"] + ".recovered")
+        await asyncio.sleep(6)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    results = await asyncio.gather(
+        _worker_task(),
+        _chaos(),
+        _live_scrape_and_stop(),
+        return_exceptions=True,
+    )
+    for entry in results:
+        if isinstance(entry, BaseException):
+            print(f"HOSTILE_TASK_FAILED:{type(entry).__name__}:{entry}", flush=True)
+    print("WORKER_EXIT:", results[0], flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(_run())
+'''
+
+
+def _write_probe_scripts(workdir: Path) -> None:
+    (workdir / "probe_cron_factory.py").write_text(_CRON_FACTORY_MODULE)
+    (workdir / "probe_worker.py").write_text(_WORKER_PROBE)
+    (workdir / "probe_hostile.py").write_text(_HOSTILE_PROBE)
+
+
+def _migrate_schema(pg_dsn: str, schema: str) -> None:
+    script = (
+        "import asyncio, sys\n"
+        "import asyncpg\n"
+        "from taskq.migrate import apply_pending\n"
+        "from taskq.testing.fixtures import seed_actors\n"
+        "async def go():\n"
+        f"    conn = await asyncpg.connect({pg_dsn!r})\n"
+        f"    await apply_pending(conn, schema={schema!r})\n"
+        f"    await seed_actors(conn, {schema!r})\n"
+        "    await conn.close()\n"
+        "asyncio.run(go())\n"
+    )
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv built from test-controlled constants, no shell.
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "DOTENV_DIR": str(_dotenv_guard_dir())},
+    )
+    assert result.returncode == 0, f"migration failed: {result.stderr}"
+
+
+def run_worker_probe(
+    pg_dsn: str,
+    schema: str,
+    workdir: Path,
+    *,
+    worker_secs: int = 80,
+) -> dict[str, str]:
+    """Run the real worker probe; return {tag: exposition_text} keyed
+    ``LIVE``/``FINAL``, each the bridge router's served text."""
+    _write_probe_scripts(workdir)
+    _migrate_schema(pg_dsn, schema)
+    env = probe_env(
+        PROBE_PG_DSN=pg_dsn,
+        PROBE_SCHEMA=schema,
+        PROBE_DIR=str(workdir),
+        PROBE_METRICS_PORT="19464",
+        PROBE_SCRAPE_PATH=str(workdir / "scrape.txt"),
+        PROBE_WORKER_SECS=str(worker_secs),
+        TASKQ_PG_DSN=pg_dsn,
+        TASKQ_SCHEMA_NAME=schema,
+        TASKQ_QUEUES="probe_queue,bp_queue",
+        TASKQ_HEARTBEAT_INTERVAL="1",
+        TASKQ_SWEEP_INTERVAL="1",
+        TASKQ_QUEUE_DEPTH_INTERVAL="1",
+        TASKQ_STRANDED_JOBS_INTERVAL="1",
+        TASKQ_CANCELLATION_GRACE_PERIOD="1",
+        TASKQ_CLEANUP_GRACE_PERIOD="1",
+        TASKQ_MAX_CONCURRENCY="4",
+        # The cron pathologies: the per-factory grant (2s) funds a slow
+        # factory's 1.2s sleep, and the funded whole-tick budget
+        # (dispatcher_command_timeout 5s x 0.9 = 4.5s) fits only three of
+        # them - the fourth defers.
+        TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT="2",
+        TASKQ_REDIS_URL="redis://127.0.0.1:15999/0",
+        TASKQ_METRICS_PORT="19464",
+        TASKQ_LOG_LEVEL="WARNING",
+    )
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
+        [sys.executable, str(workdir / "probe_worker.py")],
+        capture_output=True,
+        text=True,
+        timeout=worker_secs + 120,
+        env=env,
+        cwd=str(workdir),
+    )
+    assert result.returncode == 0, (
+        f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+    )
+    scrapes = {}
+    for tag in ("LIVE", "FINAL"):
+        bridge_path = workdir / f"scrape.txt.{tag}.bridge"
+        port_path = workdir / f"scrape.txt.{tag}.port"
+        assert bridge_path.exists(), f"probe wrote no {tag} bridge scrape: {result.stdout[-2000:]}"
+        scrapes[tag] = bridge_path.read_text()
+        scrapes[f"{tag}.port"] = port_path.read_text()
+    follower_path = workdir / "scrape.txt.FOLLOWER.port"
+    assert follower_path.exists(), f"probe wrote no FOLLOWER scrape: {result.stdout[-2000:]}"
+    scrapes["FOLLOWER.port"] = follower_path.read_text()
+    assert "BP_REFUSED:" in result.stdout, (
+        "the max_pending=0 enqueues were not refused - the backpressure "
+        f"pathology never fired: {result.stdout[-2000:]}"
+    )
+    assert "NO_ACTOR_CONFIG_SHAPE:OK" in result.stdout, (
+        f"the deleted-actor_config pathology never landed: {result.stdout[-2000:]}"
+    )
+    return scrapes
+
+
+def run_hostile_probe(
+    pg_dsn: str,
+    schema: str,
+    workdir: Path,
+    *,
+    worker_secs: int = 45,
+) -> tuple[str, str]:
+    """Run the hostile (real transient PG failure) probe; return
+    (mid_chaos_scrape, post_recovery_scrape)."""
+    _write_probe_scripts(workdir)
+    _migrate_schema(pg_dsn, schema)
+    env = probe_env(
+        PROBE_PG_DSN=pg_dsn,
+        PROBE_SCHEMA=schema,
+        PROBE_DIR=str(workdir),
+        PROBE_METRICS_PORT="19465",
+        PROBE_SCRAPE_PATH=str(workdir / "hostile_scrape.txt"),
+        PROBE_WORKER_SECS=str(worker_secs),
+        TASKQ_PG_DSN=pg_dsn,
+        TASKQ_SCHEMA_NAME=schema,
+        TASKQ_QUEUES="probe_queue",
+        TASKQ_HEARTBEAT_INTERVAL="1",
+        # Default max_heartbeat_failures (3): the storm fails every tick,
+        # so the worker takes its DESIGNED isolate exit a few ticks in -
+        # the docstring's own "if misses continue, the worker will
+        # self-isolate" contract. The assertion is that the miss counter
+        # (the alert's operand) moved and OUTLIVED the isolate.
+        TASKQ_METRICS_PORT="19465",
+        TASKQ_LOG_LEVEL="WARNING",
+    )
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
+        [sys.executable, str(workdir / "probe_hostile.py")],
+        capture_output=True,
+        text=True,
+        timeout=worker_secs + 120,
+        env=env,
+        cwd=str(workdir),
+    )
+    assert result.returncode == 0, (
+        f"hostile probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+    )
+    path = workdir / "hostile_scrape.txt"
+    recovered = workdir / "hostile_scrape.txt.recovered"
+    assert path.exists() and recovered.exists(), (
+        f"hostile probe wrote no scrape: {result.stdout[-2000:]}"
+    )
+    return path.read_text(), recovered.read_text()
+
+
+# ── promtool rule evaluation (the honest alert harness) ────────────
+
+
+# ── promtool rule evaluation (the honest alert harness) ────────────
+
+#: The docker CLI's absolute path: the harness's container runs are fixed
+#: argv, and an absolute executable satisfies the partial-path lint.
+_DOCKER = shutil.which("docker")
+
+
+def docker_available() -> bool:
+    if _DOCKER is None:
+        return False
+    try:
+        result = subprocess.run(  # noqa: S603  # Why: fixed argv probe of the daemon, no shell.
+            [_DOCKER, "info", "--format", "ok"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def run_promtool_rule_tests(rules_path: Path, test_yaml: str, workdir: Path) -> str:
+    """Evaluate a ``promtool test rules`` file against the shipped rules
+    inside the prom/prometheus image's own promtool.
+
+    The rules file is mounted read-only, exactly as a server would load
+    it; the test file's input series are built by the callers from the
+    REAL exposition the probes captured. Raises AssertionError with
+    promtool's diff on failure - each non-firing rule names the alert.
+    """
+    assert _DOCKER is not None, "docker is required for the promtool evaluation"
+    # Stage into a fresh, world-readable directory: pytest tmp paths carry
+    # 0700 modes the container's stat cannot cross.
+    stage = Path(tempfile.mkdtemp(prefix="promtool_stage_"))
+    try:
+        shutil.copy(rules_path, stage / "rules.yaml")
+        for path in (stage, stage / "rules.yaml"):
+            path.chmod(0o755)
+        test_file = stage / "taskq_rules_test.yml"
+        test_file.write_text(test_yaml)
+        test_file.chmod(0o644)
+        result = subprocess.run(  # noqa: S603  # Why: fixed argv container run, no shell.
+            [
+                _DOCKER,
+                "run",
+                "--rm",
+                "-v",
+                f"{stage}:/work:ro",
+                "--entrypoint",
+                "promtool",
+                PROMTOOL_IMAGE,
+                "test",
+                "rules",
+                "/work/taskq_rules_test.yml",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, (
+            f"promtool rule tests failed:\n{result.stdout}\n{result.stderr}"
+        )
+        return result.stdout
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
