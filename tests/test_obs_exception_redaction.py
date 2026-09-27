@@ -1856,6 +1856,110 @@ def test_opaque_bearer_token_is_masked_even_when_not_jwt_shaped() -> None:
     assert out == "Authorization: Bearer *** :: 401"
 
 
+# ── #463 round 2: the bare scheme word and the non-bearer schemes ────────
+
+# An opaque token with no dot structure and (realistic for a credential)
+# digits in it.
+_OPAQUE_463 = "v9xK2mQ7wR4tY6uI1oP3aS5dF8gH0jL2zC4vB6nM"
+_B64_CREDS_463 = "ZGVwbG95LWJvdDpWc21aN2Yza1Exd1A5eFIy"  # deploy-bot:<secret>
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f"Bearer {_OPAQUE_463}",  # the raw header VALUE: no header name
+        f"bearer {_OPAQUE_463}",
+        f"Token {_OPAQUE_463}",  # the GitHub scheme, raw value
+        f"Basic {_B64_CREDS_463}",  # base64 user:password, raw value
+        f"Authorization: Token {_OPAQUE_463}",  # rendered header, non-bearer scheme
+        f"Authorization: Basic {_B64_CREDS_463}",
+        f'"Authorization": "Token {_OPAQUE_463}"',  # the quoted renderings
+        f"{{'Authorization': 'Basic {_B64_CREDS_463}'}}",
+        f"Bearer\t{_OPAQUE_463}",  # a tab renders the frame too
+    ],
+    ids=[
+        "bare-bearer",
+        "bare-bearer-lower",
+        "bare-token",
+        "bare-basic",
+        "header-token",
+        "header-basic",
+        "quoted-token",
+        "quoted-repr-basic",
+        "tab-frame",
+    ],
+)
+def test_bare_scheme_and_non_bearer_scheme_credentials_are_masked(raw: str) -> None:
+    """(#463 round 2, red-proven against a real ``admin_audit`` row) The
+    pre-fix chain required the ``Authorization:`` header name and the
+    ``bearer`` scheme word, so the raw header VALUE (``Bearer <opaque>``
+    -- the header name is the dict key, not the value) and the
+    ``Token``/``Basic`` scheme words shipped credential material
+    verbatim into the never-pruned audit ledger. Every framing here must
+    leave only the scheme word and the ``***`` marker."""
+    from taskq.obs._redact_exc import _scrub_text, mask_credentials
+
+    out = mask_credentials(raw)
+    assert _OPAQUE_463 not in out and _B64_CREDS_463 not in out
+    assert "***" in out, f"the frame was dropped, not redacted: {out!r}"
+    # The audit path and the exception path share the chain.
+    assert out == _scrub_text(raw)
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "token revocation service",
+        "basic authentication reviewer",
+        "bearer bond custodian",
+        "token bucket rate limiting",
+    ],
+    ids=["token-prose", "basic-prose", "bearer-prose", "token-bucket"],
+)
+def test_bare_scheme_words_in_prose_bind_verbatim(prose: str) -> None:
+    """The over-redaction boundary of the bare-scheme pass: the common
+    nouns "token"/"basic"/"bearer" followed by PROSE (no digit, or under
+    the 16-char floor) must survive untouched -- the audit subject is
+    honest attribution, and mangling it is its own falsification. The
+    digit requirement is what makes the common-noun scheme words safe to
+    pattern at all."""
+    from taskq.obs._redact_exc import mask_credentials
+
+    assert mask_credentials(prose) == prose
+
+
+def test_bare_scheme_digitless_long_value_rides_documented() -> None:
+    """The bare-scheme pass's stated fail-open limit, pinned as a decision:
+    a 16+ char value with NO digit after a bare scheme word rides -- every
+    realistic credential alphabet carries digits, and requiring one is
+    what keeps "token"/"basic" out of prose. A JWT-shaped value is backed
+    up by the JWT pass regardless."""
+    from taskq.obs._redact_exc import mask_credentials
+
+    digitless = "abcdefghijklmnop"  # 16 chars: over the floor, no digits
+    assert mask_credentials(f"token {digitless}") == f"token {digitless}"
+    # A digitless JWT-shape is still caught by the JWT mask behind it.
+    jwtish = "abcdefghijkmnopqrstuvwx.ABCDEFGHIJKLMNOP.qrstuvwxyz012345"
+    assert "***" in mask_credentials(f"Bearer {jwtish}")
+
+
+def test_bare_scheme_scan_stays_bounded_on_long_digitless_runs() -> None:
+    """The bare-scheme pass's ``{16,}`` repeat on a long digitless value
+    (the prose side of the digit requirement) must stay linear in the
+    text: a poison subject with a huge digitless run after "token" runs
+    synchronously on the event loop at audit-record time."""
+    import time
+
+    from taskq.obs._redact_exc import mask_credentials
+
+    text = "token " + "a" * 100_000
+    start = time.perf_counter()
+    out = mask_credentials(text)
+    elapsed = time.perf_counter() - start
+    assert out == text  # digitless prose rides
+    assert elapsed < 0.25, f"bare-scheme scan blew the budget: {elapsed:.3f}s"
+
+
 def test_jwt_shaped_token_is_masked_without_a_bearer_header() -> None:
     """A bare JWT (no ``Authorization:`` prefix around it) is masked too:
     response bodies quote the token raw."""

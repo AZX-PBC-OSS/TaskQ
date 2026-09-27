@@ -114,7 +114,16 @@ async def require_token(
 ) -> str:
     if credentials.credentials != "your-secret-admin-token":
         raise HTTPException(status_code=401, detail="invalid admin token")
-    return credentials.credentials
+    # Return an identity, never the credential itself: the value becomes
+    # the audit trail's principal_subject -- a table that is never pruned,
+    # rendered on the job detail page. (If a dependency returns the raw
+    # credential anyway as a string, the audit writer masks it and logs
+    # `admin-audit-principal-credential-redacted` -- but a subject is what
+    # the trail is for. A claims object whose `.subject` field itself
+    # carries the credential is bound verbatim -- the subject field is the
+    # identity contract -- with the same warning log, so a leak is never
+    # silent; return an identity either way.)
+    return "ops-admin"
 
 
 # Pass to create_router():
