@@ -698,7 +698,60 @@ class ShutdownWatchdog:
                 )
 
 
-def _classify_loop_parked(sample: _StackSample) -> bool | None:
+#: Sentinel for "the ``_run_once`` frame's ``timeout`` local could not be
+#: read" (a frame-shape drift across CPython versions, or a read that
+#: raced the frame resuming). The classifier degrades to the shape-only
+#: verdict, never raises: a missed discriminator is one sample of the
+#: documented churn over-report, not a dead watchdog thread.
+_TIMEOUT_UNREAD = object()
+
+
+def _run_once_frame_timeout(frame: Any) -> float | object | None:
+    """The ``timeout`` argument the sampled ``base_events._run_once`` frame
+    passed to its ``selector.select`` call, ``_TIMEOUT_UNREAD`` when no
+    such frame (or no such local) is in the chain.
+
+    Read from the SAME off-loop frame walk that produced the stack sample:
+    a thread suspended inside the select syscall has its ``_run_once``
+    frame frozen, and ``f_locals`` of a suspended frame is a plain
+    snapshot. When the loop thread resumes mid-read the GIL serialises the
+    local-cell read; the worst case is one poll's staleness, the same
+    sampling noise every verdict here already carries.
+
+    The value is the idle/churn discriminator: ``_run_once`` sets
+    ``timeout = 0`` exactly when ready callbacks are queued (the loop is
+    mid-dispatch, about to run work - NOT idle) and a positive or ``None``
+    timeout when it is about to wait for timers/IO (the genuine park).
+    """
+    walk = frame
+    seen_base = False
+    while walk is not None:
+        filename = walk.f_code.co_filename
+        if filename.endswith("base_events.py"):
+            seen_base = True
+            if walk.f_code.co_name == "_run_once":
+                try:
+                    local = walk.f_locals.get("timeout", _TIMEOUT_UNREAD)
+                except (
+                    Exception
+                ):  # Why: a locals-read racing teardown must degrade, not kill the watchdog thread.
+                    return _TIMEOUT_UNREAD
+                return (
+                    local if isinstance(local, (int, float)) or local is None else _TIMEOUT_UNREAD
+                )
+        elif seen_base:
+            # The base_events run_forever chain ends at the loop's caller:
+            # no _run_once in it, the shape's pair is not this loop's.
+            break
+        walk = walk.f_back
+    return _TIMEOUT_UNREAD
+
+
+def _classify_loop_parked(
+    sample: _StackSample,
+    *,
+    run_once_timeout: float | object | None = _TIMEOUT_UNREAD,
+) -> bool | None:
     """Is the event-loop thread parked in its idle selector wait?
 
     Reads one sampled frame chain of the loop thread (the watchdog thread
@@ -712,20 +765,33 @@ def _classify_loop_parked(sample: _StackSample) -> bool | None:
     returns None - the caller counts that as not parked, the conservative
     direction: the idle fraction may under-report, never over-report.
 
-    A zero-timeout select (``_run_once`` with ready callbacks queued) is
-    indistinguishable from the parked wait at this resolution; that window
-    is microseconds wide against a half-second poll and costs at most one
-    sample of idle over-report per landing.
+    The selector shape alone cannot distinguish the idle wait from the
+    ZERO-TIMEOUT select ``_run_once`` makes when ready callbacks are
+    queued (measured: a hot ``call_soon`` spinner sits inside
+    ``select(0)`` for nearly all of its wall time, so shape-only
+    classification read a 100%-busy loop as ~100% parked). The
+    ``_run_once`` frame's ``timeout`` local is the discriminator: 0 means
+    ready callbacks are queued (mid-dispatch, NOT parked); a positive or
+    ``None`` timeout is the genuine park. Callers that could not read the
+    local (``_TIMEOUT_UNREAD`` - a CPython frame-shape drift) fall back to
+    the shape-only verdict, which keeps the churn over-report for that
+    one sample rather than fabricating busy.
     """
     if len(sample) < 2:
         return None
     inner, outer = sample[0], sample[1]
-    return (
+    if not (
         os.path.basename(inner[0]) == "selectors.py"
         and inner[2] == "select"
         and os.path.basename(outer[0]) == "base_events.py"
         and outer[2] == "_run_once"
-    )
+    ):
+        return False
+    if run_once_timeout is _TIMEOUT_UNREAD:
+        return True
+    # timeout == 0: ready callbacks are queued - the loop is mid-dispatch.
+    # bool|None guard: the walker only passes float|None|_TIMEOUT_UNREAD.
+    return run_once_timeout != 0
 
 
 class LoopLagWatchdog:
@@ -921,7 +987,11 @@ class LoopLagWatchdog:
         frame = sys._current_frames().get(ident)
         if frame is None:
             return None
-        return _classify_loop_parked(_sample_frame_stack(frame))
+        # One frame read serves BOTH the shape sample and the timeout
+        # local: two reads could straddle a scheduling boundary and mix
+        # verdicts (the shape of one instant with the timeout of another).
+        sample = _sample_frame_stack(frame)
+        return _classify_loop_parked(sample, run_once_timeout=_run_once_frame_timeout(frame))
 
     def _unique_job_id(self, actor: str | None) -> str | None:
         """The running job id when exactly one matches the attributed actor.

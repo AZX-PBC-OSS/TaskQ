@@ -133,10 +133,13 @@ class LoopIdleWindow:
     - The classification is defined against CPython's selector-based
       event loop (the only loop TaskQ runs on). A frame shape it does not
       recognise counts as not parked, so ``idle_fraction`` biases toward
-      busy, never toward idle.
-    - A poll landing in the microseconds-wide zero-timeout select call
-      ``_run_once`` makes when ready callbacks are queued reads as parked;
-      a one-sample under-count of busy at the default cadence.
+      busy. The idle direction is guarded by the classifier's timeout
+      read: the zero-timeout select ``_run_once`` makes with ready
+      callbacks queued (a hot ``call_soon`` spinner sits inside it for
+      nearly all its wall time - shape-only classification read such a
+      loop as ~100% parked) is classified NOT parked via the
+      ``_run_once`` frame's ``timeout`` local; the residual over-report
+      window is one sample where that local cannot be read.
 
     The window is drained by the heartbeat once per tick: ``drain``
     returns the aggregate and resets, so the published value always
