@@ -31,11 +31,13 @@ module attacks each claim where the original pass stopped:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -660,3 +662,100 @@ def test_prefix_walk_covers_every_url_bearing_attribute(
             )
             checked += 1
     assert checked > 0, "the walk must have collected URL-bearing attributes"
+
+
+# ── 6. the re-attack's own hardening: the cells the re-attack left unpinned ─
+#
+# Three pins over the re-attack's own fixes, found while attacking them:
+# the base-path literal was pinned for the ampersand prefix only (the
+# ``</script>`` break-out and the EMPTY root-deployment prefix were not),
+# and the vendored lucide file had no integrity pin at all - a silently
+# corrupted vendor is the air-gap failure the move was made to prevent,
+# discovered only when the icons never render.
+
+_LUCIDE_UNPKG_SHA256 = (
+    # The hash of the bytes https://unpkg.com/lucide@0.544.0/dist/umd/lucide.min.js
+    # served at the time of vendoring (verified by fetch + compare). unpkg
+    # serves immutable versioned URLs, so a mismatch here means the vendored
+    # copy was corrupted or silently re-vendored from something else - the
+    # icons break offline either way, and the pin forces a conscious update.
+    "72646e574ecc776f056949d914e5f461881e639b236910680e38b097d3561634"
+)
+
+
+def test_taskq_base_path_survives_a_script_breakout_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The base-path pin covered the ``&`` prefix; the ``</script>`` prefix
+    is the same literal in the same script context and must be pinned too:
+    tojson must escape it into the JS string, and the JS value must
+    round-trip to the raw prefix."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    payload = "</script><script>alert(1)</script>"
+    client = _make_client(_ClockPool(_ClockConn(fetchrow=_job_row(_JOB_ID))), base_path=payload)
+    html = client.get(f"/jobs/{_JOB_ID}").text
+    match = re.search(r"window\.TASKQ_BASE_PATH = (.*?);</script>", html, re.S)
+    assert match is not None, "the page must embed its base path config"
+    literal = match.group(1).strip()
+    assert "</script>" not in literal, (
+        "a raw </script> inside the TASKQ_BASE_PATH script block ends the "
+        "script element: the rest of the prefix renders as markup"
+    )
+    assert json.loads(literal) == payload, (
+        f"TASKQ_BASE_PATH rendered as {literal!r}; the JS literal must "
+        f"evaluate to the raw prefix {payload!r}"
+    )
+
+
+def test_taskq_base_path_empty_prefix_is_a_valid_root_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root deployment (no prefix) renders ``window.TASKQ_BASE_PATH = "";``
+    - the literal must still be a JSON string (not ``null``/``undefined``
+    or a bare word), and every URL the page builds from the concatenation
+    must be root-absolute."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = _make_client(_ClockPool(_ClockConn(fetchrow=_job_row(_JOB_ID))), base_path="")
+    html = client.get(f"/jobs/{_JOB_ID}").text
+    match = re.search(r"window\.TASKQ_BASE_PATH = (.*?);</script>", html, re.S)
+    assert match is not None, "the page must embed its base path config"
+    literal = match.group(1).strip()
+    assert literal == '""', (
+        f"an empty base_path must render as the empty JS string literal, got {literal!r}"
+    )
+    for src in re.findall(r'<script[^>]*\bsrc="([^"]+)"', html):
+        assert src.startswith("/static/"), (
+            f"the root deployment's script src {src!r} must be root-absolute"
+        )
+
+
+def test_vendored_lucide_is_the_pinned_unpkg_build() -> None:
+    """The vendored lucide.min.js must be byte-identical to the unpkg
+    build the chrome's comment names, and must carry lucide's ISC license
+    header - the repo's discipline for every vendored third-party asset.
+    A silently corrupted vendor renders every icon as an empty ``<i>``
+    offline; the hash pin makes that a red test instead of a discovery."""
+    vendored = (
+        Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "lucide.min.js"
+    )
+    assert vendored.exists(), "the vendored lucide asset must ship in the static dir"
+    body = vendored.read_bytes()
+    assert hashlib.sha256(body).hexdigest() == _LUCIDE_UNPKG_SHA256, (
+        "lucide.min.js's bytes drifted from the pinned unpkg v0.544.0 UMD "
+        "build - re-vendor consciously and update the pin, or restore the "
+        "exact file (a corrupted vendor breaks the icons offline)"
+    )
+    header = body[:512].decode("utf-8", errors="replace")
+    assert "@license lucide v0.544.0 - ISC" in header, (
+        "the vendored lucide must carry its ISC license header with the "
+        "pinned version (the repo's vendoring discipline)"
+    )
+    # The chrome's comment names the same version: the doc must not drift
+    # from the asset it describes.
+    chrome = (
+        Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "templates" / "_base.html"
+    ).read_text()
+    assert "lucide v0.544.0" in chrome, (
+        "_base.html's vendoring comment must name the version the hash pin "
+        "holds - a comment that drifted from the asset lies to the next reviewer"
+    )
