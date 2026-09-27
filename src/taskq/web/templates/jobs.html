@@ -186,7 +186,11 @@ window.__taskqJobConfig = {
     </div>
 
     {# Table container #}
-    <div id="job-table-container">
+    {# The container id lives on the table fragment's own root (the partial
+       both htmx and the poll's fetch receive) — NOT on this wrapper: a
+       wrapper id would be replaced by the id-less fragment on the first
+       swap and stranded every later refresh. #}
+    <div>
         {% include "_partials/job_table.html" %}
     </div>
 
