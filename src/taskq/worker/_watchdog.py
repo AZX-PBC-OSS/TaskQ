@@ -58,6 +58,7 @@ from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
 from taskq.worker._stall_tally import (
     KIND_BLOCKING_CALL,
     KIND_GIL_HELD,
+    LoopIdleWindow,
     StallAttributionTally,
     remedy_for_kind,
 )
@@ -697,6 +698,36 @@ class ShutdownWatchdog:
                 )
 
 
+def _classify_loop_parked(sample: _StackSample) -> bool | None:
+    """Is the event-loop thread parked in its idle selector wait?
+
+    Reads one sampled frame chain of the loop thread (the watchdog thread
+    already samples these for stall attribution - this is the SAME
+    mechanism, applied every poll instead of only during stalls). A
+    CPython asyncio loop with no ready callbacks parks inside its
+    selector: the innermost Python frame is ``selectors.py:select``
+    directly under ``base_events.py:_run_once``. Any other readable shape
+    means the loop thread was executing a callback (busy), and a chain
+    too short to classify (the thread exited, the read raced teardown)
+    returns None - the caller counts that as not parked, the conservative
+    direction: the idle fraction may under-report, never over-report.
+
+    A zero-timeout select (``_run_once`` with ready callbacks queued) is
+    indistinguishable from the parked wait at this resolution; that window
+    is microseconds wide against a half-second poll and costs at most one
+    sample of idle over-report per landing.
+    """
+    if len(sample) < 2:
+        return None
+    inner, outer = sample[0], sample[1]
+    return (
+        os.path.basename(inner[0]) == "selectors.py"
+        and inner[2] == "select"
+        and os.path.basename(outer[0]) == "base_events.py"
+        and outer[2] == "_run_once"
+    )
+
+
 class LoopLagWatchdog:
     """Detector 4: daemon thread measuring event-loop scheduling lag.
 
@@ -751,6 +782,7 @@ class LoopLagWatchdog:
         clock: Callable[[], float] = time.monotonic,
         actor_code_names: dict[int, str] | None = None,
         stall_tally: StallAttributionTally | None = None,
+        idle_window: LoopIdleWindow | None = None,
         list_running_jobs: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self._loop = loop
@@ -763,6 +795,7 @@ class LoopLagWatchdog:
         self._clock = clock
         self._actor_code_names: dict[int, str] = dict(actor_code_names or {})
         self._stall_tally = stall_tally
+        self._idle_window = idle_window
         self._list_running_jobs = list_running_jobs
         self._last_beat = clock()
         self._started = clock()
@@ -874,6 +907,22 @@ class LoopLagWatchdog:
             gil_pressure = self._gil_pressure
         return KIND_GIL_HELD if gil_pressure else KIND_BLOCKING_CALL
 
+    def _loop_thread_parked(self) -> bool | None:
+        """The event-loop thread's park classification for THIS instant.
+
+        Same thread-safe off-loop frame read the stall sampler uses
+        (``sys._current_frames`` needs no cooperation from a blocked
+        loop); an unreadable chain (thread gone, teardown race) degrades
+        to None, which the window counts as not parked.
+        """
+        ident = threading.main_thread().ident
+        if ident is None:
+            return None
+        frame = sys._current_frames().get(ident)
+        if frame is None:
+            return None
+        return _classify_loop_parked(_sample_frame_stack(frame))
+
     def _unique_job_id(self, actor: str | None) -> str | None:
         """The running job id when exactly one matches the attributed actor.
 
@@ -983,6 +1032,13 @@ class LoopLagWatchdog:
         if not self._armed():
             return
         self._sample_landed_beat()
+        # One idle-fraction sample per poll, on the same cadence the beat
+        # rides: parked = the loop thread was in its idle selector wait at
+        # this instant. The stall sampler below reuses the same frame read
+        # when a stall is in progress; this one runs every poll so a full
+        # window's worth of samples lands beside the stall counts.
+        if self._idle_window is not None:
+            self._idle_window.record_sample(parked=self._loop_thread_parked())
         lag = self._clock() - self._last_beat
         if lag > self._warn_budget:
             # The loop has not scheduled for a warn budget: the stall is

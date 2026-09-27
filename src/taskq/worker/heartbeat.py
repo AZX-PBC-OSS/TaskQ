@@ -359,6 +359,43 @@ _tick_duration = _meter.create_histogram(
     unit="s",
     description="Wall-clock seconds for one heartbeat tick.",
 )
+# Bounded buckets: the value is a fraction in [0, 1], so the boundary set
+# covers the whole range and nothing spills into an unbounded tail. One
+# sample per heartbeat window (drained at the tick's metadata merge), not
+# per beat of the underlying sampler: the distribution answers "what share
+# of windows was this loop mostly idle in", the same granularity the
+# windowed stall tally publishes at.
+_loop_idle_fraction = _meter.create_histogram(
+    name="taskq.worker.loop_idle_fraction",
+    unit="1",
+    description="Sampled idle fraction of this worker's event loop, one "
+    "sample per heartbeat window: the share of the lag watchdog's polls "
+    "in the window whose event-loop thread was parked in its idle "
+    "selector wait (the CPython asyncio loop's no-ready-callbacks state), "
+    "published beside the windowed stall tally in the workers row "
+    "metadata. A sampled proportion, not an integral: sub-interval busy "
+    "bursts below the watchdog poll cadence are invisible, unreadable "
+    "frame samples count as not parked (samples_unreadable in the "
+    "metadata carries that share), and the signal measures the loop "
+    "thread, not job concurrency. Read beside the windowed stall tally: "
+    "a window with stalls attributed and a low idle fraction is a loop "
+    "with no spare scheduling capacity; a healed worker's idle fraction "
+    "recovers while its cumulative stall counts stand still.",
+    explicit_bucket_boundaries_advisory=(
+        0.0,
+        0.05,
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+        1.0,
+    ),
+)
 
 
 async def _failed_tick_ledger(
@@ -542,11 +579,24 @@ async def heartbeat_loop(
                             # one dict merge in the statement the tick already
                             # issues, no extra round trip. An empty tally merges a
                             # no-op, so a quiet process leaves the registered
-                            # metadata keys untouched.
+                            # metadata keys untouched. The idle-fraction window
+                            # drains at the same seam (the watchdog thread is its
+                            # writer, this loop its reader): the drained aggregate
+                            # publishes as ``loop_idle`` beside the stall keys and
+                            # feeds the per-window histogram. A failed tick's
+                            # drain is metrics-only - the histogram sample stands,
+                            # the row's payload dies with the rolled-back
+                            # transaction, and the next tick's window starts
+                            # fresh (never double-counted).
+                            metadata_payload = deps.stall_tally.metadata_value()
+                            idle_window = deps.loop_idle.drain()
+                            if idle_window is not None:
+                                metadata_payload["loop_idle"] = idle_window.as_metadata()
+                                _loop_idle_fraction.record(idle_window.idle_fraction)
                             await conn.execute(
                                 update_worker_liveness_sql,
                                 worker_id,
-                                jsonb_param(deps.stall_tally.metadata_value()),
+                                jsonb_param(metadata_payload),
                             )
                             renewal_at = time.monotonic()
                             # The gated renewal: binds the threshold as
@@ -890,7 +940,12 @@ async def heartbeat_loop(
 
 
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
-    "SELECT id, attempt, started_at, max_attempts, retry_kind, cancel_phase "
+    # scheduled_at rides for the attempt ledger's due_at stamp: the value
+    # this snapshot reads is the claim-time due time of each running row's
+    # attempt (the isolate arbiter below RESCHEDULES the re-pend arm, so
+    # its own RETURNING cannot carry it - see
+    # 01.00.20_04_pre_attempt_due_at.sql).
+    "SELECT id, attempt, started_at, scheduled_at, max_attempts, retry_kind, cancel_phase "
     'FROM "{schema}".jobs '
     "WHERE locked_by_worker = $1 AND status = 'running'"
     " AND id <> ALL($2::uuid[])"
@@ -1346,6 +1401,14 @@ async def isolate_self(
                                 None,
                                 worker_id,
                                 "{}",  # metadata, matches the sweep paths' literal
+                                # The attempt's due time: the claim-time
+                                # scheduled_at from the snapshot SELECT (the
+                                # arbiter's re-pend already rescheduled the row,
+                                # so its RETURNING cannot carry it; the ONLY
+                                # writer between claim and isolate is nobody -
+                                # the loop was blocked - so the snapshot value
+                                # IS the claim-time due time).
+                                row["scheduled_at"],
                             )
                     if event_job_ids:
                         await conn.execute(

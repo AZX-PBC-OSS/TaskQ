@@ -283,6 +283,9 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
     "duration_ms",
     "worker_id",
     "metadata",
+    # 01.00.20_04: the archive twin mirrors every job_attempts column
+    # (explicit lists, never source.* - see the block comment above).
+    "due_at",
 )
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
