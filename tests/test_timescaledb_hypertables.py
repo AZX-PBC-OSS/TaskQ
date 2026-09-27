@@ -1126,6 +1126,121 @@ async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
         await conn.close()
 
 
+async def _seed_null_finished_archive_row(conn: asyncpg.Connection, schema: str) -> None:
+    """The one row shape the hypertable mode cannot hold: a NULL finished_at.
+
+    Direct-SQL written on purpose — that is the ONLY way the shape enters
+    the archive (every production terminal arm stamps finished_at, and
+    the archive COPY's candidate and lock-time predicates both require it
+    non-NULL), which is exactly the debris verdict the refusal encodes.
+    """
+    await conn.execute(
+        f"""INSERT INTO {schema}.jobs_archive (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                scheduled_at, finished_at, archived_at, expire_at)
+            VALUES ($1, 'test_actor', 'default', '{{"v":1}}'::jsonb, 3, 'transient',
+                'succeeded', now(), NULL, now(), now() + interval '365 days')""",
+        new_uuid(),
+    )
+
+
+async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
+    timescale_dsn: str, ts_schema: str
+) -> None:
+    """The archive's NULL finished_at tail: refused BEFORE any DDL, loudly.
+
+    ``jobs_archive.finished_at`` is nullable (the archive mirrors every
+    ``jobs`` column, and a job's ``finished_at`` is NULL until a terminal
+    transition stamps it), so a legacy archive can hold NULL-finished_at
+    rows: version skew carries the shape in (the reclaim sweep's
+    pre-reorder shape terminalised budget-carrying cancelled rows
+    unstamped — the un-draining NULL tail of the prune's cursor walk, the
+    shape its finished_at CASE comment names), and direct SQL carries it
+    in today. TimescaleDB cannot convert the table while such rows exist
+    (the partition column must be NOT NULL), and the pre-fix behavior was
+    the worst shape: the NotNullViolationError surfaced mid-migrate_data,
+    AFTER the primary-key drops, the unique adds, and the foreign-key
+    drop had already committed — a half-converted schema whose archive
+    has no primary key and whose job_events is already a hypertable.
+    Pinned here, three facts:
+
+    * the refusal is LOUD: it names the row count and both remediations
+      (complete via finished_at = archived_at, or discard);
+    * the refusal is ATOMIC: it fires before ANY statement of the
+      conversion, so the schema stays byte-identical to what the operator
+      arrived with — every pkey and the attempts FK still in place, no
+      hypertable, and the debris row untouched;
+    * the remediation unblocks: the census counts remaining rows only,
+      so the backfill the message names, followed by a re-run, converts
+      all three tables cleanly.
+    """
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+        await _seed_null_finished_archive_row(conn, ts_schema)
+        await _seed_null_finished_archive_row(conn, ts_schema)
+        # A healthy row beside the debris: the conversion must not be
+        # refused for a table that is merely POPULATED.
+        await _seed_archive_row(
+            conn, schema=ts_schema, finished_at=datetime.now(UTC) - timedelta(days=3)
+        )
+        settings = _ts_settings(timescale_dsn, ts_schema)
+
+        with pytest.raises(
+            TimescaleDBUnavailableError,
+            match=r"2 row\(s\) whose finished_at is NULL",
+        ) as exc_info:
+            await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        # The remediation is in the message, both branches named.
+        message = str(exc_info.value)
+        assert "finished_at = archived_at" in message
+        assert "DELETE FROM" in message
+
+        # ATOMIC: nothing applied. Every vanilla constraint the
+        # half-converted pre-fix state lost is still in place, no table
+        # converted, and the debris row is exactly where it was.
+        ht = await conn.fetch(
+            "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            ts_schema,
+        )
+        assert ht == [], "the refusal must precede every conversion statement"
+        cons = await conn.fetch(
+            "SELECT c.relname AS tbl, con.conname "
+            "FROM pg_constraint con "
+            "JOIN pg_class c ON c.oid = con.conrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = $1 AND con.contype IN ('p', 'f')",
+            ts_schema,
+        )
+        names = {(r["tbl"], r["conname"]) for r in cons}
+        assert ("jobs_archive", "jobs_archive_pkey") in names, (
+            "the archive must keep its primary key: the pre-fix failure "
+            "dropped it before surfacing, and a duplicate-id insert succeeded"
+        )
+        assert ("job_attempts_archive", "job_attempts_archive_pkey") in names
+        assert ("job_attempts_archive", "job_attempts_archive_job_id_fkey") in names
+        assert ("job_events", "job_events_pkey") in names
+        n_rows = await conn.fetchval(f"SELECT count(*) FROM {ts_schema}.jobs_archive")
+        assert n_rows == 3, "the debris rows must survive the refusal untouched"
+
+        # The remediation unblocks: the census counts only rows that are
+        # still NULL, so completing them makes the very next deploy
+        # convert cleanly — the refusal is a gate, never a wedge.
+        await conn.execute(
+            f"UPDATE {ts_schema}.jobs_archive SET finished_at = archived_at "
+            "WHERE finished_at IS NULL"
+        )
+        report = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()
+
+
 async def test_widened_unique_constraints_still_reject_exact_duplicates(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
