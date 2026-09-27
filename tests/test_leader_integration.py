@@ -18,6 +18,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
+from taskq._forkguard import take_parent_fork_event
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend.clock import SystemClock
@@ -1066,6 +1067,33 @@ def _route_logs_to_stdlib() -> None:
     setup_logging(level="DEBUG", log_format="json")
 
 
+def _drain_stale_parent_fork_stamp() -> None:
+    """Consume any fork stamp a SIBLING test left in this process.
+
+    The fork guard's parent stamp (``taskq._forkguard._parent_fork_at``)
+    is a PROCESS-global: once any test has installed the guard (the
+    fork-attack family does, for real), every ``fork()`` in this pytest
+    process - the attack tests' own deliberate ``os.fork()`` calls, made
+    with live sockets precisely to exercise the guard - stamps it, and
+    the stamp is consumed by the next loop that asks. A sibling test can
+    therefore leave an UNCONSUMED stamp behind: CI caught exactly that
+    (``fork_age_secs: 35.593`` - fifty times this test's 3 s window, so
+    the fork predated it; the fork-attack module forks in-process with
+    no stamp cleanup). This test's pods are in-process asyncio tasks,
+    the only error-asserting capture in the file, and their fresh
+    heartbeat loops were the first consumers of the stale stamp - so
+    the guard's honest report of a REAL fork landed in THIS test's
+    caplog window and tripped the zero-errors assertion.
+
+    The drain scopes the capture honestly: only forks landing AFTER it
+    are this test's signals (nothing here forks; a fresh stamp during
+    the window would still be reported). Not a guard bug and not a
+    leadership bug - a capture-scope discipline for any process-wide
+    signal consumed per-loop in tests that share a pytest process.
+    """
+    take_parent_fork_event()
+
+
 @pytest.mark.asyncio
 async def test_losing_pod_emits_no_error_and_keeps_retrying(
     pg_dsn: str, caplog: pytest.LogCaptureFixture
@@ -1094,6 +1122,10 @@ async def test_losing_pod_emits_no_error_and_keeps_retrying(
     try:
         shutdown = asyncio.Event()
 
+        # The capture is armed only after the stale-stamp drain: a fork a
+        # sibling test performed in this pytest process predates this
+        # test's window and is not this test's signal (see the helper).
+        _drain_stale_parent_fork_stamp()
         _route_logs_to_stdlib()
         with caplog.at_level(logging.DEBUG):
             election_a, hb_a = await _run_pod(deps_a, backend_a, wid_a, shutdown)
@@ -1129,6 +1161,100 @@ async def test_losing_pod_emits_no_error_and_keeps_retrying(
         )
         assert _events(caplog, "leader-retry"), (
             "sanity: the losing pod's retry activity must be present in the stream"
+        )
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_sibling_fork_stamp_never_reports_in_the_losing_pods_window(
+    pg_dsn: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin for the CI leak the losing-pod test's drain fixes: a fork stamp
+    left over from a SIBLING test must never surface in this test family's
+    zero-error captures.
+
+    The reproduced shape (CI, ``fork_age_secs: 35.593``): the fork-attack
+    family installs the guard and calls ``os.fork()`` in THIS pytest
+    process with live sockets; its parent stamp is process-global and its
+    tests leave it unconsumed. The next test whose heartbeat loops tick
+    is the stamp's first consumer, so the guard's honest
+    ``fork-detected-in-worker-process`` report - about a fork that
+    predated the test by fifty window-lengths - landed in the losing
+    pod's caplog and tripped the zero-errors assertion. The event was
+    real, the report honest, the attribution a capture-scope artifact.
+
+    Pinned here with the guard's real module state (monkeypatch-scoped):
+    a stale stamp sitting exactly where a sibling would have left it,
+    the losing pod's two-pod shape run over it, and the capture staying
+    clean - the drain scoped the capture to forks that happen DURING the
+    window. Remove the drain and this pin goes red in the CI failure's
+    own shape.
+    """
+    import time
+
+    import taskq._forkguard as forkguard_mod
+
+    (
+        _schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+
+    # The sibling's leftover, exactly where the real _after_in_parent hook
+    # would have left it: the CI failure's own stamp age (35.593s). The
+    # loops' consume reads only this stamp (take_parent_fork_event), so
+    # seeding it alone reproduces the consumer side of the leak whatever
+    # the guard's install state. Monkeypatch restores the pre-test value
+    # afterwards - this pin must not become the leak it pins.
+    monkeypatch.setattr(forkguard_mod, "_parent_fork_at", time.monotonic() - 35.593, raising=False)
+
+    try:
+        shutdown = asyncio.Event()
+
+        _drain_stale_parent_fork_stamp()
+        _route_logs_to_stdlib()
+        with caplog.at_level(logging.DEBUG):
+            election_a, hb_a = await _run_pod(deps_a, backend_a, wid_a, shutdown)
+            election_b, hb_b = await _run_pod(deps_b, backend_b, wid_b, shutdown)
+            tasks = [election_a, hb_a, election_b, hb_b]
+            try:
+                await asyncio.sleep(6 * _HEARTBEAT_INTERVAL)
+
+                assert int(deps_a.is_leader.is_set()) + int(deps_b.is_leader.is_set()) == 1, (
+                    "sanity: exactly one pod must hold leadership"
+                )
+            finally:
+                shutdown.set()
+                for task in tasks:
+                    task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+        fork_reports = [
+            r for r in caplog.records if "fork-detected-in-worker-process" in r.getMessage()
+        ]
+        assert fork_reports == [], (
+            "a STALE sibling fork stamp was reported inside this test's window: "
+            "the capture absorbed a fork that predates it (the CI leak shape); "
+            f"got {[r.getMessage() for r in fork_reports]}"
+        )
+        errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert errors == [], (
+            f"no error may ride a stale stamp in this family's captures; got "
+            f"{[record.getMessage() for record in errors]}"
+        )
+        assert _events(caplog, "leader-elected"), (
+            "sanity: the pods ran their election over the stale stamp"
         )
     finally:
         await stack_b.aclose()

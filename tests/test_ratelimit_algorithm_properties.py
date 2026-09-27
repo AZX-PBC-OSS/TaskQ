@@ -75,7 +75,7 @@ from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
-from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.fixtures import ModulePgSchema, redis_url_for
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _SCHEMA_LABEL = "taskq_test"
@@ -420,7 +420,9 @@ async def test_redis_log_window_concurrent_conservation(redis_url: str) -> None:
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
-    redis_url: str,
+    killable_redis_container: object,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
 ) -> None:
     """Pinned invariant (the burst boundary): 120 concurrent GCRA acquires
     (limit 100 / 600 s) admit at most
@@ -441,6 +443,29 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
     (or returned a stale TAT echo) would break the chain spacing or hand
     the refund CAS a wrong compare target; a check-then-set split would
     blow past the burst boundary under this gather.
+
+    Why a PRIVATE container instead of the shared ``redis_url``: the
+    120-acquire storm rides a real redis client with ``socket_timeout=
+    None``, and on the shared broker a co-tenant stall (the -n 2 leg's
+    load) made a read fail — the product's ``with_pg_fallback`` then
+    fired CORRECTLY (weather → bounded retry → fallback) and, with no
+    pg_pool injected, the PG arm raised the typed
+    ``RateLimitDependencyUnavailable: pg_pool not injected`` refusal. CI
+    red, product innocent: the test had assumed pure-redis health. Two
+    fixes, both here. (a) This test alone moves to its own Dragonfly
+    (~1s boot, the reconnection test's precedent), so the storm no
+    longer races a shared container's stall. (b) The file's PG fixtures
+    are injected, so IF a redis failure still lands, the fallback runs
+    its CORRECT path — and the asserts treat the fallback's decision
+    shape honestly: the burst boundary is the REDIS ledger's conservation
+    law (a fallback acquire is a decision from the POSTGRES backend, a
+    different ledger with its own GCRA chain), so the redis-boundary and
+    TAT-chain asserts count redis-backend decisions only, the fallback
+    arm gets its own boundary (the same GCRA math, its echoes in the
+    seconds domain with seconds-domain keys), and the composition is
+    bounded: redis grants within the calibrated bound, fallback grants
+    within the PG GCRA's own spread-calibrated bound, denials of either
+    arm carrying no TAT echo.
     """
     limit = 100
     window_ms = 600_000  # 600 s: emission 6 s, far above any gather spread
@@ -452,43 +477,88 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
         backend="redis",
         style="gcra",
     )
+    # Why: redis_url_for resolves the mapped port via docker HTTP - off-loop.
+    redis_url = await asyncio.to_thread(redis_url_for, killable_redis_container)
     client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
-    settings = _redis_settings(redis_url)
+    # REAL pg settings + the module pool: if the fallback fires, it lands
+    # in the migrated module schema instead of the typed refusal.
+    settings = WorkerSettings.load_from_dict(
+        {
+            "pg_dsn": module_pg_schema.pg_dsn,
+            "schema_name": module_pg_schema.schema_name,
+            "redis_url": redis_url,
+        },
+    )
     clock = SystemClock()
 
     try:
         t0 = time.perf_counter()
         results = await asyncio.gather(
-            *[sw.acquire(redis_client=client, clock=clock, settings=settings) for _ in range(120)]
+            *[
+                sw.acquire(
+                    redis_client=client, clock=clock, settings=settings, pg_pool=module_pg_pool
+                )
+                for _ in range(120)
+            ]
         )
         spread_ms = (time.perf_counter() - t0) * 1000
 
-        allowed = [r for r in results if r.allowed]
-        # Self-calibrated pure-GCRA bound: arrivals spread over the gather
-        # widen the window the boundary cell lives in, never shrink it.
+        # Every decision came from one of the two wired backends.
+        assert {r.backend for r in results} <= {"redis", "postgres"}
+
+        redis_allowed = [r for r in results if r.allowed and r.backend == "redis"]
+        fallback_allowed = [r for r in results if r.allowed and r.backend == "postgres"]
+
+        # The burst boundary is the REDIS ledger's conservation law:
+        # arrivals spread over the gather widen the window the boundary
+        # cell lives in, never shrink it.
         calibrated_bound = int((window_ms + spread_ms) / emission_ms) + 1
-        assert len(allowed) <= calibrated_bound, (
-            f"burst boundary violated: {len(allowed)} granted "
+        assert len(redis_allowed) <= calibrated_bound, (
+            f"burst boundary violated: {len(redis_allowed)} granted from redis "
             f"(bound={calibrated_bound}, spread={spread_ms:.1f}ms)"
         )
 
+        # The TAT chain is likewise the REDIS ledger's chain (string
+        # echoes, milliseconds): a fallback decision's TATs live in the
+        # PG ledger's chain and are asserted below in their own domain.
         posts: list[float] = []
-        for r in allowed:
+        for r in redis_allowed:
             ps = r.previous_state
-            assert ps is not None, "allowed GCRA decision lost its TAT echo"
+            assert ps is not None, "allowed redis GCRA decision lost its TAT echo"
             pre = float(ps["pre_acquire_tat_str"])  # type: ignore[arg-type]  # Why: the allowed arm always populates the string echoes
             post = float(ps["post_acquire_tat_str"])  # type: ignore[arg-type]
             assert post - pre == pytest.approx(emission_ms, rel=1e-9)
             posts.append(post)
 
-        assert len(set(posts)) == len(allowed), "duplicate post-TATs: a TAT write was lost"
+        assert len(set(posts)) == len(redis_allowed), "duplicate post-TATs: a TAT write was lost"
         for a, b in zip(sorted(posts), sorted(posts)[1:], strict=False):
             # tat = max(stored, now) can only WIDEN a gap between
             # consecutive allowances, never shrink it below one interval.
             assert b - a >= emission_ms * (1 - 1e-9)
 
+        # The fallback arm, bounded honestly by ITS ledger's own GCRA
+        # boundary (the same pure-GCRA math on the PG row; the gather's
+        # arrivals spread its statement clock the same way): each
+        # fallback acquire is ONE PG admission, and with_pg_fallback
+        # never re-enters the redis loop, so the fallback grants cannot
+        # conspire with the redis grants past their own bound.
+        emission_s = window_ms / limit / 1000.0
+        assert len(fallback_allowed) <= calibrated_bound, (
+            f"fallback boundary violated: {len(fallback_allowed)} granted from postgres "
+            f"(bound={calibrated_bound}, spread={spread_ms:.1f}ms)"
+        )
+        for r in fallback_allowed:
+            ps = r.previous_state
+            assert ps is not None, "allowed postgres GCRA decision lost its TAT echo"
+            # The PG echo is seconds-domain with seconds-domain keys.
+            pre_s = float(ps["pre_acquire_tat"])  # type: ignore[typing]  # Why: the PG arm's allowed decision always populates the pair
+            post_s = float(ps["post_acquire_tat"])  # type: ignore[typing]
+            assert post_s - pre_s == pytest.approx(emission_s, rel=1e-9)
+
         for r in results:
             if not r.allowed:
+                # Both arms: a denial carries no TAT echo (the redis
+                # script's denial branch and the PG arm's no-row path).
                 assert r.previous_state is None
     finally:
         await client.aclose()
