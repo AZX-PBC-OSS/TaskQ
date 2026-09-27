@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
@@ -269,6 +269,9 @@ class JobHandle[R: BaseModel | None]:
         Raises:
             RuntimeError: this handle was constructed without a
                 :class:`JobsClient`.
+            KeyError: the job does not exist (never enqueued, or pruned
+                past retention); the delegate's contract, a typo'd id and
+                a pruned job are indistinguishable here.
         """
         if self._client is None:
             raise RuntimeError(
@@ -380,11 +383,23 @@ class JobHandle[R: BaseModel | None]:
         :class:`~taskq.exceptions.StreamUnavailable` when the Postgres poll
         could not re-read the row for 30 s straight.
 
-        Does not advance :attr:`row`, the Redis path fetches no rows,
-        and advancing only on the PG fallback would make the semantics
-        backend-dependent.
+        The stream terminates: on the Redis path the job's current row is
+        read once before subscribing (an already-terminal job yields its
+        terminal event and returns instead of waiting on a channel that
+        will never speak again), every poll timeout re-reads the row as a
+        safety net (a terminal write whose pub/sub message was dropped —
+        Redis pub/sub is fire-and-forget — still ends the stream), and a
+        ``terminal=True`` event ends it as on the PG path. The one case
+        that never terminates on the Redis path is a job id that reads
+        back as missing: the stream cannot know the job's state, so it
+        falls through to the subscription (the PG fallback warns and ends
+        instead).
 
-        Yields events until a ``terminal=True`` event is produced.
+        Does not advance :attr:`row`, the Redis path fetches no rows
+        through the subscription (the snapshot read and the on-timeout
+        safety net below read through ``_backend`` directly without
+        recording), and advancing only there would make the semantics
+        backend-dependent.
         """
         from taskq.testing.in_memory import InMemoryBackend  # lazy, test-only dep
 
@@ -394,6 +409,16 @@ class JobHandle[R: BaseModel | None]:
             )
 
         if self._redis_client is not None and self._handle_settings is not None:
+            # The snapshot TaskQ.stream's Redis arm takes before
+            # subscribing: a job already terminal when this call was made
+            # has nothing left to publish, so without this read the
+            # generator waited on a silent channel forever (red-proven:
+            # tests/test_public_api_ergonomics.py). A missing row falls
+            # through to the subscription unchanged.
+            current = await self._backend.get(self.job_id)
+            if current is not None and current.status in TERMINAL_STATUSES:
+                yield self._row_to_progress_event(current, status_changed=True)
+                return
             # aclosing: closed FROM UPSTREAM on every exit that is not the
             # transport's own exhaustion - a consumer's ``break`` on the
             # terminal event closes it via GeneratorExit inside the
@@ -402,7 +427,12 @@ class JobHandle[R: BaseModel | None]:
             # for the GC's asyncgen finalizer to close later, one
             # ``async_generator_athrow`` task per abandoned generator - the
             # residue the loop-leak guard names.
-            async with contextlib.aclosing(self._progress_stream_redis()) as feed:
+            async with contextlib.aclosing(
+                self._progress_stream_redis(
+                    last_seq=current.progress_seq if current is not None else -1,
+                    last_status=current.status if current is not None else None,
+                )
+            ) as feed:
                 async for event in feed:
                     yield event
         else:
@@ -411,21 +441,73 @@ class JobHandle[R: BaseModel | None]:
                 async for event in feed:
                     yield event
 
-    async def _progress_stream_redis(self) -> AsyncGenerator[ProgressEvent, None]:
+    def _row_to_progress_event(self, row: JobRow, status_changed: bool) -> ProgressEvent:
+        """Synthesize a :class:`ProgressEvent` from a :class:`JobRow` snapshot.
+
+        Shared by the PG polling fallback (which maps every poll) and the
+        Redis path's snapshot / on-timeout re-fetch (which map a row read
+        outside the subscription), so both transports emit identically
+        shaped events for the same row.
+        """
+        kind = "state_change" if status_changed else "progress"
+        terminal = row.status in TERMINAL_STATUSES
+        return ProgressEvent(
+            kind=kind,  # type: ignore[arg-type]  # Why: kind is narrowed to "progress"|"state_change" by the ternary but pyright cannot track str→Literal narrowing.
+            job_id=self.job_id,
+            actor=row.actor,
+            ts=datetime.now(UTC),
+            seq=row.progress_seq,
+            status=row.status,
+            step=row.progress_state.get("step"),  # type: ignore[arg-type]  # Why: progress_state is dict[str, object]; field types are runtime-correct but pyright cannot verify narrowing through a generic dict.
+            percent=row.progress_state.get("percent"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
+            detail=row.progress_state.get("detail"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
+            data=row.progress_state.get("data"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
+            terminal=terminal,
+        )
+
+    async def _progress_stream_redis(
+        self,
+        *,
+        last_seq: int = -1,
+        last_status: JobStatus | None = None,
+    ) -> AsyncGenerator[ProgressEvent, None]:
         """Redis pub/sub path for progress_stream."""
         assert self._redis_client is not None
         assert self._handle_settings is not None
         channel = progress_channel(self._handle_settings.schema_name, self.job_id)
-        last_seq = -1
+
+        async def _refetch() -> ProgressEvent | None:
+            """The safety-net row read behind the subscription, the same
+            shape ``TaskQ.stream``'s Redis arm uses: Redis pub/sub is
+            fire-and-forget, so a terminal write whose message was
+            dropped (or that landed between the snapshot read and the
+            subscribe) would otherwise hang the stream forever. A changed
+            row yields its event, and a terminal row ends the stream via
+            redis_event_stream's terminal check."""
+            nonlocal last_seq, last_status
+            row = await self._backend.get(self.job_id)
+            if row is None:
+                return None
+            if row.progress_seq == last_seq and row.status == last_status:
+                return None
+            event = self._row_to_progress_event(row, status_changed=row.status != last_status)
+            last_seq = row.progress_seq
+            last_status = row.status
+            return event
 
         async def decode(raw_str: str) -> ProgressEvent | None:
-            nonlocal last_seq
+            nonlocal last_seq, last_status
             event = parse_progress_event(raw_str, job_id=self.job_id)
             if event is None:
                 return None
             if event.kind == "progress" and event.seq <= last_seq:
                 return None
             last_seq = event.seq
+            # Why the cast: ProgressEvent.status is a plain str on the wire
+            # (Redis pub/sub payload), the state variable carries JobStatus
+            # for the row-diff comparison; every value here originated as a
+            # JobRow.status literal.
+            last_status = cast("JobStatus", event.status)
             return event
 
         # aclosing: closed FROM UPSTREAM on every exit that is not the
@@ -440,6 +522,7 @@ class JobHandle[R: BaseModel | None]:
                 channel,
                 poll_timeout=30.0,
                 decode_message=decode,
+                on_timeout=_refetch,
             )
         ) as stream:
             async for event in stream:
@@ -449,21 +532,7 @@ class JobHandle[R: BaseModel | None]:
         """PG polling fallback path for progress_stream."""
 
         def row_to_event(row: JobRow, status_changed: bool) -> ProgressEvent:
-            kind = "state_change" if status_changed else "progress"
-            terminal = row.status in TERMINAL_STATUSES
-            return ProgressEvent(
-                kind=kind,  # type: ignore[arg-type]  # Why: kind is narrowed to "progress"|"state_change" by the ternary but pyright cannot track str→Literal narrowing.
-                job_id=self.job_id,
-                actor=row.actor,
-                ts=datetime.now(UTC),
-                seq=row.progress_seq,
-                status=row.status,
-                step=row.progress_state.get("step"),  # type: ignore[arg-type]  # Why: progress_state is dict[str, object]; field types are runtime-correct but pyright cannot verify narrowing through a generic dict.
-                percent=row.progress_state.get("percent"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
-                detail=row.progress_state.get("detail"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
-                data=row.progress_state.get("data"),  # type: ignore[arg-type]  # Why: same erasure boundary as above.
-                terminal=terminal,
-            )
+            return self._row_to_progress_event(row, status_changed)
 
         # aclosing: closed FROM UPSTREAM on every exit that is not the
         # transport's own exhaustion (progress_stream's GeneratorExit); a

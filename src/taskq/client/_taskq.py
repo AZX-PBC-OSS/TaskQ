@@ -458,9 +458,12 @@ class TaskQ:
         a client constructed with no opinion lands in the schema its worker
         fleet is listening on. An explicit value always wins.
     min_pool_size:
-        Minimum pool connections. Only used when ``dsn`` is provided.
+        Minimum pool connections. Only used when ``dsn`` or ``pg_provider``
+        is provided (both build the pool through the same factory path;
+        a caller-supplied ``pool`` / ``pool_factory`` is used as-is).
     max_pool_size:
-        Maximum pool connections. Only used when ``dsn`` is provided.
+        Maximum pool connections. Only used when ``dsn`` or
+        ``pg_provider`` is provided.
     redis_url:
         Redis URL string. Mutually exclusive with ``redis_client``.
         The library creates and owns the Redis client; ``close()`` will
@@ -497,8 +500,20 @@ class TaskQ:
         (token providers refresh per connection and need no rebuild).
         The rotation runs as a background task for the life of the client;
         a rebuild that fails leaves the live pool serving and is retried
-        on the next tick. Ignored for ``dsn=`` and ``pool=``, which have
-        nothing to rebuild from.
+        on the next tick. **Rejected** for ``dsn=`` and ``pool=`` (a
+        ``ValueError`` at construction), which have nothing to rebuild
+        from — it is not silently ignored, the docstring's earlier claim.
+    reclaim_event_visibility_delay:
+        Overrides the margin :meth:`watch_reclaims` assumes between a
+        ``job_events`` writer's INSERT and its COMMIT (see
+        :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`, default
+        2s). It is passed through to the constructed backend's
+        ``poll_reclaim_events`` and bounds the NOTIFY catch-up retry.
+        Must match whatever margin the worker fleet's sweep-adjacent
+        backend uses: the margin's correctness depends on writer
+        transaction duration, not reader preference, so a client that
+        widens it alone only silences the gap detection on itself.
+        ``None`` (the default) uses the shipped constant.
     """
 
     def __init__(
@@ -968,6 +983,16 @@ class TaskQ:
     ) -> JobHandle[R]:
         """Enqueue a job and return a typed handle.
 
+        The actor's name is NOT validated against the registration table
+        at enqueue time (any ``ActorRef`` is accepted, the same
+        defer-to-fire-time doctrine ``create_schedule`` applies): a
+        ref whose actor no worker declares enqueues successfully and the
+        job is parked at the snooze cadence by every worker that claims
+        it (``released_reason: "actor-not-found"``, the stranded-jobs
+        detector surfaces it) rather than being refused here. See
+        :meth:`JobsClient.enqueue` for the full enqueue contract:
+        dedup, ``max_pending``, and idempotency semantics.
+
         ``schedule_to_close`` (absolute datetime) is deprecated, it crosses
         clock domains (the app clock that produced it vs the database clock
         that evaluates it).  Declare ``retry.time_budget`` on the actor
@@ -1080,7 +1105,13 @@ class TaskQ:
         *,
         result_adapter: TypeAdapter[R] | None = None,
     ) -> JobHandle[R] | None:
-        """Look up a job by id. Returns ``None`` when the job does not exist."""
+        """Look up a job by id. Returns ``None`` when the job does not exist.
+
+        Delegates to :meth:`JobsClient.get` (jobs table first, then the
+        archive tier; ``None`` means the id lives in neither). The
+        ``result_adapter`` default and its status-only-idiom rationale are
+        documented there.
+        """
         return await self._require_open().get(job_id, result_adapter=result_adapter)
 
     async def get_row(self, job_id: JobId) -> JobRow | None:
@@ -1106,7 +1137,21 @@ class TaskQ:
         job_id: JobId,
         reason: str | None = None,
     ) -> CancelResult:
-        """Request cancellation of a job. Raises :class:`KeyError` if not found."""
+        """Request cancellation of a job and return a :class:`CancelResult`.
+
+        Delegates to :meth:`JobsClient.cancel`. The result reports
+        ``previous_status`` (the row as first read) and ``new_status``
+        (the row re-read after the cancel request was written; the two
+        are not atomically consistent, a job can move in between), and
+        ``cancellation_initiated`` is ``False`` when no cancellation was
+        needed (the job was already terminal, or had a cancel request
+        recorded).
+
+        Raises :class:`KeyError` carrying *job_id* when the job does not
+        exist (never enqueued, or pruned past retention) — the stdlib
+        "asked for an entry by id; it isn't there" idiom, matching
+        :meth:`stream` and :meth:`JobHandle.wait`.
+        """
         return await self._require_open().cancel(job_id, reason)
 
     async def cancel_where(
@@ -1128,9 +1173,13 @@ class TaskQ:
         every terminal status is a valid source (an operator re-run is
         "run this again", including after a success), non-terminal
         statuses are refused, and the attempt counter is not reset.
-        Returns ``False`` when the job was not in a retryable state, or
-        the spent attempt sits at the smallint ceiling, the same
-        conflict the route surfaces as a 409.
+        Returns ``False`` when the job was not in a retryable state, the
+        spent attempt sits at the smallint ceiling, **or the job id does
+        not exist** — the three cases are indistinguishable here by
+        design (the operation is a single conditional UPDATE); when a
+        ``False`` could mean a typo'd id rather than a busy job, check
+        existence first with :meth:`get`. The same conflict surfaces as
+        a 409 on the admin route.
         """
         return await self._require_open().backend.retry_job(job_id)
 
@@ -1245,7 +1294,10 @@ class TaskQ:
         RuntimeError
             Called before ``tq.open()`` or outside an ``async with`` block.
         KeyError
-            The job does not exist.
+            The job does not exist — at the opening read, or on any later
+            poll whose row has been pruned in the meantime (the stream
+            cannot fabricate the promised terminal event, so it raises
+            rather than ending quietly).
         StreamUnavailable
             The Postgres poll could not re-read the row for 30 s straight.
         """

@@ -507,6 +507,17 @@ class JobsClient:
         :meth:`JobHandle.wait` can validate the stored result back to
         ``R``.
 
+        The actor's name is NOT validated against the registration table
+        here: any :class:`~taskq.actor.ActorRef` is accepted, and a ref
+        whose actor no worker fleet declares enqueues successfully and
+        then parks (every worker that claims it snoozes it back with
+        ``released_reason: "actor-not-found"``, budget-free; the
+        stranded-jobs detector surfaces it). If "my job never runs",
+        check the actor spelling against the worker's registry and
+        ``taskq job show``'s released reason before looking at queues or
+        capacity. This is the same defer-to-fire-time doctrine
+        :meth:`create_schedule` documents.
+
         The ``metadata.singleton`` key is reserved by the library for
         singleton enforcement. When ``ref.singleton`` is ``True`` the
         library unconditionally writes ``metadata.singleton = True``,
@@ -1621,15 +1632,21 @@ class JobsClient:
         """Request cancellation of a job and return a :class:`CancelResult`.
 
         Reads the row first via :meth:`Backend.get`. If the job does not
-        exist, raises :class:`KeyError`, matching Python's stdlib
-        idiom for "asked for an entry by id; it isn't there".
+        exist, raises :class:`KeyError` (carrying *job_id*), matching
+        Python's stdlib idiom for "asked for an entry by id; it isn't
+        there" — note this means a typo'd id and a pruned job are both
+        :class:`KeyError`, never a "not found" result; check existence
+        with :meth:`get` first when the distinction matters.
 
         Then calls :meth:`Backend.write_cancel_request` and reads the
         row again to capture the new status. The ``previous_status``
         reflects the row at the first read, not atomically at
-        write-time (TOCTOU per  ).
+        write-time: the status can move between the two reads (a TOCTOU
+        window inherent to a request-write protocol), so a handler that
+        must not race the transition should re-check ``new_status``
+        rather than assume ``previous_status``.
 
-        : increments ``taskq.cancellation.requested`` exactly once
+        Metrics: increments ``taskq.cancellation.requested`` exactly once
         per call, regardless of ``cancellation_initiated`` outcome.
         """
         from taskq.obs import record_cancel_requested
