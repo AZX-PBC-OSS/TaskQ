@@ -206,10 +206,48 @@ SELECT pg_reload_conf();
 ```
 
 (or set it on the workers' sessions; it is user-settable). The measured
-trade-offs: `benchmarks/timescale_compression.py` recorded a 6.20x
-storage reduction on the 400k-row archive corpus, the cold archive reads
-4-9x faster over compressed chunks, the young chunk's hot page unchanged,
-and the id point lookup (a non-segmentby key) the documented weakness.
+headline: `benchmarks/timescale_compression.py` recorded a 6.20x storage
+reduction on the 400k-row archive corpus (269 MB of rowstore chunks →
+41 MB once the aged chunks compress), with the young chunk's hot page
+unchanged.
+
+**Who pays what — the rest of the ledger, all p50s off the committed
+recording (`benchmarks/results/timescale-compression.json`):**
+
+* **Cold reads at the admin's actual shapes win big.** A windowed
+  status-filtered count over aged chunks runs 4.6x faster than plain
+  (6.40 → 1.39 ms, 2,930 → 251 shared-buffer hits: the ColumnarScan
+  reads segments, not the heap), and an aged newest-first page — the
+  archive tab's shape over old data — 9.3x faster (46.9 → 5.1 ms).
+* **The id point lookup is the documented weakness, and the fold guard
+  pays it.** A by-id lookup (`id` is a non-`segmentby` key) costs ~7x
+  plain's p50 on a compressed chunk (0.31 → 2.23 ms): no per-chunk
+  index serves it, so every compressed chunk contributes a bloom-filter
+  segment scan to the Append, and the cost scales with the chunk count
+  (the artifact's plan shows ~106 buffer hits per compressed chunk).
+  The prune's fold guard runs exactly that shape as a `NOT EXISTS`
+  probe — its exists-miss measured ~6x plain. Readers of old archive
+  rows by id (support lookups, the differential prune) pay it; windowed
+  recent-history readers do not.
+
+**And the 6.20x is the aged-in state — a row-level drain gives it
+back.** The same recording's 100k-row archive-expiry drain ran row-level
+`DELETE`s against compressed chunks: the hypertable ended the drain at
+469 MB against the plain engine's steady 269 MB (1.7x plain — the ratio
+gone; one 10k batch at the default GUC had to decompress 356,633
+tuples, the warning above). The bloat self-heals, but only at chunk
+drop: nothing in the DELETE path reclaims the decompressed material —
+the reclaim arrives when the RETENTION policy drops the chunk that
+holds it (a manual `decompress_chunk` + `compress_chunk` cycle
+reclaims sooner, by hand). The operator's lever is therefore the
+retention policy's cadence: each `policy_retention` run drops the
+fully-aged chunks and their ballast with them, and a stalled policy —
+background workers down, jobs erroring, `next_run` sliding — means the
+bloat is retained indefinitely. Watch both through the Monitoring
+section: `timescaledb_information.jobs` (`proc_name =
+'policy_retention'`, the `next_run` that must keep advancing) and the
+per-hypertable chunk count and size, whose growth-without-bound alert
+is exactly the stalled-policy signal.
 
 ## Retention is owned by the policies, mostly
 
@@ -465,4 +503,11 @@ end to end (`test_disable_after_deploy_restores_vanilla`) plus the real
 (killed at every swap stage, converging on the re-run with every row —
 `test_disable_crash_at_every_swap_stage_converges`), and the loud refusal
 of rows the restored table's primary key could not hold
-(`test_disable_refuses_vanilla_key_collisions_loudly`).
+(`test_disable_refuses_vanilla_key_collisions_loudly`), and the
+serialization pin on the absorb's one drop rule: a real concurrent
+writer fired into the trash the moment the absorb's
+`LOCK TABLE ... IN EXCLUSIVE MODE` statement arrives — the writer
+either commits before the lock and is absorbed by the twin-guard, or
+queues behind it and wakes to the relation gone — either way the trash
+is gone and every row is accounted
+(`test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer`).

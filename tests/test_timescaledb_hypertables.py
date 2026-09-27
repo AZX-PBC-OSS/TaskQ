@@ -2060,3 +2060,174 @@ async def test_disable_refuses_vanilla_key_collisions_loudly(timescale_dsn: str)
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+class _WindowWriterConn:
+    """A forwarding proxy that opens the absorb's drop window on purpose.
+
+    The serialization claim under test: ``_absorb_orphan_rows``' final
+    twin check and its ``DROP TABLE`` share one transaction behind
+    ``LOCK TABLE ... IN EXCLUSIVE MODE``, so the one writer that could
+    otherwise destroy a row silently — a worker transaction that opened
+    the orphan before the trash rename and commits after — cannot land a
+    commit inside the window. This proxy proves the claim deterministically,
+    without any real-world timing luck: when the ``LOCK TABLE`` statement
+    for *victim_trash* arrives, it fires a REAL concurrent ``INSERT`` into
+    that same table from a SECOND connection (the writer the lock must
+    serialize against), racing it against the lock itself. Exactly two
+    outcomes are possible, and both prove no row is destroyed silently:
+
+    * the writer commits BEFORE the lock is granted → its row is in the
+      orphan when the window opens and the twin-guard absorbs it into the
+      live table;
+    * the lock is granted first → the writer QUEUES behind it (measured
+      on 2.30.1/pg18: the holder's in-transaction ``DROP TABLE`` proceeds
+      past the queued writer, and the writer wakes at the commit to
+      ``relation does not exist``) — its row never landed, and the writer
+      KNOWS, loudly.
+
+    Either way the window shut with every row accounted for.
+    """
+
+    def __init__(
+        self,
+        inner: asyncpg.Connection,
+        writer_conn: asyncpg.Connection,
+        victim_trash: str,
+        insert_sql: str,
+        insert_args: tuple[Any, ...],
+    ) -> None:
+        self._inner = inner
+        self._writer_conn = writer_conn
+        self._victim = victim_trash
+        self._insert_sql = insert_sql
+        self._insert_args = insert_args
+        self._fired = False
+        self.writer_task: asyncio.Task[str] | None = None
+
+    async def _fire_writer(self) -> str:
+        """The second connection's real INSERT — the row the lock must
+        keep out of the drop window (or hand to the twin-guard)."""
+        try:
+            await self._writer_conn.execute(self._insert_sql, *self._insert_args)
+            return "committed"
+        except asyncpg.UndefinedTableError:
+            # The blocked branch: the writer queued behind the lock, the
+            # drop committed, the relation is gone. The row was never
+            # landed and the writer holds the error — nothing silent.
+            return "relation-gone"
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        stmt = sql.lstrip()
+        if not self._fired and stmt.startswith("LOCK TABLE") and f'"{self._victim}"' in stmt:
+            self._fired = True
+            self.writer_task = asyncio.create_task(self._fire_writer())
+        return await self._inner.execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return await self._inner.fetch(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer(
+    timescale_dsn: str,
+) -> None:
+    """The absorb's ``LOCK TABLE ... IN EXCLUSIVE MODE`` serialization pin.
+
+    enable -> seed -> disable through a proxy that, the instant the
+    absorb's ``LOCK TABLE`` on the trash arrives, fires a real concurrent
+    writer INSERT into that trash from a second connection. The window
+    the lock owns is the twin-check → DROP pair; the race decides only
+    WHICH proof runs (absorbed, or woken by the drop), never whether a
+    row can vanish: the trash is gone at the end and every row is
+    accounted — live count == seed + (1 iff the writer landed)."""
+    schema = "tslock_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    writer_conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=10, n_archive=3, n_attempts=3)
+
+        # The concurrent writer's row: a fresh id in the archive row's
+        # own shape, aimed at the trash table the absorb is about to
+        # lock and drop.
+        writer_id = new_uuid()
+        now = datetime.now(UTC)
+        insert_sql = f"""INSERT INTO "{schema}".jobs_archive__hypertable_trash (
+            id, actor, queue, payload, max_attempts, retry_kind, status,
+            scheduled_at, schedule_to_close, finished_at, archived_at, expire_at
+        ) VALUES ($1, 'test_actor', 'default', '{{"v":1}}'::jsonb, 3, 'transient',
+            'succeeded', $2, $3, $4, $2, $5)"""
+        insert_args = (
+            writer_id,
+            now,
+            now + timedelta(hours=1),
+            now,
+            now + timedelta(days=365),
+        )
+
+        proxy = _WindowWriterConn(
+            conn,  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+            writer_conn,
+            "jobs_archive__hypertable_trash",
+            insert_sql,
+            insert_args,
+        )
+        await disable_hypertables(
+            proxy, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert proxy._fired, "the LOCK TABLE window must have been reached and opened"
+        assert proxy.writer_task is not None
+        outcome = await asyncio.wait_for(proxy.writer_task, 30)
+        assert outcome in ("committed", "relation-gone"), (
+            f"the concurrent writer must either commit before the lock or fail "
+            f"with the relation gone, got: {outcome}"
+        )
+        landed = outcome == "committed"
+
+        # The disable completed: zero hypertables, every orphan gone.
+        assert await _hypertable_names(conn, schema) == set()
+        for orphan in (
+            "jobs_archive__hypertable_trash",
+            "jobs_archive__restore",
+            "job_attempts_archive__hypertable_trash",
+            "job_attempts_archive__restore",
+            "job_events__hypertable_trash",
+            "job_events__restore",
+        ):
+            left = await conn.fetchval(
+                "SELECT to_regclass($1) IS NOT NULL", f'"{schema}"."{orphan}"'
+            )
+            assert not left, f"{orphan} must be gone after the disable"
+
+        # Every row accounted, exactly: the seed survived, and the
+        # writer's row is in the live table IFF its INSERT committed
+        # (absorbed by the twin-guard) — never silently destroyed.
+        for table, count in seeded.items():
+            live = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
+            assert live == count, (
+                f"every {table} row must survive the disable and the concurrent "
+                f"writer ({live} of {count})"
+            )
+        present = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs_archive WHERE id = $1', writer_id
+        )
+        assert present == (1 if landed else 0), (
+            f"the writer's row must be live iff the writer committed "
+            f"(outcome={outcome}, found {present})"
+        )
+        total = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive')
+        assert total == seeded["jobs_archive"] + (1 if landed else 0), (
+            f"live count must be seed + absorbed ({outcome})"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+        await writer_conn.close()
