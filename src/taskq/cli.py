@@ -83,6 +83,14 @@ from taskq.exceptions import (
     ActorNotFoundError,
     EmptyFilterError,
 )
+from taskq.insights import (
+    INSIGHTS_WINDOWS,
+    fetch_cron_ledger,
+    fetch_drain_estimates,
+    fetch_overprovisioning,
+    fetch_queue_imbalance,
+    fetch_wait_distribution,
+)
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 from taskq.timescale import TimescaleDBUnavailableError, disable_hypertables, enable_hypertables
@@ -1663,6 +1671,290 @@ def _unknown_env_findings(unknown_env_vars: Sequence[str]) -> list[str]:
     return findings
 
 
+# ── Doctor's operational-insight families ──────────────────────────────
+#
+# Every threshold below is derived in place, and each derivation is the
+# same three-part argument: what the metric honestly measures, what the
+# confound is, and why the number sits past the confound.  The families
+# read the already-merged taskq.insights statements — pure SELECTs, so
+# the read-only contract holds family by family.
+
+#: The window every insights read runs over, and the label the findings
+#: quote.  Derivation: 24h spans one full diurnal traffic cycle — the
+#: shortest window that cannot mistake a nightly lull for a fleet to
+#: shrink — while staying far inside the default 30-day prune retention,
+#: so both UNION tiers (live + archive) can answer every statement.  It
+#: is a member of the insights layer's own closed window set
+#: (INSIGHTS_WINDOWS), not a doctor-private value the docs cannot
+#: reproduce.
+_DOCTOR_INSIGHTS_WINDOW: Final[timedelta] = INSIGHTS_WINDOWS["24h"]
+
+#: STARVED: the utilization (due depth / effective capacity) above which
+#: the imbalance family reports.  Derivation: effective capacity is the
+#: jobs ONE claim wave can absorb (sum(max_concurrent) over the actors
+#: routed to the queue x live workers).  Crossing 1.0 means more due work
+#: than one wave — but any enqueue burst crosses 1.0 transiently, and the
+#: dispatcher is built to absorb exactly that.  2.0 means the queue still
+#: holds a full SECOND wave after the first drains entirely: a burst that
+#: size is a fleet too small for its arrival rate.  The number is also
+#: the lever's own granularity — one added worker (or one max_concurrent
+#: step) adds exactly one wave of capacity — so a 2x finding is one
+#: lever away from resolved.
+_IMBALANCE_UTILIZATION_HIGH: Final[float] = 2.0
+
+#: STARVED (strand arm): the oldest due job's age must exceed the
+#: queue's own p95 wait by this factor.  Derivation: the p95 wait is
+#: computed over the SAME window the pathological depth would inflate —
+#: a burst raises the p95 with the depth, so a factor arm is what
+#: survives that confound.  4x the tail means the row has outlived the
+#: entire observed distribution INCLUDING its tail by a full factor: 95%
+#: of the queue's recent deliveries waited less than a quarter of this
+#: row's age, which no reading of the same window calls healthy.
+_IMBALANCE_STRAND_FACTOR: Final[float] = 4.0
+
+#: STARVED (strand arm): the absolute age floor under which the factor
+#: arm never fires.  Derivation: 2x the 30s worker-liveness window the
+#: imbalance statement itself uses — a due row younger than that may be
+#: claimed before the operator finishes reading the report, and the
+#: claim already in flight would make the finding a lie.
+_IMBALANCE_STRAND_FLOOR_S: Final[float] = 60.0
+
+
+def _insights_window_label(window: timedelta) -> str:
+    """The window as the findings quote it ("24h"), derived from the
+    timedelta so the label cannot drift from the constant it names.
+    Hours win below two days — the window's own docs quote 24h, not 1d."""
+    seconds = window.total_seconds()
+    if seconds >= 172800 and seconds % 86400 == 0:
+        return f"{int(seconds // 86400)}d"
+    if seconds % 3600 == 0:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds)}s"
+
+
+def _format_eta(seconds: float) -> str:
+    """An eta in the unit the operator would say it out loud in."""
+    if seconds >= 86400:
+        return f"{seconds / 86400:.1f} days"
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f} hours"
+    if seconds >= 60:
+        return f"{seconds / 60:.0f} minutes"
+    return f"{seconds:.0f}s"
+
+
+def _capacity_remedy(queue: str, stored_by_actor: Mapping[str, ActorConfigRow]) -> str:
+    """The capacity sentence the imbalance findings end with: the only
+    two levers that add dispatch capacity, with the actors actually
+    serving the queue named when the stored config knows them."""
+    serving = sorted(a for a, row in stored_by_actor.items() if row.queue == queue)
+    actors = f" (actors serving it: {', '.join(repr(a) for a in serving)})" if serving else ""
+    return (
+        f"The levers that add capacity are the product's own two: start another worker "
+        f"serving {queue!r}, or raise the serving actor's max_concurrent{actors}."
+    )
+
+
+def _imbalance_findings(
+    imbalance_rows: Sequence[Mapping[str, Any]],
+    wait_rows: Sequence[Mapping[str, Any]],
+    stored_by_actor: Mapping[str, ActorConfigRow],
+    window: timedelta,
+) -> list[str]:
+    """The IMBALANCE family, read from ``fetch_queue_imbalance`` (the
+    per-queue depth / armed wave / live workers / effective capacity /
+    utilization / oldest-due-age row) with ``fetch_wait_distribution``'s
+    per-queue p95 as the strand arm's baseline.
+
+    Two arms, each with its derivation at the threshold constants:
+
+    * utilization (depth / effective capacity) above
+      ``_IMBALANCE_UTILIZATION_HIGH`` — the starved queue.
+    * oldest-due age above ``max(_IMBALANCE_STRAND_FACTOR x p95,
+      _IMBALANCE_STRAND_FLOOR_S)`` — the strand.  The p95 is the CLEAN
+      segment's (first-delivery rows only): the deferred segment's wait
+      excludes its deferral by construction, so its percentile is not a
+      queue-latency baseline.  A queue with no clean wait history has no
+      honest baseline and the arm stays silent.
+
+    ``utilization IS NULL`` (due work, nothing can serve it) is the
+    unserved-queue starvation shape the stranded-jobs families above
+    already report; this family does not report it twice.
+    """
+    label = _insights_window_label(window)
+    p95_by_queue = {
+        str(r["queue"]): float(r["p95_wait_s"])
+        for r in wait_rows
+        if r.get("segment") == "clean" and r.get("p95_wait_s") is not None
+    }
+    findings: list[str] = []
+    for row in imbalance_rows:
+        queue = str(row["queue"])
+        utilization = row.get("utilization")
+        if utilization is not None and float(utilization) > _IMBALANCE_UTILIZATION_HIGH:
+            findings.append(
+                f"queue {queue!r}: STARVED, {row['depth']} due job(s) against effective "
+                f"capacity {row['effective_capacity']} (utilization {float(utilization):.1f}x, "
+                f"threshold {_IMBALANCE_UTILIZATION_HIGH:.0f}x — a full second claim-wave of "
+                f"due work survives after the first drains). {_capacity_remedy(queue, stored_by_actor)}"
+            )
+        age = row.get("oldest_due_age_s")
+        p95 = p95_by_queue.get(queue)
+        if (
+            age is not None
+            and p95 is not None
+            and float(age) > max(_IMBALANCE_STRAND_FACTOR * p95, _IMBALANCE_STRAND_FLOOR_S)
+        ):
+            findings.append(
+                f"queue {queue!r}: STRANDED WORK, the oldest due job has waited "
+                f"{float(age):.0f}s — {float(age) / p95:.0f}x the queue's own p95 wait of "
+                f"{p95:.0f}s over the last {label} (threshold: "
+                f"{_IMBALANCE_STRAND_FACTOR:.0f}x p95 with a {_IMBALANCE_STRAND_FLOOR_S:.0f}s "
+                "floor — the floor is 2x the 30s worker-liveness window, so a claim already "
+                f"in flight is never reported). {_capacity_remedy(queue, stored_by_actor)}"
+            )
+    return findings
+
+
+def _overprovisioning_findings(
+    overprovisioning_rows: Sequence[Mapping[str, Any]],
+    window: timedelta,
+) -> list[str]:
+    """The OVERPROVISIONING family, read from ``fetch_overprovisioning``:
+    the statement's own verdict (live workers, ZERO due depth, fewer
+    terminalisations across the whole window than workers — fewer than
+    one completion per worker).  The remedy is consolidation in the
+    workgroup config; a destructive suggestion (drop the queue, purge the
+    rows) would destroy the very history that proves the verdict, so the
+    finding says explicitly that nothing is deleted."""
+    label = _insights_window_label(window)
+    return [
+        f"queue {row['queue']!r}: OVERPROVISIONED, {row['live_workers']} live worker(s) with "
+        f"{row['depth']} due job(s) and {row['terminalisations']} completion(s) in the last "
+        f"{label} — fewer than one completion per worker across the whole window. "
+        "Consolidate the workers serving this queue in the workgroup config (fewer "
+        "[[workers]] entries or a smaller fleet on the queue's subscriber list); nothing "
+        "is deleted — the queue's rows and history are untouched."
+        for row in overprovisioning_rows
+        if row.get("overprovisioned")
+    ]
+
+
+def _drain_findings(
+    drain_rows: Sequence[Mapping[str, Any]],
+    window: timedelta,
+) -> list[str]:
+    """The DRAIN family, read from ``fetch_drain_estimates``.
+
+    Threshold derivation — the eta must exceed the observation window
+    itself.  The eta is depth / (terminalisations / window): a
+    throughput extrapolation whose only honest input is the traffic the
+    window actually carried (``has_traffic``).  An eta beyond the window
+    means the due depth exceeds everything the ENTIRE window completed —
+    the queue needs more than the full observation period to drain,
+    which is the longest horizon the rate has any evidence for, and
+    exactly the "will this be done by tomorrow?" period the operator
+    recognizes.  Below the window the extrapolation still has support;
+    above it the finding fires.
+
+    ``has_traffic = false`` (no terminalisations in the window) means the
+    estimate is honestly NULL — "already drained" would be a lie — so a
+    no-traffic window renders NO drain finding; the widening-the-window
+    advice lives in docs/guides/insights.md, and the empty queue is what
+    the overprovisioning family exists to catch.
+    """
+    label = _insights_window_label(window)
+    window_s = window.total_seconds()
+    findings: list[str] = []
+    for row in drain_rows:
+        if not row.get("has_traffic"):
+            continue
+        eta = row.get("eta_seconds")
+        if eta is None or float(eta) <= window_s:
+            continue
+        queue = str(row["queue"])
+        armed = (
+            f" The armed wave ({row['scheduled_depth']} scheduled job(s)) is not included "
+            "in the eta."
+            if row.get("scheduled_depth")
+            else ""
+        )
+        findings.append(
+            f"queue {queue!r}: SLOW DRAIN, {row['depth']} due job(s) at the observed rate of "
+            f"{float(row['completions_per_second']):.3g} completion(s)/s drains in "
+            f"~{_format_eta(float(eta))}, longer than the {label} window the rate was measured "
+            "over (threshold: the eta exceeds the observation window — the depth exceeds "
+            f"everything the entire window completed). Confidence caveat: a throughput "
+            f"extrapolation resting on {row['terminalisations']} completion(s) of realised "
+            "traffic (has_traffic) — it assumes the next window looks like the last one, "
+            "the workers stay up, and nothing enqueues behind the current depth." + armed
+        )
+    return findings
+
+
+def _cron_lag_findings(
+    cron_rows: Sequence[Mapping[str, Any]],
+    window: timedelta,
+) -> list[str]:
+    """The CRON LAG family, read from ``fetch_cron_ledger``: one finding
+    per schedule whose fan-out outruns its clearance, naming the
+    schedule, the backlog, and the two honest remedies (slow the cron /
+    add workers for the actor).
+
+    Two trigger arms:
+
+    * ``runaway_trending`` — the statement's own verdict: fires >
+      cleared in BOTH the current and the prior window.  One window is a
+      burst; two consecutive is the runaway shape.
+    * outstanding above the catch-up window's slot capacity.  The
+      catch-up window is the same insights window, and its slot capacity
+      is the schedule's OWN demonstrated clearance — the better of the
+      current and the prior equal window (``max(cleared_window,
+      cleared_prior)``): what the fleet actually cleared in one window
+      at its best, not a theoretical ceiling it has never been observed
+      to reach.  The best-of-two guards the ledger's documented
+      right-edge confound (clearance lags fires at the window's edge, so
+      a burst of fresh fires must not read as an uncatchable backlog).
+      The arm also requires the schedule to have actually fired within
+      the two-window trend horizon (``fires_window > 0 or fires_prior >
+      0``): a weekly cron with one long-running fire has no measured
+      clearance capacity to compare against, and its outstanding row is
+      honest work in flight, not a lag.
+    """
+    label = _insights_window_label(window)
+    findings: list[str] = []
+    for row in cron_rows:
+        if not row.get("enabled"):
+            continue  # A disabled schedule fires nothing new; its ledger is historical.
+        runaway = bool(row.get("runaway_trending"))
+        outstanding = int(row["outstanding"])
+        capacity = max(int(row["cleared_window"]), int(row["cleared_prior"]))
+        fired_in_horizon = int(row["fires_window"]) > 0 or int(row["fires_prior"]) > 0
+        backlog = fired_in_horizon and outstanding > capacity
+        if not runaway and not backlog:
+            continue
+        triggers: list[str] = []
+        if runaway:
+            triggers.append(
+                "the fan-out is trending: fires outran clearances in both the current "
+                "and the prior window"
+            )
+        if backlog:
+            triggers.append(
+                f"the backlog exceeds one {label} catch-up window's slot capacity (the "
+                f"schedule's own demonstrated clearance: {capacity} in its best window)"
+            )
+        findings.append(
+            f"cron schedule {row['schedule_id']} (actor {row['actor']!r}, "
+            f"cron {row['cron_expr']}): CRON LAG, {outstanding} fire(s) outstanding with "
+            f"{row['cleared_window']} of {row['fires_window']} cleared in the last {label} — "
+            f"{' and '.join(triggers)}. Two honest remedies: slow the cron (widen the "
+            "interval or raise its budget), or add workers for the actor — raise its "
+            "max_concurrent so more fires clear per wave."
+        )
+    return findings
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
@@ -1670,6 +1962,13 @@ def _doctor_findings(
     stranded: list[_StrandedActorJobs],
     worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
     unknown_env_vars: Sequence[str] | None = None,
+    *,
+    imbalance_rows: list[dict[str, Any]] | None = None,
+    wait_rows: list[dict[str, Any]] | None = None,
+    overprovisioning_rows: list[dict[str, Any]] | None = None,
+    drain_rows: list[dict[str, Any]] | None = None,
+    cron_rows: list[dict[str, Any]] | None = None,
+    insights_window: timedelta = _DOCTOR_INSIGHTS_WINDOW,
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
@@ -1685,6 +1984,16 @@ def _doctor_findings(
     ``unknown_env_vars`` carries the ``TASKQ_``-prefixed environment names
     that match no settings field (``_unknown_taskq_env_vars``): each is a
     configuration typo applying its intended setting's default silently.
+
+    The four ``*_rows`` insight parameters carry the operational-insight
+    families as the ``taskq.insights`` fetchers returned them
+    (``fetch_queue_imbalance`` / ``fetch_wait_distribution`` ->
+    ``imbalance_rows`` + ``wait_rows``, ``fetch_overprovisioning``,
+    ``fetch_drain_estimates``, ``fetch_cron_ledger``), all over
+    ``insights_window``: the IMBALANCE, OVERPROVISIONING, DRAIN and CRON
+    LAG families.  They are keyword-only and default to empty — the
+    healthy fleet — so a caller that cannot read the insights layer
+    still gets every stored-config family.
     """
     stored_by_actor = {row.actor: row for row in rows}
     findings: list[str] = []
@@ -1794,6 +2103,18 @@ def _doctor_findings(
                 f"{remedy_for_kind(dominant)}. The worker's "
                 "`event-loop-stall-attributed` warnings name the file:line."
             )
+
+    # The operational-insight families, read from the same statements the
+    # docs guide documents (taskq/insights.py): the live-shape conditions
+    # the stored-config families above cannot see, because they are about
+    # TRAFFIC, not config.  Every read is a SELECT — the read-only
+    # contract holds here exactly as it holds above.
+    findings.extend(
+        _imbalance_findings(imbalance_rows or [], wait_rows or [], stored_by_actor, insights_window)
+    )
+    findings.extend(_overprovisioning_findings(overprovisioning_rows or [], insights_window))
+    findings.extend(_drain_findings(drain_rows or [], insights_window))
+    findings.extend(_cron_lag_findings(cron_rows or [], insights_window))
     return findings
 
 
@@ -1854,6 +2175,24 @@ async def _doctor(
         queues = await list_queues(conn, schema=settings.schema_name)
         stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
         worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
+        # The insight families over the doctor's 24h window (the
+        # derivation sits on _DOCTOR_INSIGHTS_WINDOW): every one a
+        # pure-read statement from taskq/insights.py, so the read-only
+        # contract — no writing statement anywhere in this command —
+        # holds across the new families too.
+        imbalance_rows = await fetch_queue_imbalance(conn, schema=settings.schema_name)
+        wait_rows = await fetch_wait_distribution(
+            conn, schema=settings.schema_name, window=_DOCTOR_INSIGHTS_WINDOW
+        )
+        overprovisioning_rows = await fetch_overprovisioning(
+            conn, schema=settings.schema_name, window=_DOCTOR_INSIGHTS_WINDOW
+        )
+        drain_rows = await fetch_drain_estimates(
+            conn, schema=settings.schema_name, window=_DOCTOR_INSIGHTS_WINDOW
+        )
+        cron_rows = await fetch_cron_ledger(
+            conn, schema=settings.schema_name, window=_DOCTOR_INSIGHTS_WINDOW
+        )
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
 
@@ -1873,6 +2212,12 @@ async def _doctor(
         stranded,
         worker_stalls,
         unknown_env_vars=_unknown_taskq_env_vars(),
+        imbalance_rows=imbalance_rows,
+        wait_rows=wait_rows,
+        overprovisioning_rows=overprovisioning_rows,
+        drain_rows=drain_rows,
+        cron_rows=cron_rows,
+        insights_window=_DOCTOR_INSIGHTS_WINDOW,
     )
 
     # The one finding that needs an operator-supplied number: the platform's

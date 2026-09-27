@@ -766,6 +766,68 @@ including application-built pools the guard cannot see - is in
 
 ---
 
+## 16. `taskq doctor` reports a STARVED, OVERPROVISIONED, SLOW DRAIN or CRON LAG finding
+
+### Symptom
+
+`taskq doctor` names a live-traffic condition on a queue or cron schedule:
+`STARVED`, `STRANDED WORK`, `OVERPROVISIONED`, `SLOW DRAIN` or
+`CRON LAG`. The stored-config families (a missing actor row, a stale
+`queues` row, incoherent caps) all read clean — the configuration is
+fine, the *traffic* is not.
+
+### Cause
+
+These are the operational-insight families: `doctor` reads the live fleet
+through the same statements the [operational-insights SQL
+layer](insights.md) documents, over the **24h window**. Each finding's
+threshold is derived in the code (and in
+[cli.md: The operational-insight findings](cli.md#the-operational-insight-findings));
+the short form:
+
+| Finding | The data | The threshold |
+|---|---|---|
+| `STARVED` | `fetch_queue_imbalance`: utilization = due depth ÷ effective capacity (`sum(max_concurrent)` × live workers) | > 2x — a full second claim wave survives after the first drains; one wave is a burst the dispatcher absorbs |
+| `STARVED` (strand) | the same read's `oldest_due_age_s` against `fetch_wait_distribution`'s clean-segment p95 | > 4x p95 with a 60s floor — past the whole observed distribution including its tail; the floor is 2x the 30s worker-liveness window |
+| `OVERPROVISIONED` | `fetch_overprovisioning`'s verdict: live workers, zero due depth, terminalisations < workers over the window | fewer than one completion per worker across the whole window |
+| `SLOW DRAIN` | `fetch_drain_estimates`: `eta_seconds` = due depth ÷ the window's completions/second | eta > the 24h window — the depth exceeds everything the entire window completed |
+| `CRON LAG` | `fetch_cron_ledger`: fires vs cleared per schedule, both windows, plus the windowless `outstanding` | `runaway_trending` (fires > cleared in BOTH windows), or outstanding > the schedule's best demonstrated clearance |
+
+The confidence caveats are part of the finding, not fine print: a
+`SLOW DRAIN` eta is a throughput extrapolation resting on the window's
+realised traffic (`has_traffic` — a no-traffic window renders no eta at
+all, never zero), and a `CRON LAG` verdict should be read against the
+schedule's `dst_strategy` (an `allof` schedule legitimately doubles a
+fire in the DST-overlap hour) and its budget deferrals (a deferred fire
+enqueues no row, so it reads as zero fires here).
+
+### Diagnosis
+
+The finding is the diagnosis — that is what `doctor` is for. Re-run it
+after acting to confirm the shape cleared; the single-window verdicts
+become decisive when they persist across windows.
+
+### Fix
+
+- **`STARVED` / `STRANDED WORK`**: the only two levers that add dispatch
+  capacity — start another worker serving the queue, or raise the
+  serving actor's `max_concurrent` (the finding names the actors serving
+  it). See [ops.md: When to add workers](ops.md#when-to-add-workers-saturation-not-depth).
+- **`OVERPROVISIONED`**: consolidate the workers serving the queue in
+  the workgroup config (fewer `[[workers]]` entries, or a smaller fleet
+  on the queue's subscriber list). Nothing is deleted; a single-window
+  TRUE is a hypothesis, three consecutive windows is a fleet to shrink.
+- **`SLOW DRAIN`**: the same capacity levers as `STARVED`, or slow the
+  producer; if the window carried no traffic the eta is undefined —
+  widen the window (up to the archive retention floor) before trusting
+  anything else.
+- **`CRON LAG`**: slow the cron (widen the interval or raise its
+  budget), or add workers for the actor (raise its `max_concurrent` so
+  more fires clear per wave). Those are the only two honest levers; the
+  backlog itself is never the thing to delete.
+
+---
+
 ## See also
 
 - [ops.md](ops.md): operations & adoption guide: sizing, timeout policy, fan-out patterns, and the footgun index (the preventive counterpart of this page)

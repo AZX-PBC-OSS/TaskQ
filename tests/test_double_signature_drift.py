@@ -108,6 +108,13 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     "test asserts on and forwards the rest as **kwargs; _otel.get_tracer() passes "
     "only those two positional arguments.",
     (
+        "test_cli_doctor_insights_pg.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as above - third-party breadth the CLI never uses. The double is the "
+    "read-only-contract recorder: it wraps the REAL connection (opened with the "
+    "same single positional dsn the CLI passes) and forwards every call, so the "
+    "scan runs against the actual statement set, not a fake.",
+    (
         "test_settings_coverage.py",
         "asyncpg.create_pool",
     ): "Why: asyncpg.create_pool takes the DSN positionally plus ~25 connection "
