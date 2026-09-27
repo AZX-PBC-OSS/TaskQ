@@ -29,7 +29,7 @@ scope. The integration tier at the bottom runs the same commands against a
 real migrated Postgres container with a seeded scenario.
 """
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -65,6 +65,7 @@ class _FakeConn:
         cron_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.executed: list[str] = []
+        self.written: list[str] = []
         self._wait_rows = wait_rows or []
         self._balance_rows = balance_rows or []
         self._drain_rows = drain_rows or []
@@ -81,6 +82,22 @@ class _FakeConn:
         if "runaway_trending" in query:
             return list(self._cron_rows)
         raise AssertionError(f"unexpected statement handed to the connection: {query[:120]!r}")
+
+    async def execute(self, query: str, *args: object) -> Any:
+        # The write-trap: the read-only contract makes `fetch` the ONLY data
+        # method the command may call. Recording before raising keeps a
+        # failing test's evidence readable; the raise (or the empty
+        # `written` assertion) is what reds a command that starts writing.
+        self.written.append(query)
+        raise AssertionError(
+            f"insights issued a non-fetch statement (read-only contract break): {query[:120]!r}"
+        )
+
+    async def executemany(self, query: str, args: object) -> Any:
+        self.written.append(query)
+        raise AssertionError(
+            f"insights issued a non-fetch statement (read-only contract break): {query[:120]!r}"
+        )
 
     async def close(self) -> None: ...
 
@@ -613,6 +630,403 @@ def test_every_statement_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
                 f"insights issued a writing statement ({verb}); the command "
                 "must stay read-only like doctor"
             )
+
+
+# ── the read-only contract, restated at the connection boundary ──────────
+
+
+def test_no_write_ever_reaches_the_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BEHAVIORAL (red-first): the pin is the CONNECTION, not the statement
+    text. `fetch` is the only data method the command may call — the
+    write-trap `execute`/`executemany` methods on the fake red the first
+    invocation that reaches for one, even a write hiding in a statement
+    the verb scan cannot parse."""
+    conn = _FakeConn(
+        wait_rows=[_wait_row()],
+        balance_rows=[_balance_row()],
+        drain_rows=[_drain_row()],
+        cron_rows=[_cron_row()],
+    )
+    _patch_conn(monkeypatch, conn)
+
+    result = runner.invoke(app, ["insights", "all"])
+
+    assert conn.written == [], (
+        "insights issued a non-fetch statement; the command must stay read-only"
+    )
+    assert result.exit_code == 0
+
+
+def test_no_write_rides_the_all_surface_before_its_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write smuggled in BEFORE or BETWEEN the reads (a setup statement on
+    the shared connection) is still a write. Every statement the whole
+    `all` surface issues — fetch and otherwise — must be in `executed`,
+    none in `written`."""
+    conn = _FakeConn(
+        wait_rows=[_wait_row()],
+        balance_rows=[_balance_row()],
+        drain_rows=[_drain_row()],
+        cron_rows=[_cron_row()],
+    )
+    _patch_conn(monkeypatch, conn)
+
+    result = runner.invoke(app, ["insights", "all"])
+
+    assert result.exit_code == 0
+    assert len(conn.executed) == 4, "each surface's module read must run on the one connection"
+    assert conn.written == []
+
+
+# ── the boundary discipline: guard ORDER, not just guard presence ───────
+
+
+def test_guards_fire_before_any_connection_is_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BEHAVIORAL (red-first): the refusals must happen before
+    ``asyncpg.connect`` is even ATTEMPTED — mid-incident, an unauthorized
+    option combination must not open a socket to the fleet at all. The
+    existing pins assert no statement ran; this one asserts no
+    connection was opened, and that the message is the guard's (not a
+    settings-load or connection crash that merely also exits 1)."""
+    connects: list[str] = []
+
+    async def recording_connect(dsn: str, *args: object, **kwargs: object) -> Any:
+        connects.append(dsn)
+        return _FakeConn()
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", recording_connect)
+    for argv, refusal in (
+        (["insights", "extrapolate"], "unknown insights surface"),
+        (["insights", "wait", "--window", "30d"], "invalid --window"),
+        (["insights", "balance", "--actor", "mailer"], "--actor applies to the wait surface"),
+        (["insights", "cron", "--queue", "email"], "--queue does not apply to the cron surface"),
+    ):
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 1, f"{argv} must be refused"
+        assert refusal in result.output, (
+            f"{argv} must be refused by its own guard, not by a later crash"
+        )
+        assert connects == [], f"{argv} must refuse before opening a connection"
+
+
+def test_invalid_window_is_refused_not_coerced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A window outside the module's closed set must be REFUSED with the
+    valid set named — never silently coerced to a nearest neighbor (a
+    coerced window changes the numbers the operator is reading without
+    changing the command they typed)."""
+    conn = _FakeConn()
+    _patch_conn(monkeypatch, conn)
+
+    for window in ("30d", "1w", "1h ", "", "1H"):
+        result = runner.invoke(app, ["insights", "wait", "--window", window])
+
+        assert result.exit_code == 1, f"--window {window!r} must be refused"
+        assert "expected one of" in result.output
+        assert conn.executed == []
+
+
+def test_schema_guard_fires_before_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue_ops convention this command claims: the schema identifier
+    is re-checked at the boundary, and the check precedes
+    ``asyncpg.connect`` — a hostile schema name must not open a socket
+    at all (the settings layer refuses it at load; this is the
+    defence-in-depth re-check, pinned in its ORDER)."""
+    connects: list[str] = []
+
+    async def recording_connect(dsn: str, *args: object, **kwargs: object) -> Any:
+        connects.append(dsn)
+        return _FakeConn()
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", recording_connect)
+
+    class _HostileSchemaSettings:
+        pg_dsn = "postgresql://irrelevant"
+        schema_name = 'bad"; DROP SCHEMA x'
+
+    class _HostileSettingsClass:
+        @staticmethod
+        def load() -> Any:
+            return _HostileSchemaSettings()
+
+    monkeypatch.setattr("taskq.cli.TaskQSettings", _HostileSettingsClass)
+
+    result = runner.invoke(app, ["insights", "wait"])
+
+    assert result.exit_code == 1
+    assert "invalid schema name" in result.output
+    assert connects == [], "the schema re-check must fire before the connection is opened"
+
+
+def test_metacharacter_actor_and_queue_values_never_reach_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--actor/--queue are Python post-filters over the module's returned
+    rows, never SQL fragments: a value carrying metacharacters cannot
+    inject, the issued statements stay byte-identical to the module's
+    own templates, and the command still exits 0 (the filter just keeps
+    nothing). The value must not appear in ANY issued statement."""
+    hostile = "x'; DROP TABLE jobs; --"
+    conn = _FakeConn(wait_rows=[_wait_row("email", "clean")])
+    conn._wait_rows[0]["actor"] = "x"  # the per-actor grouping carries the actor key
+    _patch_conn(monkeypatch, conn)
+
+    result = runner.invoke(app, ["insights", "wait", "--actor", hostile, "--queue", hostile])
+
+    assert result.exit_code == 0
+    assert conn.written == []
+    assert conn.executed, "the module's read must still run"
+    for query in conn.executed:
+        assert hostile not in query, "a filter value must never be interpolated into SQL"
+        lowered = query.lower()
+        for verb in _WRITE_VERBS:
+            assert f"{verb} " not in lowered
+
+
+# ── the renderer's honesty under edge data ───────────────────────────────
+
+
+def test_wait_null_percentiles_render_dash_never_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A (queue, segment) group whose percentiles came back NULL must
+    render '-' in the p50/p95/max cells — a 0 would read as 'instant',
+    the exact lie the duration formatter's docstring forbids."""
+    row = _wait_row("email", "clean", 1)
+    row["p50_wait_s"] = None
+    row["p95_wait_s"] = None
+    row["max_wait_s"] = None
+    _patch_conn(monkeypatch, _FakeConn(wait_rows=[row]))
+
+    result = runner.invoke(app, ["insights", "wait"])
+
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if "clean" in line)
+    cells = line.split()
+    assert cells[-3:] == ["-", "-", "-"], "NULL percentiles must render '-', not 0"
+    assert "0s" not in line
+
+
+def test_drain_negative_eta_keeps_its_sign(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An eta that arrives negative (a pathological row) must not be
+    laundered into a healthy-looking positive or a crash: the sign
+    survives into the cell, so the operator sees the pathology."""
+    _patch_conn(
+        monkeypatch,
+        _FakeConn(drain_rows=[_drain_row("email", has_traffic=True, eta_seconds=-30.0, depth=1)]),
+    )
+
+    result = runner.invoke(app, ["insights", "drain"])
+
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if "email" in line)
+    assert line.split()[-1] == "-30.0s", "the negative eta must keep its sign, not read as drained"
+
+
+def test_drain_absurd_eta_stays_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 31-year eta must render as a human duration, never scientific
+    notation or a raw float the operator cannot read at a glance."""
+    _patch_conn(
+        monkeypatch,
+        _FakeConn(
+            drain_rows=[
+                _drain_row("email", has_traffic=True, eta_seconds=1_000_000_000.0, depth=10**9)
+            ]
+        ),
+    )
+
+    result = runner.invoke(app, ["insights", "drain"])
+
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if "email" in line)
+    assert line.split()[-1] == "11574d1h"
+    assert "e+" not in line and "1e" not in line
+
+
+def test_cron_runaway_verdict_is_the_exact_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fires with ZERO cleared across BOTH windows is the maximal runaway
+    shape: the verdict cell must be the exact documented marker."""
+    _patch_conn(
+        monkeypatch,
+        _FakeConn(
+            cron_rows=[
+                _cron_row(
+                    fires_window=3,
+                    cleared_window=0,
+                    fires_prior=3,
+                    cleared_prior=0,
+                    outstanding=3,
+                    runaway_trending=True,
+                )
+            ]
+        ),
+    )
+
+    result = runner.invoke(app, ["insights", "cron"])
+
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if "ticker" in line)
+    assert line.split()[-3:] == ["!!", "runaway", "trending"]
+
+
+def test_cron_one_window_burst_is_not_the_runaway_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fires outrunning clearance in the CURRENT window only is a burst,
+    not a trend — the module's two-window rule says the verdict must be
+    the plain 'ok', never the runaway marker."""
+    _patch_conn(
+        monkeypatch,
+        _FakeConn(
+            cron_rows=[
+                _cron_row(
+                    fires_window=5,
+                    cleared_window=0,
+                    fires_prior=0,
+                    cleared_prior=0,
+                    outstanding=5,
+                    runaway_trending=False,
+                )
+            ]
+        ),
+    )
+
+    result = runner.invoke(app, ["insights", "cron"])
+
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if "ticker" in line)
+    assert line.split()[-1] == "ok"
+    assert "runaway" not in result.output
+
+
+def test_cron_schedule_id_renders_shortened_not_mangled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--help documents the schedule column as 'the schedule id,
+    shortened': the rendered cell is the id's first 8 chars, never a
+    bare float-like reinterpretation or the full 36-char uuid."""
+    schedule_id = new_uuid()
+    row = _cron_row()
+    row["schedule_id"] = schedule_id
+    _patch_conn(monkeypatch, _FakeConn(cron_rows=[row]))
+
+    result = runner.invoke(app, ["insights", "cron"])
+
+    assert result.exit_code == 0
+    assert str(schedule_id)[:8] in result.output
+    assert str(schedule_id) not in result.output
+
+
+def test_balance_flag_column_renders_each_label_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All three flag states are part of the contract, each exact: the
+    over-threshold marker, the no-capacity marker, and the healthy row's
+    EMPTY flag cell (a healthy queue must not inherit a stray '!!' from
+    a neighboring row's marker)."""
+    _patch_conn(
+        monkeypatch,
+        _FakeConn(
+            balance_rows=[
+                _balance_row("over", utilization=2.5),
+                _balance_row("idle", live_workers=0, effective_capacity=0, utilization=None),
+                _balance_row("ok", depth=1, live_workers=1, effective_capacity=2, utilization=0.5),
+            ]
+        ),
+    )
+
+    result = runner.invoke(app, ["insights", "balance"])
+
+    assert result.exit_code == 0
+    over_line = next(line for line in result.output.splitlines() if line.startswith("over"))
+    idle_line = next(line for line in result.output.splitlines() if line.startswith("idle"))
+    ok_line = next(line for line in result.output.splitlines() if line.startswith("ok"))
+    assert over_line.split()[-3:] == ["!!", "over", "threshold"]
+    assert idle_line.split()[-3:] == ["!!", "no", "capacity"]
+    assert "!!" not in ok_line, "a healthy row's flag cell must be empty"
+
+
+def test_unicode_and_long_names_stay_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A queue name that is unicode-heavy and very long must render
+    verbatim (never truncated, escaped, or mangled) and the table must
+    stay aligned: every line the table renders is padded to one
+    code-point width, so the columns still line up."""
+    long_queue = "排隊-émail-🔥-" + "q" * 60
+    unicode_actor = "actor-ß-名前"
+    row = _wait_row(long_queue, "clean")
+    row["actor"] = unicode_actor
+    _patch_conn(monkeypatch, _FakeConn(wait_rows=[row]))
+
+    result = runner.invoke(app, ["insights", "wait", "--actor", unicode_actor])
+
+    assert result.exit_code == 0
+    assert long_queue in result.output, "the queue name must render verbatim"
+    table_lines = [
+        line for line in result.output.splitlines() if line.startswith(("queue", long_queue))
+    ]
+    assert len(table_lines) == 2, "the header and the data row must both be found"
+    assert len({len(line) for line in table_lines}) == 1, (
+        "the table's lines must all pad to the same width (aligned columns)"
+    )
+
+
+# ── the help contract: a drift pin ───────────────────────────────────────
+
+
+def test_help_contract_covers_every_rendered_column_and_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BEHAVIORAL (red-first): --help is the operator's column dictionary,
+    so it is pinned against what the renderers ACTUALLY render, not
+    against a hand-copied list. Every header each surface renders (and
+    every marker string the renderers emit) must appear in --help —
+    adding a column or marker without documenting it reds this test."""
+    captured: list[list[str]] = []
+
+    def spy(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
+        captured.append(list(headers))
+
+    monkeypatch.setattr("taskq.cli._insights_table", spy)
+    for argv in (
+        ["insights", "wait"],
+        ["insights", "wait", "--actor", "mailer"],
+        ["insights", "balance"],
+        ["insights", "drain"],
+        ["insights", "cron"],
+    ):
+        conn = _FakeConn(
+            wait_rows=[_wait_row()],
+            balance_rows=[_balance_row()],
+            drain_rows=[_drain_row()],
+            cron_rows=[_cron_row()],
+        )
+        conn._wait_rows[0]["actor"] = "mailer"  # the per-actor grouping carries the key
+        _patch_conn(monkeypatch, conn)
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+
+    assert captured, "every surface must render a table to capture headers from"
+    help_result = runner.invoke(app, ["insights", "--help"])
+    assert help_result.exit_code == 0
+    plain = " ".join(help_result.output.split()).lower()
+    for headers in captured:
+        for header in headers:
+            for token in header.lower().split("_"):
+                assert token in plain, (
+                    f"column {header!r} renders but --help does not document "
+                    f"it ({token!r} missing) — the help contract drifted"
+                )
+    for marker in (
+        "!! no capacity",
+        "!! over threshold",
+        "!! runaway trending",
+        "no traffic in window",
+    ):
+        assert marker in plain, f"the renderer emits {marker!r} but --help does not document it"
 
 
 # ── integration tier: the real SQL path on a real container ─────────────
