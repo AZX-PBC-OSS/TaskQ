@@ -38,6 +38,7 @@ from taskq.constants import (
 )
 from taskq.cron import (
     DST_STRATEGIES,
+    _unwrap_cron_factory_system_exit,  # pyright: ignore[reportPrivateUsage]  # Why: the single unwrapping point for the factory-SystemExit carrier lives in taskq.cron beside the conversion; the tick's failure choke point is the only consumer.
     compute_next_fire_after,
     repeated_range_bounds,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical bounds of a repeated wall range; redefining them here would let the tick's delivery hop and compute_next_fire_after drift on what "the repeated range" is.
 )
@@ -670,7 +671,10 @@ class _BufferedFailureTelemetry:
     """
 
     failure: _FireFailure
-    exc: Exception
+    # BaseException: a payload factory's SystemExit arrives as the
+    # unwrapped original (see the per-schedule except branch), so the
+    # buffered telemetry carries the factory's own BaseException.
+    exc: BaseException
     links: list[trace.Link] | None
     worker_id: UUID
 
@@ -722,7 +726,10 @@ async def resolve_payload(
 
 def _compute_fire_failure(
     row: asyncpg.Record,
-    exc: Exception,
+    # BaseException: the choke point unwraps the factory-SystemExit
+    # carrier before this call, so the record is built from the factory's
+    # own exception, whatever its class.
+    exc: BaseException,
     settings: WorkerSettings,
 ) -> _FireFailure:
     """The pure half of the per-failure except-branch: bump the failure
@@ -756,7 +763,9 @@ def _compute_fire_failure(
 def _mark_failure_span(
     span: Span,
     failure: _FireFailure,
-    exc: Exception,
+    # BaseException: the buffered telemetry's exc is the factory's own
+    # exception (see _BufferedFailureTelemetry), not always an Exception.
+    exc: BaseException,
 ) -> None:
     """The telemetry half of the old per-failure except-branch: mark the
     (already-open) failure span ERROR and attach ``cron.auto_disabled``.
@@ -1418,6 +1427,13 @@ async def tick_cron(
                 # claim (ERROR status, auto-disable event) belongs to the
                 # emission span, which opens only once the transaction has
                 # committed, a rollback takes this failure with it.
+                #
+                # The unwrap first: a payload factory's SystemExit arrives
+                # as the _CronFactorySystemExitError carrier (resolve_payload
+                # converts it, see there), and the strike must record the
+                # factory's own exception, never the carrier's name (a
+                # false audit trail).
+                exc = _unwrap_cron_factory_system_exit(exc)
                 failure = _compute_fire_failure(row, exc, settings)
                 failures.append(failure)
                 failure_telemetry.append(
