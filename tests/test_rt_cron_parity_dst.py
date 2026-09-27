@@ -41,6 +41,7 @@ import pytest
 import structlog.testing
 
 from taskq._ids import new_uuid
+from taskq.constants import CANCEL_ORIGIN_PENDING
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
@@ -1222,4 +1223,213 @@ class TestTwinCoverageIsPerSchedule:
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 62 + 60, (
             "the on-demand jobs are untouched: the schedule's fires coexist "
             "with them, no dedup, no displacement"
+        )
+
+
+class TestTwinCoverageSurvivesBeyondPendingScheduled:
+    """FINDING (red until fixed, GH issue #462): the coverage walk counts a
+    fold-1 twin only while it is ``pending``/``scheduled``, so any twin
+    that has left that pair by the time the walk runs DROPS OUT of the
+    covered prefix and the schedule re-fires its instant.
+
+    ``_skip_already_delivered_overlap_twins`` scoped its coverage query
+    with ``j.status IN ('pending', 'scheduled')``. A twin is not a
+    delivery promise that only exists in those two states:
+
+    - an operator-cancelled twin (``cancel_pending_scheduled`` terminalises
+      exactly that pair to ``cancelled``) is a delivery the operator
+      refused - re-firing it overrides the cancel;
+    - a claimed (``running``) or finished (``succeeded``) twin is a
+      delivery in progress or done - re-firing it is double delivery.
+
+    Both shapes need the walk to run while a twin sits outside the
+    pending/scheduled pair. The natural steady state cannot produce that
+    (the twins are pre-scheduled about an hour ahead of the fold-0 ticks
+    that create them), but a stall that drags ``next_fire_at`` through the
+    twin's own instant can: tick-budget exhaustion advances a suppressed
+    schedule one cadence per suppressed tick WITHOUT consulting twin
+    coverage (the suppression UPDATE writes ``next_fire_at`` directly,
+    cron_loop's tick-budget arm), so the walk can arrive at an instant
+    whose twin a worker claimed or finished in the meantime - and the
+    operator-cancel arm needs no timing argument at all, the cancel can
+    land at any moment before the walk.
+
+    The drive seeds that state directly (the harness's real clock precedes
+    the November overlap, the same honesty note
+    ``TestPartialTwinCoverageFoldHandoff`` carries): a schedule mid
+    fold-1 pass at 01:00 fold-1, pre-queued twins covering 01:05..01:59,
+    and the 01:30 twin moved past the pending/scheduled pair by the arm
+    under test. The walk must advance through the transformed twin's
+    instant like any other covered one: no second enqueue at 01:30
+    fold-1, ``next_fire_at`` lands past the range, the transformed twin
+    keeps its own status.
+    """
+
+    @staticmethod
+    async def _cancel_scheduled_twin(
+        conn: asyncpg.Connection, schema: str, scheduled_at: datetime, schedule_id: UUID
+    ) -> None:
+        """Operator-cancel the schedule's twin at *scheduled_at*.
+
+        Mirrors the exact SET ``cancel_pending_scheduled``
+        (``_sql_templates.py``) leaves on a pending/scheduled row:
+        terminal ``cancelled`` with ``finished_at`` stamped and the
+        ``CancelledBeforeStart`` cancel-origin marker on the row. The
+        cancel writes themselves are pinned by the cancel suite; this pin
+        is about what the coverage walk owes a row they leave behind.
+        """
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = 'cancelled'::\"{schema}\".job_status, "
+            "finished_at = clock_timestamp(), "
+            f"error_class = '{CANCEL_ORIGIN_PENDING}' "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            scheduled_at,
+        )
+
+    @staticmethod
+    async def _restate_twin(
+        conn: asyncpg.Connection,
+        schema: str,
+        scheduled_at: datetime,
+        schedule_id: UUID,
+        status: str,
+    ) -> None:
+        """Move the schedule's twin at *scheduled_at* to *status*.
+
+        The state a claim (``running``, dispatch's own write) or a
+        finished run (``succeeded``, ``mark_succeeded``'s write) leaves;
+        the walk reads the status column and nothing else about the row.
+        """
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; every value is $-bound.
+            f"SET status = '{status}'::\"{schema}\".job_status "
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            scheduled_at,
+        )
+
+    async def _drive_fold1_pass_with_one_transformed_twin(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        transform: str,
+    ) -> UUID:
+        """The shared drive: schedule mid fold-1 pass, twins 01:05..01:59
+        fold-1, the 01:30 twin transformed per *transform*, the pass
+        ticked through 01:30 fold-1."""
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name=f"twin-{transform}",
+            cron_expr=_MINUTELY,
+            timezone=_OVERLAP_TZ,
+            dst_strategy="allof",
+            next_fire_at=_FOLD1_TICKS_UTC[0],
+            identity_key=f"twin-{transform}",
+        )
+        transformed_at = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 fold-1
+        for minute in range(5, 60):
+            instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
+        assert transform in ("cancelled", "running", "succeeded")
+        if transform == "cancelled":
+            await self._cancel_scheduled_twin(clean_pg_conn, schema, transformed_at, schedule_id)
+        else:
+            await self._restate_twin(clean_pg_conn, schema, transformed_at, schedule_id, transform)
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        # Ticks 06:00..06:04 fire the uncovered 01:00..01:04 fold-1
+        # occurrences; the 06:04 tick's walk must advance THROUGH the
+        # transformed twin's instant to the first instant nothing holds.
+        for minute in range(5):
+            due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            assert fired == 1, (
+                f"the {due.isoformat()} tick owes the uncovered fold-1 "
+                "occurrence - a failure here is setup, not the finding"
+            )
+        return schedule_id
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("transform", "why"),
+        [
+            ("cancelled", "operator-cancelled"),
+            ("running", "claimed"),
+            ("succeeded", "finished"),
+        ],
+    )
+    async def test_transformed_twin_never_refires(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        transform: str,
+        why: str,
+    ) -> None:
+        """A twin beyond the pending/scheduled pair must not stall the walk.
+
+        The 01:30 fold-1 twin is {why}; the walk must count its instant as
+        covered and land ``next_fire_at`` past the range. While the
+        coverage query counts only pending/scheduled twins, the walk
+        stalls ON the transformed instant, the schedule sits due there,
+        and the 06:30 tick enqueues a SECOND job for an occurrence that
+        was already delivered ({why}) - or that the operator refused.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        transformed_at = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 fold-1
+        schedule_id = await self._drive_fold1_pass_with_one_transformed_twin(
+            clean_pg_conn, module_pg_schema, transform
+        )
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == _AFTER_RANGE_UTC, (
+            f"the walk must advance through the {why} twin's instant: every "
+            "fold-1 slot through 01:59 is held by a job, so the schedule owes "
+            f"nothing until 02:00 local ({_AFTER_RANGE_UTC.isoformat()}) - "
+            f"got {row['next_fire_at'].isoformat()}"
+        )
+
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+        # The walk stalled (red) -> the schedule sits due at 06:30 and this
+        # tick re-fires the transformed instant; walked past (fixed) -> the
+        # schedule is not due and this tick fires nothing.
+        fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=transformed_at)
+        assert fired == 0, (
+            f"the {transformed_at.isoformat()} tick re-fired the 01:30 fold-1 "
+            f"occurrence ({why} twin) - a {why} twin is its delivery or the "
+            "operator's refusal of it, never an owed occurrence"
+        )
+
+        at_instant = await clean_pg_conn.fetch(
+            f'SELECT status FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
+            "  AND scheduled_at = $3",
+            _OPEN_ACTOR,
+            str(schedule_id),
+            transformed_at,
+        )
+        assert len(at_instant) == 1, (
+            f"exactly one job may hold the 01:30 fold-1 instant: the {why} "
+            f"twin - a second enqueue there is a re-fired occurrence, got "
+            f"{[dict(r) for r in at_instant]}"
+        )
+        assert at_instant[0]["status"] == transform, (
+            f"the fix must not touch the twin's own write path: the {why} "
+            f"twin keeps its status, got {at_instant[0]['status']}"
+        )
+
+        assert await _count_schedule_jobs(clean_pg_conn, schema, _OPEN_ACTOR, schedule_id) == 60, (
+            "5 schedule-delivered occurrences + 55 held twins, the transformed "
+            "one included - no occurrence delivered twice, none conjured away"
         )
