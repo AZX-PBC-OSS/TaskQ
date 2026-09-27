@@ -280,7 +280,9 @@ Redirects (302) to `/admin/queues`.
 
 ### `GET /admin/queues`
 
-Queue overview. Lists all queues that have jobs in `pending`, `scheduled`, `running`, or `failed` state. For each queue shows the count of jobs in each of those four statuses, the number of live workers subscribed to it, and a stranded count.
+Queue overview. Lists all queues that have jobs in `pending`, `scheduled`, `running`, or `failed` state. For each queue shows the count of jobs in each of those four statuses, the number of live workers subscribed to it, and a stranded count. The roll-up is capped at 200 queue labels and says so when the cap is reached; there is no pagination.
+
+The page refreshes through the jobs page's partial-poll pattern: the htmx poll re-renders the table fragment alone (no full-page meta refresh), so a poll tick costs one fragment request, not a whole-document reload.
 
 The **Live Workers** column counts workers whose `last_seen_at` falls inside the `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` window, per queue subscription. It is the same read the leader's queue-depth sampler runs (`statement_timestamp()` bound over `workers_last_seen_idx`), so the page, the orphan banner, and the stranded-jobs detector all agree on which worker counts as alive. A queue with pending depth and zero live workers is unserved; that is the condition the `TaskQQueueUnserved` alert fires on.
 
@@ -298,7 +300,9 @@ Queue detail page. Lists jobs in the named queue filtered by `status` (query par
 | `cursor_at` | No | ISO 8601 timestamp cursor for the next page. Must be provided together with `cursor_id`. |
 | `cursor_id` | No | UUID cursor for the next page. Must be provided together with `cursor_at`. |
 
-Returns `400` if `status` is not an allowed value or if only one of `cursor_at` / `cursor_id` is provided.
+Returns `400` if `status` is not an allowed value, if only one of `cursor_at` / `cursor_id` is provided, or if the request carries a query parameter the page does not declare (the declared set is exactly the table above).
+
+**The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts.
 
 ### `GET /admin/history`
 
@@ -343,7 +347,7 @@ The **Duration** column carries a live twin for exactly that view: a running row
 
 Job detail. Shows the full job record, attempt history from `job_attempts`, and the event log from `job_events`. Tracebacks are truncated to 2 000 characters with a `(N more characters)` suffix. Returns `404` if the job does not exist.
 
-If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log is empty (events are not archived). An "archived" banner is shown at the top of the page.
+If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log reads the same `job_events` ledger the live page reads — the archive arm renders whatever the ledger holds for the job, never a hardcoded empty log. An "archived" banner is shown at the top of the page.
 
 The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state: `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 
@@ -504,7 +508,13 @@ Response codes:
 
 ### `GET /admin/batches`
 
-Batch overview. Reads all rows from the `batches` table: batch ID (linked to its finalizer job's detail page when one is set), queue, status (`active`, `complete`, or `aborted`), expected size, consecutive failures against the failure threshold, originating actor, and created/completed timestamps. Active batches sort first, then the most recent rows. The page renders at most 200 batches and says so when the cap is reached; there is no pagination. If the batches migration has not been applied, renders a notice instead of raising.
+Batch overview. Reads all rows from the `batches` table: batch ID (linked to the batch's own drilldown page, `GET /admin/batches/{batch_id}`), queue, status (`active`, `complete`, or `aborted`), expected size, consecutive failures against the failure threshold, originating actor, and created/completed timestamps. Active batches sort first, then the most recent rows. The page renders at most 200 batches and says so when the cap is reached; there is no pagination. If the batches migration has not been applied, renders a notice instead of raising.
+
+### `GET /admin/batches/{batch_id}`
+
+Batch drilldown. Renders the batch's own facts (queue, status, expected size, failure counters, originating actor, finalizer link, created/completed), the member jobs' per-status counts, and the member jobs themselves — the live rows whose `metadata->>'batch_id'` is the batch id, newest first, capped at 200 with a notice when the cap bites. Members that have already been archived out of the live jobs table are counted and reported separately (they are visible on the History page), so a completed batch never reads as if it had no members.
+
+Returns `404` if the batch id is unknown; renders the batches-not-installed notice (like the overview) if the migration has not been applied.
 
 ### `GET /admin/sse/{topic}`
 

@@ -539,3 +539,156 @@ def test_queue_live_workers_read_matches_the_leader_sampler_shape() -> None:
         "the queues page must reuse the leader sampler's live-worker SQL "
         "shape, not a second definition of 'live'"
     )
+
+
+# ── Issue #337: the overview's roll-up is bounded, and the page's poll ────
+#
+# The overview GROUP BY ran with no LIMIT (unbounded under high queue-label
+# cardinality) while the page double-fetched: the full-page meta refresh
+# AND the htmx poll both fired, because only jobs set suppress_refresh.
+
+
+def test_queue_overview_sql_caps_its_rows() -> None:
+    """The overview GROUP BY carries the same 200-row cap the page's other
+    reads already take — one row per queue label, never unbounded."""
+    from taskq.web.admin.queues import _QUEUE_OVERVIEW_SQL, _QUEUE_ROW_CAP
+
+    assert f"LIMIT {_QUEUE_ROW_CAP}" in _QUEUE_OVERVIEW_SQL, (
+        "the overview roll-up must cap its row count like the live-worker "
+        "and stranded reads on the same page"
+    )
+
+
+def test_queue_overview_page_does_not_double_fetch(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """The queues page renders the partial-poll pattern, not meta refresh +
+    htmx poll together: the htmx poll is the only refresh, so a poll tick
+    costs one request, not a full page reload plus one."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues")  # pyright: ignore[reportUnknownVariableType]
+    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
+    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    assert 'http-equiv="refresh"' not in html, (
+        "the page polled by htmx must not ALSO meta-refresh the whole "
+        "document: that is the double-fetch"
+    )
+    assert "hx-get" in html, "the htmx poll is the page's remaining refresh"
+
+
+def test_queue_overview_htmx_poll_returns_the_table_partial(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """An HX-Request poll of /queues returns the table partial alone —
+    the jobs page's own partial-poll contract — not the whole document."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues", headers={"HX-Request": "true"})  # pyright: ignore[reportUnknownVariableType]
+    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
+    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    assert "<html" not in html, "the poll must return the partial, not the full page"
+    assert 'id="queue-table-wrap"' in html
+
+
+def test_queue_overview_poll_fragment_carries_the_poll_attributes(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """The swapped-in fragment keeps the hx-get poll alive: the wrapper's
+    poll attributes ride the partial, or the second tick never fires."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues", headers={"HX-Request": "true"})  # pyright: ignore[reportUnknownVariableType]
+    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    assert "hx-trigger" in html and "hx-select" in html and "hx-swap" in html
+
+
+def test_queue_overview_renders_truncation_notice_when_the_cap_bites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At the row cap the page says so, the batches page's own idiom:
+    a capped read-only render must never read as the whole population."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+    from taskq.web.admin.queues import _QUEUE_ROW_CAP
+
+    overview = [
+        StubRecord(
+            queue=f"queue-{i}",
+            pending_count=1,
+            scheduled_count=0,
+            running_count=0,
+            failed_count=0,
+        )
+        for i in range(_QUEUE_ROW_CAP)
+    ]
+    conn = _ScriptedConn(
+        fetch_results=[overview, [], [], []],
+    )
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
+    response = client.get("/queues")
+    assert response.status_code == 200
+    assert "Showing the" in response.text, "a capped overview must tell the operator the cap bit"
+
+
+def test_queue_overview_no_truncation_notice_under_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the cap no notice renders: the page must not cry wolf."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+
+    overview = [
+        StubRecord(
+            queue="default", pending_count=1, scheduled_count=0, running_count=0, failed_count=0
+        )
+    ]
+    conn = _ScriptedConn(fetch_results=[overview, [], [], []])
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
+    response = client.get("/queues")
+    assert response.status_code == 200
+    assert "Showing the" not in response.text
+
+
+# ── Issue #337: unknown filter params are refused, not silently dropped ──
+
+
+def test_queue_overview_rejects_unknown_filter_params(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """The overview declares no filters, so ANY query param is undeclared:
+    FastAPI would drop it and 200-unfiltered; the page 400s instead."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues?status=pending")
+    assert response.status_code == 400
+    assert "status" in response.text
+    assert client.get("/queues").status_code == 200
+
+
+def test_queue_detail_rejects_unknown_filter_params(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """The queue detail page 400s on a param it does not declare (its
+    declared status/cursor params keep rendering)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues/default?bogus=1")
+    assert response.status_code == 400
+    assert "bogus" in response.text
+    ok = client.get("/queues/default?status=running")
+    assert ok.status_code == 200

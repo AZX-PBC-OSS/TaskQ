@@ -1,0 +1,111 @@
+{% extends "_base.html" %}
+{% set active_page = "batches" %}
+{% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
+
+{% block title %}Batch {{ batch.id[:8] if batch else '' }} — TaskQ Admin{% endblock %}
+
+{% block content %}
+{% if not batches_installed %}
+<div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">{{ notice_text }}</div>
+{% elif batch %}
+<h2 class="text-xl font-semibold tracking-tight mb-4">
+    Batch <span class="font-mono text-sm text-slate-500 dark:text-slate-400" title="{{ batch.id }}">{{ batch.id[:8] }}…</span>
+</h2>
+
+{# The batch's own facts #}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-4">
+    <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Queue</dt>
+            <dd><a href="{{ base_path }}/queues/{{ batch.queue|urlencode }}" class="text-blue-600 dark:text-blue-400 hover:underline">{{ batch.queue }}</a></dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Status</dt>
+            <dd>
+                {% if batch.status == 'active' %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"><span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span> active</span>
+                {% elif batch.status == 'complete' %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> complete</span>
+                {% else %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> aborted</span>
+                {% endif %}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Expected Size</dt>
+            <dd class="text-slate-500 dark:text-slate-400">{{ batch.expected_size }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Failures</dt>
+            <dd class="text-slate-500 dark:text-slate-400">{{ batch.consecutive_failures }}{% if batch.failure_threshold is not none %} / {{ batch.failure_threshold }}{% endif %}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Originating Actor</dt>
+            <dd>{{ batch.originating_actor or '—' }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Finalizer</dt>
+            <dd class="font-mono text-xs">
+                {% if batch.finalizer_job_id %}
+                <a href="{{ base_path }}/jobs/{{ batch.finalizer_job_id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ batch.finalizer_job_id }}">{{ batch.finalizer_job_id[:8] }}…</a>
+                {% else %}—{% endif %}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Created</dt>
+            <dd class="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ batch.created_at }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 mb-1">Completed</dt>
+            <dd class="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ batch.completed_at or '—' }}</dd>
+        </div>
+    </dl>
+</div>
+
+{# Member status counts #}
+{% if status_counts %}
+<div class="flex flex-wrap gap-2 mb-4">
+    {% for c in status_counts %}
+    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+        {{ c.status }} <span class="font-semibold">{{ c.count }}</span>
+    </span>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if archived_members %}
+<p class="text-xs text-slate-500 dark:text-slate-400 mb-2">
+    {{ archived_members }} archived member{{ 's' if archived_members != 1 }} not listed below (they have left the live jobs table); the History page carries them.
+</p>
+{% endif %}
+
+{# Member jobs #}
+{% if members %}
+{% call styled_table() %}
+    {{ table_header(["ID", "Actor", "Queue", "Status", "Attempt", "Created", "Finished"]) }}
+    {% call table_body() %}
+    {% for j in members %}
+        {% call table_row() %}
+            <td class="px-4 py-2.5 font-mono text-xs">
+                <a href="{{ base_path }}/jobs/{{ j.id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ j.id }}">{{ j.id[:8] }}…</a>
+            </td>
+            <td class="px-4 py-2.5 text-sm font-medium">{{ j.actor }}</td>
+            <td class="px-4 py-2.5 text-sm">{{ j.queue }}</td>
+            <td class="px-4 py-2.5 text-sm">{{ j.status }}</td>
+            <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">{{ j.attempt }}{% if j.retry_kind == 'transient' %} / {{ j.max_attempts }}{% else %} / — (indefinite){% endif %}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ j.created_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ j.finished_at or '—' }}</td>
+        {% endcall %}
+    {% endfor %}
+    {% endcall %}
+{% endcall %}
+{% if truncated %}
+<p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Showing the {{ page_size }} most recent members; the rest are visible in the jobs table directly.</p>
+{% endif %}
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No live member jobs in the jobs table.</p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

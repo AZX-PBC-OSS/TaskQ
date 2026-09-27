@@ -1051,6 +1051,176 @@ async def test_parentless_archive_attempts_are_documented_not_fatal(lab: _Lab) -
     assert "Attempt History" in ht_detail
 
 
+def _event_log_kinds(html: str) -> list[str]:
+    """The event kinds the detail page's Event Log section renders, in order."""
+    section = html.split("Event Log", 1)[1].split("Admin Audit Trail", 1)[0]
+    return re.findall(r'font-mono">(\w+)</span>', section)
+
+
+async def test_archived_detail_events_match_the_live_detail_events(lab: _Lab) -> None:
+    """Issue #337: the detail route's archive arm rendered ``events = []``
+    without reading the ledger at all, so an archived job whose
+    ``job_events`` rows are intact claimed "No events recorded". Pinned
+    differentially: the SAME job's event log renders identically through
+    the live arm and the archive arm, on BOTH engines (on the converted
+    one ``job_events`` is the hypertable the archive arm must read)."""
+    now = datetime.now(UTC)
+
+    async def _plant(engine: _Engine, jid: uuid.UUID) -> None:
+        conn = await asyncpg.connect(lab.dsn)
+        try:
+            await conn.execute(
+                f"""INSERT INTO {engine.schema}.jobs (id, actor, queue, payload,
+                        max_attempts, retry_kind, status, attempt, created_at,
+                        scheduled_at, started_at, finished_at)
+                    VALUES ($1, 'event_probe', 'eventq', '{{}}'::jsonb, 3, 'transient',
+                        'succeeded', 1, $2, $2, $3, $4)""",
+                jid,
+                _BASE,
+                _BASE + timedelta(minutes=1),
+                _BASE + timedelta(minutes=5),
+            )
+            await conn.executemany(
+                f"INSERT INTO {engine.schema}.job_events (job_id, occurred_at, kind, detail) "
+                "VALUES ($1, $2, $3, $4::jsonb)",
+                [
+                    (
+                        jid,
+                        _BASE + timedelta(minutes=1, seconds=1),
+                        "state_change",
+                        '{"from": "pending", "to": "running"}',
+                    ),
+                    (
+                        jid,
+                        _BASE + timedelta(minutes=1, seconds=2),
+                        "progress",
+                        '{"percent": 100}',
+                    ),
+                ],
+            )
+        finally:
+            await conn.close()
+
+    async def _archive_move(engine: _Engine, jid: uuid.UUID) -> None:
+        """The lifecycle's own move, byte-for-byte: the archive row gains
+        only archived_at/expire_at, and the live row goes away."""
+        conn = await asyncpg.connect(lab.dsn)
+        try:
+            await conn.execute(
+                f"""INSERT INTO {engine.schema}.jobs_archive (
+                        id, actor, queue, payload, max_attempts, retry_kind,
+                        status, attempt, created_at, scheduled_at, started_at,
+                        finished_at, archived_at, expire_at)
+                    SELECT id, actor, queue, payload, max_attempts, retry_kind,
+                        status, attempt, created_at, scheduled_at, started_at,
+                        finished_at, $2, $3
+                    FROM {engine.schema}.jobs WHERE id = $1""",
+                jid,
+                now,
+                _FAR_FUTURE,
+            )
+            await conn.execute(f"DELETE FROM {engine.schema}.jobs WHERE id = $1", jid)
+        finally:
+            await conn.close()
+
+    async def _keep_events_over_the_archive(engine: _Engine, jid: uuid.UUID) -> None:
+        """Re-plant the ledger rows the archive move's FK cascade removed.
+
+        Production's archive sweep deletes the live row and
+        ``job_events.job_id REFERENCES jobs ON DELETE CASCADE`` takes the
+        events with it TODAY (the event-watermark migration documents the
+        cascade: there is no job_events_archive); the issue's prescription
+        is retention alignment, so the ledger outlives the archive it
+        belongs to. The state that alignment produces -- an archived job
+        whose ``job_events`` rows are intact -- is what this pins:
+        re-inserted past the FK (the trigger bypass runs as the container
+        superuser the lab already uses), the rows must reach the archived
+        page exactly as the live arm rendered them."""
+        conn = await asyncpg.connect(lab.dsn)
+        try:
+            await conn.execute("SET session_replication_role = replica")
+            try:
+                await conn.executemany(
+                    f"INSERT INTO {engine.schema}.job_events (job_id, occurred_at, kind, detail) "
+                    "VALUES ($1, $2, $3, $4::jsonb)",
+                    [
+                        (
+                            jid,
+                            _BASE + timedelta(minutes=1, seconds=1),
+                            "state_change",
+                            '{"from": "pending", "to": "running"}',
+                        ),
+                        (
+                            jid,
+                            _BASE + timedelta(minutes=1, seconds=2),
+                            "progress",
+                            '{"percent": 100}',
+                        ),
+                    ],
+                )
+            finally:
+                await conn.execute("SET session_replication_role = DEFAULT")
+        finally:
+            await conn.close()
+
+    async def _cleanup(engine: _Engine, jid: uuid.UUID) -> None:
+        conn = await asyncpg.connect(lab.dsn)
+        try:
+            await conn.execute(f"DELETE FROM {engine.schema}.job_events WHERE job_id = $1", jid)
+            await conn.execute(f"DELETE FROM {engine.schema}.jobs_archive WHERE id = $1", jid)
+            await conn.execute(f"DELETE FROM {engine.schema}.jobs WHERE id = $1", jid)
+        finally:
+            await conn.close()
+
+    jid = new_job_id()
+    try:
+        # Identical bytes on both engines: one job, two events.
+        for engine in (lab.vanilla, lab.ht):
+            await _plant(engine, jid)
+
+        live_kinds: dict[str, list[str]] = {}
+        for engine in (lab.vanilla, lab.ht):
+            live_html = await _html(engine.app, f"/admin/jobs/{jid}")
+            live_kinds[engine.schema] = _event_log_kinds(live_html)
+            assert live_kinds[engine.schema] == ["state_change", "progress"], (
+                f"{engine.schema}: the live arm must render the planted events"
+            )
+
+        # The lifecycle's own move on both engines, then the ledger rows
+        # re-planted over the cascade (see the helper's docstring: the
+        # cascade is today's deletion; retention alignment is the issue's
+        # prescription and the state this differential pins).
+        for engine in (lab.vanilla, lab.ht):
+            await _archive_move(engine, jid)
+            await _keep_events_over_the_archive(engine, jid)
+
+        for engine in (lab.vanilla, lab.ht):
+            archived_html = await _html(engine.app, f"/admin/jobs/{jid}")
+            assert "No events recorded" not in archived_html, (
+                f"{engine.schema}: the events table still holds this job's rows; "
+                "the archived page must render them"
+            )
+            archived_kinds = _event_log_kinds(archived_html)
+            assert archived_kinds == live_kinds[engine.schema], (
+                f"{engine.schema}: the archive arm must render the SAME event "
+                f"log the live arm renders (live={live_kinds[engine.schema]!r} "
+                f"archived={archived_kinds!r})"
+            )
+            # The event detail carries through too, not just the kind
+            # (autoescape turns the jsonb's quotes into entities; the bare
+            # key text is what survives them).
+            assert "percent" in archived_html
+
+        # The two engines agree byte-for-byte on the archived page (fixed
+        # stamps only: the volatile-stamp stripper handles the rest).
+        van_archived = await _html(lab.vanilla.app, f"/admin/jobs/{jid}")
+        ht_archived = await _html(lab.ht.app, f"/admin/jobs/{jid}")
+        _diff("archived detail events", _stable_html(van_archived), _stable_html(ht_archived))
+    finally:
+        for engine in (lab.vanilla, lab.ht):
+            await _cleanup(engine, jid)
+
+
 async def test_null_partition_key_is_the_documented_divergence(
     lab: _Lab,
     ts_dsn: str,
