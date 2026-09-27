@@ -43,7 +43,13 @@
        jobs page's live machinery - to a CDN it cannot reach. The shipped
        alpine.min.js IS the version the CDN tag used to pin (3.14.9). #}
     <script defer src="{{ base_path }}/static/alpine.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    {# lucide ships from the SAME local /static dir as Alpine and htmx:
+       the air-gapped ops deployment argument that moved Alpine applies
+       verbatim - an unpkg tag renders every data-lucide icon as an EMPTY
+       <i> the moment the deployment cannot reach the CDN (the icon boot
+       is guarded, so the page survives; the decoration does not). The
+       shipped file IS unpkg's lucide v0.544.0 UMD build, pinned. #}
+    <script src="{{ base_path }}/static/lucide.min.js"></script>
     <script src="{{ base_path }}/static/htmx.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
