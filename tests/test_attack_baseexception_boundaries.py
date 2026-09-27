@@ -1,12 +1,14 @@
 """BaseException boundary pins: user code's ``SystemExit`` is an outcome at
-every seam, never worker death; ``KeyboardInterrupt`` propagates raw.
+the converted seams, never worker death; ``KeyboardInterrupt`` propagates
+raw.
 
 #459 fixed the actor seams (the sync actor's executor-thread task, the tx
 path's ``_run_actor_in_tx`` task): CPython's ``Task.__step`` re-raises
 exactly ``(KeyboardInterrupt, SystemExit)`` bare after ``set_exception``,
 so a task ending with SystemExit kills the loop before any boundary's
-``except`` can run. The same mechanism survives at every OTHER seam user
-code crosses, and each has its own documented outcome contract:
+``except`` can run. The same mechanism survives at the OTHER seams where
+TaskQ owns the frame around user code, and each has its own documented
+outcome contract (the reload family is the named exception, below):
 
   - a cron payload factory (sync: the executor-pool thread; async: the
     coroutine awaited in the tick's frame) is a TICK FAILURE: the strike,
@@ -20,16 +22,45 @@ code crosses, and each has its own documented outcome contract:
     sync or async) is a HOOK FAILURE: logged, never propagated, the
     already decided terminal outcome stands;
   - a DI provider factory (sync callable on the loop, sync generator's
-    ``__enter__`` on the pinned executor thread) is a JOB-LEVEL TERMINAL
+    ``__enter__`` on the pinned executor thread) is an ATTEMPT-LEVEL
     FAILURE recorded through the same dispatch handler as any pre-actor
-    failure, the worker survives.
+    failure - the ATTEMPT is terminal (no actor code ran), not the job:
+    under the default transient policy the handler re-schedules it, the
+    dispatch pin's outcome is ``scheduled`` - and the worker survives;
+  - a sync generator's ``__exit__`` (or an async generator's
+    ``__aexit__``) raising SystemExit at TEARDOWN is a log-and-continue
+    teardown failure: ``aclose`` logs it at ERROR and moves on to the
+    remaining teardowns, the worker survives.
 
 Every conversion raises a typed carrier (an ordinary ``Exception`` whose
 ``.original`` is the user code's own ``SystemExit``) and the choke point
 that records the outcome unwraps it, so the carrier's own name never
-reaches a row, a log or a span. ``KeyboardInterrupt`` is deliberately not
-converted anywhere: interpreter/operator intent, never an outcome, it
-propagates raw (pinned per boundary).
+reaches a row, a log or a span.
+
+Two BaseException surfaces are deliberately OUTSIDE the discipline:
+
+  - the RELOAD family (``reload_credentials``, the worker's
+    ``_reload_coordinator_loop``, ``run_reload_schedule``, the boot-time
+    slot-pool open): its factories run under ``asyncio.wait_for`` task
+    boundaries guarded by ``except Exception`` only, so a factory's
+    ``sys.exit()`` propagates raw - loop-fatal at the task step, the very
+    mechanism these conversions exist for. At the slot-pool open that IS
+    the documented contract (a worker that cannot open its transaction
+    connections fails to boot, loudly); the reload loops' survive-and-
+    retry contract covers reload failures, never a BaseException - a
+    credential factory must not call ``sys.exit()``. Pinned below.
+  - DI BOOTSTRAP (PROCESS/THREAD/LOOP scope open): no dispatch handler
+    exists yet to unwrap the carrier, so it fails the boot with exit 1,
+    its own name in the error surface (the factory's ``SystemExit`` in
+    the cause chain) - the operator-facing difference from the factory's
+    own exit code.
+
+``KeyboardInterrupt`` is deliberately not converted anywhere:
+interpreter/operator intent, never an outcome, it propagates raw (pinned
+per boundary). At the per-job seams that raw interrupt is nobody's
+verdict: the dispatch task dies with it and the row strands ``running``
+until lease expiry - the lease-reclaim path is the recovery; interrupts
+reclaim, they never fabricate a verdict (pinned at the dispatch level).
 """
 
 import asyncio
@@ -49,8 +80,10 @@ from taskq._di.scopes import (
     make_resolver,
 )
 from taskq._ids import new_uuid
+from taskq._reload_loop import run_reload_schedule
 from taskq._scope import LifecycleDetectionWarning
 from taskq.actor import ActorRef
+from taskq.auth import ReloadSchedule
 from taskq.cron import resolve_payload
 from taskq.retry import (
     JobRetryState,
@@ -509,6 +542,83 @@ async def test_provider_keyboardinterrupt_propagates_raw() -> None:
         await container.get_or_create(_TransDep, registry.get(_TransDep))
 
 
+async def test_provider_teardown_systemexit_is_logged_and_dropped() -> None:
+    """The generator teardown shape: a sync generator's ``__exit__`` raising
+    ``SystemExit`` (an async generator's ``__aexit__`` crosses the same
+    ``aclose`` boundary) is swallowed by the log-and-continue teardown
+    policy - logged at ERROR, the remaining teardowns fire, the pinned
+    executor still shuts down, the worker survives. The user code here
+    runs on the executor thread, so the SystemExit is an ordinary future
+    exception (no task step ends with it); the boundary that owns the
+    contract is ``aclose``'s ``except BaseException``."""
+    teardown_ran: list[int] = []
+
+    def teardown_exit_factory() -> object:
+        yield _TransDep()
+        teardown_ran.append(1)
+        raise SystemExit("boom")
+
+    with pytest.warns(LifecycleDetectionWarning):
+        registry = ProviderRegistry()
+        registry.register_factory(_TransDep, Scope.TRANSIENT, teardown_exit_factory)
+    container = ScopeContainer(
+        scope=Scope.TRANSIENT,
+        resolver=make_resolver(ProviderRegistry(), {}),
+    )
+
+    value = await container.get_or_create(_TransDep, registry.get(_TransDep))
+    assert isinstance(value, _TransDep)
+
+    with structlog.testing.capture_logs() as captured:
+        await container.aclose()
+
+    assert teardown_ran == [1], "the generator's teardown ran and raised SystemExit"
+    errors = [e for e in captured if e["event"] == "provider-teardown-error"]
+    assert len(errors) == 1, (
+        "the teardown SystemExit is a logged teardown failure, never a "
+        "propagator: aclose completed and the worker survives"
+    )
+    assert container.has_teardown_work is False, (
+        "the log-and-continue pass completed: every teardown ran and the "
+        "pinned executor was shut down"
+    )
+
+
+# ── Reload: the deliberately uncovered seam family ────────────────────
+
+
+async def test_reload_loop_systemexit_is_outside_the_discipline() -> None:
+    """The scoped claim, pinned: the reload family is the seam family the
+    discipline does NOT cover. A rebuild's ``SystemExit`` is not converted
+    - it leaves ``run_reload_schedule`` raw, and no
+    ``credentials-reload-failed`` verdict is recorded (the loop's
+    survive-and-retry contract covers reload failures, never a
+    BaseException). Driven in-frame here because that is the honest
+    delivery shape: in production the user factories run under
+    ``asyncio.wait_for``'s task boundary, where a raw SystemExit ends the
+    task's step bare and kills the loop before any TaskQ boundary can see
+    it - the very mechanism these conversions exist for. At the boot-time
+    slot-pool open the raw kill IS the documented fail-to-boot-loudly
+    contract (exit 1). A credential factory must not call ``sys.exit()``."""
+    schedule = ReloadSchedule()
+    trigger = asyncio.Event()
+    rebuilds: list[int] = []
+
+    async def exit_rebuild() -> None:
+        rebuilds.append(1)
+        raise SystemExit("boom")
+
+    trigger.set()
+    with structlog.testing.capture_logs() as captured, pytest.raises(SystemExit):
+        await run_reload_schedule(schedule, exit_rebuild, trigger=trigger, role="test")
+
+    assert rebuilds == [1], "the rebuild ran exactly once: the loop did not survive to retry"
+    assert not [e for e in captured if e["event"] == "credentials-reload-failed"], (
+        "the SystemExit is not classified as a reload failure - the reload "
+        "family is outside the discipline, the escapee is nobody's verdict"
+    )
+
+
 # ── DI: the dispatch-level pin (worker survives, outcome recorded) ────
 
 
@@ -569,11 +679,14 @@ def _make_actor_ref(fn: object) -> ActorRef[_Payload, None]:
     )
 
 
-async def test_provider_systemexit_is_a_job_level_terminal_failure() -> None:
+async def test_provider_systemexit_is_an_attempt_level_failure_the_job_retries() -> None:
     """The dispatch-level pin: an actor whose TRANSIENT dependency's
     factory raises ``sys.exit()`` is recorded through the SAME failure
     handler as any pre-actor failure (error_class is the factory's own
-    SystemExit), the dispatch completes, and the worker survives. Pre-fix,
+    SystemExit), the dispatch completes, and the worker survives. The
+    failure is terminal for the ATTEMPT (no actor code ran), not for the
+    job: under the default transient policy the handler re-schedules it -
+    the pin's outcome is ``scheduled``. Pre-fix,
     the SystemExit escaped ``dispatch_one_job``'s ``except Exception`` and
     the per-job dispatch task ended with the bare re-raise that kills the
     loop: the row stranded ``running`` for lease expiry."""
@@ -623,3 +736,56 @@ async def test_provider_systemexit_is_a_job_level_terminal_failure() -> None:
         "the recorded class is the factory's own SystemExit, never the "
         "carrier's name (the unwrap happened at the choke point)"
     )
+
+
+async def test_provider_keyboardinterrupt_at_dispatch_propagates_raw_and_strands_running() -> None:
+    """The carve-out's consequence, pinned at the dispatch level: a
+    TRANSIENT dependency's factory raising ``KeyboardInterrupt`` inside
+    ``dispatch_one_job`` propagates RAW - in production the per-job
+    dispatch task ends its step with the bare re-raise that kills the
+    loop - and no verdict is written: the row strands ``running`` until
+    lease expiry, the documented lease-reclaim path is its recovery.
+    Interrupts reclaim, they never fabricate a verdict."""
+    registry = ProviderRegistry()
+    registry.register_factory(_TransDep, Scope.TRANSIENT, _ki_sync_callable)
+
+    async def my_actor(
+        payload: _Payload,
+        ctx: object,
+        dep: Annotated[_TransDep, Scope.TRANSIENT],
+    ) -> dict[str, object]:
+        del payload, ctx, dep  # pragma: no cover  # Why: the factory fails before the actor runs.
+        return {}
+
+    actor_ref = _make_actor_ref(my_actor)
+    job = make_job_row(payload={"value": 42})
+    fake_backend = FakeBackend()
+    fake_deps = _FakeWorkerDeps()
+
+    async with _ScopeStack(registry) as scopes:
+        with pytest.raises(KeyboardInterrupt):
+            await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=fake_deps,  # type: ignore[arg-type]  # Why: the stub deps shape test_dispatch_one_job's own pins pass.
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] vs ActorRef[BaseModel, BaseModel | None], the same pyright erasure test_dispatch_one_job documents.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=None,
+            )
+
+    assert job.status == "running", (
+        "no verdict was fabricated: the row strands running until the lease sweep reclaims it"
+    )
+    assert fake_backend.mark_failed_or_retry_calls == [], (
+        "the interrupt is not classified as a failure - the row strands "
+        "running for lease expiry, the lease-reclaim path is the recovery"
+    )
+    assert fake_backend.mark_succeeded_calls == []
+    assert fake_backend.mark_cancelled_calls == []

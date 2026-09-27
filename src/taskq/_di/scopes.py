@@ -32,8 +32,10 @@ logger = structlog.get_logger("taskq._di.scopes")
 
 
 class _ProviderSystemExitError(Exception):
-    """Typed carrier for a provider factory's ``SystemExit``: a job-level
-    failure, not worker death.
+    """Typed carrier for a provider factory's ``SystemExit``: an
+    attempt-level failure (terminal for the attempt - no actor code ran -
+    not for the job: under the default policy the dispatch handler
+    re-schedules it), not worker death.
 
     A provider factory is user code, and it runs on every resolution
     seam: a sync callable called on the loop, a sync generator's
@@ -55,7 +57,17 @@ class _ProviderSystemExitError(Exception):
     ``SystemExit``: the dispatch's failure handler records the factory's
     own exception (``error_class`` is ``"SystemExit"``, the traceback
     carries the factory's frame via the cause chain) and the worker
-    survives. ``KeyboardInterrupt`` is deliberately not converted:
+    survives; the failure is terminal for the attempt, not the job, the
+    handler routes it through the job's own retry policy.
+
+    At BOOT (the PROCESS/THREAD/LOOP scope bootstrap) the outcome half of
+    that contract does not exist yet: there is no dispatch failure
+    handler to unwrap, so the carrier propagates and fails the boot with
+    exit 1, its own name in the error surface (the factory's
+    ``SystemExit`` in the cause chain) - the operator-facing difference
+    from the factory's own exit code.
+
+    ``KeyboardInterrupt`` is deliberately not converted:
     interpreter/operator intent, never a factory outcome, it propagates
     raw.
     """
