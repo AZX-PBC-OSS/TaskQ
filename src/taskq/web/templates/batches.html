@@ -16,7 +16,7 @@
     {% for b in batches %}
         {% call table_row() %}
             <td class="px-4 py-2.5 font-mono text-xs">
-                <a href="{{ base_path }}/jobs/{{ b.id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ b.id }}">{{ b.id[:8] }}…</a>
+                <a href="{{ base_path }}/batches/{{ b.id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ b.id }}">{{ b.id[:8] }}…</a>
             </td>
             <td class="px-4 py-2.5 text-sm">{{ b.queue }}</td>
             <td class="px-4 py-2.5">

@@ -2081,7 +2081,7 @@ changelog becomes the authoritative record and these notes age out.
 
 ### Cron, queries, and admin
 
-- **Cron schedule ownership model (`disabled_by`, migration `01.00.19_01`)**:
+- **Cron schedule ownership model (`disabled_by`, migration `01.00.19_02`)**:
   `cron_schedules` gains a nullable `disabled_by text` column recording WHO
   disabled a schedule: `'auto'` (the cron loop's failure-count auto-disable),
   `'operator'` (schedule handle `disable()`, the CLI, the admin UI, actor

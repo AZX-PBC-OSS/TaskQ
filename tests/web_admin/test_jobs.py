@@ -1,5 +1,6 @@
 """Tests for job detail routes, templates, traceback truncation, and XSS prevention."""
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -634,6 +635,25 @@ def test_jobs_count_route_rejects_nul_in_text_filters(
         assert response.status_code == 400, (param, response.status_code)
 
 
+# ── Unknown filter params: the page 400s, it never silently ignores ──────
+
+
+def test_jobs_route_rejects_unknown_filter_params(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """A query param the page does not declare is a clean 400, not a
+    200-unfiltered render (issue #337: FastAPI drops undeclared params, so
+    a mistyped filter read as "show me everything" without a word)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/jobs?actr=send_email")
+    assert response.status_code == 400
+    assert "actr" in response.text
+    # The control: every declared param keeps rendering.
+    ok = client.get("/jobs?tab=live&actor=send_email&queue=default&live=on")
+    assert ok.status_code == 200
+
+
 # ── _build_order: unknown sort falls back to first entry ────────────────
 
 
@@ -1220,3 +1240,158 @@ def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> Non
     )
     assert "sort=started_at" in html
     assert "▲" in html  # active sort indicator rendered on the asc link
+
+
+# ── Archived job detail: the event timeline reads the ledger ─────────────
+#
+# Issue #337: the detail route's archive arm renders events from the
+# ledger read -- ``job_events`` is the one place the timeline lives (there
+# is no job_events_archive), so the arm must read it exactly as the live
+# arm does. The production-reachable state for an archived job is an EMPTY
+# ledger (the archive sweep's DELETE FROM jobs cascades job_events away),
+# so the template's empty case says the history was removed at archive;
+# these pins vouch for the arm's read-and-render contract itself: whatever
+# the ledger holds for the job must render (pinned with stubbed ledger
+# rows -- a state production cannot reach today, the forward-compatible
+# property the read exists for).
+
+
+class _ArchivedJobConnection(StubConnection):
+    """Connection answering the archive arm's reads: no live row, the
+    archive row, its archived attempts, and the event rows the
+    ``job_events`` table still holds. Records every query so the pin can
+    assert the events table was actually read for the archived job."""
+
+    def __init__(self, job_row: StubRecord, events: list[StubRecord]) -> None:
+        self._job_row = job_row
+        self._events = events
+        self.fetched_queries: list[str] = []
+
+    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
+        self.fetched_queries.append(query)
+        if "jobs_archive" in query:
+            return self._job_row
+        return None
+
+    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+        self.fetched_queries.append(query)
+        if "job_attempts_archive" in query:
+            return []
+        if "job_events" in query:
+            return self._events
+        return []  # admin_audit and anything else: empty
+
+
+class _ArchivedJobPool(_StubPool):
+    def __init__(self, conn: _ArchivedJobConnection) -> None:
+        self._conn = conn
+
+    def acquire(self, *, timeout: float | None = None) -> Any:
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self) -> _ArchivedJobConnection:
+                return conn
+
+            async def __aexit__(self, *args: object) -> None:
+                pass
+
+        return _Ctx()
+
+
+def _archived_job_row(job_id: uuid.UUID) -> StubRecord:
+    """One jobs_archive row as ``SELECT *`` hands it to the route."""
+    return StubRecord(
+        id=job_id,
+        actor="send_email",
+        queue="default",
+        status="succeeded",
+        priority=0,
+        attempt=1,
+        max_attempts=3,
+        retry_kind="transient",
+        created_at=datetime(2025, 1, 1, tzinfo=UTC),
+        scheduled_at=datetime(2025, 1, 1, tzinfo=UTC),
+        started_at=datetime(2025, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2025, 1, 1, tzinfo=UTC),
+        archived_at=datetime(2025, 1, 2, tzinfo=UTC),
+        tags=[],
+        payload={},
+        metadata={},
+        progress_state=None,
+        error_class=None,
+        error_message=None,
+        error_traceback=None,
+        trace_id=None,
+    )
+
+
+def _archived_job_events() -> list[StubRecord]:
+    """The two events the archived job's ledger still holds."""
+    return [
+        StubRecord(
+            job_id=new_uuid(),
+            occurred_at=datetime(2025, 1, 1, 0, 0, 30, tzinfo=UTC),
+            kind="state_change",
+            detail='{"from": "running", "to": "succeeded"}',
+        ),
+        StubRecord(
+            job_id=new_uuid(),
+            occurred_at=datetime(2025, 1, 1, 0, 0, 31, tzinfo=UTC),
+            kind="progress",
+            detail='{"seq": 1, "percent": 100}',
+        ),
+    ]
+
+
+def _archived_detail_client(monkeypatch: pytest.MonkeyPatch, conn: _ArchivedJobConnection) -> Any:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_ArchivedJobPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return TestClient(app)
+
+
+def test_archived_job_detail_renders_the_events_the_ledger_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The archive arm reads the job's events from ``job_events`` exactly
+    as the live arm does: the ledger is the one place the event timeline
+    lives, so whatever it holds for the archived job must render."""
+    conn = _ArchivedJobConnection(_archived_job_row(new_uuid()), _archived_job_events())
+    client = _archived_detail_client(monkeypatch, conn)
+
+    response = client.get(f"/jobs/{conn._job_row['id']}")  # pyright: ignore[reportAttributeAccessUsage]  # Why: test stub; the row was just assigned.
+    assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    html = response.text  # pyright: ignore[reportUnknownAttributeType]
+    assert "No events recorded" not in html, (
+        "the ledger holds this archived job's events: the page must "
+        "render them, not claim the log is empty"
+    )
+    assert "state_change" in html
+    assert "progress" in html
+    # The events read binds THIS job's id: the archive arm must read the
+    # same per-job ledger the live arm reads.
+    assert any("job_events" in q for q in conn.fetched_queries), (
+        "the archive arm never queried job_events"
+    )
+
+
+def test_archived_job_detail_events_read_binds_the_path_job_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The events query the archive arm issues is the same per-job
+    ``_EVENTS_SQL`` shape the live arm issues (ORDER BY occurred_at)."""
+    conn = _ArchivedJobConnection(_archived_job_row(new_uuid()), _archived_job_events())
+    client = _archived_detail_client(monkeypatch, conn)
+
+    client.get(f"/jobs/{conn._job_row['id']}")  # pyright: ignore[reportAttributeAccessUsage]  # Why: test stub; the row was just assigned.
+    events_queries = [q for q in conn.fetched_queries if "job_events" in q]
+    assert len(events_queries) == 1
+    assert "ORDER BY occurred_at" in events_queries[0]
