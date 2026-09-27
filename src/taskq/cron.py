@@ -357,6 +357,44 @@ def compute_next_fire_after(
     Uses croniter. *after* should be timezone-aware; the
     result preserves the schedule's timezone.
 
+    Raises:
+        ValueError: *cron_expr* passes ``croniter.is_valid()`` but no
+            calendar date can ever satisfy it (day 30 in February, day 31
+            in a 30-day month), or the timezone name is unknown.  The
+            message names the expression and the diagnosis; croniter's own
+            ``CroniterBadDateError`` (a ``ValueError`` subclass carrying
+            only "failed to find next date") is deliberately re-wrapped so
+            every caller - the ``@cron`` decoration gate, the client's
+            ``create_schedule``, the worker's registration pass and the
+            tick's strike text in ``last_fire_error`` - surfaces the same
+            self-describing error instead of a bare croniter line.
+
+    The DST semantics (gap/overlap handling per *dst_strategy*) are
+    documented on the implementation, :func:`_compute_next_fire_after_walking`.
+    """
+    from croniter import CroniterBadDateError
+
+    try:
+        return _compute_next_fire_after_walking(cron_expr, timezone_name, after, dst_strategy)
+    except CroniterBadDateError as exc:
+        raise ValueError(
+            f"Invalid cron expression: {cron_expr!r} never matches any "
+            "calendar date (the day-of-month field has no occurrence in "
+            "the months the expression selects)"
+        ) from exc
+
+
+def _compute_next_fire_after_walking(
+    cron_expr: str,
+    timezone_name: str,
+    after: datetime,
+    dst_strategy: DstStrategy = "skip",
+) -> list[datetime]:
+    """The croniter walk behind :func:`compute_next_fire_after`.
+
+    Uses croniter. *after* should be timezone-aware; the
+    result preserves the schedule's timezone.
+
     DST handling:
       - **Gaps** (spring-forward): a cron match that falls INSIDE a gap
         (e.g. 02:30 on a day where 02:00→03:00) fires once at the gap's
