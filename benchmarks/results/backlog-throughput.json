@@ -1,0 +1,246 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-27T16:38:00.236480+00:00",
+  "meta": {
+    "image": "postgres:18.6",
+    "container": "tq-backlog-bench:55443",
+    "server_flags": [
+      "-c",
+      "max_connections=200",
+      "-c",
+      "shared_buffers=512MB",
+      "-c",
+      "max_wal_size=8GB"
+    ],
+    "depth_checkpoints": [
+      1000,
+      10000,
+      100000,
+      1000000
+    ],
+    "claim_rounds_per_checkpoint": 200,
+    "claim_widths": [
+      1,
+      50
+    ],
+    "wake_checkpoints": [
+      100000,
+      1000000
+    ],
+    "wake_samples_per_arm": 30,
+    "throughput_backlog": 200000,
+    "worker_ladder": [
+      1,
+      4,
+      16
+    ],
+    "seed_path": "_enqueue_batch_fast (the production COPY enqueue path)",
+    "python": "3.13.15",
+    "wall_s": 1509.615778470994
+  },
+  "claim_latency_vs_depth": [
+    {
+      "depth": 1000,
+      "seed_s": 0.07,
+      "claim": {
+        "limit_1": {
+          "n": 200,
+          "p50_ms": 7.263049017637968,
+          "p95_ms": 10.473811998963356,
+          "p99_ms": 13.164669973775744,
+          "min_ms": 5.634228931739926,
+          "max_ms": 17.51326199155301,
+          "mean_ms": 7.5616601458750665
+        },
+        "limit_50": {
+          "n": 200,
+          "p50_ms": 8.445203071460128,
+          "p95_ms": 12.590824975632131,
+          "p99_ms": 15.547130024060607,
+          "min_ms": 7.165335933677852,
+          "max_ms": 17.004819004796445,
+          "mean_ms": 9.040929283364676
+        }
+      },
+      "note": "depth is the checkpoint's initial pending count; the 200 rounds per width claim at exactly this depth; each round resets its claimed rows to pending before the next"
+    },
+    {
+      "depth": 10000,
+      "seed_s": 0.428,
+      "claim": {
+        "limit_1": {
+          "n": 200,
+          "p50_ms": 6.388372043147683,
+          "p95_ms": 9.210335090756416,
+          "p99_ms": 11.905973078683019,
+          "min_ms": 5.525785963982344,
+          "max_ms": 15.43730404227972,
+          "mean_ms": 6.891681728302501
+        },
+        "limit_50": {
+          "n": 200,
+          "p50_ms": 8.608387899585068,
+          "p95_ms": 11.565735912881792,
+          "p99_ms": 14.882726012729108,
+          "min_ms": 7.141942973248661,
+          "max_ms": 20.788114052265882,
+          "mean_ms": 8.979716879548505
+        }
+      },
+      "note": "depth is the checkpoint's initial pending count; the 200 rounds per width claim at exactly this depth; each round resets its claimed rows to pending before the next"
+    },
+    {
+      "depth": 100000,
+      "seed_s": 4.434,
+      "claim": {
+        "limit_1": {
+          "n": 200,
+          "p50_ms": 6.998394033871591,
+          "p95_ms": 9.991778060793877,
+          "p99_ms": 13.213060097768903,
+          "min_ms": 5.224423017352819,
+          "max_ms": 15.446792938746512,
+          "mean_ms": 7.247501092497259
+        },
+        "limit_50": {
+          "n": 200,
+          "p50_ms": 9.578173980116844,
+          "p95_ms": 12.744192965328693,
+          "p99_ms": 15.150428051128983,
+          "min_ms": 7.385990000329912,
+          "max_ms": 18.63466191571206,
+          "mean_ms": 9.752265433780849
+        }
+      },
+      "note": "depth is the checkpoint's initial pending count; the 200 rounds per width claim at exactly this depth; each round resets its claimed rows to pending before the next"
+    },
+    {
+      "depth": 1000000,
+      "seed_s": 45.695,
+      "claim": {
+        "limit_1": {
+          "n": 200,
+          "p50_ms": 11.840791092254221,
+          "p95_ms": 16.980584943667054,
+          "p99_ms": 21.21774898841977,
+          "min_ms": 8.492210996337235,
+          "max_ms": 46.42336396500468,
+          "mean_ms": 12.268163565313444
+        },
+        "limit_50": {
+          "n": 200,
+          "p50_ms": 13.641723082400858,
+          "p95_ms": 21.363561041653156,
+          "p99_ms": 28.934056987054646,
+          "min_ms": 9.482385008595884,
+          "max_ms": 61.155067989602685,
+          "mean_ms": 15.094171605305746
+        }
+      },
+      "note": "depth is the checkpoint's initial pending count; the 200 rounds per width claim at exactly this depth; each round resets its claimed rows to pending before the next"
+    }
+  ],
+  "wake_latency_vs_depth": [
+    {
+      "depth": 100000,
+      "seed_s_for_depth": 8.331,
+      "samples": 30,
+      "notify": {
+        "n": 30,
+        "p50_ms": 195.71781798731536,
+        "p95_ms": 228.6726830061525,
+        "p99_ms": 266.95724902674556,
+        "min_ms": 51.39067501295358,
+        "max_ms": 266.95724902674556,
+        "mean_ms": 194.96574406512082
+      },
+      "poll": {
+        "n": 30,
+        "p50_ms": 258.1911750603467,
+        "p95_ms": 334.84526292886585,
+        "p99_ms": 912.1246469439939,
+        "min_ms": 214.86905799247324,
+        "max_ms": 912.1246469439939,
+        "mean_ms": 288.58323791452375
+      },
+      "poll_minus_notify_p50_ms": 62.473357073031366
+    },
+    {
+      "depth": 1000000,
+      "seed_s_for_depth": 47.131,
+      "samples": 30,
+      "notify": {
+        "n": 30,
+        "p50_ms": 134.9578220397234,
+        "p95_ms": 200.29467099811882,
+        "p99_ms": 206.84891403652728,
+        "min_ms": 19.725354970432818,
+        "max_ms": 206.84891403652728,
+        "mean_ms": 140.6366383850885
+      },
+      "poll": {
+        "n": 30,
+        "p50_ms": 610.0044930353761,
+        "p95_ms": 741.387875052169,
+        "p99_ms": 1279.7186149982736,
+        "min_ms": 455.71834896691144,
+        "max_ms": 1279.7186149982736,
+        "mean_ms": 627.5024942316426
+      },
+      "poll_minus_notify_p50_ms": 475.0466709956527
+    }
+  ],
+  "throughput_ladder": [
+    {
+      "workers": 1,
+      "backlog": 200000,
+      "wall_s": 868.29,
+      "jobs_per_s": 230.33776054628657,
+      "jobs_per_s_per_worker": 230.33776054628657,
+      "claimed": [
+        200000
+      ],
+      "seed_s": 9.837
+    },
+    {
+      "workers": 4,
+      "backlog": 200000,
+      "wall_s": 272.435,
+      "jobs_per_s": 734.1203266219542,
+      "jobs_per_s_per_worker": 183.53008165548854,
+      "claimed": [
+        50000,
+        50000,
+        50000,
+        50000
+      ],
+      "seed_s": 9.012
+    },
+    {
+      "workers": 16,
+      "backlog": 200000,
+      "wall_s": 132.216,
+      "jobs_per_s": 1512.674354884234,
+      "jobs_per_s_per_worker": 94.54214718026462,
+      "claimed": [
+        12500,
+        12482,
+        12619,
+        12500,
+        12513,
+        12544,
+        12530,
+        12568,
+        12500,
+        12404,
+        12550,
+        12448,
+        12479,
+        12435,
+        12441,
+        12487
+      ],
+      "seed_s": 9.545
+    }
+  ]
+}

@@ -302,6 +302,11 @@ _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
         # seam index; the archive is the branch whose size the walk used
         # to sort in full on every page turn.
         "jobs_archive_seam_idx",
+        # 01.00.21_01 (pre): the archive tab's own keyset page index
+        # (finished_at DESC NULLS LAST, id DESC) — the ordering no
+        # earlier index served, the pathology benchmarks/archive_scale.py
+        # red-proved (every page sorted the whole archive).
+        "jobs_archive_page_idx",
     }
 )
 

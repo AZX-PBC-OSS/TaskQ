@@ -1,0 +1,64 @@
+-- The admin archive tab's keyset page index: (finished_at DESC NULLS LAST,
+-- id DESC). Forward-only; there is no down migration. To revert, drop the
+-- index by hand.
+--
+-- ── Why this index exists ────────────────────────────────────────────
+-- The archive tab's list walks the archive newest-first: its ordering is
+-- `finished_at DESC NULLS LAST, id DESC` (taskq/web/admin/jobs.py's
+-- `_SORTABLE_ARCHIVE`, the nullable flag rendering NULLS LAST), the
+-- keyset cursor comparing the same tuple (backend/_cursor.py's
+-- `_row_wise_sql`). The shipped indexes cannot serve that ordering in
+-- ANY scan direction:
+--
+-- * `jobs_archive_finished_at_idx (finished_at)` — backward scan yields
+--   `finished_at DESC NULLS FIRST` (a backward scan reverses the null
+--   placement along with the values); the query needs NULLS LAST. The
+--   planner therefore cannot use it for the ordering.
+-- * the /history seam indexes (01.00.20_01) index the COALESCE tuple the
+--   /history walk sorts by — a different expression with different
+--   trailing keys, matched only by that walk's statements.
+--
+-- So EVERY archive-tab page — first page and cursor page alike, the
+-- keyset predicate bounds nothing ahead of the sort — plans as a full
+-- Sort of every matching row, and the page cost is linear in the
+-- archive's depth: the walk is quadratic. Measured on the timescaledb
+-- trade-off corpus (benchmarks/results/timescale-tradeoffs-sweep.json,
+-- the sweep's plain-engine points): 3.81 ms per page at a 10,000-row
+-- archive, 23.47 ms at 100k, 55.92 ms at 400k, 135.82 ms at 2M —
+-- ~0.068 ms per 1,000 archive rows, every page, at every depth; a
+-- 10,000-page back-scroll of a 10M-row archive would pay ~680 ms PER
+-- PAGE. The campaign's red/green legs at the 10M scale
+-- (benchmarks/results/archive-scale.json, pagination_pathology): the
+-- red page costs 690/690/662/447 ms at the 0/51k/510k/5.1M-depth
+-- checkpoints, the green page 0.47/0.48/0.48/0.39 ms — a 1,000x+
+-- ratio, flat at every depth. At the campaign's 100k red probe
+-- (benchmarks/results/archive-scale-red-probe.json): 16.61 ms per page
+-- (Gather Merge over a full sort) → 0.12 ms with this index.
+--
+-- This is the archive tab's own instance of the pathology 01.00.20_01
+-- fixed for /history: the walk sorts by an expression no index matched.
+-- The fix is the same shape — index the tuple the walk actually sorts
+-- by — applied to the archive tab's ordering. The live jobs tab's
+-- default page (`created_at DESC, id DESC`, non-nullable) is served by a
+-- backward scan of ANY (created_at)-leading index and is a separate
+-- question this migration does not touch.
+--
+-- ── Why the id tiebreaker is in the key ──────────────────────────────
+-- The keyset cursor is the two-tuple (finished_at, id); ordering id with
+-- the leading column is what makes the seam a single row-wise
+-- comparison (backend/_cursor.py's `_row_wise_sql` docstring). Without
+-- id in the index the page walk re-filters equal-finished_at rows per
+-- page — the tiebreak range has no index support and the page cost
+-- degrades with the tie width.
+
+CREATE INDEX IF NOT EXISTS jobs_archive_page_idx
+    ON "{schema}".jobs_archive (finished_at DESC NULLS LAST, id DESC);
+
+-- OPS NOTE (locks): plain CREATE INDEX inside the migration transaction,
+-- the same precedent as 01.00.19_01 and 01.00.20_01 (the runner
+-- serializes migrators with pg_advisory_lock; CONCURRENTLY cannot run in
+-- a transaction). The build locks writes on jobs_archive for the build's
+-- duration; build time is proportional to the current archive row
+-- count. Operators with a very large archive can pre-build with CREATE
+-- INDEX CONCURRENTLY before applying this migration; IF NOT EXISTS keeps
+-- the migration a no-op then.

@@ -42,8 +42,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13-slim-trixie AS runtime
 
 # Non-root, no home writes, no shell needs beyond the image defaults.
+# pip is removed here too: the shipped venv is uv-managed (it carries no
+# pip of its own) and nothing at runtime installs packages, while the base
+# image's pip vendors known-vulnerable copies that no pip release fixes yet
+# (pip._vendor.msgpack 1.1.2 -> GHSA-6v7p-g79w-8964; the pkg_resources
+# setuptools-70.3.0 code -> CVE-2025-47273). Removing pip is what takes the
+# image's Python surface to zero known HIGHs; re-add only with a pip that
+# vendors fixed copies.
 RUN groupadd --system taskq \
-    && useradd --system --gid taskq --home-dir /app --no-create-home --shell /usr/sbin/nologin taskq
+    && useradd --system --gid taskq --home-dir /app --no-create-home --shell /usr/sbin/nologin taskq \
+    && pip uninstall --no-cache-dir -y pip
 
 WORKDIR /app
 

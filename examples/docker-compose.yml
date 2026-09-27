@@ -20,6 +20,13 @@ services:
       interval: 2s
       retries: 15
 
+  # Every taskq-example service runs `uv run --no-sync` (not bare `uv run`):
+  # bare `uv run` re-syncs the project environment at container start, which
+  # pulls the dev dependency group (pyright, mkdocs, ruff, ...) over the
+  # network on every cold start and discards the image's `--no-dev` runtime
+  # state. The image venv is already synced (`uv sync --locked --no-dev` in
+  # examples/Dockerfile), so `--no-sync` starts instantly, offline, with
+  # exactly the packages the image shipped.
   worker-1:
     # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
     # benchmarks/example_image_spec.py): when set and present locally, compose
@@ -29,7 +36,7 @@ services:
     build:
       context: ..
       dockerfile: examples/Dockerfile
-    command: uv run python examples/worker.py
+    command: uv run --no-sync python examples/worker.py
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,7 +58,7 @@ services:
     build:
       context: ..
       dockerfile: examples/Dockerfile
-    command: uv run python examples/worker.py
+    command: uv run --no-sync python examples/worker.py
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,7 +80,7 @@ services:
     build:
       context: ..
       dockerfile: examples/Dockerfile
-    command: uv run uvicorn examples.app:app --host 0.0.0.0 --port 8000
+    command: uv run --no-sync uvicorn examples.app:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     depends_on:
@@ -99,7 +106,7 @@ services:
     build:
       context: ..
       dockerfile: examples/Dockerfile
-    command: uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001
+    command: uv run --no-sync uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001
     ports:
       - "8001:8001"
     depends_on:
@@ -125,7 +132,7 @@ services:
     build:
       context: ..
       dockerfile: examples/Dockerfile
-    command: uv run uvicorn examples.fastapi_app.main:app --host 0.0.0.0 --port 8002
+    command: uv run --no-sync uvicorn examples.fastapi_app.main:app --host 0.0.0.0 --port 8002
     ports:
       - "8002:8002"
     depends_on:
