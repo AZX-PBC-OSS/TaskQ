@@ -22,6 +22,7 @@ Unit tier: the database reads are faked at the ``taskq.cli`` boundary,
 following ``tests/test_cli_actor_config_diff_exit_code.py``.
 """
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -539,3 +540,107 @@ def test_doctor_platform_grace_above_worst_case_confirms_coverage(
 
     assert "covers the worker's modelled worst-case shutdown" in result.output
     assert "SIGKILL" not in result.output
+
+
+# ── Unknown TASKQ_ environment variables (the config-drift family) ────
+
+
+def _clean_taskq_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every ambient ``TASKQ_`` variable so the env scan under test
+    starts from a known-clean process environment. The sanctioned
+    monkeypatch seam - the suite-hygiene pin bans direct ``os.environ``
+    writes in tests - and the same discipline conftest applies to the
+    OTel trigger variables: the scan reads the REAL process environment
+    at doctor runtime, so the developer's ambient ``TASKQ_*`` must not
+    decide what a finding test sees."""
+    for name in list(os.environ):
+        if name.startswith("TASKQ_"):
+            monkeypatch.delenv(name, raising=False)
+
+
+def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit's real config-drift trap: a typo'd ``TASKQ_`` variable
+    (``TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS``, missing the second C) loads
+    noiselessly - the settings loader reads only the names it defines -
+    and the intended field applies its documented default with no error
+    anywhere. Doctor must name the offender AND the closest real setting
+    name, the one-character-drift remedy a typo almost always wants."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
+        queue_rows=[],
+    )
+    _clean_taskq_env(monkeypatch)
+    monkeypatch.setenv("TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS", "5000")
+
+    result = _invoke()
+
+    assert "unknown TASKQ_ setting: TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS" in result.output
+    assert "did you mean TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS?" in result.output
+    # The consequence is stated, not just the name: the report must tell
+    # the operator WHY an unknown variable is worth acting on.
+    assert "a typo applies defaults silently" in result.output
+
+
+def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: a fully legitimate ``TASKQ_`` environment - core settings,
+    an SSO sub-config's variable, a deprecated no-op - produces no
+    unknown-setting finding. Without this, a scan that flagged every
+    prefixed name would bury real findings in false positives."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
+        queue_rows=[],
+    )
+    _clean_taskq_env(monkeypatch)
+    monkeypatch.setenv("TASKQ_PG_DSN", "postgresql://taskq:taskq@localhost:5432/taskq")
+    monkeypatch.setenv("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "5000")
+    monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://login.microsoftonline.com/tenant/v2.0")
+    monkeypatch.setenv("TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE", "false")
+
+    result = _invoke()
+
+    assert "unknown TASKQ_ setting" not in result.output
+
+
+def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resembles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``TASKQ_`` variable that matches no real setting's name gets the
+    honest remedy - "no similar setting name exists" - not a bogus
+    difflib suggestion: a hint pointing at an unrelated setting sends the
+    operator editing the wrong line."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
+        queue_rows=[],
+    )
+    _clean_taskq_env(monkeypatch)
+    monkeypatch.setenv("TASKQ_FLEET_ENCHILADA_MODE", "1")
+
+    result = _invoke()
+
+    assert "unknown TASKQ_ setting: TASKQ_FLEET_ENCHILADA_MODE" in result.output
+    assert "no similar setting name exists" in result.output
+    assert "docs/guides/configuration.md" in result.output
+
+
+def test_unknown_env_scan_ignores_non_taskq_names() -> None:
+    """The scan is scoped to the ``TASKQ_`` namespace: the process
+    environment's other variables are not TaskQ's to report."""
+    from taskq.cli import _unknown_taskq_env_vars
+
+    assert (
+        _unknown_taskq_env_vars(
+            {
+                "PATH": "/usr/bin",
+                "TASKQ_PG_DSN": "postgresql://t:t@h/db",
+                "OTEL_SDK_DISABLED": "true",
+            }
+        )
+        == []
+    )

@@ -46,11 +46,16 @@ Surfaces, in the order the deployment guide walks them:
    (34/112/342) — the numbers operators size ``max_connections``
    against are pinned arithmetic, not prose.
 
-Plus one DOCUMENTED LIMITATION: ``taskq.aws.RdsIamProvider`` (the AWS IAM
-credential source) cannot parse a multi-host DSN — ``urlparse``'s ``port``
-cannot cast ``5432,host2:5432`` — and fails with a raw ``ValueError``.
-Pinned as the honest current behavior; the deployment guide tells
-multi-host operators to use a different credential source.
+Plus one surface that WAS a documented limitation: ``taskq.aws.RdsIamProvider``
+(the AWS IAM credential source) could not parse a multi-host DSN —
+``urlparse``'s ``port`` cannot cast ``5432,host2:5432`` and construction
+raised a raw ``ValueError``. Fixed to the same last-``@`` partition
+discipline the DSN rewriters use; the pins cover the construction, the
+token signing (first hostspec — the one libpq tries first), the token
+landing in every hostspec's password slot through ``enrich_pg_dsn``, the
+unchanged single-host parse, and a live connect through the rewritten
+DSN failing with the SERVER's auth error (the DSN reaching Postgres
+well-formed is what that proves).
 """
 
 from __future__ import annotations
@@ -60,6 +65,7 @@ import contextlib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 import pytest
@@ -440,23 +446,135 @@ def test_documented_budget_profiles_match_the_computation(
     assert budget.pgbouncer_recommended is recommended, name
 
 
-# ── The documented limitation: AWS IAM auth cannot parse multi-host ──────
+# ── A6: AWS IAM auth on the multi-host form ─────────────────────────────
 
 
-def test_rds_iam_provider_multi_host_dsn_is_a_documented_limitation() -> None:
-    """RdsIamProvider cannot parse a multi-host DSN: urlparse's ``.port``
-    cannot cast ``5432,host2:5432`` and raises a raw ValueError. Pinned
-    AS the honest current behaviour (the deployment guide routes
-    multi-host operators to a different credential source); a fix that
-    parses the first host instead should turn this pin red deliberately.
-    """
+# A fake boto3 client: records the (hostname, port, username) each token
+# signing was addressed to and returns a token that encodes them, so the
+# pins can assert WHO a token was signed for without any AWS machinery.
+# ``Region`` is accepted and ignored - the real client's signature is
+# scoped to it, but nothing here reads the token's meaning.
+class _FakeRdsClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int, str]] = []
+
+    def generate_db_auth_token(
+        # Why noqa N803 on every parameter: boto3's real signature is
+        # camelCase; the fake must match it argument-for-argument so the
+        # recorded calls read like the real ones.
+        self,
+        DBHostname: str,  # noqa: N803
+        Port: int,  # noqa: N803
+        DBUsername: str,  # noqa: N803
+        Region: str | None,  # noqa: N803
+    ) -> str:
+        self.calls.append((DBHostname, Port, DBUsername))
+        return f"token-for-{DBHostname}:{Port}"
+
+
+def test_rds_iam_provider_multi_host_dsn_signs_the_first_hostspec() -> None:
+    """The multi-host DSN constructs, and the token is signed for the FIRST
+    hostspec - the one libpq tries first, and therefore the one the
+    token fetch should address. Previously urlparse's ``.port`` cast on
+    the joined ``5432,pg2.invalid:5432`` raised a raw ValueError here,
+    before any token could be requested."""
     from taskq.aws import RdsIamProvider
 
-    with pytest.raises(ValueError, match=r"[Pp]ort"):
-        RdsIamProvider(
-            "postgresql://iamuser@pg1.invalid:5432,pg2.invalid:5432/taskq",
-            region="us-east-1",
-        )
+    client = _FakeRdsClient()
+    provider = RdsIamProvider(
+        "postgresql://iamuser@pg1.invalid:5432,pg2.invalid:5432/taskq?sslmode=require",
+        client=client,
+        region="us-east-1",
+    )
+    credential = asyncio.run(provider.get_pg_credential())
+    assert client.calls == [("pg1.invalid", 5432, "iamuser")]
+    assert credential.password == "token-for-pg1.invalid:5432"
+    # The DSN's user is preserved (the IAM-mapped DB user); a token
+    # credential carries no username override.
+    assert credential.username is None
+
+
+def test_rds_iam_provider_multi_host_parse_is_bracket_aware() -> None:
+    """An IPv6 literal inside a multi-hostspec: the bracketed host's colons
+    must not feed the port split, per hostspec."""
+    from taskq.aws import (
+        _parse_dsn,  # pyright: ignore[reportPrivateUsage]  # Why: the parse contract IS the surface under test; the provider's construction rides it.
+    )
+
+    assert _parse_dsn("postgresql://u@[::1]:5432,[::2]:5433/db") == ("::1", 5432, "u")
+
+
+def test_rds_iam_provider_single_host_parse_is_unchanged() -> None:
+    """The single-host contract is byte-identical to the pre-multi-host
+    behavior: urlparse's lowercased host, its 5432 default, the
+    percent-decoded username, and the socket form's localhost fallback.
+    A multi-host fix that moved these would move every existing
+    deployment's token signing."""
+    from taskq.aws import (
+        _parse_dsn,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the parse contract is the surface under test.
+    )
+
+    assert _parse_dsn("postgresql://u:p@h1:5432/db") == ("h1", 5432, "u")
+    assert _parse_dsn("postgresql://iamuser@host:5432/db") == ("host", 5432, "iamuser")
+    assert _parse_dsn("postgresql://host:5432/db") == ("host", 5432, "")
+    assert _parse_dsn("postgresql://host/db") == ("host", 5432, "")
+    assert _parse_dsn("postgresql://u%40domain@host:5432/db") == ("host", 5432, "u@domain")
+    assert _parse_dsn("postgresql://u:p@[::1]:5433/db") == ("::1", 5433, "u")
+    assert _parse_dsn("postgresql://u:p@[::1]/db") == ("::1", 5432, "u")
+    assert _parse_dsn("postgresql://u:p@/taskq?host=/var/run/postgresql") == (
+        "localhost",
+        5432,
+        "u",
+    )
+
+
+def test_rds_iam_provider_token_lands_in_every_hostspec_password_slot() -> None:
+    """The full rewrite, provider + ``enrich_pg_dsn`` on the multi-host
+    DSN: the token goes into the DSN's single shared userinfo password
+    slot - i.e. EVERY hostspec's password slot, the only credential slot
+    a multi-host DSN has - while the hosts, their ports and the
+    ``sslmode`` all survive. Each component is asserted off the parsed
+    rewritten DSN, not off substring luck."""
+    from taskq.aws import RdsIamProvider
+
+    dsn = "postgresql://iamuser@pg1.invalid:5432,pg2.invalid:5432/taskq?sslmode=require"
+    provider = RdsIamProvider(dsn, client=_FakeRdsClient(), region="us-east-1")
+    credential = asyncio.run(provider.get_pg_credential())
+
+    rewritten = enrich_pg_dsn(dsn, credential)
+    parsed = urlparse(rewritten)
+    assert unquote(parsed.password or "") == "token-for-pg1.invalid:5432"
+    assert parsed.username == "iamuser"
+    # Every hostspec survives, in order, each with its own port:
+    assert parsed.netloc.rpartition("@")[2] == "pg1.invalid:5432,pg2.invalid:5432"
+    assert parse_qs(parsed.query)["sslmode"] == ["require"]
+
+
+@pytest.mark.integration
+async def test_rds_iam_multi_host_dsn_reaches_the_server_well_formed(pg_dsn: str) -> None:
+    """A live connect through the rewritten multi-host DSN with a DUMMY
+    token: the failure is the SERVER's auth error (28P01,
+    ``InvalidPasswordError``), not a parse or DNS error - the proof that
+    the rewritten DSN reached Postgres well-formed for every hostspec.
+    Both hostspecs name the same container (the parsing is under test,
+    not failover), and ``sslmode=disable`` keeps the failure an auth
+    failure: a ``require`` DSN against this plain server would fail with
+    the SSL-upgrade refusal instead, a different pin."""
+    from taskq.aws import RdsIamProvider
+
+    base = _single_host_dsn(pg_dsn)
+    user = base.split("@", 1)[0].split("//", 1)[1].split(":", 1)[0]
+    db = base.rpartition("/")[2]
+    host_only = base.split("@", 1)[1].split("/", 1)[0]  # host:port
+    dsn = f"postgresql://{user}@{host_only},{host_only}/{db}?sslmode=disable"
+
+    provider = RdsIamProvider(dsn, client=_FakeRdsClient(), region="us-east-1")
+    credential = await provider.get_pg_credential()
+    rewritten = enrich_pg_dsn(dsn, credential)
+    assert "token-for-" in rewritten  # the dummy token is what rides the DSN
+
+    with pytest.raises(asyncpg.exceptions.InvalidPasswordError):
+        await asyncpg.connect(rewritten)
 
 
 # ── Container fixtures (module-scoped, one per shape) ────────────────────

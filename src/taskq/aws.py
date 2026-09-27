@@ -94,6 +94,21 @@ def _require_boto3() -> Any:
     return boto3
 
 
+def _parse_hostspec(hostspec: str) -> tuple[str, int]:
+    """Parse one libpq hostspec (``host``, ``host:port``, ``[::1]:port``).
+
+    Bracket-aware (an IPv6 literal's colons must not feed the port split)
+    and per-hostspec: the port cast sees one host's port, never the joined
+    ``5432,pg2:5432`` string urlparse's ``.port`` chokes on.
+    """
+    if hostspec.startswith("["):
+        host, _, rest = hostspec[1:].partition("]")
+        port_str = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, _, port_str = hostspec.partition(":")
+    return (host or "localhost"), (int(port_str) if port_str else 5432)
+
+
 def _parse_dsn(dsn: str) -> tuple[str, int, str]:
     """Extract ``(hostname, port, username)`` from a Postgres DSN.
 
@@ -101,11 +116,32 @@ def _parse_dsn(dsn: str) -> tuple[str, int, str]:
     the IAM token is signed for the literal DB username). May be empty ,
     the caller decides whether that's an error (an explicit ``username=``
     parameter can rescue a userless DSN).
+
+    Multi-host DSNs (``postgresql://u@pg1:5432,pg2:5432/db``, the libpq
+    failover form) parse like :func:`taskq.auth.enrich_pg_dsn` reads them:
+    the netloc is partitioned at the LAST ``@`` (a userinfo password may
+    itself contain ``@``), then the FIRST hostspec - the one libpq tries
+    first, and therefore the one a token should be signed for - provides
+    the ``(hostname, port)`` the token fetch addresses. The port cast
+    runs per hostspec, so the joined form never reaches urlparse's
+    ``.port`` (which cannot cast ``5432,pg2:5432``). Every hostspec's
+    credential slot is the DSN's single shared userinfo password, so a
+    token issued for the first host serves every hostspec through the
+    same rewriting :func:`taskq.auth.enrich_pg_dsn` applies.
     """
     parsed = urlparse(str(dsn))
-    hostname = parsed.hostname or "localhost"
-    port = parsed.port or 5432
     username = unquote(parsed.username or "")
+    # Last-@ partition, enrich_pg_dsn's discipline: userinfo (which may
+    # contain @) is separated from the (possibly multi-)hostspec exactly
+    # the way the DSN rewriters do, so the two cannot disagree about
+    # where the credential ends and the hosts begin.
+    hostspec = parsed.netloc.rpartition("@")[2]
+    first, comma, _ = hostspec.partition(",")
+    if not comma:
+        # Single host: urlparse's own parsing, unchanged (it lowercases
+        # the host and raises its own error on a malformed port).
+        return parsed.hostname or "localhost", parsed.port or 5432, username
+    hostname, port = _parse_hostspec(first)
     return hostname, port, username
 
 
@@ -171,6 +207,16 @@ class RdsIamProvider(PgCredentialProvider):
     credential chain, built once on first use and reused for the
     provider's lifetime; pass ``region`` to pin it. ``username`` defaults
     to the DSN's userinfo user.
+
+    Multi-host DSNs (``postgresql://iamuser@pg1:5432,pg2:5432/taskq``,
+    the libpq failover form) are accepted: the token is signed for the
+    FIRST hostspec (the one libpq tries first) and returned as the
+    credential's password, which - through
+    :func:`taskq.auth.enrich_pg_dsn` or the factory builders in
+    :mod:`taskq.auth` - lands in the DSN's single shared userinfo
+    password slot, i.e. every hostspec's password slot. A failover to a
+    later host whose endpoint differs re-signs on the next pool rebuild;
+    see the deployment guide's multi-host section.
 
     Why the client is built once: a token is signed for every physical
     connection the pool opens, and ``boto3.client`` is not a cheap call -
