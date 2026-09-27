@@ -708,3 +708,21 @@ def test_every_series_name_the_shipped_text_cites_is_registered() -> None:
         cited = set(re.findall(r"\b(?:taskq|messaging)_[a-z][a-z0-9_]*\b", text))
         unknown = sorted(cited - allowed.keys())
         assert not unknown, f"{text_path.name}: cites series no code path registers: {unknown}"
+
+
+def test_ops_md_claimed_rule_count_matches_the_shipped_files() -> None:
+    """ops.md §8 tells operators the shipped rule set carries a specific
+    number of rules ("(N rules: ...)"); that count must equal what both
+    files actually ship. A stale count is how an operator importing the
+    file concludes a rule family went missing (or that the docs describe a
+    set they did not install)."""
+    ops_md = _REPO_ROOT / "docs" / "guides" / "ops.md"
+    match = re.search(r"\((\d+) rules:", ops_md.read_text(encoding="utf-8"))
+    assert match, "ops.md no longer states the shipped rule count"
+    claimed = int(match.group(1))
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        assert len(_rules_from(rules_path)) == claimed, (
+            f"{rules_path.name} no longer carries the {claimed} rules ops.md "
+            "advertises - correct the count (and the enumeration beside it) "
+            "whenever the rule set changes"
+        )

@@ -1030,6 +1030,8 @@ supported shapes:
   and set `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
   `OTEL_RESOURCE_ATTRIBUTES`. `taskq worker` installs the SDK providers from those variables
   at startup and logs `otel-exporter-configured traces=otlp metrics=otlp source=env`
+  (the console renderer's shape; under the default `TASKQ_LOG_FORMAT=json`
+  the same fields ride the `otel-exporter-configured` JSON event)
   (`opentelemetry-instrument taskq worker` is the equivalent launcher; an embedded worker
   calls `taskq.obs.configure_exporters(settings)` or initializes the SDK in-process (
   `examples/otel_setup.py`).
