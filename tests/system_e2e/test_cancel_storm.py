@@ -45,18 +45,59 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-s4"
-# The storm soaks until the vacuousness premises are OBSERVED in the
-# ledger (a retry fired, a cancel honoured, the archiver moved a row),
-# not for a fixed clock. The deadline derives from the scenario's own
-# retry math: fail_until_attempt=2 needs one full deferral -> re-claim
-# cycle (the flaky actor's 1s deferral floor judged on the DB clock +
-# the worker's 50ms claim poll), taken twice for headroom, times a 20x
-# co-tenancy stretch (the stall band these runners produce between a
-# seed and its observation), plus the original 8s soak as the floor.
+# The storm's fleet shape, which every premise budget below derives from:
+# 6 flaky jobs (the retry premise's own cohort), 4 slow, 6 fast.
+_FLAKY_COHORT = 6
+_SLOW_COHORT = 4
+_FAST_COHORT = 6
+
+# The storm's budgets are DERIVED, never bare: the storm soaks until the
+# vacuousness premises are OBSERVED in the ledger (a retry fired, a
+# cancel honoured, the archiver moved a row), and the deadline for that
+# observation derives from the scenario's own retry math under the
+# co-tenancy band this file's history measured on loaded -n 2 runners
+# (74c5931b's premise-wait fix):
+#
+# * one ladder cycle = the flaky cohort's 1s deferral floor
+#   (MIN_DEFERRAL_INTERVAL, the fastest legal ladder) + the worker's
+#   50ms claim poll + the premise loop's 250ms observation cadence;
+# * taken twice for headroom (a deferral -> re-claim -> observation
+#   round trip, twice);
+# * times the 20x co-tenancy stretch (the stall band these runners
+#   produce between a seed and its observation), plus the original 8s
+#   soak as the floor  =>  60.0s.
 # It bounds FAILURE only - a premise that never lands is exactly what
 # the assertions after the storm red - and the conservation invariants
 # hold for any duration the storm runs.
-_STORM_DEADLINE_SECS = 60.0
+_LADDER_FLOOR_SECS = 1.0  # the flaky ladder's MIN_DEFERRAL_INTERVAL floor
+_CLAIM_POLL_SECS = 0.05  # the worker's TASKQ_POLL_INTERVAL (the harness default)
+_PREMISE_POLL_SECS = 0.25  # the premise loop's own observation cadence
+_LADDER_CYCLE_SECS = _LADDER_FLOOR_SECS + _CLAIM_POLL_SECS + _PREMISE_POLL_SECS
+_PREMISE_HEADROOM = 2
+_COTENANCY_STRETCH = 20
+_SOAK_FLOOR_SECS = 8.0
+_STORM_DEADLINE_SECS = (
+    _LADDER_CYCLE_SECS * _PREMISE_HEADROOM * _COTENANCY_STRETCH + _SOAK_FLOOR_SECS
+)  # 1.3 * 2 * 20 + 8 == 60.0
+
+# The storm worker's slot count, derived the same way: the harness
+# default (4) lets the SLOW cohort monopolise every slot for its whole
+# (stretched) sleep, queueing the flaky cohort's re-claims behind it.
+# On a co-tenancy-stalled runner the deferral windows then expire
+# unclaimed and the canceller strips them - the measured CI red: 60s of
+# storm with jobs archived and cancels honoured while max(attempt)
+# never left 1. The storm's worker gets the slow cohort plus the flaky
+# cohort as headroom, so a re-claim never queues behind a sleep it does
+# not depend on.
+_STORM_WORKER_SLOTS = _SLOW_COHORT + _FLAKY_COHORT
+
+# The retrier's per-tick cohort: a cohort of the fleet's own size, not a
+# bare count. Its fuel is the non-cancelled terminal set (see the
+# retrier's docstring), dominated by the fast cohort - a cohort-wide
+# LIMIT re-pends the whole fuel set each 0.5s tick, while still losing
+# some rows to the archiver's 0.9s tick - the archived premise stays
+# live.
+_RETRIER_TICK_ROWS = _FAST_COHORT
 
 
 @pytest.mark.timeout(300)
@@ -70,7 +111,12 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
     conn = sys_ledger
     worker: WorkerProc | None = None
     try:
-        worker = spawn_worker(pg_dsn, schema, tag="s4")
+        worker = spawn_worker(
+            pg_dsn,
+            schema,
+            tag="s4",
+            extra_env={"TASKQ_MAX_CONCURRENCY": str(_STORM_WORKER_SLOTS)},
+        )
         wait_worker_ready(worker)
 
         # The population: retries in flight the whole window (each flaky
@@ -112,17 +158,42 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
             """Operator 2: re-pend whatever has come to rest, racing the
             archiver that is moving those same rows away. Owns its own
             connection: concurrent tasks must never share the ledger
-            connection (asyncpg forbids concurrent use of one connection)."""
+            connection (asyncpg forbids concurrent use of one connection).
+
+            The re-pend set EXCLUDES 'cancelled': the cancel audit trail is
+            pinned truthful in both directions (a cancelled row must carry
+            the operator's request columns, and a state_change('cancelled')
+            event must belong to a row that IS cancelled), so a re-pended
+            cancel would make the trail lie - a mutation the ledger says
+            happened standing on a row that un-happened it. The fuel the
+            retry premise needs is the rest of the terminal set: a
+            re-pended row's re-claim stamps its attempt up, which is
+            exactly the cancel/retry race the premises observe."""
             rconn = await asyncpg.connect(pg_dsn)
             retried = 0
+            # The non-cancelled terminal statuses (see the docstring): the
+            # re-pend fuel, derived from the state machine's own terminal
+            # set rather than spelled bare.
+            rependable = sorted(TERMINAL_STATUSES - {"cancelled"})
             try:
                 while not stop.is_set():
                     rows = await rconn.fetch(
+                        # status::text: jobs.status is the job_status ENUM and
+                        # `enum = ANY($2::text[])` is an operator error - the
+                        # retrier task crashed silently on its very first tick
+                        # in every environment this shape ever ran in (the
+                        # task's exception is swallowed until GC), leaving the
+                        # storm's retry fuel to the flaky ladder alone - which
+                        # a loaded -n 2 runner's canceller strips faster than
+                        # a starved worker re-claims: the measured
+                        # "no job ever retried" red. The ::text cast puts the
+                        # comparison on the text side, where the array
+                        # already is.
                         f'SELECT id FROM "{schema}".jobs '
-                        "WHERE tags @> ARRAY[$1::text] AND status = ANY($2::text[]) "
-                        "ORDER BY random() LIMIT 2",
+                        "WHERE tags @> ARRAY[$1::text] AND status::text = ANY($2::text[]) "
+                        f"ORDER BY random() LIMIT {_RETRIER_TICK_ROWS}",
                         _TAG,
-                        list(TERMINAL_STATUSES),
+                        rependable,
                     )
                     for row in rows:
                         with contextlib.suppress(Exception):

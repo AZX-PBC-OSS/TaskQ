@@ -2209,12 +2209,21 @@ async def test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer(
 
         # Every row accounted, exactly: the seed survived, and the
         # writer's row is in the live table IFF its INSERT committed
-        # (absorbed by the twin-guard) — never silently destroyed.
+        # (absorbed by the twin-guard) — never silently destroyed. The
+        # per-table census is DERIVED from the writer's OWN outcome, not
+        # from the bare seed: committed → the row landed in the trash the
+        # absorb's LOCK TABLE window was opening on, so the twin-guard
+        # moves it into the swapped-in jobs_archive and the live census
+        # counts seed + 1 (the absorbed outcome is SURVIVAL, not an
+        # excess row); relation-gone → the drop committed first, the
+        # writer woke to the error that proves it, and the row never
+        # landed (seed).
         for table, count in seeded.items():
+            expected = count + (1 if landed and table == "jobs_archive" else 0)
             live = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
-            assert live == count, (
+            assert live == expected, (
                 f"every {table} row must survive the disable and the concurrent "
-                f"writer ({live} of {count})"
+                f"writer ({live} of {expected})"
             )
         present = await conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs_archive WHERE id = $1', writer_id
