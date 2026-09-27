@@ -577,7 +577,11 @@ def test_queue_overview_page_uses_exactly_one_refresh_transport_per_mode(
         "polling mode runs ONE transport: the htmx poll must be off"
     )
 
-    async def _realtime_ctx(redis_client: object) -> tuple[str, str]:  # Why: mirrors get_realtime_ctx's real signature; the stub ignores the client (its verdict is deterministic).
+    async def _realtime_ctx(
+        redis_client: object | None = None,
+    ) -> tuple[
+        str, str
+    ]:  # Why: mirrors get_realtime_ctx's real signature shape (the param exists so the drift pin sees it; the None default keeps FastAPI from resolving it as a query param); the stub ignores the client - its verdict is deterministic.
         return ("realtime", "real-time mode")
 
     import taskq.web.admin.queues as queues_module
@@ -614,7 +618,11 @@ def test_queue_overview_poll_fragment_carries_the_poll_attributes(
     is that mode's only transport."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
 
-    async def _realtime_ctx(redis_client: object) -> tuple[str, str]:  # Why: mirrors get_realtime_ctx's real signature; the stub ignores the client (its verdict is deterministic).
+    async def _realtime_ctx(
+        redis_client: object | None = None,
+    ) -> tuple[
+        str, str
+    ]:  # Why: mirrors get_realtime_ctx's real signature shape (the param exists so the drift pin sees it; the None default keeps FastAPI from resolving it as a query param); the stub ignores the client - its verdict is deterministic.
         return ("realtime", "real-time mode")
 
     import taskq.web.admin.queues as queues_module
