@@ -1147,7 +1147,14 @@ keeps winning.
     jobs whose actor has no `actor_config` row (e.g. the actor was removed from
     the registry but jobs remain enqueued).
 
-Failover SLA: leader gap ≤ `heartbeat_interval + 1s` on worker kill.
+Failover SLA: a graceful stop resigns the row, so a follower's next election
+cycle already finds it free, and the leader gap is `heartbeat_interval` plus
+one round trip, about 11s at defaults. A killed leader resigns nothing, so
+its `expires_at` stands until it lapses and the gap is `leader_lease +
+heartbeat_interval` plus one round trip, about 50s at defaults. A pod that
+wins the row but cannot assume it adds one failing cycle's connection
+attempts on top (each bounded by `reload_factory_timeout`, 30 s at
+defaults), about 80s at defaults.
 
 ---
 
