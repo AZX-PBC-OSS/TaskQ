@@ -43,13 +43,15 @@ import time
 from contextlib import AsyncExitStack, suppress
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._protocol import Backend as _Backend
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import leader_wake_channel
@@ -57,9 +59,12 @@ from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.testing.fixtures import _create_worker
+from taskq.worker import leader as _leader_mod
+from taskq.worker._watchdog import LoopLiveness as _LoopLiveness
 from taskq.worker.deps import LeaderTerm, WorkerDeps, open_worker_deps
 from taskq.worker.leader import MaintenanceLeader, build_leader_lease_sql
 from taskq.worker.notify import _make_leader_wake_callback
+from tests._leader_stub_deps import stub_deps as _stub_deps
 
 pytestmark = pytest.mark.integration
 
@@ -1028,3 +1033,156 @@ async def test_lw7_the_graceful_bound_table_holds_on_the_real_wire(pg_dsn: str) 
             await raw.close()
         await stack_b.aclose()
         await stack_a.aclose()
+
+
+# ── The scheduled-wake loop's failure arms ────────────────────────────
+#
+# The scheduled-wake iteration awaits PG twice under ONE deadline (the
+# scheduled_to_pending sweep, then the WAKE NOTIFY's dispatcher-pool
+# acquire). The two failure sites must not be accounted the same: a sweep
+# that COMPLETED and only lost its notify is a healthy sweep whose wake
+# failed (logged, retried next tick; the producer's poll interval covers
+# the missed NOTIFY), while a sweep cut short by the deadline is a
+# sweep-timeouts increment. Counting the former as the latter pages the
+# sweep-timeouts alert for a healthy sweep - the distinction the
+# transient-PG branch draws on ``rows is None`` (worker/leader.py's
+# ``_scheduled_wake_loop``). These two pins are the arms of that
+# distinction; the stubs follow tests/test_watchdog_safety.py's harness
+# shape (SimpleNamespace deps via stub_deps, a bare backend stand-in).
+
+
+class _NotifyTimeoutPool:
+    """Dispatcher-pool stand-in whose acquire dies on the deadline: the
+    pool-exhausted / notify-timeout shape the notify arm must survive."""
+
+    def acquire(self, *, timeout: float | None = None) -> object:
+        raise TimeoutError("simulated dispatcher pool acquire timeout")
+
+
+class _ScheduledWakeBackend:
+    """Backend stand-in with two scripted failure modes.
+
+    * ``notify_timeout``: the sweep returns rows, the notify's pool
+      acquire raises (the completed-sweep arm: ``rows`` is bound).
+    * ``sweep_timeout``: the sweep itself raises the deadline error
+      (the sweep-timing-out arm: ``rows`` stays unbound).
+    """
+
+    def __init__(self, mode: str) -> None:
+        self._mode = mode
+        self.calls = 0
+
+    async def scheduled_to_pending(self) -> int:
+        self.calls += 1
+        if self._mode == "sweep_timeout":
+            raise TimeoutError("simulated asyncpg command_timeout")
+        return 1
+
+
+def _wake_deps(pool: object) -> Any:
+    liveness = _LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    return _stub_deps(
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+            dispatcher_pool=pool,
+        ),
+    )
+
+
+async def _run_one_wake_tick(
+    leader: MaintenanceLeader,
+) -> tuple[list[Any], list[str], list[str]]:
+    """Run the loop until its first failure arm has fired, then stop it.
+
+    Returns (captured logs, record_sweep_timeout args, record_sweep_success
+    args). The loop sleeps 1.0s between ticks; one tick is all the pins
+    need, so the task is cancelled as soon as the spy recorded.
+    """
+    timeout_calls: list[str] = []
+    success_calls: list[str] = []
+    real_timeout, real_success = (
+        _leader_mod.record_sweep_timeout,
+        _leader_mod.record_sweep_success,
+    )
+    _leader_mod.record_sweep_timeout = lambda name: timeout_calls.append(name)  # type: ignore[assignment]
+    _leader_mod.record_sweep_success = lambda name: success_calls.append(name)  # type: ignore[assignment]
+    shutdown = asyncio.Event()
+    try:
+        with structlog.testing.capture_logs() as logs:
+            task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
+            try:
+                for _ in range(200):  # up to 10s; the arm fires in the first tick
+                    if timeout_calls or success_calls:
+                        break
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)  # let the arm's log land too
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+    finally:
+        _leader_mod.record_sweep_timeout = real_timeout  # type: ignore[assignment]
+        _leader_mod.record_sweep_success = real_success  # type: ignore[assignment]
+    return logs, timeout_calls, success_calls
+
+
+async def test_wake_notify_failure_does_not_count_completed_sweep_as_timeout() -> None:
+    """MUTATION PIN - the ``rows is None`` guard.
+
+    The sweep returned rows (the deadline casualty was the WAKE NOTIFY,
+    not the sweep): the sweep-timeouts counter must NOT increment, the
+    failure must still be logged, and the completed sweep must still be
+    counted a success. Mutating the guard off (recording every transient
+    as a timeout) reds this: a pool exhaustion or notify timeout would
+    page the sweep-timeouts alert for a sweep that did its work.
+    """
+    backend = _ScheduledWakeBackend("notify_timeout")
+    leader = MaintenanceLeader(
+        _wake_deps(_NotifyTimeoutPool()),  # type: ignore[arg-type]  # Why: the loop reads the stub only through the deps surface the loop actually touches.
+        new_uuid(),
+        cast(_Backend, backend),
+        clock=SystemClock(),
+    )
+
+    logs, timeout_calls, success_calls = await _run_one_wake_tick(leader)
+
+    assert timeout_calls == [], (
+        f"a completed sweep whose notify failed must not be a sweep timeout: {timeout_calls}"
+    )
+    assert success_calls == ["scheduled_to_pending"], (
+        f"the sweep DID run; its success must be recorded: {success_calls}"
+    )
+    failures = [e for e in logs if e.get("event") == "scheduled-wake-failed"]
+    assert len(failures) == 1, f"the notify failure must be logged: {logs}"
+    assert failures[0].get("kind") == "scheduled_wake_failed"
+    assert "TimeoutError" in str(failures[0].get("error"))
+
+
+async def test_sweep_timing_out_counts_the_sweep_timeout() -> None:
+    """The control arm: the sweep call ITSELF cut short by the deadline.
+
+    ``rows`` never binds, so record_sweep_timeout("scheduled_to_pending")
+    MUST fire, the same log line still carries the failure, and no row
+    sample (a 0-row sample would read as a healthy empty sweep). The
+    pair with the notify-arm pin is the whole distinction.
+    """
+    backend = _ScheduledWakeBackend("sweep_timeout")
+    leader = MaintenanceLeader(
+        _wake_deps(_NotifyTimeoutPool()),  # type: ignore[arg-type]  # Why: the sweep dies before the pool is ever reached; the pool stub is inert here.
+        new_uuid(),
+        cast(_Backend, backend),
+        clock=SystemClock(),
+    )
+
+    logs, timeout_calls, success_calls = await _run_one_wake_tick(leader)
+
+    assert timeout_calls == ["scheduled_to_pending"], (
+        f"a deadline-cut sweep must increment sweep-timeouts: {timeout_calls}"
+    )
+    assert success_calls == [], "no success without a completed sweep"
+    failures = [e for e in logs if e.get("event") == "scheduled-wake-failed"]
+    assert len(failures) == 1, f"the sweep failure must be logged: {logs}"

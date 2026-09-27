@@ -539,6 +539,25 @@ class TokenBucket:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> RateLimitDecision:
+        """Spend *count* tokens, or return the denial with its retry hint.
+
+        The shared admission state is measured in the data store's own
+        clock domain: PG paths use ``statement_timestamp()`` and Redis
+        paths use Redis ``TIME`` inside their scripts, so callers on
+        nodes with divergent Python clocks are all measured against the
+        same bucket. The injected *clock* drives the memory backend only
+        (its single domain) and remains part of the public call shape,
+        the unified limiter contract shared with
+        :class:`~taskq.ratelimit.sliding_window.SlidingWindow`.
+
+        With ``rate_limit_pg_fallback_enabled`` (the default) the redis
+        backend fails over to Postgres on connection-family errors, and
+        the returned decision's ``backend`` names the store that
+        actually paid, the field ``refund`` dispatches on. A PG
+        row-lock timeout fails closed (a denial, never an exception,
+        never an admission); a store reply no honest write could have
+        produced raises :class:`RateLimitStoreCorrupt`.
+        """
         if self._backend == "memory":
             return await self._acquire_memory(count, clock)
         if self._backend == "redis":
@@ -558,6 +577,23 @@ class TokenBucket:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
+        """Return *count* tokens to the bucket that actually paid them.
+
+        Dispatches on *decision*'s ``backend`` (see the comment in the
+        body for why not the bucket's own: a redis acquire during a
+        Redis outage may have spent its token in Postgres), so the
+        refund lands in the store whose quota was consumed. The memory
+        path re-adds under the bucket lock capped at capacity; the
+        Redis path runs the refund Lua script (elapsed refill plus
+        *count*, capped); the PG path rewrites the row under the same
+        bounded ``FOR UPDATE`` lock the acquire takes, and raises on
+        lock-budget exhaustion rather than silently reporting a lost
+        refund (for a fixed-quota bucket that loss is permanent).
+        *clock* is accepted and unused, a token-bucket refund needs no
+        timestamp; it stays in the signature because
+        RateLimitRegistry dispatches refund/peek/reset polymorphically
+        over both primitives with one fixed keyword block.
+        """
         # Why decision.backend and not self._backend: with backend="redis" and
         # rate_limit_pg_fallback_enabled (the default), an acquire during a
         # Redis outage falls through to Postgres and consumes the token THERE.

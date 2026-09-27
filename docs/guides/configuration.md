@@ -66,6 +66,12 @@ TASKQ_ENVIRONMENT=development
 
 `.env` is the committed base. `.env.local` overrides it on a developer's machine without affecting others. Setting `ENV=production` additionally loads `.env.production` and `.env.production.local`. `TASKQ_ENVIRONMENT` has nothing to do with file selection; it is a TaskQ deployment label that gates the unauthenticated-admin warning (`dev`/`development` suppress it; any other value triggers it). Never commit `.env.local` or production env files.
 
+### Known limit: a typo'd `TASKQ_*` variable applies its default silently
+
+Unknown `TASKQ_*` environment variables and `.env` keys load **noiselessly**: the settings loader reads only the field names it defines, so `TASKQ_MAX_CONCURENCY=4` (missing the second C), a wrong prefix (`TASKQ_MAXCONCURRENCY`), or a variable that never existed is ignored without a warning, and the field it was meant to set applies its documented default. Every `TASKQ_*` variable must therefore be spelled against this reference; a typo can only be detected by noticing the default's effect.
+
+This is a known limit of the loader, accepted rather than fixed: rejecting unknown keys would break forward and backward compatibility across rolling deploys (a newer pod's extra variable must not fail an older pod's load) and would fight the dotenv cascade, where keys legitimately migrate between files and the process environment. **`taskq doctor` does not help here**: it reports stored actor-config drift, orphaned queue rows, stranded pending jobs, worker stall tallies, and the platform stop-grace shortfall, but it does NOT report unknown environment variables (settings load before doctor ever runs). To audit a deployment's variables, diff the process environment (or the `.env` files) against the field tables in this reference; the deprecated-`no-op` settings that do still load (e.g. `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE`) are announced at worker startup, which is the only class of stale variable that announces itself.
+
 ---
 
 ## TaskQSettings Reference
