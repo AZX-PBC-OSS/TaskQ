@@ -19,8 +19,16 @@ domain - exactly the hypothesized outage residue. The pins:
 
 * the acquire scripts never read a client-supplied now (wire-level skew
   cannot flip an admission, both directions);
-* the peek paths measure against the store clock they can see, and their
-  elapsed math clamps at zero (no phantom refill from a behind stamp);
+* the peek paths measure against the store clock they can see: the token
+  bucket and GCRA peeks clamp their elapsed/TAT math at zero (no phantom
+  refill from a behind stamp), and the log peek's AHEAD direction measures
+  the skewed cutoff directly. Its BEHIND direction is pinned to the CURRENT
+  fail-closed contract: the stored entry's score then sits in the FUTURE of
+  the behind peek's own clock read, and the trust boundary the lying-store
+  hardening added (a837931e: a score outside ``(cutoff, now]`` is a reply
+  lie) rejects it with ``RateLimitStoreCorrupt`` - the behind skew is
+  indistinguishable at this boundary from a future-dated reply lie, and a
+  lie is never measured, it fails closed;
 * the PG fallback stamps its recovery in ITS OWN domain: a poisoned Redis
   stamp (either direction, +/-2 min) cannot move the PG row's ts/TAT one
   microsecond;
@@ -48,6 +56,7 @@ import redis.asyncio as redis_async
 
 from taskq._ids import new_base62
 from taskq.backend.clock import SystemClock
+from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.progress._flush import (  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the flush statement's exact clock-free contract.
     _FLUSH_UNNEST_BINDING_ORDER,  # pyright: ignore[reportPrivateUsage]  # Why: see above.
     _flush_update_sql,  # pyright: ignore[reportPrivateUsage]  # Why: see above.
@@ -71,7 +80,14 @@ class _OutageScript:
 
 
 class _OutageRedis:
-    """A Redis client whose every scripted call fails, as in a real outage."""
+    """A Redis client whose every scripted call fails, as in a real outage.
+
+    The transient-retry machinery (cc611f09) weathers this family with a
+    bounded retry (3 attempts, 0.25/0.75 s backoffs) BEFORE the fail-closed
+    decision, so every outage acquire below spends that ~1 s budget first
+    and THEN lands on the PG fallback arm - a persistent outage still ends
+    in the fallback, which is the contract these pins assert; the retry
+    only prices the weathering in front of it."""
 
     def register_script(self, script: bytes) -> object:
         return _OutageScript()
@@ -248,14 +264,24 @@ async def test_sliding_window_gcra_acquire_ignores_client_visible_time_skew(
 async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
     redis_url: str,
 ) -> None:
-    """The log peek's window filter runs on the store clock the CLIENT
-    sees (the only clock it can read). One admission is logged, then the
-    peek rides +/-2 min TIME proxies: the +2 min cutoff puts the real
-    entry outside the window (1 token available, the peek cannot see what
-    its clock says aged out), the -2 min cutoff stretches the window over
-    the entry (exhausted, retry hint ~3 min). Both are distinct from the
-    unskewed peek (0 available, ~60 s hint), so a peek that read a Python
-    clock instead of the store's fails either direction."""
+    """The log peek's AHEAD direction measures the store clock the CLIENT
+    sees (the only clock it can read): one admission is logged, then the
+    peek rides a +2 min TIME proxy - the skewed cutoff puts the real entry
+    outside the window (1 token available; the peek cannot see what its
+    clock says aged out). A peek that read a Python clock instead of the
+    store's sees the entry in-window (0 available) and fails this assert.
+
+    The BEHIND direction is pinned to the CURRENT fail-closed contract
+    (reconciled after a837931e's lying-store hardening): the stored entry's
+    score then sits 120 s in the FUTURE of the behind peek's own clock
+    read, and the peek's oldest-score trust boundary - which bounds every
+    selected score to ``(cutoff, now]`` exactly because a future-dated
+    score was the crash direction - rejects it as a reply lie with
+    ``RateLimitStoreCorrupt``. A behind skew is indistinguishable from a
+    future-dated lie at this boundary, and a lie is never measured, it
+    fails closed. A Python-clock peek in the same scenario sees the entry
+    in-window (exhausted, ~60 s hint, no raise), so the raise itself
+    discriminates the store-clock read."""
     settings = _redis_settings(redis_url, "taskq_fallback_clock")
     name = f"swlog_peek_{new_base62()}"
     window = SlidingWindow(
@@ -287,13 +313,11 @@ async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
         f"the +2 min peek's cutoff must age the entry out of its window, got {ahead.remaining}"
     )
 
-    behind = await peek_through(-_SKEW_S)
-    assert behind.is_exhausted and behind.remaining == 0.0
-    assert behind.retry_after is not None, "the stretched window must still report a hint"
-    assert 150 <= behind.retry_after.total_seconds() <= 210, (
-        f"the -2 min hint must be the entry's expiry on the skewed clock (~180 s), "
-        f"got {behind.retry_after}"
-    )
+    # The behind direction takes the CURRENT fail-closed verdict (see the
+    # docstring): the future-dated score is the store-corrupt sentinel,
+    # not a stretched-window measurement.
+    with pytest.raises(RateLimitStoreCorrupt):
+        await peek_through(-_SKEW_S)
 
 
 async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
