@@ -42,12 +42,16 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-pytest.importorskip("fastapi")  # Why: this module attacks the admin's builders; the extras legs without fastapi must skip, not error at collection.
+pytest.importorskip(
+    "fastapi"
+)  # Why: this module attacks the admin's builders; the extras legs without fastapi must skip, not error at collection.
 
-from taskq import migrate as migrate_mod  # noqa: E402  # Why: importorskip must precede the optional-import chain.
-from taskq._ids import new_base62  # noqa: E402
-from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]  # noqa: E402
-from taskq.web.admin._constants import (  # pyright: ignore[reportPrivateUsage]  # noqa: E402
+from taskq import (
+    migrate as migrate_mod,  # Why: importorskip must precede the optional-import chain.
+)
+from taskq._ids import new_base62
+from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]
+from taskq.web.admin._constants import (  # pyright: ignore[reportPrivateUsage]
     _PAGE_SIZE,
 )
 from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why: the admin module's own builders are the queries under attack; a hand-copied SQL shape would drift from the real page.

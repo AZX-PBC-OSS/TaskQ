@@ -33,9 +33,13 @@ from typing import Any
 import asyncpg
 import pytest
 
-pytest.importorskip("fastapi")  # Why: this module attacks the admin page's builders; the extras legs without fastapi must skip, not error at collection.
+pytest.importorskip(
+    "fastapi"
+)  # Why: this module attacks the admin page's builders; the extras legs without fastapi must skip, not error at collection.
 
-from taskq import migrate as migrate_mod  # noqa: E402  # Why: importorskip must precede the optional-import chain.
+from taskq import (
+    migrate as migrate_mod,  # Why: importorskip must precede the optional-import chain.
+)
 from taskq._ids import new_base62
 from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]
 from taskq.settings import WorkerSettings  # pyright: ignore[reportPrivateUsage]
@@ -43,8 +47,10 @@ from taskq.timescale import (  # pyright: ignore[reportPrivateUsage]
     disable_hypertables,
     enable_hypertables,
 )
-from taskq.web.admin._constants import _PAGE_SIZE  # pyright: ignore[reportPrivateUsage]  # noqa: E402  # Why: after importorskip.
-from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # noqa: E402  # Why: the admin module's own builders are the queries under attack; a hand-copied SQL shape would drift from the real page.
+from taskq.web.admin._constants import (
+    _PAGE_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: after importorskip.
+)
+from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why: the admin module's own builders are the queries under attack; a hand-copied SQL shape would drift from the real page.
     _ARCHIVE_COLS,
     _SORTABLE_ARCHIVE,
     _build_paginated_sql,
