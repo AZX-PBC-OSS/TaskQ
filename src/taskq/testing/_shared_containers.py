@@ -184,10 +184,14 @@ DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
 REDIS_DB_POOL_SIZE = 1024
 
 # Only containers running these EXACT images are sweep candidates: the shared pair and
-# TaskQ's disposable chaos containers all use them. The PG entry is the CONFIGURED
-# image (``_PG_IMAGE``, ``TASKQ_TEST_PG_IMAGE``-overridable) rather than a literal,
-# so a version-matrix leg's containers are swept by the same rule as the default's.
-# Deliberately not a bare
+# TaskQ's disposable chaos containers all use them. The PG entries are the CONFIGURED
+# image (``_PG_IMAGE``, ``TASKQ_TEST_PG_IMAGE``-overridable) AND the default, so a
+# version-matrix leg's containers are swept by the same rule as the default's — and a
+# flip between the override and the default (the seam's stated developer workflow, a
+# version-matrix leg on a dev box) can never strand the other one's crashed-run
+# leftovers: the prefix check precedes the ``SWEEP_AGE_LIMIT`` backstop, so an image
+# outside this list is an ETERNAL leak, not a delayed sweep. Under the default env the
+# two PG entries coincide. Deliberately not a bare
 # ``postgres`` repository prefix, the docker-compose dev stack runs versioned
 # ``postgres:18.x`` tags (same repository, different tag), and a repository-wide
 # prefix would make the sweep a hazard to it (the fixed ``container_name: taskq-*``
@@ -205,6 +209,7 @@ REDIS_DB_POOL_SIZE = 1024
 # (``taskq-*``) and run different images.
 _SWEEP_IMAGE_PREFIXES = (
     _PG_IMAGE,
+    _PG_IMAGE_DEFAULT,
     "docker.dragonflydb.io/dragonflydb/",
     "taskq-e2e-worker",
 )
