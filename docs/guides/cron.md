@@ -500,7 +500,7 @@ the metric reconciles to match on the next tick with due work, not immediately.
 ## Schedule ownership
 
 `cron_schedules.disabled_by` records **who disabled a schedule** (migration
-`01.00.19_01_pre_cron_disabled_by`), because the two ways a schedule ends up
+`01.00.19_02_pre_cron_disabled_by`), because the two ways a schedule ends up
 disabled need opposite treatment at worker restart:
 
 | `disabled_by` | Meaning | At the next worker restart |

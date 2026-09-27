@@ -352,6 +352,74 @@ def long_loop(payload: BigPayload, ctx: JobContext[BigPayload]) -> None:
 - **Phase 2 (FORCED):** The cancel controller writes `cancel_phase=2` to PG but **cannot** interrupt the thread. The sync actor continues until it polls `should_abort()` or hits `start_to_close` timeout.
 - **Phase 3 (ABANDON):** If the actor never polls, the job is abandoned after `cancel_grace + cleanup_grace`.
 
+### Sync actors and shutdown
+
+SIGTERM (or SIGINT) triggers the worker's graceful shutdown
+([workers.md — Graceful shutdown](workers.md#graceful-shutdown)). For a sync
+actor the contract has one hard fact at its center: **the thread is
+uncancellable**. A sync actor runs on the default executor via
+`asyncio.to_thread()` (`src/taskq/actor.py`), and `task.cancel()` — what the
+shutdown's FORCING phase does — cancels the await, never the thread; CPython
+offers no API to interrupt a running thread. What each phase actually does to
+a sync actor:
+
+- **CANCELLING** sets the cancel event, so `ctx.should_abort()` starts
+  returning `True`.
+- **FORCING** cancels the job's asyncio task: the await unwinds, the actor's
+  body keeps running to its own end.
+- **RELEASING** does not assume the actor unwound with the await. The
+  thread's handle is exit-tracked (`_run_sync_actor_tracked`,
+  `src/taskq/worker/dispatch.py`), and the row's release is held back until
+  the thread has provably exited or the exit budget is spent: held
+  `scheduled` behind the remaining `termination_grace_period` plus the
+  watchdog's exit tail, capped by `lock_lease` — the fleet never gets a row
+  whose actor is still running in this process.
+- **The exit is enforced, not hoped for.** The shutdown watchdog stays armed
+  until every tracked actor handle is reaped: either the thread finishes on
+  its own, or the deadline trip fires and `os._exit` ends the process with
+  the still-running thread inside it (the trip's reason is
+  `tracked-actor-outlived-teardown`). A third signal while that gate is
+  waiting also exits by join: a running actor thread is waited out, not
+  killed.
+
+What the job body must do:
+
+- **Poll `ctx.should_abort()` in long loops** and exit promptly when it turns
+  `True`. RAISE to cancel (`asyncio.CancelledError`, or
+  `ctx.check_cancelled()`), per the raise-vs-return rule in the cancellation
+  subsection above: an actor that exits inside the grace gets the immediate
+  `pending` release.
+- **Budget the grace.** Put a `should_abort()` poll at least every few
+  seconds, so the body lands well inside `cancellation_grace_period` (30s at
+  the defaults). An actor that cannot check in still gets the held release —
+  the row is never stranded — but every deploy it outlives pays the exit
+  window's latency, and at the deadline trip the thread dies with the
+  process, by design.
+- **Prefer async actors for cancellable work.** An `async def` actor unwinds
+  with the await: `task.cancel()` reaches the body's current `await`
+  directly, and the row is released `pending` immediately. Reach for a sync
+  actor for what threads are actually for — blocking libraries that release
+  the GIL — not as the default shape.
+
+What the body must **not** do:
+
+- Block indefinitely on a call that never returns: no poll opportunity means
+  the grace cannot reach you.
+- Install its own signal handlers or fight the worker's shutdown ordering.
+- Fan out threads or subprocesses and expect shutdown to reap them:
+  "provably exited" is wrapper-level, about TaskQ's own executor thread. A
+  subprocess the actor spawned outlives even `os._exit`.
+
+**The heartbeat-loss residual.** On the isolate path (`isolate_self`,
+`src/taskq/worker/heartbeat.py`) — the walk-away a worker takes when Postgres
+stops answering its heartbeat — locally-running actors get the same SHUTDOWN
+cancel stamp and task cancel, and the path joins them bounded
+(`cancellation_grace_period + cleanup_grace_period` plus close slack). A
+wedged sync thread outlives that join: its row stays excluded from the
+re-pend, and when its consumer's unwinding never completes the interrupt
+write never lands, so the row's release falls to the lock-lease expiry
+backstop ([workers.md — Heartbeat and liveness](workers.md#heartbeat-and-liveness)).
+
 ### DI thread safety
 
 DI resolution happens in the event loop **before** the sync function is dispatched to the thread. Resolved kwargs are passed through:
