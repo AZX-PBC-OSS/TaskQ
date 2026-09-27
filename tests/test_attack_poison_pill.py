@@ -694,6 +694,6 @@ async def test_fleet_of_100_poison_pills_terminates_bounded_and_healthy() -> Non
         # bounded by the attempt ceiling on the test's own clock; the drain is
         # loop-local. 120 s = the 5-round claim/reclaim ladder's worst case
         # (5 rounds x ~20 s of reclaim sweeps) with ~20% co-tenancy slack —
-        # an order of magnitude above the observed drain, two orders below
+        # an order of magnitude above the observed drain, 2.5x below
         # the 300 s pytest-timeout.
     )

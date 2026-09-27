@@ -55,6 +55,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.migrate import (
+    DEFAULT_MIGRATION_LOCK_TIMEOUT,
     checksum_drifts,
     discover,
     list_applied,
@@ -70,9 +71,11 @@ pytestmark = pytest.mark.integration
 _TIMESCALE_IMAGE = os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or _TIMESCALE_IMAGE_DEFAULT
 
 # ── Timeout arithmetic (derived, not vibes) ──────────────────────────────
-# DEFAULT_MIGRATION_LOCK_TIMEOUT = 120s: each pod's bounded WAIT for the
-# advisory lock. A fresh-schema apply of the bundled chain measured single
-# digits of seconds on CI containers; _APPLY_MARGIN_PER_POD = 60s is an
+# DEFAULT_MIGRATION_LOCK_TIMEOUT (imported, so a production retune of the
+# lock wait re-derives every budget here instead of silently drifting):
+# each pod's bounded WAIT for the advisory lock. A fresh-schema apply of
+# the bundled chain measured single digits of seconds on CI containers;
+# _APPLY_MARGIN_PER_POD = 60s is an
 # order of magnitude above it. Pods queue on the lock, so a pod's total
 # lifetime is bounded by its own lock wait + its own apply:
 #   per-pod budget = 120 + 60 = 180s; n pods, n x 180s.
@@ -88,7 +91,7 @@ _TIMESCALE_IMAGE = os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or _TIMESCALE_
 # on 2026-09-27. Traffic tests add the hypertable conversions of small
 # seeded tables (the mid-life enable E2E converts 1000 rows in seconds):
 # +60s flat.
-_MIGRATION_LOCK_WAIT_SECS: float = 120.0
+_MIGRATION_LOCK_WAIT_SECS: float = DEFAULT_MIGRATION_LOCK_TIMEOUT
 _APPLY_MARGIN_PER_POD_SECS: float = 60.0
 _TRAFFIC_EXTRA_SECS: float = 60.0
 
@@ -572,7 +575,11 @@ async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str
     round that lands. A lock mutant (barge / early-release / private key)
     shows the instant in NO round — deterministically red — while a correct
     lock shows it with probability ~1 per round idle and ~2/3 under the
-    harshest observed compression (5 rounds: residual ~4%). Each failed
+    harshest observed compression — 5 rounds: residual (1/3)^5 ≈ 0.4%
+    (census on 2026-09-27: 10 rounds at 2 cores + 2 hog loops measured
+    1/10 inverted with the PG container off the pinned cores and 0/10 with
+    it pinned, so 1/3 is the harshest observed band and the residual is
+    conservative). Each failed
     round is CHEAP since the gate's liveness check names the exiting pod
     instead of burning the budget; the round budget bounds the pathological
     both-pods-hang case, which is a real defect worth the burn."""

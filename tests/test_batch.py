@@ -752,7 +752,8 @@ class TestTIGinIndexUsed:
         # of index pages, and the measured floor on the test-identical seed
         # is single-digit ms. 200 ms = ~20x that floor: PG's own ANALYZE
         # clock (not runner wall clock), so co-tenancy weather moves it by
-        # CPU contention alone; 20x matches the storm pins' stretch.
+        # CPU contention alone; 20x is this pin's own co-tenancy stretch
+        # (the publish-storm pin stretches its 0.2s bound only 5x).
         assert exec_time < 200, f"GIN query took {exec_time}ms, expected < 200ms"
 
 

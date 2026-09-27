@@ -4456,10 +4456,13 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
     leader._leader_monitor_conn = FakeConn(on_fetchval=_boom)  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
 
     task = asyncio.create_task(leader._watchdog_loop(shutdown))
-    # Poll-asserted, not a bare sleep: demotion (the monitor probe failure
-    # clearing is_leader) must land within the watchdog's own probe cadence
-    # plus loop turns. 2.0 s = ~10x the probe interval — co-tenancy slack;
-    # the no-demotion regression this pins leaves the flag set, so the poll
+    # Poll-asserted, not a bare sleep: the demotion is SYNCHRONOUS on the
+    # first failed probe (the probe raises, _step_down clears is_leader in
+    # the same loop turn), so this budget covers loop turns only — 2.0 s of
+    # co-tenancy slack, deliberately NOT a stretch of the 5s
+    # _WATCHDOG_INTERVAL_SECS park (0.4x of it): a demotion that ever waited
+    # a full probe cadence would false-fail here, and that is the tripwire.
+    # The no-demotion regression this pins leaves the flag set, so the poll
     # still times out red.
     await wait_for_condition(
         lambda: not deps.is_leader.is_set(),
