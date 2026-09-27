@@ -25,7 +25,9 @@ __all__ = [
     "DEADLINE_RETRY_EXCEEDED_MESSAGE",
     "JOB_FENCE_BOUND_SQL",
     "JOB_FENCE_SQL",
+    "LEASE_CLEAR_SQL",
     "MIN_DEFERRAL_INTERVAL_SQL",
+    "PROGRESS_MERGE_SQL",
 ]
 
 # The non-consuming deferral floor, pre-rendered for the two arms that
@@ -121,4 +123,43 @@ JOB_FENCE_SQL: Final[str] = (
 JOB_FENCE_BOUND_SQL: Final[str] = (
     "id = $1 AND status = 'running' AND locked_by_worker = $2 "
     "AND attempt = ${attempt_bind} AND claim_epoch = ${epoch_bind}"
+)
+
+# The lease-clear SET trio, ONE fragment for every arm that releases a
+# row's claim (the terminal writes, the deferral arms, the interruption
+# release): the row's claim dies with the transition, so the lock's three
+# columns clear together. Editing one column of the trio in one statement
+# but not its siblings is exactly the drift that lets a released row stay
+# locked on one axis (a cleared lock_expires_at with a stale
+# last_heartbeat_at misleads the stale-heartbeat readers; the reverse
+# misleads the reclaim probe), so the trio travels as one fragment.
+# Deliberately NOT a consumer: the mark_succeeded / mark_failed pair clears
+# only the two lock columns and keeps last_heartbeat_at (the attempt that
+# finished is the row's last heartbeat, the audit trail a terminal row
+# should keep), so their 2-column shape is hand-maintained. The reference is
+# unqualified (a SET clause, no alias) with the continuation indent baked in
+# at the templates' SET-body depth; a trailing comma is the caller's, since
+# the trio is always followed by another assignment.
+LEASE_CLEAR_SQL: Final[str] = (
+    "locked_by_worker = NULL,\n        lock_expires_at = NULL,\n        last_heartbeat_at = NULL"
+)
+
+# The progress-merge SET pair, ONE fragment for every arm that folds a
+# caller's progress update into the row (the terminal writes and the
+# deferral arms alike: progress published before the outcome must survive
+# it). ``progress_seq`` ratchets (GREATEST, an out-of-order publish never
+# regresses the sequence) and ``progress_state`` concatenates the update
+# only when one was bound (the params CTE carries it as NULL otherwise),
+# the exact two-line discipline restated in the in-memory twin's
+# _merge_progress helper (testing/_terminal.py). The fragment assumes the
+# consuming statement defines the two binds in a ``params`` CTE (the
+# multi-arm arbiters' shape); the single-row statements that bind progress
+# directly ($N) hand-maintain their pair instead. Unqualified SET-clause
+# spelling, continuation indent baked in, trailing comma on the caller.
+PROGRESS_MERGE_SQL: Final[str] = (
+    "progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),\n"
+    "        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL\n"
+    "                              THEN COALESCE(j.progress_state, '{}'::jsonb)"
+    " || (SELECT progress_state FROM params)\n"
+    "                              ELSE j.progress_state END"
 )

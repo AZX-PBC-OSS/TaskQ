@@ -30,7 +30,7 @@ from uuid import UUID
 
 import pytest
 
-from taskq._ids import new_job_id, new_uuid
+from taskq._ids import new_job_id
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import JobId
 from taskq.backend.postgres import PostgresBackend
@@ -38,6 +38,7 @@ from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.retry import RetryPolicy, _compute_reclaim_backoff
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
+from tests._worker_of import worker_of
 
 pytestmark = pytest.mark.integration
 
@@ -53,25 +54,6 @@ _ZERO_BASE = timedelta(0)
 #: The other degenerate shape: a negative base draws a negative raw value,
 #: which without the floor lands ``scheduled_at`` in the past.
 _NEGATIVE_BASE = timedelta(seconds=-5)
-
-
-async def _worker_of(backend: Backend) -> UUID:
-    """A worker id that exists in the backend's ``workers`` table."""
-    if isinstance(backend, InMemoryBackend):
-        return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_reclaim_backoff_policy_parity.py
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_reclaim_backoff_policy_parity.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
-    worker_id = new_uuid()
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
-        await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
-            worker_id,
-            "test-host",
-            12345,
-            ["default"],
-        )
-    return worker_id
 
 
 async def _enqueue_zero_base(backend: Backend, job_id: JobId | None = None) -> JobId:
@@ -154,7 +136,7 @@ async def _now_of(backend: Backend) -> datetime:
 async def _claim_then_reclaim(backend: Backend, job_id: JobId) -> timedelta:
     """Run a real claim round, expire the lease, reclaim through the public
     sweep API, and return how far out the re-pend landed."""
-    worker_id = await _worker_of(backend)
+    worker_id = await worker_of(backend)
     dispatched = await backend.dispatch_batch(
         worker_id=worker_id,
         queues=["default"],
