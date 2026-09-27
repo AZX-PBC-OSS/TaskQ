@@ -1244,13 +1244,16 @@ def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> Non
 
 # ── Archived job detail: the event timeline reads the ledger ─────────────
 #
-# Issue #337: the detail route's archive arm rendered ``events = []``
-# without reading the ledger at all -- ``job_events`` is the one place
-# the timeline lives (there is no job_events_archive), so the archive arm
-# must read it exactly as the live arm does. An arm that skips the read
-# renders every archived job's page as "No events recorded" regardless of
-# what the ledger holds -- the one section an operator triaging a failed
-# archived job reads first.
+# Issue #337: the detail route's archive arm renders events from the
+# ledger read -- ``job_events`` is the one place the timeline lives (there
+# is no job_events_archive), so the arm must read it exactly as the live
+# arm does. The production-reachable state for an archived job is an EMPTY
+# ledger (the archive sweep's DELETE FROM jobs cascades job_events away),
+# so the template's empty case says the history was removed at archive;
+# these pins vouch for the arm's read-and-render contract itself: whatever
+# the ledger holds for the job must render (pinned with stubbed ledger
+# rows -- a state production cannot reach today, the forward-compatible
+# property the read exists for).
 
 
 class _ArchivedJobConnection(StubConnection):

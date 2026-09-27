@@ -776,12 +776,16 @@ def register(router: APIRouter) -> None:
                 archived_at = job["archived_at"]
                 attempts_archive_sql = _ATTEMPTS_ARCHIVE_SQL.format(schema=schema)
                 attempts = await conn.fetch(attempts_archive_sql, job_id)
-                # Events read from the SAME ledger the live arm reads: event
-                # retention is archive-aligned, so job_events still holds the
-                # archived job's rows. An arm that skipped the read rendered
-                # every archived job's page as "No events recorded" -- the
-                # event log is exactly what an operator triaging a failed
-                # archived job reads first.
+                # Events read from the SAME ledger the live arm reads -- and
+                # in production that read comes back EMPTY: the archive
+                # sweep's DELETE FROM jobs cascades job_events away (the
+                # sweep's own comment names the cascade; there is no
+                # job_events_archive), so a job the archive arm can serve has
+                # no events left. The read stays so the arm renders whatever
+                # the ledger holds if an event archive ever lands; the
+                # template renders the empty case honestly (removed at
+                # archive), never as "No events recorded." -- that phrasing
+                # misreads as the job never emitted any.
                 events = await conn.fetch(events_sql, job_id)
             # The audit trail is queried for live AND archived jobs: the
             # whole point of the no-FK design is that the record of who

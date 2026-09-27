@@ -302,7 +302,7 @@ Queue detail page. Lists jobs in the named queue filtered by `status` (query par
 
 Returns `400` if `status` is not an allowed value, if only one of `cursor_at` / `cursor_id` is provided, or if the request carries a query parameter the page does not declare (the declared set is exactly the table above).
 
-**The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts.
+**The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts. This is a behavior change for consumers of the HTML pages: a bookmarked URL or integration that carried an undeclared parameter used to receive a 200 page (rendered without the filter) and now receives a `400`; remove the stale parameter from the URL.
 
 ### `GET /admin/history`
 
@@ -347,7 +347,9 @@ The **Duration** column carries a live twin for exactly that view: a running row
 
 Job detail. Shows the full job record, attempt history from `job_attempts`, and the event log from `job_events`. Tracebacks are truncated to 2 000 characters with a `(N more characters)` suffix. Returns `404` if the job does not exist.
 
-If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log reads the same `job_events` ledger the live page reads — the archive arm renders whatever the ledger holds for the job, never a hardcoded empty log. An "archived" banner is shown at the top of the page.
+If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive`. An "archived" banner is shown at the top of the page.
+
+**The event log of an archived job is empty by design, and the page says so honestly.** The archive sweep moves the job row to `jobs_archive` and deletes it from the live table; `job_events.job_id` references `jobs` with `ON DELETE CASCADE` and there is no `job_events_archive`, so the move removes the job's event rows with it. The archived page renders the ledger read like the live page does (so it will render events the day an event archive exists) and, when the ledger comes back empty — the only state production reaches — says the history was removed at archive rather than "No events recorded.", which would misread as the job never emitted any.
 
 The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state: `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 

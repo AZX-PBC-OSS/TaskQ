@@ -378,6 +378,10 @@
                 </table>
             </div>
         </div>
+        {% elif is_archived %}
+        <p class="text-sm text-slate-400">
+            Event history is not retained past archive: the archive sweep's move of the job out of the live table removes its event rows with it (the event ledger has no archive tier). The attempt history above is the archive's own.
+        </p>
         {% else %}
         <p class="text-sm text-slate-400">No events recorded.</p>
         {% endif %}

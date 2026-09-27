@@ -1129,13 +1129,16 @@ async def test_archived_detail_events_match_the_live_detail_events(lab: _Lab) ->
         Production's archive sweep deletes the live row and
         ``job_events.job_id REFERENCES jobs ON DELETE CASCADE`` takes the
         events with it TODAY (the event-watermark migration documents the
-        cascade: there is no job_events_archive); the issue's prescription
-        is retention alignment, so the ledger outlives the archive it
-        belongs to. The state that alignment produces -- an archived job
-        whose ``job_events`` rows are intact -- is what this pins:
-        re-inserted past the FK (the trigger bypass runs as the container
-        superuser the lab already uses), the rows must reach the archived
-        page exactly as the live arm rendered them."""
+        cascade: there is no job_events_archive) -- so the state this
+        constructs, an archived job whose ``job_events`` rows are intact,
+        is UNREACHABLE in production: the rows are re-inserted past the FK
+        (the trigger bypass runs as the container superuser the lab
+        already uses). What this differential pins is the archive arm's
+        read-and-render contract -- the page renders whatever the ledger
+        holds, identical to the live arm's render -- the forward-compatible
+        property the read exists for; the production-reachable empty state
+        is pinned honestly (the removed-at-archive notice) by
+        test_attack337_cascade_truth.py."""
         conn = await asyncpg.connect(lab.dsn)
         try:
             await conn.execute("SET session_replication_role = replica")
