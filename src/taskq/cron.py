@@ -374,6 +374,11 @@ def compute_next_fire_after(
     """
     from croniter import CroniterBadDateError
 
+    # The "day-of-month field" blame below is asserted, not derived:
+    # croniter's CroniterBadDateError carries no field attribution, and
+    # day-of-month is the only field whose starvation (day 30 in
+    # February, day 31 in a 30-day month) reaches this walk today.
+    # Revisit the wording if a second field ever produces this error.
     try:
         return _compute_next_fire_after_walking(cron_expr, timezone_name, after, dst_strategy)
     except CroniterBadDateError as exc:
@@ -760,8 +765,10 @@ def cron(
 ) -> CronScheduleSpec:
     """Declare a cron schedule and auto-register it.
 
-    Validates *expression* via ``croniter.is_valid()``; raises
-    :class:`ValueError` on invalid expressions.  Raises
+    Validates *expression* via ``croniter.is_valid()`` and then a
+    landability walk: an expression that is syntactically valid but
+    matches no calendar date (day 30 in February, day 31 in a 30-day
+    month) also raises :class:`ValueError`.  Raises
     :class:`ValueError` if both *payload_factory* and *static_payload*
     are provided.
 

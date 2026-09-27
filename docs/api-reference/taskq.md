@@ -34,7 +34,7 @@ ways. Mixing them up is the most common integration bug:
 | `TaskQ.cancel` / `JobHandle.cancel` | raises `KeyError` carrying the job id — a typo'd id and a pruned job are indistinguishable |
 | `TaskQ.stream` | raises `KeyError` at the opening read **and** if the row is pruned mid-stream (it cannot fabricate the promised terminal event) |
 | `TaskQ.retry_job` | returns `False` — a nonexistent id, a non-terminal status, and the attempt-ceiling conflict are all the same `False` by design |
-| `wait_for_batch` (foreign/typo'd batch id) | raises `EmptyBatchError` ("has 0 jobs, expected at least 1") — pass `on_empty="ok"` when an empty batch is legitimate |
+| `wait_for_batch` (foreign/typo'd batch id) | raises `EmptyBatchError` ("is empty or unknown to this client") — pass `on_empty="ok"` when an empty batch is legitimate |
 
 `enqueue` performs **no actor-registration check**: a ref whose actor no
 worker declares is enqueued successfully and then parked at the snooze
