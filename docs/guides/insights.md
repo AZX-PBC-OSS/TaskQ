@@ -315,12 +315,27 @@ The honest absences an operator must not paper over:
   `taskq_queue_utilization` by the sampler (the capacity table is the
   leader's to read). The raw inputs are `fetch_queue_imbalance`'s
   `actor_capacity` / `effective_capacity` columns.
-- **Zero capacity is a missing series, not a zero.**
-  `taskq_queue_utilization` OMITS a queue whose effective capacity is
-  zero rather than reporting `0` — a frozen zero reads "idle", the
-  opposite of the truth. `taskq_queue_depth > 0` with NO utilization
-  series (plus `taskq_jobs_stranded{reason="unserved_queue"}`) is the
-  starved-from-zero shape.
+- **A missing utilization series has three meanings — read them
+  apart before acting.** `taskq_queue_utilization` OMITS a queue rather
+  than reporting a number that would lie: a frozen `0` reads "idle", the
+  opposite of the truth, and a ratio against unlimited capacity is not a
+  ratio. The absence is therefore ambiguous by design, and the alarm rule
+  `taskq_queue_depth > 0` with NO utilization series resolves it:
+  - **No due rows** — an idle queue (depth 0): nothing to starve, no
+    series, no action.
+  - **Zero effective capacity** — no live worker, or no routed
+    `actor_config` row (check `taskq_jobs_stranded{reason=
+    "unserved_queue"}` and `taskq_queue_live_workers`): the
+    starved-from-zero shape.
+  - **An uncapped routed actor** (`max_concurrent IS NULL` — the
+    convention means uncapped): such an actor contributes no capacity
+    term, so the queue's ratio is UNDEFINED, not zero and not starved —
+    it cannot be capacity-bound. A persistent depth there is a
+    dispatch/priority problem (`fetch_actor_backlog`); scaling workers
+    cannot make the series appear.
+  On the SQL side the same three shapes read as `utilization IS NULL`
+  beside `fetch_queue_imbalance`'s raw columns (`live_workers`,
+  `actor_capacity`, `effective_capacity`).
 
 ### The decision table
 
@@ -334,14 +349,34 @@ vocabulary below is what such a proposal would cite.
 
 | Signal | Threshold (source columns) | Action |
 |---|---|---|
-| Starved queue | `taskq_queue_utilization > 1` sustained (`fetch_queue_imbalance.utilization`, from `depth` ÷ `effective_capacity`) | **Scale up workers** subscribed to the queue (or raise the routed actors' `max_concurrent`) |
-| Starved from zero | `taskq_queue_depth > 0`, NO `taskq_queue_utilization` series, `taskq_queue_live_workers == 0` (`utilization IS NULL` with `depth > 0`) | **Scale up from zero / subscribe a worker** — no tuning serves an unserved queue |
-| Fairness strand | `taskq_jobs_oldest_due_age_seconds` grows while utilization ≤ 1 (`oldest_due_age_s` vs `depth`: large depth + tiny age is a burst; small depth + large age is a strand) | **Investigate dispatch/priority**, not fleet size |
-| Overprovisioned | `overprovisioned == true` over three consecutive windows (`fetch_overprovisioning`: `live_workers`, `depth`, `terminalisations` — live workers, zero due depth, fewer terminalisations than workers) | **Consolidate: scale down.** One window is a hypothesis; three is a fleet to shrink |
+| Starved queue | `taskq_queue_utilization > 1` sustained (`fetch_queue_imbalance.utilization`, from `depth` ÷ `effective_capacity`) — a STRONG starvation signal; the converse is NOT clearance (see the denominator caveat below) | **Scale up**: add workers subscribed to the queue AND/OR raise the routed actors' `max_concurrent`, then re-read the ratio |
+| Starved from zero | `taskq_queue_depth > 0`, NO `taskq_queue_utilization` series (`utilization IS NULL` with `depth > 0`) — then split by `taskq_queue_live_workers` and the stranded gauge: `live_workers == 0` → nothing claims the queue; `live_workers > 0` with `taskq_jobs_stranded{reason="unserved_queue"}` → no routed actor; `live_workers > 0`, no stranded rows → every routed actor is uncapped or zero-capped (see the missing-series meanings above) | Workers at 0 or a missing routing → **scale up from zero / subscribe a worker** (or add the `actor_config` row). Uncapped routed actors → **do not scale**: the queue cannot be capacity-bound; treat the depth as a dispatch problem |
+| Fairness strand | `taskq_jobs_oldest_due_age_seconds` grows while utilization ≤ 1 — then split by `fetch_actor_backlog.saturation`. Utilization is a ONE-WAVE measure (due depth ÷ one wave of capacity): running work and job DURATION are invisible to it, so a fleet of long jobs at max concurrency pins the ratio at ≤ 1 while wait time climbs toward a full job duration | Saturation **< 1** (slots free, work waiting) → **investigate dispatch/priority**, not fleet size. Saturation **= 1 sustained** (all admitted slots held, claims immediate, age still growing) → the configured cap IS the constraint: **raise the routed actors' `max_concurrent`** (the admission damper reads it directly) or add workers — this is row 1's starvation in long-job clothing, and utilization never exceeds 1 to say so |
+| Overprovisioned | `overprovisioned == true` over three consecutive windows (`fetch_overprovisioning`: `live_workers`, `depth`, `terminalisations` — live workers, zero due depth, fewer terminalisations than workers). **Duration confound:** long jobs make the terminalisation rate low on a FULLY BUSY fleet (4 workers on 2-hour jobs finish < 4 jobs/hour fleet-wide) — cross-check `fetch_worker_busy_ratio.busy_ratio` before acting | `busy_ratio` low too → **consolidate: scale down.** One window is a hypothesis; three is a fleet to shrink. `busy_ratio` high → the workers are occupied, not idle — the fleet is small for the job DURATION (the Fairness strand row's saturation = 1 shape), not large for the work |
 | Idle workers | `busy_ratio ≈ 0` sustained on still-heartbeating workers (`fetch_worker_busy_ratio.busy_ratio`) | **Consolidate the pool** |
-| Saturated actor, growing backlog | `saturation` at 1 while `unservable_backlog > 0` sustained (`fetch_actor_backlog.saturation`, `.unservable_backlog`) | **Move the actor to a queue with headroom** (re-route in `actor_config`) — worker count cannot lift a per-actor cap |
+| Saturated actor, growing backlog | `saturation` at 1 while `unservable_backlog > 0` sustained (`fetch_actor_backlog.saturation`, `.unservable_backlog`) | **Raise the actor's `max_concurrent`** — the one lever that lifts the admission damper under either enforcement model — **or move the actor to a queue with headroom** (re-route in `actor_config`); adding workers alone may not lift a pinned actor cap (see the denominator caveat below) |
 | Runaway cron schedule | `runaway_trending == true` (`fetch_cron_ledger`: fires > cleared in BOTH the current and prior window) | **Do not scale for this alone** — feed the schedule; read against `dst_strategy` (an `allof` overlap-hour double-fire is by design) |
 | Drain budget | `eta_seconds` against the intended change window (`fetch_drain_estimates.eta_seconds`; `has_traffic == false` ⇒ undefined — widen the window first) | **Size the scaling action** to finish inside the window, then re-read |
+
+**What the utilization denominator models — and why `≤ 1` never
+clears starvation on its own.** The denominator
+(`effective_capacity` = routed `sum(max_concurrent)` × live workers)
+is the dispatch admission damper's OVER-DISPATCH ceiling, not a hard
+cap: a claim round admits up to `max_concurrent − in_flight` where
+`in_flight` counts the actor's running rows FLEET-WIDE, so concurrent
+dispatchers each admit against a stale count and the realized ceiling
+saturates toward the documented over-dispatch bound
+(`(producers − 1) × max_concurrent` — see `capped_running` in
+`taskq.backend._dispatch_sql`). A queue served by many workers
+therefore reads the ratio LOW by up to the live-worker factor: 20 due
+rows against one actor capped at 2 report `0.5` with four workers,
+while the actor's configured cap holds the queue to roughly two
+concurrent jobs. Read utilization WITH its two sisters, never alone:
+`fetch_actor_backlog.saturation` at 1 means the configured cap is the
+binding constraint (only raising `max_concurrent` — or re-routing to
+actors with headroom — lifts it), and a growing
+`taskq_jobs_oldest_due_age_seconds` means the queue is not draining
+however small the ratio looks.
 
 ### The label-cardinality bounds are part of the contract
 
@@ -375,7 +410,12 @@ guarantee, not an implementation choice:
 - Fleet-wide `sum by (queue)` note: processes admit different queue
   sets, so their `_other_` series are not the same queue; the summed
   overflow keeps the TOTAL honest, but per-queue attribution past the
-  cap lives on spans and log lines.
+  cap lives on spans and log lines. For `taskq_queue_utilization`
+  specifically the `_other_` series is the SUM of the tail queues'
+  RATIOS — a boundedness bookkeeping value, not itself a utilization
+  (ratios do not add). Rank-driven admission still puts the most-starved
+  queues' own series first, so never alert on the utilization `_other_`
+  series; treat it as "more queues exist than the cap shows".
 
 These bounds are **pinned**: `tests/test_obs_scaling_operator_contract.py`
 asserts the cap constants, the capped-dimension overflow behaviour, and

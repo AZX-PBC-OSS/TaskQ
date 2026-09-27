@@ -241,6 +241,23 @@ def test_the_window_selector_set_is_pinned() -> None:
     assert set(insights_mod.INSIGHTS_WINDOWS) == {"1h", "6h", "24h", "7d"}
 
 
+def test_the_window_selector_durations_are_pinned() -> None:
+    """The windows are operator-facing selectors (an operator's dashboard
+    pins one by NAME and reads the aggregate under the duration the
+    contract documents): a duration change under a stable name silently
+    re-bases every windowed comparison an operator trends across
+    upgrades. Changing one is a deliberate contract amendment — record it
+    here and in the docs guide."""
+    from datetime import timedelta
+
+    assert {
+        "1h": timedelta(hours=1),
+        "6h": timedelta(hours=6),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+    } == insights_mod.INSIGHTS_WINDOWS
+
+
 @pytest.mark.parametrize("function_name", sorted(_FUNCTION_CONTRACTS))
 def test_signatures_are_pinned(function_name: str) -> None:
     positional, kwonly = _FUNCTION_CONTRACTS[function_name]

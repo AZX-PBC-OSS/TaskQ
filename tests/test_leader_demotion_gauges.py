@@ -1,12 +1,19 @@
 """Leader-only gauges must stop exporting when this process loses leadership.
 
-``taskq.queue.depth``, ``taskq.reservation.slots_used`` and
+``taskq.queue.depth``, ``taskq.queue.live_workers``,
+``taskq.queue.utilization``, ``taskq.reservation.slots_used`` and
 ``taskq.jobs.stranded`` are populated ONLY by the elected leader's sweep
 loops, and ``taskq.maintenance_leader.lease_expires_in_seconds`` is stamped
 only by the pod holding the leader lease.  A demoted worker that keeps its
 last cached values exports numbers it no longer has any authority over --
 and it exports them during a failover, which is precisely when an operator
 is reading the dashboard.
+
+``taskq.queue.live_workers`` and ``taskq.queue.utilization`` join the list
+with the depth gauge: the utilization ratio is computed FROM the
+live-workers read (its denominator's factor), so a demoted process
+exporting a stale ratio asserts a capacity pairing it stopped sampling --
+the exact stale-authority shape this file exists to forbid.
 
 "Cleared" here means ABSENT, not zero: an observable gauge whose callback
 yields nothing produces no data point, so the collector marks the series
@@ -37,6 +44,8 @@ from tests._leader_stub_deps import stub_deps
 
 _LEADER_ONLY_GAUGES: tuple[tuple[str, str, str], ...] = (
     ("taskq.queue.depth", "_queue_depth_gauge", "1"),
+    ("taskq.queue.live_workers", "_queue_live_workers_gauge", "1"),
+    ("taskq.queue.utilization", "_queue_utilization_gauge", "1"),
     ("taskq.reservation.slots_used", "_reservation_slots_gauge", "1"),
     ("taskq.jobs.stranded", "_stranded_jobs_gauge", "1"),
     (
@@ -48,6 +57,8 @@ _LEADER_ONLY_GAUGES: tuple[tuple[str, str, str], ...] = (
 
 _CALLBACKS: dict[str, str] = {
     "taskq.queue.depth": "_observe_queue_depth",
+    "taskq.queue.live_workers": "_observe_queue_live_workers",
+    "taskq.queue.utilization": "_observe_queue_utilization",
     "taskq.reservation.slots_used": "_observe_reservation_slots",
     "taskq.jobs.stranded": "_observe_stranded_jobs",
     "taskq.maintenance_leader.lease_expires_in_seconds": "_observe_leader_lease_expires_in_seconds",
@@ -134,6 +145,8 @@ def _leader(is_leader: asyncio.Event) -> MaintenanceLeader:
 def _reset_leader_caches() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     yield None
     obs_mod.update_queue_depth_cache({})
+    obs_mod.update_queue_live_workers_cache({})
+    obs_mod.update_queue_utilization_cache({})
     obs_mod.update_reservation_slots_cache({})
     obs_mod.update_stranded_jobs_cache({})
     otel_mod.clear_leader_lease_expires_in_seconds()
@@ -147,12 +160,16 @@ async def test_leader_only_gauges_are_absent_after_demotion(
     reader = _isolated_leader_gauges(monkeypatch)
 
     obs_mod.update_queue_depth_cache({"default": 7})
+    obs_mod.update_queue_live_workers_cache({"default": 2})
+    obs_mod.update_queue_utilization_cache({"default": 3.5})
     obs_mod.update_reservation_slots_cache({"bucket_a": 3})
     obs_mod.update_stranded_jobs_cache({("ghost_actor", "no_actor_config"): 2})
     obs_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
 
     # Sanity: while leading, the values ARE exported.
     assert [p.value for p in _points(reader, "taskq.queue.depth")] == [7]
+    assert [p.value for p in _points(reader, "taskq.queue.live_workers")] == [2]
+    assert [p.value for p in _points(reader, "taskq.queue.utilization")] == [3.5]
     assert [p.value for p in _points(reader, "taskq.reservation.slots_used")] == [3]
     assert [p.value for p in _points(reader, "taskq.jobs.stranded")] == [2]
     assert [
