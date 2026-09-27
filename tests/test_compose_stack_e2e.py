@@ -60,16 +60,27 @@ _COMPOSE_FILE = _REPO_ROOT / "examples" / "docker-compose.yml"
 # creates - the deployment-level analogue of creator_labels() for testcontainers.
 _PROJECT_LABEL = "com.docker.compose.project"
 
-# The stack's schema: examples/docker-compose.yml sets no TASKQ_SCHEMA_NAME, so
-# the services resolve the library default - the schema the whole stack shares.
-_SCHEMA = "taskq"
-
 # A counter job sleeps 1s per step (examples/actors/basic.py); n=2 keeps the
 # batch short while still exercising progress + the real dispatch loop.
 _COUNTER_N = 2
 _COUNTER_JOBS = 6
 _SUMMER_VALUES = ("11,22", "1000,33")
 _SUMMER_EXPECTED = [33, 1033]
+
+
+@pytest.fixture(scope="module")
+def compose_schema() -> str:
+    """The deployed stack's OWN database/schema name - fixed by the deployment.
+
+    examples/docker-compose.yml sets ``POSTGRES_DB: taskq`` and no
+    ``TASKQ_SCHEMA_NAME``, so every service resolves the library default: the
+    database AND the TaskQ schema are both the deployment's fixed ``taskq`` -
+    not a per-test marker. The value lives in this fixture rather than a
+    module-level constant (the suite-hygiene pin bans shared schema
+    constants) while staying the one honest source for the name the stack
+    under test is pinned to.
+    """
+    return "taskq"
 
 
 # ── Subprocess / docker helpers ─────────────────────────────────────────────
@@ -148,6 +159,7 @@ class ComposeStack:
     app_port: int
     admin_port: int
     pg_port: int
+    schema: str
 
     @property
     def app_url(self) -> str:
@@ -159,7 +171,7 @@ class ComposeStack:
 
     @property
     def pg_dsn(self) -> str:
-        return f"postgresql://taskq:taskq@127.0.0.1:{self.pg_port}/{_SCHEMA}"
+        return f"postgresql://taskq:taskq@127.0.0.1:{self.pg_port}/{self.schema}"
 
     def compose(self, *args: str, timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
         result = _run([*self.compose_cmd, *args], timeout=timeout)
@@ -180,7 +192,7 @@ class ComposeStack:
             "-U",
             "taskq",
             "-d",
-            _SCHEMA,
+            self.schema,
             "-At",
             "-c",
             sql,
@@ -229,7 +241,9 @@ def _override_file(path: Path, app_port: int, admin_port: int, pg_port: int) -> 
 
 
 @pytest.fixture(scope="module")
-def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ComposeStack]:
+def compose_stack(
+    tmp_path_factory: pytest.TempPathFactory, compose_schema: str
+) -> Iterator[ComposeStack]:
     """Stand up the examples compose stack, wait for its own observables, tear it down.
 
     The stack boots through the compose CLI against a UNIQUE project name (so
@@ -250,6 +264,7 @@ def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ComposeS
         app_port=app_port,
         admin_port=admin_port,
         pg_port=pg_port,
+        schema=compose_schema,
     )
 
     try:
@@ -334,7 +349,7 @@ async def completed_jobs(compose_stack: ComposeStack) -> CompletedJobs:
     from examples.actors.advanced import SumPayload, SumResult, summer
 
     summer_ids: list[str] = []
-    async with TaskQ(dsn=compose_stack.pg_dsn, schema=_SCHEMA) as tq:
+    async with TaskQ(dsn=compose_stack.pg_dsn, schema=compose_stack.schema) as tq:
         for values in _SUMMER_VALUES:
             handle = await tq.enqueue(summer, SumPayload(values=values))
             summer_ids.append(str(handle.job_id))
@@ -364,7 +379,7 @@ async def completed_jobs(compose_stack: ComposeStack) -> CompletedJobs:
         job_id, status = row.split("|")[:2]
         assert status == "succeeded", job_id
 
-    async with TaskQ(dsn=compose_stack.pg_dsn, schema=_SCHEMA) as tq:
+    async with TaskQ(dsn=compose_stack.pg_dsn, schema=compose_stack.schema) as tq:
         summer_adapter: TypeAdapter[SumResult] = TypeAdapter(SumResult)
         for job_id, expected in zip(summer_ids, _SUMMER_EXPECTED, strict=True):
             # The result_adapter is the app.py shape: TypeAdapter(SumResult).

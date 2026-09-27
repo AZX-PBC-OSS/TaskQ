@@ -107,6 +107,14 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     "name + version. The double records the (name, version) pairs the memoization "
     "test asserts on and forwards the rest as **kwargs; _otel.get_tracer() passes "
     "only those two positional arguments.",
+    (
+        "test_settings_coverage.py",
+        "asyncpg.create_pool",
+    ): "Why: asyncpg.create_pool takes the DSN positionally plus ~25 connection "
+    "kwargs. The double answers with a canned pool and models none of them; the "
+    "comment on the fake owns the reason - the CLI never dials in these tests, "
+    "so no call ever reaches it. They assert which credential path the command "
+    "WIRES UP, not how the pool is configured.",
 }
 
 

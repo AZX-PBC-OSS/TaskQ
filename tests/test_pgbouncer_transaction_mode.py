@@ -366,10 +366,12 @@ async def _client_addr_of(pool_or_conn: Any) -> str | None:
     if hasattr(pool_or_conn, "acquire"):
         async with pool_or_conn.acquire() as conn:
             return await conn.fetchval(
-                "SELECT host(client_addr) FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+                "SELECT host(client_addr) FROM pg_stat_activity "
+                "WHERE pid = pg_backend_pid() AND datname = current_database()"
             )
     return await pool_or_conn.fetchval(
-        "SELECT host(client_addr) FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+        "SELECT host(client_addr) FROM pg_stat_activity "
+        "WHERE pid = pg_backend_pid() AND datname = current_database()"
     )
 
 
@@ -688,13 +690,16 @@ async def test_worker_boot_and_job_completion_through_pooler(
         async def _wait_for_pooler_conn() -> None:
             for _ in range(40):
                 n = await ledger.fetchval(
-                    "SELECT count(*) FROM pg_stat_activity WHERE host(client_addr) = $1",
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE host(client_addr) = $1 AND datname = current_database()",
                     stack.naive_ip,
                 )
                 if n:
                     return
                 await asyncio.sleep(0.25)
-            raise AssertionError("no pg_stat_activity conns from the pooler IP while the pod ran")
+            raise AssertionError(
+                "no pooler-IP backends appeared in the activity view while the pod ran"
+            )
 
         async with TaskQ(dsn=stack.direct_dsn, schema=probe_schema) as client:
             fast = await client.enqueue(sys_fast, SysPayload())

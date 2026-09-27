@@ -52,13 +52,25 @@ from tests._progress_context import make_progress_context
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-00000000c001")
 _WORKER_ID = UUID("11111111-2222-3333-4444-555555555555")
-_SCHEMA = "taskq_test"
 
 
-def _settings() -> WorkerSettings:
+@pytest.fixture
+def schema_name() -> str:
+    """The schema identifier the flush statements render against - test-local.
+
+    This tier never touches real PG (the pool is an ``AsyncMock``/simulator),
+    so the value is an arbitrary marker string; it lives in a per-test fixture
+    rather than a module-level constant so the flush pins get it from one
+    place without re-introducing the shared/stale-constant anti-pattern the
+    suite-hygiene pin bans.
+    """
+    return "taskq_test"
+
+
+def _settings(schema: str) -> WorkerSettings:
     return WorkerSettings.load_from_dict(
         {
-            "TASKQ_SCHEMA_NAME": _SCHEMA,
+            "TASKQ_SCHEMA_NAME": schema,
             "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
         }
     )
@@ -68,6 +80,7 @@ def _progress_context(
     buffers: dict[UUID, _ProgressBuffer],
     job_id: UUID,
     *,
+    schema: str,
     redis_client: object | None = None,
 ) -> object:
     """A progress-wired context at the job's live attempt epoch."""
@@ -77,7 +90,7 @@ def _progress_context(
         job_id,
         attempt=1,
         backend=backend,
-        settings=_settings(),
+        settings=_settings(schema),
         redis_client=redis_client,  # type: ignore[arg-type]  # Why: the AsyncMock double below is duck-identical to redis.asyncio.Redis for the two calls the publish path makes.
         pending_publish_tasks=set(),
     )
@@ -173,7 +186,9 @@ async def _drain_publish_tasks(tasks: set[asyncio.Task[None]]) -> None:
 # ── H1: concurrent flush triggers — exactly-once delta application ────
 
 
-async def test_tick_suspension_immediate_flush_skips_and_late_call_survives() -> None:
+async def test_tick_suspension_immediate_flush_skips_and_late_call_survives(
+    schema_name: str,
+) -> None:
     """Regression: a pre-terminal immediate flush issued while the tick's
     batched statement holds an unretired snapshot of the same buffer used
     to double-apply the delta (the second statement re-merged the same
@@ -195,19 +210,19 @@ async def test_tick_suspension_immediate_flush_skips_and_late_call_survives() ->
     pool = sim.pool()
 
     tick = asyncio.create_task(
-        _flush_dirty_set(pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, buf)])
+        _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
     )
     # Observed-state arming: the tick's statement is suspended holding its
     # snapshot (delta=3). Everything below races it on the same loop.
     await sim.started.wait()
 
     # The immediate (pre-terminal) flush must skip, not issue a statement.
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
     assert len(sim.statements) == 0, "immediate flush double-applied the latched delta"
 
     # A progress call landing during the suspension mutates the buffer in
     # place: head moves 5+3=8 to 5+4=9.
-    ctx = _progress_context(buffers, _JOB_ID)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name)
     await ctx.progress(step=2)  # type: ignore[attr-defined]
     assert buf.pending_seq_delta == 4
     assert buf.base_seq + buf.pending_seq_delta == 9
@@ -224,7 +239,7 @@ async def test_tick_suspension_immediate_flush_skips_and_late_call_survives() ->
 
     # The next flush carries only the late delta, landing the row at the
     # buffer's head (9): no loss, no repeat.
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
     assert sim.statements[-1] == {"job_ids": [_JOB_ID], "deltas": [1]}
     assert sim.row_seq == 9
     assert buf.base_seq == 9 and buf.pending_seq_delta == 0 and buf.dirty is False
@@ -234,7 +249,9 @@ async def test_tick_suspension_immediate_flush_skips_and_late_call_survives() ->
     assert seq == 10
 
 
-async def test_immediate_skip_under_tick_gate_keeps_delta_for_terminal_write() -> None:
+async def test_immediate_skip_under_tick_gate_keeps_delta_for_terminal_write(
+    schema_name: str,
+) -> None:
     """Regression: when the immediate (pre-terminal) flush skips because the
     tick holds the gate, the skipped delta must stay ON the buffer so the
     terminal write's absolute SET carries it — a flush that "succeeds" by
@@ -250,11 +267,11 @@ async def test_immediate_skip_under_tick_gate_keeps_delta_for_terminal_write() -
     pool = sim.pool()
 
     tick = asyncio.create_task(
-        _flush_dirty_set(pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, buf)])
+        _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
     )
     await sim.started.wait()
 
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
 
     # The buffer the caller hands the terminal projection still carries the
     # full unflushed head, and the projection consumes one past it.
@@ -270,7 +287,9 @@ async def test_immediate_skip_under_tick_gate_keeps_delta_for_terminal_write() -
 # ── H2: flush failure paths — buffer whole, gate reopened, no loss ────
 
 
-async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_delta() -> None:
+async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_delta(
+    schema_name: str,
+) -> None:
     """Regression: a flush statement failing mid-buffer (connection reset,
     statement timeout) must not consume, corrupt, or drop the buffer's
     delta — the failure is the tick's alone, the buffer stays dirty with
@@ -302,7 +321,7 @@ async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_
 
     pool.acquire = _acquire
 
-    await _flush_dirty_set(pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, buf)])
+    await _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
 
     assert failing.is_set()
     assert buf.dirty is True
@@ -312,12 +331,12 @@ async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_
 
     # Recovery: the next flush applies the FULL delta, once.
     conn.fetch.side_effect = sim._fetch
-    await _flush_dirty_set(pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, buf)])
+    await _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
     assert sim.statements == [{"job_ids": [_JOB_ID], "deltas": [3]}]
     assert buf.base_seq == 3 and buf.pending_seq_delta == 0 and buf.dirty is False
 
 
-async def test_pool_acquire_failure_leaves_buffer_whole_and_gate_reopened() -> None:
+async def test_pool_acquire_failure_leaves_buffer_whole_and_gate_reopened(schema_name: str) -> None:
     """Regression: a pool-level acquire failure (exhaustion, wedged pool)
     must lose the tick, not the buffer — the buffer stays dirty with its
     delta intact and the immediate path's gate reopened, so a pre-terminal
@@ -337,7 +356,7 @@ async def test_pool_acquire_failure_leaves_buffer_whole_and_gate_reopened() -> N
         yield  # pragma: no cover
 
     pool.acquire = _dead_acquire
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
 
     assert buf.dirty is True
     assert buf.pending_seq_delta == 2
@@ -352,7 +371,7 @@ async def test_pool_acquire_failure_leaves_buffer_whole_and_gate_reopened() -> N
         yield sim.conn
 
     healthy.acquire = _live_acquire
-    await _flush_buffer_immediate(healthy, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(healthy, schema_name, _JOB_ID, _WORKER_ID, buffers)
     assert sim.statements == [{"job_ids": [_JOB_ID], "deltas": [2]}]
     assert buf.base_seq == 2 and buf.dirty is False
 
@@ -360,7 +379,9 @@ async def test_pool_acquire_failure_leaves_buffer_whole_and_gate_reopened() -> N
 # ── H3: seq monotonicity — the SSE dedup contract's foundation ────────
 
 
-async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate() -> None:
+async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate(
+    schema_name: str,
+) -> None:
     """Regression: the coalesced publish gate (in-flight task + latch) used
     to be the candidate for a repeated or decreasing wire seq — a latched
     event re-published after a newer one, or a direct publish racing the
@@ -373,7 +394,7 @@ async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate()
     redis, published = _recording_redis()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _progress_context(buffers, _JOB_ID, redis_client=redis)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name, redis_client=redis)
 
     await ctx.progress(step=1)  # type: ignore[attr-defined]
     await ctx.progress(step=2)  # type: ignore[attr-defined]
@@ -390,7 +411,7 @@ async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate()
     assert published == sorted(set(published))
 
 
-async def test_latched_trailing_call_publishes_after_in_flight_round_trip() -> None:
+async def test_latched_trailing_call_publishes_after_in_flight_round_trip(schema_name: str) -> None:
     """Regression: a progress call landing while a publish round trip is in
     flight latches on the buffer; the in-flight task must drain the latch
     AFTER its own event (strictly increasing wire seqs, no lost trailing
@@ -408,7 +429,7 @@ async def test_latched_trailing_call_publishes_after_in_flight_round_trip() -> N
 
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _progress_context(buffers, _JOB_ID, redis_client=redis)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name, redis_client=redis)
     tasks = cast("set[asyncio.Task[None]]", ctx._pending_publish_tasks)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
     await ctx.progress(step=1)  # type: ignore[attr-defined]  # in flight, suspended in the round trip
@@ -425,7 +446,7 @@ async def test_latched_trailing_call_publishes_after_in_flight_round_trip() -> N
     assert buf.pending_publish is None, "the drain left a stale latch on the buffer"
 
 
-async def test_terminal_override_seq_exceeds_every_published_progress_seq() -> None:
+async def test_terminal_override_seq_exceeds_every_published_progress_seq(schema_name: str) -> None:
     """Regression: taskq.web.progress's SSE generator discards events with
     ``seq <= last_emitted_seq`` BEFORE it checks ``terminal`` — a terminal
     state-change event carrying a seq at or below any already-emitted
@@ -443,11 +464,11 @@ async def test_terminal_override_seq_exceeds_every_published_progress_seq() -> N
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     pool = sim.pool()
 
-    ctx = _progress_context(buffers, _JOB_ID, redis_client=redis)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name, redis_client=redis)
     tasks = cast("set[asyncio.Task[None]]", ctx._pending_publish_tasks)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
     tick = asyncio.create_task(
-        _flush_dirty_set(pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, buf)])
+        _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
     )
     await sim.started.wait()
 
@@ -464,7 +485,9 @@ async def test_terminal_override_seq_exceeds_every_published_progress_seq() -> N
     )
 
 
-async def test_fenced_out_flush_drops_only_the_stale_buffer_never_the_new_epoch() -> None:
+async def test_fenced_out_flush_drops_only_the_stale_buffer_never_the_new_epoch(
+    schema_name: str,
+) -> None:
     """Regression: a flush whose row the fencing gate rejects (the job was
     re-claimed and redispatched to a later attempt on this worker) must
     drop ONLY the stale epoch's buffer — an identity-blind pop took the
@@ -485,7 +508,7 @@ async def test_fenced_out_flush_drops_only_the_stale_buffer_never_the_new_epoch(
         yield conn
 
     pool.acquire = _acquire
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, new_uuid(), buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, new_uuid(), buffers)
 
     assert buffers.get(_JOB_ID) is live, "the fenced pop evicted the live attempt's buffer"
     assert live.base_seq == 100 and live.pending_seq_delta == 0
@@ -496,7 +519,7 @@ async def test_fenced_out_flush_drops_only_the_stale_buffer_never_the_new_epoch(
 # ── H4: the NUL guard on the flush path — isolation, not poisoning ────
 
 
-async def test_nul_poisoned_buffer_skipped_without_poisoning_its_batch() -> None:
+async def test_nul_poisoned_buffer_skipped_without_poisoning_its_batch(schema_name: str) -> None:
     """Regression: a buffer poisoned past the ctx.progress door (a direct
     writer put a NUL into pending_state — the flush guard is the
     defense-in-depth for exactly this shape) must be skipped alone: the
@@ -524,7 +547,7 @@ async def test_nul_poisoned_buffer_skipped_without_poisoning_its_batch() -> None
 
     pool.acquire = _acquire
     await _flush_dirty_set(
-        pool, _SCHEMA, _WORKER_ID, buffers, [(_JOB_ID, poisoned), (sibling_id, healthy)]
+        pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, poisoned), (sibling_id, healthy)]
     )
 
     # The healthy sibling flushed through the same tick.
@@ -538,7 +561,7 @@ async def test_nul_poisoned_buffer_skipped_without_poisoning_its_batch() -> None
     assert poisoned.flush_in_flight is False, "the skip wedged the poisoned buffer's gate"
 
 
-async def test_nul_poisoned_immediate_flush_contained_and_gate_reopened() -> None:
+async def test_nul_poisoned_immediate_flush_contained_and_gate_reopened(schema_name: str) -> None:
     """Regression: the single-row (immediate/crash-flush) path hitting the
     NUL guard while rendering the state document must contain the
     ValueError to that one buffer — logged, buffer left dirty — and must
@@ -559,7 +582,7 @@ async def test_nul_poisoned_immediate_flush_contained_and_gate_reopened() -> Non
         yield sim.conn
 
     pool.acquire = _acquire
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
 
     assert sim.statements == [], "the poisoned state document reached the wire"
     assert buf.dirty is True and buf.pending_seq_delta == 1
@@ -585,7 +608,9 @@ async def test_nul_poisoned_immediate_flush_contained_and_gate_reopened() -> Non
     ],
 )
 async def test_rejected_progress_call_never_consumes_seq_nor_mutates_buffer(
-    kwargs: dict[str, object], error_type: type[BaseException] | tuple[type[BaseException], ...]
+    kwargs: dict[str, object],
+    error_type: type[BaseException] | tuple[type[BaseException], ...],
+    schema_name: str,
 ) -> None:
     """Regression: every rejection gate (finiteness, types, size caps, NUL)
     must fire BEFORE the buffer mutation — a gate that consumed the seq
@@ -596,7 +621,7 @@ async def test_rejected_progress_call_never_consumes_seq_nor_mutates_buffer(
     call's seq is exactly previous+1: no hole, no reuse."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _progress_context(buffers, _JOB_ID)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name)
     # An accepted call first, so the pin proves the rejection leaves the
     # buffer exactly where the accepted call left it.
     await ctx.progress(step=1)  # type: ignore[attr-defined]
@@ -612,7 +637,7 @@ async def test_rejected_progress_call_never_consumes_seq_nor_mutates_buffer(
     assert buf.base_seq + buf.pending_seq_delta == 2
 
 
-async def test_flush_failure_backlog_never_corrupts_the_accumulated_state() -> None:
+async def test_flush_failure_backlog_never_corrupts_the_accumulated_state(schema_name: str) -> None:
     """Regression (backpressure shape): a persistently failing flush (an
     outage) with an actor still calling progress must accumulate cleanly —
     the delta grows, the fixed-key state doc merges last-writer-wins, and
@@ -637,10 +662,10 @@ async def test_flush_failure_backlog_never_corrupts_the_accumulated_state() -> N
     # The outage: every flush fails while the actor keeps reporting.
     conn.fetchrow.side_effect = RuntimeError("db down")
 
-    ctx = _progress_context(buffers, _JOB_ID)
+    ctx = _progress_context(buffers, _JOB_ID, schema=schema_name)
     for step in range(1, 6):
         await ctx.progress(step=step)  # type: ignore[attr-defined]
-        await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+        await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
 
     assert buf.pending_seq_delta == 5
     assert buf.pending_state == {"step": 5}
@@ -648,6 +673,6 @@ async def test_flush_failure_backlog_never_corrupts_the_accumulated_state() -> N
 
     # Recovery: one flush carries everything.
     conn.fetchrow.side_effect = sim._fetchrow
-    await _flush_buffer_immediate(pool, _SCHEMA, _JOB_ID, _WORKER_ID, buffers)
+    await _flush_buffer_immediate(pool, schema_name, _JOB_ID, _WORKER_ID, buffers)
     assert sim.statements == [{"job_ids": [_JOB_ID], "deltas": [5]}]
     assert buf.base_seq == 5 and buf.pending_seq_delta == 0 and buf.dirty is False
