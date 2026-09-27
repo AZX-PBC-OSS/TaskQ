@@ -316,6 +316,108 @@ async def test_flow1_doctor_ignores_stale_worker_row(
     )
 
 
+async def test_flow1_act_branch_the_cap_knob_opens_and_closes_the_queue(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: Any,
+) -> None:
+    """ops.md §12 row 1's remedy lever, driven CAUSALLY, both directions.
+
+    The playbook's "first knob" for an actor-shaped backlog is
+    ``taskq actor-config set ACTOR --max-concurrent N`` (live: "the
+    dispatch query re-reads max_concurrent every dispatch cycle"). A
+    walkthrough that only raises the cap next to a drain would pass even
+    if the knob moved nothing - the worker drains regardless. This closes
+    the loop in BOTH directions against a real worker:
+
+    - the lever OFF (the documented ``0, DRAIN MODE`` value - cli.md
+      documents the 0 state as "deliberately stopped; jobs enqueue and
+      never run"): a real ``--until-idle`` worker cannot move the queue
+      and exits 4 (the documented "idle-max-runtime exceeded before drain
+      completed" code), jobs still pending;
+    - the lever ON: the SAME command with N=2 unstrands the queue with no
+      restart - the worker drains, jobs succeed, exit 0.
+
+    Only the stored cap changed between the two legs; whatever moved the
+    queue moved because the knob moved.
+    """
+    schema, dsn = module_pg_schema.schema_name, module_pg_schema.pg_dsn
+
+    await _ensure_effects_table(clean_pg_conn, schema)
+    await _bootstrap_worker_registers_actors(schema, dsn)
+    ids = await _insert_pending_jobs(
+        clean_pg_conn,
+        schema,
+        actor="send_welcome_email",
+        queue=E2E_QUEUE,
+        n=2,
+        payload=json.dumps({"run_id": "act-branch", "user_id": "u1", "email": "u1@example.com"}),
+    )
+
+    # The lever OFF: the documented DRAIN MODE value, read back as 0.
+    r = await _arun_cli(
+        schema, dsn, "actor-config", "set", "send_welcome_email", "--max-concurrent", "0"
+    )
+    assert r.returncode == 0, f"actor-config set 0 failed:\n{r.stdout}\n{r.stderr}"
+    r = await _arun_cli(schema, dsn, "actor-config", "get", "send_welcome_email")
+    assert "max_concurrent=0" in r.stdout, f"the 0 cap did not read back:\n{r.stdout}"
+
+    # A real worker cannot drain a cap-0 queue: bounded --until-idle exits
+    # 4, the jobs are still pending afterwards.
+    r = await _arun_cli(
+        schema,
+        dsn,
+        "worker",
+        "--actors",
+        ACTORS_REF,
+        "--queues",
+        E2E_QUEUE,
+        "--until-idle",
+        "--idle-settle-window",
+        "1.0",
+        "--idle-poll-interval",
+        "0.5",
+        "--idle-max-runtime",
+        "8",
+        timeout=120,
+    )
+    assert r.returncode == 4, (
+        f"a cap-0 worker must exit 4 (idle-max-runtime exceeded), got "
+        f"{r.returncode}:\n{r.stdout}\n{r.stderr}"
+    )
+    r = await _arun_cli(schema, dsn, "job", "show", str(ids[0]))
+    assert "status: pending" in r.stdout, (
+        f"a cap-0 queue drained anyway - DRAIN MODE does not stop dispatch:\n{r.stdout}"
+    )
+
+    # The lever ON: the same live command with N=2, no restart step.
+    r = await _arun_cli(
+        schema, dsn, "actor-config", "set", "send_welcome_email", "--max-concurrent", "2"
+    )
+    assert r.returncode == 0, f"actor-config set 2 failed:\n{r.stdout}\n{r.stderr}"
+
+    r = await _arun_cli(
+        schema,
+        dsn,
+        "worker",
+        "--actors",
+        ACTORS_REF,
+        "--queues",
+        E2E_QUEUE,
+        "--until-idle",
+        "--idle-settle-window",
+        "1.0",
+        "--idle-poll-interval",
+        "0.5",
+        timeout=180,
+    )
+    assert r.returncode == 0, f"the opened queue did not drain:\n{r.stdout}\n{r.stderr}"
+    for job_id in ids:
+        r = await _arun_cli(schema, dsn, "job", "show", str(job_id))
+        assert "status: succeeded" in r.stdout, (
+            f"job {job_id} did not run after the cap opened:\n{r.stdout}"
+        )
+
+
 # ── Flow 2: "a job is stuck" (cli.md job surfaces) ───────────────────────
 
 
