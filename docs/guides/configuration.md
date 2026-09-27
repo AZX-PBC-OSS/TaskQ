@@ -664,6 +664,55 @@ TASKQ_PG_DSN_POOLED=postgresql://taskq:pass@pgbouncer:5432/taskq
 
 If neither `TASKQ_PG_DSN_DIRECT` nor `TASKQ_PG_DSN_POOLED` is set, both resolve to `TASKQ_PG_DSN`. In that case `TASKQ_PG_DSN` must point directly at Postgres (not PgBouncer), because the direct-connection pools require session mode.
 
+### The proven transaction-mode topology
+
+This split is proven against a live PgBouncer in transaction mode
+(`tests/test_pgbouncer_transaction_mode.py`): full worker boot + job
+completion with the worker pool behind the pooler, claims/heartbeats/LISTEN
+direct, admin reads concurrent, and the prepared-statement mechanics below
+red/green-pinned. The essentials of the working `pgbouncer.ini`:
+
+```ini
+[databases]
+taskq = host=postgres port=5432 dbname=taskq
+
+[pgbouncer]
+listen_port = 5432
+pool_mode = transaction
+auth_type = scram-sha-256     ; match the Postgres backend's pg_hba auth
+; The prepared-statement decision — pick ONE:
+max_prepared_statements = 0   ; (a) untracked: TaskQ must disable its client cache (set TASKQ_PG_IS_POOLED=true)
+; max_prepared_statements = 200 ; (b) tracked (PgBouncer >= 1.21): asyncpg's cache survives remaps, no TaskQ declaration needed
+default_pool_size = 20        ; the saturation point: many client conns, few server conns
+```
+
+What TaskQ configures automatically once `TASKQ_PG_IS_POOLED=true` is set:
+
+- Every TaskQ-built pool passes `statement_cache_size=0` and
+  `max_cached_statement_lifetime=0` (overriding `TASKQ_STATEMENT_CACHE_SIZE` /
+  `TASKQ_MAX_CACHED_STATEMENT_LIFETIME`), so a prepared statement can never
+  cross a server-connection remap. This is not optional tuning: with an
+  untracked pooler, two clients alternately executing their same-named cached
+  statement take SQLSTATE `26000` ("prepared statement does not exist") or
+  `42P05` ("already exists") as soon as they share a server connection — the
+  pinned red leg proves it deterministically under saturation.
+- The worker treats the pooler-remap statement errors (`26000`, `42P05`) as
+  transient instead of loud.
+- Only pools TaskQ builds are touched; bring-your-own pools
+  (`WorkerConnections` factories) must pass the same `create_pool` kwargs
+  themselves.
+
+What the operator must set: the DSN split above, `pool_mode=transaction`,
+the auth type matching the backend, and — if not setting
+`TASKQ_PG_IS_POOLED=true` — `max_prepared_statements` high enough for the
+fleet's statement variety. Either knob works; exactly one is required.
+
+Measured on the pinned topology (single-job enqueue, sequential): the
+pooler's per-statement overhead is roughly +0.5–1 ms p50 against the direct
+DSN (~3–4 ms vs ~2.5–3.5 ms on localhost) — the parse/delegate hop, not a
+per-query multiplexer; at real RTTs the pooler's connection compression
+dominates.
+
 ---
 
 ## Starting configurations
