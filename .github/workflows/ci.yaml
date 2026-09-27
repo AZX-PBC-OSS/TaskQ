@@ -447,8 +447,28 @@ jobs:
     # isolated) with the e2e lane's per-test timeout headroom.
     # ubuntu-latest provides Docker; the dev group already carries
     # testcontainers, so no e2e group is needed here.
+    #
+    # The Postgres VERSION matrix (README's support matrix, issue #334): one
+    # leg per supported major, 15 (the declared minimum) through 18 (the
+    # default the other PG-touching lanes run). The seam is
+    # TASKQ_TEST_PG_IMAGE, which the shared testcontainers harness
+    # (taskq/testing/_shared_containers.py) reads for BOTH the shared pair
+    # and the sweep prefixes, so an overridden leg is swept by the same rule
+    # as the default. This tier is the per-version surface because it applies
+    # the full migration chain per module schema and drives real subprocess
+    # workers through the whole SQL lifecycle — the claim "PG 15 still works"
+    # is proven here, not assumed from the fast suite's PG 18 runs. The e2e
+    # lane keeps its own postgres:18 pin (tests/e2e/conftest.py); widening
+    # THAT tier is deferred for the same cost/time tradeoff as putting the
+    # full `test` suite on the matrix. fail-fast off: the matrix exists to
+    # answer "which majors still pass" in one run — cancelling the surviving
+    # legs on the first failure would hide exactly that.
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-version: ["15", "16", "17", "18"]
     steps:
       - uses: actions/checkout@v7
 
@@ -464,6 +484,8 @@ jobs:
           node-version: "22"
 
       - name: Run the system-e2e tier
+        env:
+          TASKQ_TEST_PG_IMAGE: postgres:${{ matrix.postgres-version }}-alpine
         run: uv run --no-sync pytest --system-e2e -m system tests/system_e2e --timeout=900 -n 2 -q
 
 
@@ -538,6 +560,7 @@ jobs:
           path: dist/
           retention-days: 7
 
-# Future work: run the `test` job's integration tier against a matrix of
-# PostgreSQL major versions (currently only tested against PG 18 via
-# testcontainers' default image). Deferred for now — cost/time tradeoff.
+# The Postgres version window is covered by the system-e2e lane's matrix
+# (PG 15-18 via TASKQ_TEST_PG_IMAGE); the fast `test` suite and the e2e lane
+# still run against PG 18 only. Putting the full suite on the version matrix
+# too remains deferred — cost/time tradeoff.

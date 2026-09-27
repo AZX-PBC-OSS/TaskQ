@@ -34,6 +34,7 @@ from taskq.web.admin._constants import (
     parse_job_tags,
     parse_text_filter,
     parse_time_filter,
+    reject_unknown_query_params,
 )
 from taskq.web.admin._factory import (
     get_admin_pool,
@@ -551,6 +552,31 @@ def register(router: APIRouter) -> None:
         order: str = Query(default="desc"),
         live: str = Query(default="on"),
     ) -> HTMLResponse:
+        # The undeclared-param refusal FIRST: FastAPI would drop any key
+        # this signature does not name, and a dropped filter renders the
+        # page 200-unfiltered -- the ask silently ignored.
+        reject_unknown_query_params(
+            request,
+            (
+                "tab",
+                "status",
+                "actor",
+                "queue",
+                "time_range",
+                "time_from",
+                "time_to",
+                "identity_key",
+                "fairness_key",
+                "search",
+                "tags",
+                "cursor_at",
+                "cursor_id",
+                "cursor_dir",
+                "sort",
+                "order",
+                "live",
+            ),
+        )
         if tab not in ("live", "archived"):
             tab = "live"
 
@@ -789,7 +815,17 @@ def register(router: APIRouter) -> None:
                 archived_at = job["archived_at"]
                 attempts_archive_sql = _ATTEMPTS_ARCHIVE_SQL.format(schema=schema)
                 attempts = await conn.fetch(attempts_archive_sql, job_id)
-                events: list[asyncpg.Record] = []
+                # Events read from the SAME ledger the live arm reads -- and
+                # in production that read comes back EMPTY: the archive
+                # sweep's DELETE FROM jobs cascades job_events away (the
+                # sweep's own comment names the cascade; there is no
+                # job_events_archive), so a job the archive arm can serve has
+                # no events left. The read stays so the arm renders whatever
+                # the ledger holds if an event archive ever lands; the
+                # template renders the empty case honestly (removed at
+                # archive), never as "No events recorded." -- that phrasing
+                # misreads as the job never emitted any.
+                events = await conn.fetch(events_sql, job_id)
             # The audit trail is queried for live AND archived jobs: the
             # whole point of the no-FK design is that the record of who
             # cancelled what outlives the row. A schema the migration has

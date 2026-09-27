@@ -35,7 +35,12 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 _NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
-_PG_IMAGE = "postgres:18-alpine"
+# The HARNESS's configured image, not a literal: the sweep prefixes are derived
+# from ``_shared_containers._PG_IMAGE`` (``TASKQ_TEST_PG_IMAGE``-overridable, the
+# CI version matrix's seam), so a pinned literal here would disagree with the
+# module under test on every overridden run. Under the default env this IS
+# ``postgres:18-alpine``, which is the value these tests pin.
+_PG_IMAGE = sc._PG_IMAGE
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 _COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 
@@ -314,6 +319,39 @@ def test_taskq_test_images_match_the_sweep_prefixes() -> None:
     images, so a crashed run's leftovers are sweepable once their owners die."""
     assert _decide(image=_PG_IMAGE, running=False) is True
     assert _decide(image=_DRAGONFLY_IMAGE, running=False) is True
+
+
+def test_under_the_image_override_the_default_image_stays_sweepable() -> None:
+    """``TASKQ_TEST_PG_IMAGE`` changes what STARTS, not what the sweep may
+    clean: a developer flipping between the default and an override major (the
+    seam's stated purpose, a CI matrix leg on a dev box) must not strand the
+    OTHER image's crashed-run leftovers - the prefix check precedes the 24h
+    age backstop, so a missed prefix is an eternal leak, not a delayed sweep.
+    The override is read at module import, so the proof needs a fresh
+    interpreter with the env set (the shape every CI matrix leg runs in)."""
+    override = "postgres:15-alpine" if _PG_IMAGE != "postgres:15-alpine" else "postgres:16-alpine"
+    code = (
+        "from datetime import UTC, datetime, timedelta\n"
+        "from taskq.testing import _shared_containers as sc\n"
+        "now = datetime.now(UTC)\n"
+        "decided = {\n"
+        "    image: sc.should_sweep_stale_container(\n"
+        "        image=image, name='nostalgic_turing', labels={},\n"
+        "        running=False, created=now - timedelta(hours=1), now=now)\n"
+        "    for image in (sc._PG_IMAGE, sc._PG_IMAGE_DEFAULT)\n"
+        "}\n"
+        "print(repr(decided))\n"
+    )
+    proc = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and script paths are this file's own constants.
+        [sys.executable, "-c", code],
+        capture_output=True,
+        env={**os.environ, "TASKQ_TEST_PG_IMAGE": override},
+        check=True,
+        timeout=120,
+        text=True,
+    )
+    assert f"'{override}': True" in proc.stdout, proc.stdout
+    assert f"'{sc._PG_IMAGE_DEFAULT}': True" in proc.stdout, proc.stdout
 
 
 # ── Per-invocation state-dir resolution ─────────────────────────────────────
