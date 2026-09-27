@@ -123,6 +123,52 @@ TASKQ_PG_DSN_POOLED=postgresql://taskq:secret@pgbouncer.internal:6432/taskq
 
 Without PgBouncer, set only `TASKQ_PG_DSN`: both split DSNs fall back to it. **Never** point `TASKQ_PG_DSN` at a transaction-mode PgBouncer. See [workers.md: PgBouncer compatibility](workers.md#pgbouncer-compatibility).
 
+### Enterprise DSN surfaces: multi-host, TLS, IPv6, Unix sockets
+
+Every DSN form below rides the same pipeline: an env var parses into pydantic's `PostgresDsn`, `post_load` applies the direct/pooled fallback, `str()` serializes it, and the string goes to asyncpg's own connection resolver (the pool factories add no rewriting of their own — only the credential-injecting paths in `taskq.auth` touch the string, via `ensure_sslmode_require` / `enrich_pg_dsn`). Each surface's behaviour here is pinned by `tests/test_enterprise_dsn_surfaces.py`, and the latency numbers ops quotes ride `benchmarks/latency_ladder.py`.
+
+**Multi-host DSNs work end to end.** The libpq multi-host form is accepted natively by asyncpg and passes through TaskQ's whole pipeline un-mangled — settings roundtrip, the `pg_dsn_direct`/`pg_dsn_pooled` fallback, the rewriters, and the pool factories:
+
+```bash
+# Failover pair; both hosts are tried in order until one accepts the session.
+TASKQ_PG_DSN=postgresql://taskq:secret@pg1.internal:5432,pg2.internal:5432/taskq?target_session_attrs=read-write
+```
+
+`target_session_attrs=read-write` rides the query string untouched and asyncpg enforces it per host: a pool built from this DSN lands on a read-write session or fails to connect. The splitting of direct and pooled DSNs is per-DSN, not global — one side can name a multi-host failover pair while the other points at PgBouncer. Two caveats, both pinned as deliberate:
+
+- The `pool-release-failed` / connection log lines name the DSN's first host only (`taskq._dsn.dsn_host` is a logging helper; the query-carried Unix-socket form logs `unknown`). No routing decision reads it.
+- **AWS IAM auth (`taskq.aws.RdsIamProvider`) cannot parse a multi-host DSN** — `urlparse`'s port cast fails on `5432,pg2:5432` with a raw `ValueError` at provider construction. It is pinned as the honest current behavior; a multi-host deployment should use a static-credential or Entra/Vault provider until this is fixed.
+
+**TLS is opt-in per DSN, and the failure is honest.** The plain DSN path adds no `sslmode` — asyncpg's own `prefer` default governs, so a DSN without one connects to a non-TLS dev container happily. `sslmode=require` (or stronger) in the DSN is honored by every pool TaskQ builds, because the DSN string reaches `asyncpg.create_pool` verbatim:
+
+```bash
+TASKQ_PG_DSN=postgresql://taskq:secret@pg1.internal:5432/taskq?sslmode=require
+# Verifying modes need the CA bundle carried in the DSN (or PGSSLROOTCERT):
+TASKQ_PG_DSN=postgresql://taskq:secret@pg1.internal:5432/taskq?sslmode=verify-full&sslrootcert=/etc/ssl/taskq-root.pem
+```
+
+What to expect when the wire disagrees with the DSN, both pinned against real servers:
+
+- `sslmode=require` against a server with SSL off fails loudly with `ConnectionError: … rejected SSL upgrade` — never a silent plaintext fallback.
+- `sslmode=verify-full` **without** a resolvable CA bundle fails at parameter-parse time (`ClientConfigurationError` naming `~/.postgresql/root.crt`), before any socket is opened: asyncpg and libpq do not fall back to the system trust store, so a verifying DSN must carry `sslrootcert=`.
+- With the bundle present, `verify-full` connects and the session reports `ssl=on` in `pg_stat_ssl` — the one-line check to add to a deploy smoke test: `select ssl from pg_stat_ssl where pid = pg_backend_pid();`.
+
+The credential-injecting paths (`taskq.auth`'s factory builders) add `sslmode=require` for you when the DSN has none, and never downgrade an explicit `verify-ca`/`verify-full`; see [managed-identities.md](managed-identities.md) for the token-path rules.
+
+**IPv6 and Unix sockets parse with the same parity.** The bracketed form (`postgresql://taskq:secret@[::1]:5432/taskq`) round-trips through settings and both rewriters byte-identically and connects through the pool factories. The socket form (`postgresql://taskq:secret@/taskq?host=/var/run/postgresql`) also round-trips; the rewriters percent-encode the `host=` value (`host=%2Fvar%2Frun%2Fpostgresql`), and asyncpg **decodes** query parameters, so the rewritten DSN still connects — verified against a live socket server, not assumed. Socket DSNs are the right choice for sidecar (same-pod) Postgres: no TCP attack surface, and the `sslmode=disable` an explicit socket deployment usually wants is honored (an explicit sslmode is never overridden).
+
+**The pooled boundary's per-statement budget, DSN side.** The pooled DSN passes through settings byte-identical, and the worker pool built from it deliberately carries **no client-side `command_timeout`** — the server-side `statement_timeout`/`lock_timeout` budgets are the ruler there, so a stalled statement is bounded by what the server enforces, not by a client timer a pooler remap would orphan. When the pooler will not forward startup parameters, carry the budget in the DSN: asyncpg maps unknown query parameters to `server_settings`, and `?statement_timeout=2500ms` lands on every session the pool hands out. Declare `TASKQ_PG_IS_POOLED=true` alongside — the statement-cache hygiene (0/0) must hold regardless of what the DSN carries.
+
+**Connection-ceiling honesty: the budget is pinned arithmetic, not prose.** The worked profiles the sizing docs publish are computed by `taskq.worker.budget.compute_connection_budget` (the same function the worker's startup log reads); its outputs for the documented shapes, at the shipped pool-size defaults, one leader, no web pods:
+
+| Profile | Workers | `TASKQ_MAX_CONCURRENCY` | `total_direct` | `total_pooled` | `total_pg` | `pgbouncer_recommended` |
+|---|---|---|---|---|---|---|
+| Small | 2 | 4 | 22 | 12 | 34 | `False` |
+| Medium | 5 | 8 | 52 | 60 | 112 | `True` |
+| Large | 10 | 16 | 102 | 240 | 342 | `True` |
+
+These are the numbers to hold against the operator's real `max_connections` — with the application's own pools **and** the rolling-deploy doubling (roughly 2× steady state) included on your side; the function counts TaskQ's connections only, and the derivation lives in [ops.md §4](ops.md#4-sizing-workers-and-postgres-connections) and [scaling.md](scaling.md).
+
 ### Schema isolation and multi-tenancy
 
 `TASKQ_SCHEMA_NAME` (default `taskq`) isolates all TaskQ tables into a dedicated Postgres schema. Multiple clusters can share one database:
