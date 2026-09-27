@@ -302,12 +302,22 @@ async def _collect_stream_events(
 #: cites the same-day cross-leg reds. The stretch is the cancel-storm
 #: doctrine's 20x (``tests/system_e2e/test_cancel_storm.py``'s
 #: ``_COTENANCY_STRETCH``, the stall band these runners produce between a
-#: seed and its observation). A stall EATS a fixed wall budget but cannot
-#: eat a poll of observed state that outlives the band: the budget bounds
-#: FAILURE only — a healthy broker pays nothing (the leg runs in ~3s).
+#: seed and its observation). 30s x 20 = 600s — which can never fire:
+#: the harness's global per-test guillotine (``--timeout=300``,
+#: ``pyproject.toml`` addopts) executes the TEST first, so the bound
+#: actually honored is the cap, 300 - 60 = 240s (60s bounds the leg's
+#: own measured cost outside the waits; the healthy leg runs ~3s end to
+#: end). A stall EATS a fixed wall budget but cannot eat a poll of
+#: observed state that outlives the band: the budget bounds FAILURE
+#: only — a healthy broker pays nothing.
 _LEG_SINGLE_SHOT_BUDGET_SECS = 30.0
 _COTENANCY_STRETCH = 20  # the cancel-storm doctrine's measured stall band
-_DERIVED_BROKER_BUDGET_SECS = _LEG_SINGLE_SHOT_BUDGET_SECS * _COTENANCY_STRETCH
+_DERIVED_BROKER_UNCAPPED_SECS = _LEG_SINGLE_SHOT_BUDGET_SECS * _COTENANCY_STRETCH
+_HARNESS_GUILLOTINE_SECS = 300.0  # --timeout=300, the global per-test bound
+_LEG_OVERHEAD_SECS = 60.0  # the leg's measured cost outside the waits
+_DERIVED_BROKER_BUDGET_SECS = min(
+    _DERIVED_BROKER_UNCAPPED_SECS, _HARNESS_GUILLOTINE_SECS - _LEG_OVERHEAD_SECS
+)  # 240s
 
 
 async def _pg_shows_the_full_stream(pool: asyncpg.Pool, schema: str, job_id: UUID) -> bool:

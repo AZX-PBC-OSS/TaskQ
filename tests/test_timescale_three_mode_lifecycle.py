@@ -673,18 +673,31 @@ async def _force_retention_policies_now(conn: asyncpg.Connection, schema: str) -
 #:   ``_COTENANCY_STRETCH``, the derived-window doctrine
 #:   ``tests/test_ratelimit_provider.py`` reuses).
 #:
-#: 3 executions x 60s x 20 = 3600s. The budget bounds FAILURE only: a
-#: healthy policy lands the drop in seconds and the poll pays nothing,
-#: while a never-dropping policy must still RED (the teeth leg below
-#: pins exactly that — it passes its own short bound, because with the
-#: policy job disabled no dispatch can ever land the drop, so any
-#: positive budget proves the red).
+#: The full product (3 executions x 60s x 20 = 3600s) can never fire:
+#: the harness's global per-test guillotine (``--timeout=300``,
+#: ``pyproject.toml`` addopts) executes the TEST first — a wait budget
+#: beyond it is decoration, and this module's own gate runs under
+#: ``-n 2`` with siblings measured exactly that death (the poll still
+#: sleeping at the 300s kill). The bound actually honored is therefore
+#: the cap: 300 - 60 = 240s, where 60s is the leg's measured cost
+#: OUTSIDE the wait (the migrate subprocess, the fold, the sweeps, the
+#: disable round-trip — the solo leg runs 23s end to end). The budget
+#: bounds FAILURE only: a healthy policy lands the drop in seconds and
+#: the poll pays nothing, while a never-dropping policy must still RED
+#: (the teeth leg below pins exactly that — it passes its own short
+#: bound, because with the policy job disabled no dispatch can ever
+#: land the drop, so any positive budget proves the red).
 _POLICY_DROP_EXECUTIONS = 3  # the recorded artifact's convergence ticks
 _SINGLE_DISPATCH_BUDGET_SECS = 60.0  # the sibling's single-dispatch bound
 _COTENANCY_STRETCH = 20  # the cancel-storm doctrine's measured stall band
-_POLICY_DROP_BUDGET_SECS = (
+_DERIVED_DROP_BUDGET_SECS = (
     _POLICY_DROP_EXECUTIONS * _SINGLE_DISPATCH_BUDGET_SECS * _COTENANCY_STRETCH
-)
+)  # 3600s — honest, and unreachable (see the guillotine above)
+_HARNESS_GUILLOTINE_SECS = 300.0  # --timeout=300, the global per-test bound
+_LEG_OVERHEAD_SECS = 60.0  # the leg's measured cost outside the wait
+_POLICY_DROP_BUDGET_SECS = min(
+    _DERIVED_DROP_BUDGET_SECS, _HARNESS_GUILLOTINE_SECS - _LEG_OVERHEAD_SECS
+)  # 240s
 
 #: The teeth leg's bound (the mutation there makes ANY budget red).
 _NEVER_DROPS_TEETH_BUDGET_SECS = 10.0
