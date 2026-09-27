@@ -81,7 +81,9 @@ on hypertables chunk pruning bounds it).
 
 ```python
 rows = await fetch_wait_distribution(conn, schema="taskq", window=timedelta(hours=1))
-rows = await fetch_wait_distribution(conn, schema="taskq", window=timedelta(hours=6), per_actor=True)
+rows = await fetch_wait_distribution(
+    conn, schema="taskq", window=timedelta(hours=6), per_actor=True
+)
 ```
 
 One row per (queue, segment) — or per (actor, queue, segment) with
