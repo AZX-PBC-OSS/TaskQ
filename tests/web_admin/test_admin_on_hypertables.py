@@ -137,10 +137,10 @@ pytestmark = pytest.mark.integration
 _TIMESCALE_IMAGE = (
     os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or "timescale/timescaledb:2.30.1-pg18"
 )
-# The progress SSE bridge needs a real broker. redis:7 is locally
-# available; the pubsub contract it serves is the same one Dragonfly
-# (the suite's shared broker) implements.
-_REDIS_IMAGE = "redis:7"
+# The progress SSE bridge needs a real broker. redis:8.10.2 is the same
+# current pin the compose stacks use; the pubsub contract it serves is the
+# same one Dragonfly (the suite's shared broker) implements.
+_REDIS_IMAGE = "redis:8.10.2"
 
 # Every seeded timestamp derives from this FIXED instant (not now()): the
 # differential requires both engines to seed byte-identical rows, and the

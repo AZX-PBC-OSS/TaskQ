@@ -70,7 +70,9 @@ from tests.system_e2e.actors import SysPayload, sys_fast, sys_progress
 pytestmark = pytest.mark.integration
 
 _PG_IMAGE = "postgres:18-alpine"
-_PGBOUNCER_IMAGE = "edoburu/pgbouncer:latest"
+# v1.25.2-p0 is the newest edoburu/pgbouncer release (2026-06); the tag is
+# pinned because :latest floats across PgBouncer majors.
+_PGBOUNCER_IMAGE = "edoburu/pgbouncer:v1.25.2-p0"
 _PGBOUNCER_PORT = 5432
 
 #: The SQLSTATEs a transaction-mode pooler's server-conn remap produces
