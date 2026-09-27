@@ -71,8 +71,15 @@ _PG_DB = "taskq"
 #: Worker isolation after the PG kill: 3 failed heartbeats at the 0.5s
 #: interval trigger isolate_self, its bounded reconnect fails against the
 #: dead PG, and the shutdown ladder runs the 15s termination grace. The
-#: cap is generous because it bounds the LADDER, not one phase.
-_WORKER_EXIT_CAP_S = 90.0
+#: cap is generous because it bounds the LADDER, not one phase - and the
+#: ladder is co-tenancy sensitive: under heavy parallel docker pressure
+#: (three concurrent family sessions plus container churn) the measured
+#: exit latency approached the old 90s cap from below (the reconnect
+#: attempts and the grace ladder all slow with the host), so the cap
+#: carries 2x headroom over the loaded latency while still failing a
+#: genuinely stuck worker (one that outlives its database by minutes)
+#: far inside the module's 600s timeout.
+_WORKER_EXIT_CAP_S = 180.0
 
 #: PG restart + readiness probe: 60s covers slow crash recovery (WAL
 #: replay) on a co-tenanted daemon.
@@ -230,7 +237,8 @@ async def test_docker_kill_mid_transaction_recovers_and_conserves(
         # The worker isolates and exits (the heartbeat-failure contract):
         # 3 failed beats trigger isolate_self, its bounded reconnect fails
         # against the dead PG, the ladder runs.
-        deadline = time.monotonic() + _WORKER_EXIT_CAP_S
+        exit_started = time.monotonic()
+        deadline = exit_started + _WORKER_EXIT_CAP_S
         while time.monotonic() < deadline:
             if worker.poll() is not None:
                 break
@@ -238,6 +246,8 @@ async def test_docker_kill_mid_transaction_recovers_and_conserves(
         else:
             raise AssertionError(
                 f"the worker did not isolate and exit within {_WORKER_EXIT_CAP_S}s "
+                f"(waited the full cap; last poll at "
+                f"{time.monotonic() - exit_started:.1f}s) "
                 "of the PG kill - a worker that outlives its database"
             )
 
