@@ -278,12 +278,23 @@ async def _run_phase(
     actor: Any,
     payload: Kill9Payload | None = None,
     kill_after_effect: tuple[str, int] | None = None,
+    fence_watch: bool = False,
 ) -> PhaseResult:
     """One phase's choreography: spawn the kill-worker (seam or observed-
     effect kill), prove the death was a SIGKILL, snapshot the row, spawn
     the replacement, prove the reclaim, settle, and return the
     observations. Full cleanup is the CALLER's finally (the worker handles
-    are returned, not owned here)."""
+    are returned, not owned here).
+
+    ``fence_watch`` keeps the replacement ALIVE for one further leadership-
+    handover budget after the settle and re-asserts the settled invariants
+    on every observation: the reclaim sweep runs on the LEADER only, and
+    the dead worker's leader lease must lapse before the replacement can
+    win it, so the sweep's first look at a committed row lands well after
+    the settle returned. A phase whose row is ALREADY terminal at the kill
+    (the committed side of the terminal-write window) needs this watch,
+    or its fence assertions pass vacuously - no worker ever looks at the
+    row again before the handles are reaped."""
     killer = _spawn_kill_worker(pg_dsn, schema, seam=seam, tag="kill9-a")
     replacement: WorkerProc | None = None
     try:
@@ -322,6 +333,58 @@ async def _run_phase(
         )
         await assert_effects_balance(conn, schema, _TAG)
         counts = await _status_counts_across(conn, schema, _TAG)
+        if fence_watch:
+            # THE FENCE MUST SURVIVE THE HANDOVER: the replacement is the
+            # only leader candidate left alive, its elect parks one
+            # heartbeat tick, and the takeover waits out the dead
+            # holder's leader lease - so the reclaim sweep's FIRST look
+            # at this committed row happens here, after the settle
+            # above already returned. One full handover budget (lease
+            # lapse + wake jitter + the sweep's tick, plus margin),
+            # re-asserting the settled invariants on every observation:
+            # any status drift, a second attempt row, or a second
+            # effects row is a reclaim that re-ran a job whose terminal
+            # write committed - the fence broken, not a benign late
+            # write.
+            handover_cap = _LEADER_LEASE_S + _LEADER_WAKE_JITTER_S + 2 * _SWEEP_INTERVAL_S + 5.0
+            watch_deadline = time.monotonic() + handover_cap
+            attempts_rows = await conn.fetch(
+                f"""
+                SELECT attempt, outcome::text AS outcome FROM "{schema}".job_attempts
+                WHERE job_id = $1 ORDER BY attempt
+                """,
+                job_id,
+            )
+            attempts_at_settle = [(int(r["attempt"]), r["outcome"]) for r in attempts_rows]
+            effects_at_settle = await conn.fetchval(
+                f'SELECT count(*)::int FROM "{schema}".sys_effects WHERE job_id = $1', job_id
+            )
+            while time.monotonic() < watch_deadline:
+                await asyncio.sleep(0.25)
+                drifted = await _status_counts_across(conn, schema, _TAG)
+                assert drifted == counts, (
+                    f"the terminal population drifted during the handover watch: "
+                    f"{drifted} != {counts}"
+                )
+                watched_rows = await conn.fetch(
+                    f"""
+                    SELECT attempt, outcome::text AS outcome FROM "{schema}".job_attempts
+                    WHERE job_id = $1 ORDER BY attempt
+                    """,
+                    job_id,
+                )
+                watched = [(int(r["attempt"]), r["outcome"]) for r in watched_rows]
+                assert watched == attempts_at_settle, (
+                    f"the attempt ledger grew during the handover watch: {watched} != "
+                    f"{attempts_at_settle} - a terminal-committed job was reclaimed and re-run"
+                )
+                watched_effects = await conn.fetchval(
+                    f'SELECT count(*)::int FROM "{schema}".sys_effects WHERE job_id = $1', job_id
+                )
+                assert watched_effects == effects_at_settle, (
+                    f"the effects ledger grew during the handover watch: {watched_effects} != "
+                    f"{effects_at_settle} - the committed job's body ran again"
+                )
         return PhaseResult(
             job_id=job_id, row_after_death=row_after_death, counts=counts, death_wall=death_wall
         )
@@ -496,6 +559,7 @@ async def test_sigkill_after_the_terminal_write_commits_never_reruns_the_job(
             seam="after_terminal",
             actor=kill9_starting,
             payload=Kill9Payload(sleep=0.2),
+            fence_watch=True,
         )
         row = result.row_after_death
         assert row["status"] == "succeeded", (
