@@ -53,14 +53,22 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-from taskq import migrate as migrate_mod
+pytest.importorskip(
+    "fastapi"
+)  # Why: this module pins the admin page's builders; the extras legs without fastapi must skip, not error at collection.
+
+from taskq import (
+    migrate as migrate_mod,  # Why: importorskip must precede the optional-import chain.
+)
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
-from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: after importorskip.
+)
 from taskq.web.admin._constants import (  # pyright: ignore[reportPrivateUsage]  # Why: the admin constants module publishes the page size the page statements fetch.
     _FETCH_SIZE,
 )
