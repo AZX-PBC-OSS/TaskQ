@@ -516,6 +516,8 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, `run_in_tx` 
 
 The isolate path writes the same reclaim event the leader's sweep writes (`reason='lock_expired'`, `cause='isolate_self'`), so heartbeat-loss reclaims reach the `Backend.poll_reclaim_events()` / `TaskQ.watch_reclaims()` feed exactly like sweep reclaims.
 
+One residual to know about: locally-running sync actors are cancelled and joined bounded (`cancellation_grace_period + cleanup_grace_period` plus close slack), but a sync actor's thread cannot be interrupted, and one that outlives the join keeps its row out of the re-pend; when that consumer's unwinding never completes, the interrupt write never lands, so the row's release falls to the same lock-lease expiry backstop the sweep's reclaims rest on. The operator-facing contract for sync actors at shutdown is in [actors.md — Sync actors and shutdown](actors.md#sync-actors-and-shutdown).
+
 ---
 
 ## Leader election

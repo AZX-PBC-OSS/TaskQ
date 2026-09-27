@@ -102,10 +102,13 @@ pip install "taskq-py[redis,fastapi,otel,prometheus]"
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/) for dependency management
 - Docker (for the bundled Postgres 18 / Redis stack)
-- PostgreSQL: tested against **PostgreSQL 18** (CI and `docker-compose.yml`
-  both pin PG 18). No PG18-specific SQL has been identified in the bundled
-  migrations, but earlier major versions are not covered by CI, so treat
-  PG 18 as the supported baseline until a version matrix is added.
+- PostgreSQL: **15 is the minimum supported major; 15–18 are covered by CI**.
+  The system-e2e tier runs its full multi-process lifecycle against every
+  major via a testcontainers version matrix (PG 18 is also what the fast
+  suite, `docker-compose.yml`, and the bundled dev stack pin). No
+  PG18-specific SQL exists in the bundled migrations; the floor is 15 because
+  that is the oldest major the CI matrix exercises — older majors may work
+  but are untested and unsupported.
 
 ### Bring up local infra
 

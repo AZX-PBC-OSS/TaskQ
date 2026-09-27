@@ -24,8 +24,10 @@ Two concrete leaks, both verified by execution rather than assumed:
 * **Bearer tokens and signatures in HTTP-failure bodies.** A managed-identity
   credential failure (azure-identity's ``HttpResponseError`` shape) appends
   the HTTP body to ``str(exc)``, and the body carries a raw access token --
-  as a standalone JWT, after ``Authorization: Bearer`` (quoted renderings of
-  the header included), or under its own OAuth token name
+  as a standalone JWT, after ``Authorization: Bearer``, as a bare scheme
+  word with no header name around it (``Bearer <opaque>``, the raw header
+  VALUE a dependency returns; ``Basic <base64 user:password>`` and the
+  GitHub ``Token`` scheme included), or under its own OAuth token name
   (``access_token``/``refresh_token``/``id_token``, camelCase included),
   which is what catches an OPAQUE token the JWT shape cannot see. Presigned
   AWS query strings carry the same class of credential as
@@ -35,9 +37,12 @@ Two concrete leaks, both verified by execution rather than assumed:
   reader knows they are decisions rather than gaps: a token whose header
   name was corrupted by homoglyphs is not caught (the masks are literal,
   and a corrupted name is not the header the credential was sent under);
-  an opaque credential appearing with NEITHER a bearer header nor a token
+  an opaque credential appearing with NEITHER a scheme word nor a token
   name around it is not caught (masking arbitrary long strings would
-  over-redact diagnostics); the JWT mask's conservative shape is its own
+  over-redact diagnostics); a bare scheme word whose value carries no
+  digit rides (the digit requirement is what keeps the common nouns
+  "token"/"basic" out of honest prose -- every realistic credential
+  alphabet carries digits); the JWT mask's conservative shape is its own
   trade-off, see :data:`_JWT_RE` -- which over-masks a three-long-label
   hostname, an accepted cost recorded there.
 
@@ -79,6 +84,7 @@ __all__ = [
     "ExceptionText",
     "ScrubbedText",
     "add_exception_event",
+    "mask_credentials",
     "record_exception_safe",
     "record_exception_text",
     "render_exception",
@@ -228,19 +234,22 @@ _URI_PARAM_CRED_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: ``Authorization: Bearer <token>`` in any casing and loose around the colon
-#: and spaces. Group 1 keeps the header text verbatim so the masked form still
+#: ``Authorization: <scheme> <token>`` in any casing and loose around the colon
+#: and spaces, for the scheme words a credential header carries: ``bearer``,
+#: and -- #463's round 2 -- ``token`` (the GitHub scheme still in the wild)
+#: and ``basic`` (whose value is base64 ``user:password``). Group 1 keeps the
+#: header text verbatim so the masked form still
 #: reads ``Bearer ***``; the token class stops at whitespace and the list
 #: delimiters a rendered header or a JSON-ish body can carry. ``[ \t]``, not
 #: ``\s``: ``\s`` crosses newlines, and a value that can only be terminated by
 #: a line boundary must not be able to peer past one.
 #:
-#: The optional ``["'\\]`` runs around the colon and ``bearer`` admit the
+#: The optional ``["'\\]`` runs around the colon and the scheme word admit the
 #: QUOTED header spellings a response body or a repr()d dict renders: JSON
 #: (``"Authorization": "Bearer ..."``, the ``\"``-escaped form included) and
 #: Python repr (``{'Authorization': 'Bearer ...'}``). The classes only match
 #: runs of quotes, backslashes and blanks, so they cannot jump over the
-#: letters of an intervening value to reach an unrelated ``bearer`` -- the
+#: letters of an intervening value to reach an unrelated scheme word -- the
 #: first non-blank, non-quote character after the colon must literally be
 #: the scheme word. Without them an opaque token under a quoted header
 #: shipped verbatim: the JWT pass cannot see a token with no dot structure,
@@ -253,9 +262,58 @@ _URI_PARAM_CRED_RE = re.compile(
 #: shape, so it claims the value first and the JWT mask finds nothing left of
 #: it to re-match.
 _BEARER_TOKEN_RE = re.compile(
-    r"(\bauthorization[\"'\\]*[ \t]*:[ \t]*[\"'\\]*[ \t]*bearer[ \t]+)[^\s,;\"'\\]+",
+    r"(\bauthorization[\"'\\]*[ \t]*:[ \t]*[\"'\\]*[ \t]*"
+    r"(?:bearer|token|basic)[ \t]+)[^\s,;\"'\\]+",
     re.IGNORECASE,
 )
+
+#: A Bearer-scheme token WITHOUT the ``Authorization:`` header name around
+#: it -- the raw header VALUE (``request.headers["authorization"]`` renders
+#: ``Bearer <token>``, the header name is the dict key, not the value), which
+#: is the most natural "return the credential" mistake a dependency can make
+#: and which the header-keyed mask above cannot see. The same gap swallowed
+#: the other scheme words a rendered header carries (``Token``, the GitHub
+#: scheme; ``Basic``, whose value is base64 user:password) and the quoted
+#: JSON renderings of a Token-scheme header.
+#:
+#: So this pass claims the scheme word BARE: ``bearer|token|basic`` followed
+#: by whitespace and a value. Two guards keep prose intact -- the common
+#: nouns "token"/"basic" appear in honest text ("token revocation service",
+#: "basic authentication reviewer"), unlike the header-keyed pass, whose
+#: frame is unambiguous:
+#:
+#: * a length floor of 16 on the value, mirroring :data:`_JWT_RE`'s floor
+#:   and its rationale (``bearer bond``, ``token bucket`` ride);
+#: * the value must carry a DIGIT. Every realistic credential alphabet --
+#:   hex, base64, base64url, JWT -- carries digits; English prose does not.
+#:   This is what lets the common-noun scheme words into the pattern at all
+#:   ("token rate-limiting-algorithm" survives, a lowercase-letter value
+#:   rides -- a stated limit, the same fail-open-for-prose trade the
+#:   too-generic-name exclusions make).
+#:
+#: Runs AFTER the header-keyed pass (which claims the framed value first;
+#: its ``***`` output is 3 chars and cannot re-match here) and BEFORE the
+#: OAuth-name and JWT passes, so a bare scheme word claims its value before
+#: the shape-generic masks see it. Group 1 keeps the scheme verbatim so the
+#: masked form still reads ``Bearer ***`` -- the non-secret frame survives,
+#: which is what the audit subject's redact-and-log binding leans on.
+_BEARER_SCHEME_RE = re.compile(
+    r"(\b(?:bearer|basic|token)[ \t]+)[^\s,;\"'\\]{16,}",
+    re.IGNORECASE,
+)
+
+
+def _bare_scheme_repl(match: re.Match[str]) -> str:
+    """The replacement for :data:`_BEARER_SCHEME_RE`: mask the value only
+    when it carries a digit (see the pattern's guards). A function repl,
+    not a regex arm, so the digit check costs one pass over the matched
+    value instead of a backtracking lookahead on every start position."""
+    scheme = match.group(1)
+    value = match.group(0)[len(scheme) :]
+    if any(ch.isdigit() for ch in value):
+        return f"{scheme}***"
+    return match.group(0)
+
 
 #: OAuth token parameter names whose value is credential material by
 #: RFC 6749, whatever the token's shape: an OPAQUE access token (no dot
@@ -448,9 +506,17 @@ def _scrub_text(text: str) -> str:
 
     Five credential shapes are masked, in this order:
 
-    1. ``Authorization: Bearer <token>`` headers -- quoted renderings
+    1. ``Authorization: <scheme> <token>`` headers for the scheme words
+       ``bearer``/``token``/``basic`` -- quoted renderings
        (``"Authorization": "Bearer ..."``, ``{'Authorization': '...'}``, the
        escaped-quote form) included -- by :data:`_BEARER_TOKEN_RE`.
+    1b. A bare scheme word with NO header name around it -- the raw header
+       VALUE (``Bearer <token>``, what ``request.headers["authorization"]``
+       renders) and the scheme words the header pass's frame cannot see --
+       by :data:`_BEARER_SCHEME_RE`, behind the same prefilter. The value
+       floor (16) and the digit requirement are documented on the pattern;
+       they are what keep the common nouns "token"/"basic" out of honest
+       prose.
     2. OAuth token values under their own names (``access_token``,
        ``refresh_token``, ``id_token``, camelCase spellings included; JSON,
        repr, bare-colon, query and form encodings), by
@@ -498,7 +564,9 @@ def _scrub_text(text: str) -> str:
     * ``_PG_DETAIL_RE`` anchors a line on the literal ``DETAIL:`` and
       ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline, both
       require ``"DETAIL:"`` in the subject.
-    * ``_BEARER_TOKEN_RE`` requires the literal ``bearer``.
+    * ``_BEARER_TOKEN_RE`` and ``_BEARER_SCHEME_RE`` (the header frame and
+      the bare scheme word) require one of the scheme words ``bearer``/
+      ``token``/``basic``.
     * ``_OAUTH_TOKEN_RE`` requires one of the token names, lowercased
       (``access_token`` ...).
     * ``_JWT_RE`` requires at least two dots (one ``str.count``). That
@@ -551,8 +619,9 @@ def _scrub_text(text: str) -> str:
         # PG-DETAIL shapes - those are why every pass below runs after
         # it, unchanged.
         text = scrub_secrets(text)
-    if "bearer" in lowered:
+    if "bearer" in lowered or "token" in lowered or "basic" in lowered:
         text = _BEARER_TOKEN_RE.sub(r"\1***", text)
+        text = _BEARER_SCHEME_RE.sub(_bare_scheme_repl, text)
         lowered = text.lower()
     if any(trigger in lowered for trigger in _OAUTH_TOKEN_TRIGGERS):
         text = _OAUTH_TOKEN_RE.sub(r"\1***", text)
@@ -569,6 +638,26 @@ def _scrub_text(text: str) -> str:
     if any(trigger in lowered for trigger in _CRED_PARAM_TRIGGERS):
         return _URI_PARAM_CRED_RE.sub(r"\1***", text)
     return text
+
+
+def mask_credentials(text: str) -> str:
+    """The credential masks of :func:`_scrub_text`, for a plain string that
+    crosses a trust boundary outside the exception-rendering paths.
+
+    Same chain, same unconditional application (the ``_redaction_enabled``
+    guard covers only the PG-DETAIL drop, which never applies here): the
+    ``Authorization:`` header frame for the ``bearer``/``token``/``basic``
+    scheme words, the bare scheme word (``Bearer <token>`` -- the raw
+    header VALUE, length floor 16 plus a digit requirement, see
+    :data:`_BEARER_SCHEME_RE`), OAuth-named token values, standalone JWT
+    shapes, presigned-URL signature parameters, URI userinfo,
+    password-family connection parameters, and the tors token families.
+    Clean text pays only the substring prefilters and returns unchanged -
+    so callers can compare before/after to DETECT credential material (the
+    audit subject's redact-and-log binding, #463) without a second
+    detector to keep in sync with this chain.
+    """
+    return _scrub_text(text)
 
 
 def set_exception_message_max_chars(limit: int) -> None:

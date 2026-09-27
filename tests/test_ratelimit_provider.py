@@ -30,9 +30,17 @@ async def test_get_redis_pool_yields_pingable_client(redis_url: str) -> None:
         # exceeds 5s under -n 2 load (the same weather class the
         # test-built clients opt out of): a single ping is a lottery.
         # Bounded retries prove pingability while tolerating the stall;
-        # a broker down for all three is a real failure.
+        # a broker down for the whole window is a real failure. The
+        # window is DERIVED (the dd4572ff doctrine, not a guess): the
+        # measured co-tenancy stretch is 20x (test_cancel_storm's
+        # _STORM_DEADLINE_SECS derives from the same band), applied to
+        # the ping's 5s production budget => ~100s ceiling. CI's 2026-09-27
+        # cross-leg reds measured a container stall exceeding the old
+        # 3-attempt window (>=16s) under -n 2 container churn; 19
+        # attempts x (5s budget + 0.5s gap) covers it and pays nothing
+        # on a healthy broker (first ping wins).
         last_error: Exception | None = None
-        for _attempt in range(3):
+        for _attempt in range(19):
             try:
                 result: bool = await client.ping()  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType] # Why: redis-py shares sync/async stubs; ping() returns Awaitable[bool] at runtime but pyright sees bool
                 assert result is True
