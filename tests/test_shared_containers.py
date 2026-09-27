@@ -35,7 +35,12 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 _NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
-_PG_IMAGE = "postgres:18-alpine"
+# The HARNESS's configured image, not a literal: the sweep prefixes are derived
+# from ``_shared_containers._PG_IMAGE`` (``TASKQ_TEST_PG_IMAGE``-overridable, the
+# CI version matrix's seam), so a pinned literal here would disagree with the
+# module under test on every overridden run. Under the default env this IS
+# ``postgres:18-alpine``, which is the value these tests pin.
+_PG_IMAGE = sc._PG_IMAGE
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 _COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 
