@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from taskq.worker._watchdog import EXIT_WATCHDOG
 from tests.system_e2e._harness import WorkerProc, reap, spawn_worker, wait_worker_ready
 from tests.system_e2e._invariants import assert_balanced, assert_effects_balance, delete_tagged
 from tests.system_e2e._toxiproxy import dsn_host_port, proxied_dsn
@@ -66,9 +67,15 @@ _CASCADE_S = max(0.5, 0.25) + (2 + 1) * (0.5 + 0.25)
 #: bound under a full cut (~8 closers = 40s), and the SHUTDOWN WATCHDOG
 #: (on by production default, ``watchdog_enabled=True``) force-exits the
 #: wedged teardown at the 15s termination grace - measured exit 17s.
-#: (With the watchdog OFF the teardown never finishes: the finding is
-#: reported, the pinned contract is the production shape.) Budget:
-#: cascade + grace + dump slack -> 40.
+#: Mutation-measured (this suite's own teeth): the exit is a RACE between
+#: two armed detectors - stale-loop-tick (the leader/sweep sibling loops
+#: starve first, ~5s) can preempt the 15s deadline trip - and with every
+#: trip neutered the bounded closers still finished the teardown inside
+#: ~35s. The test pins the FAMILY (a trip fired, rc EXIT_WATCHDOG), never
+#: which detector won; with the watchdog OFF (the harness's ``_BASE_ENV``
+#: shape) the release hold switches to ``lock_lease`` and the exit loses
+#: its guaranteed bound - the finding is reported, the pinned contract is
+#: the production shape. Budget: cascade + grace + dump slack -> 40.
 _ISOLATE_EXIT_BUDGET_S = 40.0
 
 #: The reclaim pipeline that must hand the job back WITHOUT the cut
@@ -165,6 +172,36 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # assertion below mean something (a re-run needs a live claimant).
         log_b = tmp_path / "part-b.log"
         worker_b = spawn_worker(pg_dsn, schema, tag="part-b", log_sink=str(log_b))
+
+        # ── The sibling-health proof (the per-worker scoping's tooth) ──
+        # The probe is enqueued NOW, mid-cut, before B's readiness gate:
+        # A's PG link is blackholed (it cannot claim), so the probe can
+        # only complete on B - B's bootstrap, claim, body and commit all
+        # ride the DIRECT wire while the cut is live. Success here is the
+        # CONCURRENT evidence the per-worker scoping stands on: the
+        # sibling was healthy DURING the cut, not merely by the time the
+        # re-run settled. (A re-run asserted only after A's exit would
+        # prove nothing about the cut's window.)
+        probe = await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG])
+        probe_deadline = time.monotonic() + 20.0
+        probe_row: asyncpg.Record | None = None
+        while time.monotonic() < probe_deadline:
+            probe_row = await conn.fetchrow(
+                f'SELECT status::text AS status FROM "{schema}".jobs WHERE id = $1',
+                probe.job_id,
+            )
+            if probe_row is not None and probe_row["status"] == "succeeded":
+                break
+            await asyncio.sleep(0.05)
+        assert probe_row is not None and probe_row["status"] == "succeeded", (
+            f"the healthy sibling did not complete a probe job during the cut "
+            f"(bootstrap + claim + body + commit, poll 0.05): {probe_row}"
+        )
+        assert worker_a.proc.poll() is None, (
+            "the sibling's probe completed only after the partitioned worker had "
+            "already exited - the sibling's health was not proven CONCURRENTLY "
+            "with the cut"
+        )
         wait_worker_ready(worker_b)
 
         # The isolate cascade (2.75s) + the isolate connect's own 5s
@@ -176,6 +213,38 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         assert worker_a.proc.poll() is not None, (
             f"the partitioned worker did not self-isolate and exit within "
             f"{_ISOLATE_EXIT_BUDGET_S}s (cascade {_CASCADE_S}s + connect 5s + grace 15s)"
+        )
+
+        # The worker's OWN evidence, from its log sink: the failed ticks
+        # the isolate ledger counted (F=2 - the isolate fires on the 3rd
+        # consecutive failure) and the force-exit that bounded the exit.
+        # A worker that exits for any OTHER reason (a crash, a supervisor
+        # kill, a clean return) without walking the cascade is not the
+        # contract here.
+        log_text = log_a.read_text(errors="replace")
+        tick_failures = log_text.count("heartbeat-tick-failure") + log_text.count(
+            "heartbeat-tick-unexpected-error"
+        )
+        assert tick_failures >= 3, (
+            f"the partitioned worker's log records {tick_failures} failed ticks - the "
+            f"(F+1)-th consecutive failure the isolate decision needs (F=2) left no "
+            f"trace in the worker's own log"
+        )
+        # The production-shape force-exit: the watchdog is armed (the
+        # shipped default, re-armed explicitly in this cell's env) and the
+        # wedged teardown is force-exited - WHICH detector wins the race
+        # (shutdown-deadline at 15s vs stale-loop-tick, the leader/sweep
+        # sibling loops starving first) is deliberately NOT pinned: both
+        # are the armed watchdog's redundant teeth on the same contract.
+        # What IS pinned: a trip fired, and the exit code is the watchdog's.
+        assert "worker-watchdog-trip" in log_text, (
+            "the partitioned worker's log never recorded a watchdog trip - the exit "
+            "did not come from the armed watchdog"
+        )
+        assert worker_a.proc.returncode == EXIT_WATCHDOG, (
+            f"the partitioned worker exited rc={worker_a.proc.returncode}, not the "
+            f"watchdog force-exit ({EXIT_WATCHDOG}): the armed watchdog did not "
+            f"bound this exit"
         )
 
         # The re-run: lease expiry (8s) + sweep (1s) + reclaim delay (1s)

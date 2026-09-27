@@ -189,7 +189,12 @@ async def test_weather_then_recovery_converges_without_restart(
                 await subscriber.aclose()
         if worker is not None:
             reap(worker)
+        # Each proxy's clear is suppressed SEPARATELY: a wedged server
+        # failing the PG sweep must not skip the redis sweep - one
+        # leaked toxic on a shared server is exactly the residue the
+        # per-proxy ledgers exist to prevent.
         with contextlib.suppress(Exception):
             await pg_proxy.clear()
+        with contextlib.suppress(Exception):
             await redis_proxy.clear()
         await delete_tagged(conn, schema, _TAG)

@@ -43,6 +43,7 @@ tests own every deadline.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import socket
 import urllib.error
@@ -200,6 +201,16 @@ class PartitionProxy:
                 )
                 self._toxics.remove(name)
 
+    def clear_sync(self) -> None:
+        """The synchronous form of :meth:`clear`: the session-scoped
+        fixture's teardown runs outside any event loop, and a residue
+        sweep must never be skipped because of that. Never raises - a
+        wedged server cannot mask the teardown's own failure."""
+        for name in list(self._toxics):
+            with contextlib.suppress(Exception):
+                self._spawn(f"/proxies/{self.name}/toxics/{name}", "DELETE")
+            self._toxics.remove(name)
+
 
 class Toxiproxy:
     """The running toxiproxy server: creates per-worker/per-role proxies
@@ -236,12 +247,20 @@ class Toxiproxy:
         for proxy in self._proxies:
             await proxy.clear()
 
+    def clear_all_sync(self) -> None:
+        """The synchronous form of :meth:`clear_all` - the session
+        fixture's teardown. Sweeps every proxy's toxic ledger so weather
+        a test's own ``finally`` could not reach (a mid-``finally`` crash
+        of its own, a failure between two of its clears) cannot outlive
+        the test that armed it. Never raises."""
+        for proxy in self._proxies:
+            proxy.clear_sync()
+
     def stop(self) -> None:
         """Stop the server container. Never raises: a teardown failure
         must not mask the test's own failure."""
-        import contextlib
-
         with contextlib.suppress(Exception):
+            self.clear_all_sync()
             self._proxies.clear()
             cast("Any", self._container).stop()
 
