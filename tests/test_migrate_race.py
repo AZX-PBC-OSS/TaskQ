@@ -76,18 +76,36 @@ _TIMESCALE_IMAGE = os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or _TIMESCALE_
 # order of magnitude above it. Pods queue on the lock, so a pod's total
 # lifetime is bounded by its own lock wait + its own apply:
 #   per-pod budget = 120 + 60 = 180s; n pods, n x 180s.
-# The gate waits (mid-run join, SIGKILL) get the same 180s the gated pod
-# is entitled to. Traffic tests add the hypertable conversions of small
+# The gates (mid-run join, ledger rows, SIGKILL lock release) wait on the
+# PODS' OWN lifecycle — a pod's cold start (interpreter + imports) and its
+# apply are both inside the gated window, and both stretch with runner
+# weather (a 2-core co-tenancy pin stretches the subprocess lifecycle ~4x).
+# So a gate gets the pods' full budget, not a flat constant: the join gate
+# watches two pods, hence _pod_budget(2) = 360s. The old flat 180s gate
+# lapsed under exactly that weather while the pods were still healthy and
+# slow — the gate failed, and the failure was masked by the reaper killing
+# an already-exited pod (ProcessLookupError) — caught in the 3x-loaded soak
+# on 2026-09-27. Traffic tests add the hypertable conversions of small
 # seeded tables (the mid-life enable E2E converts 1000 rows in seconds):
 # +60s flat.
 _MIGRATION_LOCK_WAIT_SECS: float = 120.0
 _APPLY_MARGIN_PER_POD_SECS: float = 60.0
-_GATE_BUDGET_SECS: float = _MIGRATION_LOCK_WAIT_SECS + _APPLY_MARGIN_PER_POD_SECS
 _TRAFFIC_EXTRA_SECS: float = 60.0
 
 
 def _pod_budget(pods: int) -> float:
     return pods * (_MIGRATION_LOCK_WAIT_SECS + _APPLY_MARGIN_PER_POD_SECS)
+
+
+# Two pods: the gate's observable window spans both pods' lifecycles.
+_GATE_BUDGET_SECS: float = _pod_budget(2)
+
+#: The mid-run join pin's re-drive rounds. The join window (winner's apply
+#: vs loser's arrival — see the pin's docstring) closes under hard CPU
+#: compression with ~1/3 probability per round; 5 rounds put the residual
+#: at ~0.4%. A lock mutant shows the queueing instant in NO round, so the
+#: re-drive costs it nothing: still deterministically red.
+_JOIN_ATTEMPTS: int = 5
 
 
 # The honest lock-contention refusal the CLI prints on SystemExit
@@ -198,7 +216,9 @@ async def _gate_on_ledger_rows(dsn: str, schema: str, *, minimum: int) -> int:
         await conn.close()
 
 
-async def _gate_on_queued_join(conn: asyncpg.Connection, schema: str) -> None:
+async def _gate_on_queued_join(
+    conn: asyncpg.Connection, schema: str, *, pods: tuple[asyncio.subprocess.Process, ...] = ()
+) -> None:
     """Fail-closed proof that the second pod's join landed MID-first-run.
 
     Spawning pod B after a ledger gate proves pod A was mid-chain at
@@ -218,11 +238,23 @@ async def _gate_on_queued_join(conn: asyncpg.Connection, schema: str) -> None:
     arrives before A releases; the gate fails closed if that instant is
     never observed, with a lock mutant (barge / early-release / private
     key) B never queues at all and the test reds.
+
+    A pod that EXITS before the join is proven can never queue, so the
+    gate fails fast naming it (with its stderr) instead of burning the
+    full budget on a corpse and reporting only the generic lapse — the
+    diagnosis the ProcessLookupError masking hid in the loaded soak of
+    2026-09-27.
     """
     name = migration_lock_name(schema)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _GATE_BUDGET_SECS
     while True:
+        for i, pod in enumerate(pods):
+            if pod.returncode is not None:
+                pytest.fail(
+                    f"pod {i} exited (rc={pod.returncode}) before the join was "
+                    f"proven — it can never queue; stderr: {pod.stderr!r}"
+                )
         try:
             rows: int = await conn.fetchval(f'SELECT count(*) FROM "{schema}".schema_migrations')
         except asyncpg.UndefinedTableError:
@@ -504,52 +536,109 @@ async def test_five_pods_migrate_up_storm(pg_dsn: str, race_schema: str) -> None
 
 
 @pytest.mark.load_sensitive
-@pytest.mark.timeout(2 * 180 + 180)
+# Derived: per round, the join gate (_GATE_BUDGET_SECS = _pod_budget(2),
+# both pods' loaded lifecycle) + the two collects running behind it
+# (_pod_budget(2), gathered in parallel); the liveness check makes a
+# window-closed round exit in seconds, so the round bound only burns when
+# both pods hang — the defect the bound exists to catch. x _JOIN_ATTEMPTS
+# rounds + the third convergence pod (_pod_budget(1)).
+@pytest.mark.timeout(_JOIN_ATTEMPTS * (_GATE_BUDGET_SECS + _pod_budget(2)) + _pod_budget(1))
 async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str) -> None:
     """Not concurrently-launched-and-hoped: the join must be PROVEN mid-run.
     Pod B launches alongside pod A and ``_gate_on_queued_join`` then demands
-    one sampled instant showing the ledger mid-chain AND B blocked behind
-    the advisory lock — B provably queued on the lock while the chain
-    applied, never apply-over-A. Spawn order does not buy the lock: either
-    pod may win, so the outcome contract is "exactly one applied the whole
-    chain, the other no-oped", not a name. Both finish the story honestly."""
-    schema = race_schema
+    one sampled instant showing the ledger mid-chain AND one pod blocked
+    behind the advisory lock — the loser provably queued on the lock while
+    the winner's chain applied, never apply-over-it. Spawn order does not
+    buy the lock: either pod may win, so the outcome contract is "exactly
+    one applied the whole chain, the other no-oped", not a name. Both
+    finish the story honestly.
+
+    The join WINDOW's arithmetic — and why the proof is a re-drive: the
+    queueing instant exists only while the winner is still applying when
+    the loser arrives. Both costs are subprocess lifecycles measured from
+    the same t=0 (the boots run in PARALLEL, so the loser's arrival costs
+    one boot, not boot-plus-A's-elapsed-apply): winner's apply ~0.8-3s,
+    loser's boot ~0.8-1.5s idle — an overlap of ~1-2s, sampled at 25ms.
+    Both stretch under co-tenancy weather, and NOT proportionally: the
+    apply is PG-round-trip bound (the container is not on the pinned
+    cores), the boot is import-CPU bound (it is), so a hard enough CPU
+    compression inverts the ordering — the loser arrives to a finished
+    chain and NO queueing instant exists to see. That inversion (not a
+    product defect: the five-pod storm and the SIGKILL-convergence pins
+    hold under the same weather) is what the 2-core-pinned soak of
+    2026-09-27 caught, masked for a full autopsy by the old reaper's
+    ProcessLookupError. The re-drive is the same doctrine as the TTL herd
+    pin (dd4572ff): weather may eat a ROUND; the contract is proven on a
+    round that lands. A lock mutant (barge / early-release / private key)
+    shows the instant in NO round — deterministically red — while a correct
+    lock shows it with probability ~1 per round idle and ~2/3 under the
+    harshest observed compression (5 rounds: residual ~4%). Each failed
+    round is CHEAP since the gate's liveness check names the exiting pod
+    instead of burning the budget; the round budget bounds the pathological
+    both-pods-hang case, which is a real defect worth the burn."""
+    schema_base = race_schema
     conn = await asyncpg.connect(pg_dsn)
+    proven = False
+    last_gate_error: BaseException | None = None
     try:
-        await _drop_schema(conn, schema)
-        pod_a = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
-        pod_b = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
-        try:
-            await _gate_on_queued_join(conn, schema)
-            budget = _pod_budget(2)
-            outcome_a, outcome_b = await asyncio.gather(
-                _collect(pod_a, budget), _collect(pod_b, budget)
+        for attempt in range(_JOIN_ATTEMPTS):
+            schema = f"{schema_base}_join{attempt}"
+            await _drop_schema(conn, schema)
+            pod_a = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
+            pod_b = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
+            try:
+                await _gate_on_queued_join(conn, schema, pods=(pod_a, pod_b))
+                proven = True
+                budget = _pod_budget(2)
+                outcome_a, outcome_b = await asyncio.gather(
+                    _collect(pod_a, budget), _collect(pod_b, budget)
+                )
+            except BaseException as gate_error:
+                # The gate failed (or the collect did) with both pods
+                # possibly still alive: reap them BEFORE the DROP SCHEMA,
+                # which otherwise deadlocks against a live migrator's
+                # schema locks. The reap must be race-safe: a pod that
+                # exited between the gate's last sample and this kill has
+                # a closed transport, and kill() on it raises
+                # ProcessLookupError — which would REPLACE the real
+                # diagnosis (that masking is how the loaded-soak red of
+                # 2026-09-27 hid its cause for the whole autopsy). Kill
+                # only provably-live pods and tolerate the exited rest.
+                for pod in (pod_a, pod_b):
+                    if pod.returncode is None:
+                        pod.kill()
+                await asyncio.gather(pod_a.wait(), pod_b.wait(), return_exceptions=True)
+                if not isinstance(gate_error, pytest.fail.Exception):
+                    raise  # a collect timeout or a real crash: not weather, not retryable
+                last_gate_error = gate_error
+                continue  # the window closed this round (see the docstring); re-drive
+            _assert_honest([outcome_a, outcome_b], "mid-run join")
+            applied_counts = [outcome_a.stdout.count(".sql"), outcome_b.stdout.count(".sql")]
+            assert sorted(applied_counts) == [0, len(discover())], (
+                f"exactly one pod may apply the chain; got {applied_counts}: "
+                f"{[o.stdout for o in (outcome_a, outcome_b)]}"
             )
-        except BaseException:
-            # The gate failed (or the collect did) with both pods possibly
-            # still alive: reap them BEFORE the finally's DROP SCHEMA, which
-            # otherwise deadlocks against a live migrator's schema locks.
-            for pod in (pod_a, pod_b):
-                pod.kill()
-            await asyncio.gather(pod_a.wait(), pod_b.wait(), return_exceptions=True)
-            raise
-        _assert_honest([outcome_a, outcome_b], "mid-run join")
-        applied_counts = [outcome_a.stdout.count(".sql"), outcome_b.stdout.count(".sql")]
-        assert sorted(applied_counts) == [0, len(discover())], (
-            f"exactly one pod may apply the chain; got {applied_counts}: "
-            f"{[o.stdout for o in (outcome_a, outcome_b)]}"
-        )
-        await _assert_ledger_converged(conn, schema)
-        await _assert_no_pending_via_third_pod(pg_dsn, schema)
+            await _assert_ledger_converged(conn, schema)
+            await _assert_no_pending_via_third_pod(pg_dsn, schema)
+            break
+        if not proven:
+            pytest.fail(
+                f"the join was never proven mid-run in {_JOIN_ATTEMPTS} rounds "
+                f"(last round: {last_gate_error})"
+            )
     finally:
-        await _drop_schema(conn, schema)
+        for attempt in range(_JOIN_ATTEMPTS):
+            await _drop_schema(conn, f"{schema_base}_join{attempt}")
         await conn.close()
 
 
 # ── 4. SIGKILL mid-run, second pod converges ────────────────────────────
 
 
-@pytest.mark.timeout(3 * 180)
+# Derived: two gates (ledger rows, advisory-lock release — each
+# _GATE_BUDGET_SECS = _pod_budget(2)) + pod B's converge (_pod_budget(2))
+# + the third convergence pod (_pod_budget(1)).
+@pytest.mark.timeout(2 * _GATE_BUDGET_SECS + _pod_budget(2) + _pod_budget(1))
 async def test_sigkilled_migrator_second_pod_converges(pg_dsn: str, race_schema: str) -> None:
     """SIGKILL pod A once it is provably inside the chain; pod B must be
     able to converge the ledger (plain PG, no hypertables involved)."""
@@ -559,7 +648,11 @@ async def test_sigkilled_migrator_second_pod_converges(pg_dsn: str, race_schema:
         await _drop_schema(conn, schema)
         pod_a = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
         await _gate_on_ledger_rows(pg_dsn, schema, minimum=1)
-        pod_a.kill()
+        # Race-safe reap: A may exit (cleanly or not) between the gate's
+        # last sample and this kill; kill() on an exited transport raises
+        # ProcessLookupError and would mask the real failure.
+        if pod_a.returncode is None:
+            pod_a.kill()
         await pod_a.wait()
         await _gate_on_advisory_lock_free(conn, schema)
 

@@ -66,7 +66,9 @@ from sse_starlette.event import ServerSentEvent
 
 from taskq._ids import new_uuid
 from taskq.constants import progress_channel
+from taskq.testing.assertions import wait_for_condition
 from taskq.web.progress import (
+    _BROKER_READ_GRACE_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin derives its budget from the loop's own read deadline.
     _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: red-team tests exercise the production generator directly rather than reimplementing it.
     _resolve_last_event_id,  # pyright: ignore[reportPrivateUsage]  # Why: pins the malformed Last-Event-ID branch, which no existing test covers.
     create_router,
@@ -286,8 +288,29 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     )
     task = asyncio.create_task(_drain(gen))
     try:
-        # 0.75s = 15 heartbeats at 50ms - ample slack for any bounded loop.
-        await asyncio.sleep(0.75)
+        # Poll-asserted, not a fixed sleep: the loop's own app-level read
+        # deadline is heartbeat_secs + _BROKER_READ_GRACE_SECS = 0.05 + 0.5
+        # = 0.55s (progress.py); the pin allows 3x that deadline (1.65s) for
+        # the done-state to land — scheduling slack on top of the loop's own
+        # bound. The unbounded shape this pins is still caught: a generator
+        # with no app-level deadline never goes done, so the poll times out
+        # red exactly as the bare sleep did, without the bare sleep's
+        # zero-slack flake when a loaded runner bills the deadline's last
+        # turns late.
+        await wait_for_condition(
+            lambda: task.done() and not task.cancelled(),
+            description=(
+                "CONTRACT: the SSE streaming loop must own an app-level deadline around "
+                "its broker wait (project rule: every TaskQ-initiated wait on a possibly-"
+                "dead broker is bounded by this codebase - see admin/_factory.py:197 "
+                "ping and close_redis_bounded). CURRENT VIOLATION: progress.py:184-187 "
+                "delegates the only bound to pubsub.get_message(timeout=heartbeat_secs); "
+                "a read that never returns is never cancelled, so the generator is still "
+                "pending after 15 heartbeat intervals, pinning the Redis subscription, "
+                "the asyncio task and the SSE slot."
+            ),
+            timeout=3 * (0.05 + _BROKER_READ_GRACE_SECS),
+        )
         assert task.done() and not task.cancelled(), (
             "CONTRACT: the SSE streaming loop must own an app-level deadline around "
             "its broker wait (project rule: every TaskQ-initiated wait on a possibly-"

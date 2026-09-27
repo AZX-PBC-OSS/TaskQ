@@ -499,6 +499,9 @@ async def test_hung_verifier_is_bounded_and_fails_closed() -> None:
     elapsed = time.monotonic() - started
 
     assert events == [], "a hung verifier is revocation: no frame may be emitted"
+    # Derived bound: the drain helper's own timeout (30s, the session-recheck
+    # bound) is the real guard. This 60 s pin (2x that guard) is the belt to
+    # the guard's braces: it can only fail if the guard stopped working.
     assert elapsed < 60, f"the hung verifier must be bounded, took {elapsed:.1f}s"
     assert pubsub.unsubscribed and pubsub.closed, (
         "the wedged stream must still release its Redis subscription"

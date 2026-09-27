@@ -746,6 +746,13 @@ class TestTIGinIndexUsed:
         plan_data = _json_loads(explain_rows[0]["QUERY PLAN"])[0]["Plan"]
         assert _find_index_in_plan(plan_data, "jobs_metadata_gin_idx")
         exec_time = _extract_execution_time_ms(plan_data)
+        # Derived bound: the oracle is the PLAN (index scan, no seq scan)
+        # above; the 200 ms execution-time pin is the tripwire. The seed is
+        # 10k rows over a GIN index — a containment probe touches a handful
+        # of index pages, and the measured floor on the test-identical seed
+        # is single-digit ms. 200 ms = ~20x that floor: PG's own ANALYZE
+        # clock (not runner wall clock), so co-tenancy weather moves it by
+        # CPU contention alone; 20x matches the storm pins' stretch.
         assert exec_time < 200, f"GIN query took {exec_time}ms, expected < 200ms"
 
 
