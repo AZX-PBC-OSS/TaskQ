@@ -1814,15 +1814,21 @@ async def _skip_already_delivered_overlap_twins(
     fires, every fold-1 slot can already hold a queued job, firing
     the schedule into that pass would double-deliver it.  The
     distinguishing fact is a query away and only on this rare shape
-    (twice a year per schedule per timezone): the schedule's OWN queued
-    jobs inside the range tell exactly which instants are already in
-    flight, scoped by the ``cron_schedule_id`` metadata stamp, because
+    (twice a year per schedule per timezone): the schedule's OWN jobs
+    inside the range tell exactly which instants are already OWNED -
+    in flight (pending/scheduled), in progress (running), delivered
+    (succeeded), or deliberately suppressed by operator intent
+    (cancelled/abandoned; a cancelled fold-1 twin must advance the walk,
+    never re-fire) - scoped by the ``cron_schedule_id`` metadata stamp,
+    because
     two schedules on one actor are independent (each owes its own
     delivery of every occurrence) and a neighbour's twin chain is not
     this schedule's coverage, and the plan advances past the delivered
     prefix to the first instant nothing holds: the uncovered remainder
     is then delivered by the schedule's own later ticks, each exactly
-    once.  ``identity_key`` cannot serve as the scope: it defaults to
+    once.  The terminal-NOT-delivered statuses (``failed``, ``crashed``)
+    hold nothing - no retry will ever deliver them, so their instant
+    stays uncovered and the schedule's own later fire re-delivers it.  ``identity_key`` cannot serve as the scope: it defaults to
     NULL and is a user-facing dedup handle shared with on-demand jobs,
     which are not the schedule's delivery either.
 
@@ -1856,7 +1862,25 @@ async def _skip_already_delivered_overlap_twins(
         f'JOIN "{schema}".jobs j ON j.actor = a.actor '
         f"AND j.metadata->>'cron_schedule_id' = a.schedule_id "
         f"AND j.scheduled_at >= a.from_ts "
-        f"AND j.scheduled_at < a.to_ts AND j.status IN ('pending', 'scheduled')",
+        f"AND j.scheduled_at < a.to_ts "
+        # Coverage = an existing job OWNS the instant's delivery: in flight
+        # (pending/scheduled), in progress (running), delivered
+        # (succeeded), or deliberately suppressed by operator intent
+        # (cancelled/abandoned - the cancel paths terminalise exactly the
+        # rows the old pending/scheduled filter matched, so an
+        # operator-refused twin dropped out of the covered prefix and the
+        # schedule re-fired it; GH issue #462).  Counting a claimed twin
+        # is safe against over-coverage: a holder that dies WITH retry
+        # budget is re-pended by the reclaim sweep with its delivery
+        # obligation intact, and one that dies without it terminalises to
+        # 'crashed' below.  The two terminal-NOT-delivered statuses
+        # ('failed', 'crashed') own nothing - no retry will ever deliver
+        # them, their scheduled_at stays at the fold instant, and the
+        # schedule's own later fire is the only deliverer left - so they
+        # must keep the walk OFF their instants: stalling there is the
+        # at-least-once re-fire a genuinely-not-delivered twin is owed.
+        f"AND j.status IN ('pending', 'scheduled', 'running', "
+        f"'succeeded', 'cancelled', 'abandoned')",
         [idx for idx, _ in enumerate(queries)],
         [plan.actor for plan, _ in queries],
         [plan.next_fire_at for plan, _ in queries],

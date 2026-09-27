@@ -4,7 +4,11 @@ TaskQ ships a dedicated `taskq.testing` package with deterministic fakes,
 pytest fixtures, OTel helpers, chaos wrappers, and assertion utilities.
 Unit tests run against `InMemoryBackend` with a `FakeClock`: no Postgres,
 no Redis, no sleeping. Integration tests use `testcontainers` to spin up real
-Postgres 18 and Dragonfly (Redis-compatible) containers.
+Postgres and Dragonfly (Redis-compatible) containers. The Postgres image
+defaults to `postgres:18-alpine` and is overridable per run via
+`TASKQ_TEST_PG_IMAGE` — the seam CI's supported-version matrix (PG 15–18,
+see the README's support statement) uses to point the whole suite at another
+major.
 
 Every symbol in `taskq.testing` lives outside the production import path so
 application code never pulls in test-only helpers.
@@ -416,7 +420,7 @@ additional fixtures: they are repo-private, not published:
 
 | Fixture | Scope | Yields | Notes |
 |---|---|---|---|
-| `pg_container` | session | `PostgresContainer` | Postgres 18 Alpine, `max_connections=1000`. |
+| `pg_container` | session | `PostgresContainer` | Postgres 18 Alpine by default (`TASKQ_TEST_PG_IMAGE` overrides, e.g. the CI matrix's 15/16/17 legs), `max_connections=1000`. |
 | `pg_dsn` | module | `str` | Per-module database on the shared container (worker-qualified hashed name), dropped on module teardown. |
 | `settings` | function | `TaskQSettings` | Per-test env via `monkeypatch`, then `TaskQSettings.load()`. |
 | `pg_conn` | function | `asyncpg.Connection` | Drops schema before each test. Prefer `clean_pg_conn`. |
@@ -789,7 +793,9 @@ uv run pytest -m integration
 ### Testcontainers setup
 
 The session-scoped `pg_container` and `redis_container` fixtures boot
-Postgres 18 and Dragonfly (Redis-compatible) once per pytest invocation,
+Postgres (18 by default; `TASKQ_TEST_PG_IMAGE` overrides the major — the CI
+version matrix rides this) and Dragonfly (Redis-compatible) once per pytest
+invocation,
 one pair shared by every xdist worker of that invocation, and visible to no
 other invocation (of this repo or any other):
 

@@ -457,6 +457,39 @@ def test_the_matrix_job_asserts_it_is_running_the_interpreter_it_advertises() ->
     assert checked, "ci.yaml no longer has a python-version matrix; this guard is now vacuous"
 
 
+def test_a_postgres_version_matrix_job_feeds_the_matrix_into_the_test_harness() -> None:
+    """A Postgres VERSION matrix is a false-green CI if the matrix value never
+    reaches the containers the leg starts: every leg would pass while running
+    the same default major, exactly the failure the matrix exists to prevent.
+    The shared testcontainers harness reads ``TASKQ_TEST_PG_IMAGE`` at import
+    (``taskq/testing/_shared_containers.py``), so every job fanning out over a
+    ``postgres-version`` must pass ``postgres:${{ matrix.postgres-version }}``
+    into that env key on every step that runs the suite."""
+    offenders: list[str] = []
+    for path in _WORKFLOWS:
+        for job_name, job in _jobs(path).items():
+            strategy = cast(_YamlMap, job.get("strategy") or {})
+            matrix = cast(_YamlMap, strategy.get("matrix") or {})
+            if not matrix.get("postgres-version"):
+                continue
+            ran_suite = False
+            for step in _steps(job):
+                env = cast(_YamlMap, step.get("env") or {})
+                image = env.get("TASKQ_TEST_PG_IMAGE")
+                if image is None:
+                    continue
+                ran_suite = True
+                if image != "postgres:${{ matrix.postgres-version }}-alpine":
+                    offenders.append(f"{path.name}:{job_name} (env got {image!r})")
+            if not ran_suite:
+                offenders.append(f"{path.name}:{job_name} (no step sets TASKQ_TEST_PG_IMAGE)")
+    assert not offenders, (
+        "a job with a `postgres-version` matrix must feed the matrix into "
+        "`TASKQ_TEST_PG_IMAGE` (the shared-container harness's image seam), or every leg "
+        f"tests the same default major: {offenders}"
+    )
+
+
 # --- publish attestations gating ---------------------------------------------------------------
 #
 # `github.event_name` inside a called reusable workflow reflects the CALLER's triggering event,

@@ -101,6 +101,7 @@ nav:
       - Cron Scheduling: guides/cron.md
       - Dependency Injection: guides/dependency-injection.md
       - Observability: guides/observability.md
+      - Operational Insights (SQL): guides/insights.md
       - Alert Runbooks: guides/runbooks.md
       - Maintenance Sweeps: guides/maintenance-sweeps.md
       - Testing: guides/testing.md

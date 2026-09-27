@@ -325,6 +325,64 @@ async def test_dev_mode_records_anonymous(
     assert rows[0]["action"] == "job.cancel"
 
 
+async def test_credential_shaped_principal_is_redacted_end_to_end(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(#463) The admin-ui guide's worked-example dependency returns the
+    raw bearer credential. Against a real pruned-never audit table and the
+    rendered job detail page: the token appears verbatim NOWHERE -- not in
+    the audit row, not in the folded cancel event detail, not on the page
+    -- while the cancel still lands and the row still attributes the
+    operator by the redacted marker."""
+    jwt_token = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIn0."
+        "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    )
+
+    async def _token_dependency() -> str:
+        return f"Authorization: Bearer {jwt_token}"
+
+    schema = module_pg_schema.schema_name
+    jid = new_uuid()
+    await _seed_pending_job(clean_pg_conn, schema, jid)
+
+    app = _make_admin_app(module_pg_pool, schema, monkeypatch, auth_dependency=_token_dependency)
+    resp = await _get_csrf_then_post(
+        app, "/admin/jobs", f"/admin/jobs/{jid}/cancel", data={"reason": "ops cancel"}
+    )
+    assert resp.status_code == 303
+
+    rows = await _audit_rows(clean_pg_conn, schema)
+    assert len(rows) == 1
+    subject: str = rows[0]["principal_subject"]
+    assert jwt_token not in subject, "the raw token landed in the audit row"
+    assert "***" in subject, f"the credential was dropped silently, not redacted: {subject!r}"
+    assert rows[0]["action"] == "job.cancel"
+
+    # The folded cancel event detail carries the redacted subject too.
+    detail: dict[str, Any] = await clean_pg_conn.fetchval(
+        f'SELECT detail FROM "{schema}".job_events '
+        "WHERE job_id = $1 AND kind = 'cancel_request' "
+        "ORDER BY id DESC LIMIT 1",
+        jid,
+    )
+    detail_obj = _json_loads(detail) if isinstance(detail, str) else detail
+    assert jwt_token not in str(detail_obj), "the raw token folded into the event detail"
+    assert detail_obj["principal_subject"] == subject
+
+    # The rendered job detail page never shows the token.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        page = await client.get(f"/admin/jobs/{jid}")
+    assert page.status_code == 200
+    assert jwt_token not in page.text, "the raw token rendered on the job detail page"
+
+
 async def test_job_detail_page_renders_audit_entries(
     clean_pg_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,

@@ -5,13 +5,13 @@ from datetime import datetime
 
 import asyncpg
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web.admin._constants import parse_text_filter
+from taskq.web.admin._constants import parse_text_filter, reject_unknown_query_params
 from taskq.web.admin._factory import (
     get_admin_pool,
     get_realtime_ctx,
@@ -28,6 +28,11 @@ _ALLOWED_STATUSES: frozenset[str] = frozenset(
 _PAGE_SIZE: int = 100
 _FETCH_SIZE: int = _PAGE_SIZE + 1
 
+# A read-only page with no filters bounds each roll-up's row count like
+# the batches page: one row per queue, capped. The overview GROUP BY takes
+# the same cap: high queue-label cardinality is unbounded otherwise.
+_QUEUE_ROW_CAP: int = 200
+
 _QUEUE_OVERVIEW_SQL = (
     "SELECT queue, "
     "count(*) FILTER (WHERE status = 'pending') AS pending_count, "
@@ -36,12 +41,9 @@ _QUEUE_OVERVIEW_SQL = (
     "count(*) FILTER (WHERE status = 'failed') AS failed_count "
     'FROM "{schema}".jobs '
     "WHERE status IN ('pending','scheduled','running','failed') "
-    "GROUP BY queue ORDER BY queue"
+    "GROUP BY queue ORDER BY queue "
+    f"LIMIT {_QUEUE_ROW_CAP}"
 )
-
-# A read-only page with no filters bounds each roll-up's row count like
-# the batches page: one row per queue, capped.
-_QUEUE_ROW_CAP: int = 200
 
 # Live workers per subscribed queue - the leader's queue-depth sampler
 # read (worker/_leader_sweeps.py, _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE):
@@ -139,12 +141,16 @@ def register(router: APIRouter) -> None:
 
     @router.get("/queues", response_class=HTMLResponse)
     async def queue_overview(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
+        request: Request,
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
+        # The page declares no filters: any query param is undeclared, and
+        # an undeclared param is refused, never silently dropped.
+        reject_unknown_query_params(request, ())
         overview_sql = _QUEUE_OVERVIEW_SQL.format(schema=schema)
         orphan_sql = _ORPHAN_QUEUES_SQL.format(
             schema=schema, live_secs=settings.admin_worker_liveness_seconds
@@ -172,17 +178,33 @@ def register(router: APIRouter) -> None:
             q["live_workers"] = live_by_queue.get(str(q["queue"]), 0)
             q["stranded_count"] = stranded_by_queue.get(str(q["queue"]), 0)
         realtime_mode, mode_label = realtime_ctx
-        html = tmpl.get_template("queues.html").render(
-            queues=queues,
-            orphan_queues=orphan_queues,
-            realtime_mode=realtime_mode,
-            mode_label=mode_label,
-        )
+        # The jobs page's partial-poll pattern, split by mode so both
+        # refresh transports never fire at once (that double-fetch was
+        # #337's complaint) and the polling contract keeps its teeth
+        # (test_web_admin_integration pins it): POLLING mode renders the
+        # meta refresh - the page stays live without JS - and the htmx
+        # poll is off; REALTIME mode suppresses the meta refresh and the
+        # htmx poll is the page's only refresh. A poll tick renders the
+        # table partial alone, never the whole document.
+        context = {
+            "queues": queues,
+            "orphan_queues": orphan_queues,
+            "truncated": len(rows) == _QUEUE_ROW_CAP,
+            "page_size": _QUEUE_ROW_CAP,
+            "realtime_mode": realtime_mode,
+            "mode_label": mode_label,
+            "suppress_refresh": realtime_mode == "realtime",
+        }
+        if request.headers.get("HX-Request") == "true":
+            html = tmpl.get_template("_partials/queue_table.html").render(**context)
+        else:
+            html = tmpl.get_template("queues.html").render(**context)
         return HTMLResponse(content=html)
 
     @router.get("/queues/{queue:path}", response_class=HTMLResponse)
     async def queue_detail(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         queue: str,
+        request: Request,
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
@@ -192,6 +214,10 @@ def register(router: APIRouter) -> None:
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
     ) -> HTMLResponse:
+        # The undeclared-param refusal first (the /queues overview's own
+        # contract): a param this signature does not name would be dropped
+        # and the page served 200 as if the ask did not exist.
+        reject_unknown_query_params(request, ("status", "cursor_at", "cursor_id"))
         # The queue name from the path binds as a text parameter in every
         # query below - the same NUL guard the list filters apply, or a
         # %00 in the URL is an opaque driver 500.

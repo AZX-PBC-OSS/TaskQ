@@ -1,7 +1,7 @@
 """Admin audit trail: durable record of who did what through the admin UI.
 
 Every admin-UI operator mutation inserts one ``admin_audit`` row through
-this module. The table (migration ``01.00.19_01_pre_admin_audit``) carries
+this module. The table (migration ``01.00.19_03_pre_admin_audit``) carries
 no foreign key to jobs on purpose: its targets are exactly the rows routine
 maintenance prunes, archives, and deregisters, and an audit trail that dies
 with its target is not a trail.
@@ -39,6 +39,7 @@ from opentelemetry.metrics import Counter
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike
 from taskq.obs import get_meter
+from taskq.obs._redact_exc import mask_credentials
 from taskq.web._pool import BoundedPool
 
 logger = structlog.get_logger("taskq.web.admin.audit")
@@ -101,6 +102,67 @@ def _bound_subject(subject: str) -> str:
     return escaped[:SUBJECT_MAX_LENGTH]
 
 
+def _bound_untyped_subject(raw: str) -> str:
+    """Redact-or-bind for the UNTYPED principal shapes (#463).
+
+    A bare string principal is whatever the host's auth dependency put on
+    ``request.state.principal`` -- and the admin-ui guide's own worked
+    example returns ``credentials.credentials``, so the string is sometimes
+    the operator's raw bearer credential. That must never reach the ledger:
+    the ``admin_audit`` table is deliberately never pruned, and the
+    subject is rendered on the job detail page -- a stored token there is a
+    durable, page-rendered credential disclosure. The house credential
+    mask chain (:func:`taskq.obs.mask_credentials`) runs BEFORE the shape
+    pin, so the token material leaves as ``***`` while any non-secret frame
+    (``Bearer ``) survives and the row still attributes the action to a
+    redacted marker. The mask fires loudly: a credential-shaped principal
+    means the auth dependency is leaking, and the operator must learn it
+    from the log (the log line carries no token material itself).
+
+    The typed path (:func:`principal_subject` reading a ``.subject``
+    attribute) deliberately skips the MASK -- a claims object's ``subject``
+    is by contract the identity field, and over-redacting identity is its
+    own falsification -- but not the DETECTION: the same mask chain runs
+    on the subject and a credential-shaped one is logged with the same
+    loud event, so the operator learns of the leak either way (#463). A
+    HOSTILE ``.subject`` is still bounded and control-escaped by
+    :func:`_bound_subject`.
+    """
+    masked = mask_credentials(raw)
+    if masked != raw:
+        logger.warning(
+            "admin-audit-principal-credential-redacted",
+            detail=(
+                "the auth dependency returned a bare credential-shaped string "
+                "(a bearer/JWT-shaped token); its secret material was masked "
+                "before the audit bind. Fix the dependency to return a subject, "
+                "not the credential."
+            ),
+        )
+    return _bound_subject(masked)
+
+
+def _warn_typed_subject_credential_shaped(subject: str) -> None:
+    """The typed-path detection half of :func:`_bound_untyped_subject`.
+
+    Same mask chain, same loud event -- but the bind stays verbatim (the
+    subject field IS the identity; masking it is the over-redaction the
+    typed path exists to avoid). The detail tells that truth: the row
+    carries what arrived, and the operator must fix the dependency.
+    """
+    if mask_credentials(subject) != subject:
+        logger.warning(
+            "admin-audit-principal-credential-redacted",
+            detail=(
+                "the auth dependency returned a claims principal whose "
+                ".subject is credential-shaped (bearer/JWT-shaped token "
+                "material); the subject field is bound verbatim by the "
+                "identity contract. Fix the dependency to return a subject, "
+                "not the credential."
+            ),
+        )
+
+
 # ── Closed-set action names ──────────────────────────────────────────────
 #
 # Kept as module constants (not an enum) so the routes stay plain-Python
@@ -157,15 +219,28 @@ def principal_subject(principal: Any) -> str:
     characters escaped, length capped at :data:`SUBJECT_MAX_LENGTH`. The
     router cannot trust the dependency's return shape, and the subject
     reaches a text bind, a jsonb detail document, and rendered pages.
+
+    The UNTYPED shapes (a bare string principal, and the ``str()``
+    fallback) additionally run the house credential mask chain BEFORE the
+    shape pin (:func:`_bound_untyped_subject`, #463): a bare credential-
+    shaped string -- the shape the admin-ui guide's own worked example
+    produces -- is redacted to the ``***`` marker and logged loudly
+    (``admin-audit-principal-credential-redacted``) instead of storing the
+    operator's bearer token verbatim in a table that is never pruned and
+    is rendered on the job detail page. A typed subject-bearing principal
+    binds its ``subject`` field -- verbatim (the identity contract), but
+    with the same loud detection log when the field is credential-shaped
+    (:func:`_warn_typed_subject_credential_shaped`).
     """
     if principal is None:
         return ANONYMOUS_SUBJECT
     subject = getattr(principal, "subject", None)
     if isinstance(subject, str) and subject:
+        _warn_typed_subject_credential_shaped(subject)
         return _bound_subject(subject)
     if isinstance(principal, str) and principal:
-        return _bound_subject(principal)
-    return _bound_subject(str(principal))
+        return _bound_untyped_subject(principal)
+    return _bound_untyped_subject(str(principal))
 
 
 async def record_admin_action(
