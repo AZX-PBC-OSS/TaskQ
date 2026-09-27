@@ -41,6 +41,7 @@ from taskq.obs import (
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_queue_live_workers_cache,
+    update_queue_utilization_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
     update_scheduled_count_cache,
@@ -56,6 +57,7 @@ from taskq.worker._leader_shared import (
     _EK2,
     _EK3,
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,
+    _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
@@ -1441,6 +1443,42 @@ _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE = (
     "GROUP BY q"
 )
 
+#: Routed actor capacity per queue: the sum of ``actor_config.max_concurrent``
+#: over the actors routed to the queue. This is the capacity input of
+#: ``taskq.queue.utilization`` — the same definition
+#: :func:`taskq.insights.fetch_queue_imbalance`'s ``cap`` CTE reports (the
+#: effective capacity multiplies the sum by the live worker count, because
+#: each worker can run every actor's jobs and the cap is enforced per
+#: worker). The table is operator-sized (one row per registered actor
+#: routing), so the grouped read is a config-table scan, not a hot-ledger
+#: one.
+_QUERY_QUEUE_ACTOR_CAPACITY_SQL_TEMPLATE = (
+    "SELECT queue, sum(max_concurrent)::int AS actor_capacity "
+    'FROM "{schema}".actor_config '
+    "WHERE max_concurrent IS NOT NULL "
+    "GROUP BY queue"
+)
+
+
+def _queue_utilization(
+    depth: dict[str, int], live_workers: dict[str, int], capacity: dict[str, int]
+) -> dict[str, float]:
+    """Compute the per-queue utilization ratio the utilization gauge
+    exports: due depth ÷ effective capacity, the definition
+    :func:`taskq.insights.fetch_queue_imbalance`'s ``utilization`` column
+    reports. A queue whose effective capacity is zero (no live worker or
+    no routed actor capacity) is OMITTED — the insights row's NULL: the
+    starvation shape is visible as depth > 0 beside a missing series (and
+    on ``taskq.jobs.stranded``), never as a frozen 0.0, which would read
+    as "idle".
+    """
+    utilization: dict[str, float] = {}
+    for queue, d in depth.items():
+        effective = capacity.get(queue, 0) * live_workers.get(queue, 0)
+        if effective > 0:
+            utilization[queue] = d / effective
+    return utilization
+
 
 async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Sample per-queue depth and per-queue live workers every
@@ -1465,6 +1503,8 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     live_workers_sql = _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE.format(schema=schema)
+    capacity_sql = _QUERY_QUEUE_ACTOR_CAPACITY_SQL_TEMPLATE.format(schema=schema)
+    due_depth_sql = _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     liveness_secs = ctx.deps.settings.admin_worker_liveness_seconds
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
@@ -1475,10 +1515,24 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 ) as conn:
                     rows = await conn.fetch(sql)
                     worker_rows = await conn.fetch(live_workers_sql, liveness_secs)
+                    capacity_rows = await conn.fetch(capacity_sql)
+                    due_rows = await conn.fetch(due_depth_sql)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
+                live_workers = {str(row["queue"]): int(row["count"]) for row in worker_rows}
+                capacity = {str(row["queue"]): int(row["actor_capacity"]) for row in capacity_rows}
+                due_depth = {str(row["queue"]): int(row["count"]) for row in due_rows}
                 update_queue_depth_cache(cache)
-                update_queue_live_workers_cache(
-                    {str(row["queue"]): int(row["count"]) for row in worker_rows}
+                update_queue_live_workers_cache(live_workers)
+                # All four reads share the tick's connection, so the ratio
+                # describes the same moment its due-depth and live-worker
+                # operands do — a join across ticks would mix a pre-burst
+                # depth with a post-scale capacity. The numerator is the
+                # DUE population (fetch_queue_imbalance's own `depth`
+                # definition), not the pending+scheduled population the
+                # depth gauge carries: a future-armed wave must not read
+                # as starvation.
+                update_queue_utilization_cache(
+                    _queue_utilization(due_depth, live_workers, capacity)
                 )
             except Exception as exc:
                 _sampler_read_failed(ctx, "queue_depth", "queue-depth-sampling-failed", exc)
