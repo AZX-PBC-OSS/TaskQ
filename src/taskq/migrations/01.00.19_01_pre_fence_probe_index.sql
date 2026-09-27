@@ -71,9 +71,11 @@
 -- name would be destroyed by this migration's own drop before its
 -- IF NOT EXISTS could no-op. The swap below works around that by
 -- parking the legacy form under a known name, and the drop in this
--- file is definition-conditional: it fires only while the LEGACY
--- one-key form owns the canonical name. Run, outside the migration
--- runner during a maintenance window:
+-- file is definition-conditional: it fires on every canonical owner
+-- that is not the finished article — the legacy one-key form, an
+-- INCLUDE(id) form (payload, never an Index Cond), INVALID debris from
+-- an interrupted build — and spares only a valid, ready two-key form.
+-- Run, outside the migration runner during a maintenance window:
 --
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS
 --   jobs_locked_by_worker_running_idx_new ON "{schema}".jobs
@@ -90,9 +92,9 @@
 --   COMMIT;
 --
 -- then apply this migration normally: the conditional drop sees the
--- two-key form already owning the canonical name and leaves it alone,
--- the parked `..._old` is dropped, and the CREATE INDEX IF NOT EXISTS
--- below no-ops. Final state is identical to the plain path: the
+-- valid two-key form already owning the canonical name and leaves it
+-- alone, the parked `..._old` is dropped, and the CREATE INDEX IF NOT
+-- EXISTS below no-ops. Final state is identical to the plain path: the
 -- canonical name carries the two-key index, valid and in place.
 DO $$
 BEGIN
@@ -103,12 +105,26 @@ BEGIN
         WHERE n.nspname = '{schema}'
           AND c.relname = 'jobs_locked_by_worker_running_idx'
           AND NOT EXISTS (
-              -- the two-key form carries `id` among its key columns;
-              -- the legacy one-key form does not
-              SELECT 1 FROM pg_catalog.pg_attribute a
-              WHERE a.attrelid = c.oid
-                AND a.attname = 'id'
-                AND a.attisdropped = false
+              -- spare the drop only while a VALID, READY index whose KEY
+              -- columns carry `id` owns the canonical name. The key columns
+              -- come from pg_index, not pg_attribute: pg_attribute cannot
+              -- tell a key column from an INCLUDE payload column, and an
+              -- INCLUDE(id) form is not the two-key form this migration
+              -- exists to land (the trailing id must ride in the index as
+              -- an Index Cond, never payload). indisvalid/indisready:
+              -- an interrupted CREATE INDEX CONCURRENTLY leaves INVALID
+              -- debris that the IF NOT EXISTS below would silently keep
+              -- (the runner's drop-the-debris discipline).
+              SELECT 1
+              FROM pg_catalog.pg_index i
+              JOIN pg_catalog.pg_attribute a
+                ON a.attrelid = i.indrelid
+               AND a.attname = 'id'
+               AND a.attisdropped = false
+              WHERE i.indexrelid = c.oid
+                AND i.indisvalid
+                AND i.indisready
+                AND a.attnum = ANY ((i.indkey::int2[])[0:i.indnkeyatts - 1])
           )
     ) THEN
         EXECUTE 'DROP INDEX "{schema}".jobs_locked_by_worker_running_idx';

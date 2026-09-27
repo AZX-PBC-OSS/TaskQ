@@ -516,3 +516,117 @@ async def test_fence_probe_migration_survives_the_documented_swap(
         settings.schema_name,
     )
     assert leftover == 0, "the parked legacy form must be cleaned up"
+
+
+async def test_fence_probe_migration_rebuilds_an_include_id_canonical(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """An operator who built the canonical name as
+    ``(locked_by_worker) INCLUDE (id)`` — a plausible misreading of the
+    recipe — is NOT holding the two-key form: an INCLUDE column is payload,
+    never an Index Cond, so the fence probe still walks the whole running
+    set. ``pg_attribute`` lists INCLUDE columns, so a definition check that
+    reads attributes cannot tell the two forms apart. The conditional drop
+    must fire on this form: after the migration, ``id`` must be a KEY
+    column of the canonical index, valid."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
+
+    # The operator's mistake: the INCLUDE form under the canonical name.
+    await pg_conn.execute(f'DROP INDEX "{settings.schema_name}".jobs_locked_by_worker_running_idx')
+    await pg_conn.execute(
+        f"CREATE INDEX jobs_locked_by_worker_running_idx"
+        f' ON "{settings.schema_name}".jobs (locked_by_worker) INCLUDE (id)'
+        f" WHERE status = 'running'"
+    )
+
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    indexdef = await pg_conn.fetchval(
+        """
+        SELECT indexdef FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert indexdef is not None, "canonical index missing after the migration"
+    assert "(locked_by_worker, id)" in indexdef, (
+        "an INCLUDE(id) form is not the two-key form: id must end up a KEY "
+        f"column, got {indexdef!r}"
+    )
+
+
+async def test_fence_probe_migration_rebuilds_an_invalid_canonical_debris(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """An interrupted direct ``CREATE INDEX CONCURRENTLY`` under the canonical
+    name leaves INVALID debris that the trailing ``IF NOT EXISTS`` alone
+    would silently keep (the runner's own drop-the-debris discipline). The
+    conditional drop must not spare it: after the migration the canonical
+    index must be the two-key form, valid."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
+
+    # Reproduce the debris honestly: an uncommitted write transaction on
+    # another connection parks CIC's phase-2 ShareLock wait (an empty table's
+    # read-only snapshot never engages it), statement_timeout cancels the
+    # build mid-flight, and PG keeps the INVALID index. The legacy form is
+    # dropped first: the failing build targets the canonical name itself, the
+    # way an operator running the recipe against the canonical name directly
+    # would.
+    await pg_conn.execute(f'DROP INDEX "{settings.schema_name}".jobs_locked_by_worker_running_idx')
+    blocker = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        await blocker.execute("BEGIN")
+        await blocker.execute(
+            f'DELETE FROM "{settings.schema_name}".jobs WHERE false'  # noqa: S608  # Why: schema is a fixture-provided identifier.
+        )
+        await pg_conn.execute("SET statement_timeout = '2s'")
+        with pytest.raises(asyncpg.exceptions.QueryCanceledError):
+            await pg_conn.execute(
+                f"CREATE INDEX CONCURRENTLY jobs_locked_by_worker_running_idx"
+                f' ON "{settings.schema_name}".jobs (locked_by_worker, id)'
+                f" WHERE status = 'running'"
+            )
+    finally:
+        await blocker.execute("ROLLBACK")
+        await blocker.close()
+
+    invalid = await pg_conn.fetchval(
+        """
+        SELECT NOT i.indisvalid
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert invalid is True, "setup precondition: the interrupted CIC must have left INVALID debris"
+
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    row = await pg_conn.fetchrow(
+        """
+        SELECT i.indisvalid, i.indisready
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert row is not None, "canonical index missing after the migration"
+    assert row["indisvalid"] and row["indisready"], (
+        "INVALID debris must be rebuilt, not silently kept behind IF NOT EXISTS"
+    )
+    indexdef = await pg_conn.fetchval(
+        """
+        SELECT indexdef FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert indexdef is not None and "(locked_by_worker, id)" in indexdef, (
+        "the rebuilt canonical index must be the two-key form"
+    )
