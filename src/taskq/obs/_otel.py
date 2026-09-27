@@ -122,6 +122,7 @@ __all__ = [
     "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
     "update_queue_live_workers_cache",
+    "update_queue_utilization_cache",
     "update_reservation_slots_cache",
 ]
 
@@ -1171,7 +1172,7 @@ def update_queue_depth_cache(data: dict[str, int]) -> None:
     _queue_depth_cache = dict(data)
 
 
-def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]:
+def _observe_capped_per_queue(cache: Mapping[str, float]) -> Iterable[Observation]:
     """Yield one observation per queue from *cache*, capped like the depth gauge.
 
     A gauge is observable, not additive, so the counter sites' per-item
@@ -1185,8 +1186,8 @@ def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]
     not name order and not first-seen admission -- keeps the largest
     queues, the ones an operator pages on, individually visible past the
     cap. Nothing shared is mutated: `_queue_label_values` stays owned by
-    the job-side instruments. Shared by the queue-depth and
-    live-workers gauges, which the same sampler tick feeds.
+    the job-side instruments. Shared by the queue-depth, live-workers and
+    utilization gauges, which the same sampler tick feeds.
     """
     ranked = sorted(cache.items(), key=lambda item: (-item[1], item[0]))
     admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
@@ -1249,6 +1250,50 @@ _queue_live_workers_gauge = get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_queue_live_workers],
+)
+
+
+_queue_utilization_cache: dict[str, float] = {}
+
+
+def update_queue_utilization_cache(data: dict[str, float]) -> None:
+    """Replace the per-queue utilization cache with fresh data from the
+    leader's query, sampled in the same tick as the queue depth and the
+    live workers, so the three gauges join on ``queue`` without
+    describing different moments.
+
+    The ratio is :func:`taskq.insights.fetch_queue_imbalance`'s
+    ``utilization`` column — due depth ÷ effective capacity (routed actor
+    capacity x live workers) — exported as a first-class gauge so a
+    scaling operator reads it straight off the scrape instead of
+    recomputing it client-side (the computation needs ``actor_config``,
+    a table the scraper does not have). A queue whose effective capacity
+    is zero reports NO utilization series — the insights row's NULL, the
+    starvation shape the depth + live_workers pair (and
+    ``taskq.jobs.stranded``) already expose; a frozen zero there would
+    read as "idle", the opposite of the truth.
+    """
+    global _queue_utilization_cache
+    _queue_utilization_cache = dict(data)
+
+
+def _observe_queue_utilization(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_utilization_cache)
+
+
+_queue_utilization_gauge = get_meter().create_observable_gauge(
+    name="taskq.queue.utilization",
+    description=(
+        "Due depth divided by effective capacity (routed actor capacity x "
+        "live workers) per queue, sampled by the leader with "
+        "taskq.queue.depth and taskq.queue.live_workers (same cap: the "
+        f"largest _MAX_QUEUE_LABEL_VALUES queues keep their own series; the "
+        f"rest collapse onto one '{_QUEUE_LABEL_OVERFLOW}' series). > 1 is "
+        "a starved queue; depth > 0 with NO series here is the "
+        "zero-effective-capacity starvation shape."
+    ),
+    unit="1",
+    callbacks=[_observe_queue_utilization],
 )
 
 
