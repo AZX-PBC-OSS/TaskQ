@@ -477,10 +477,33 @@ async def test_redis_client_opened_and_closed_when_configured(
     pg_dsn: str,
     redis_url: str,
 ) -> None:
-    """redis_client is opened when redis_url is set; closed on teardown."""
+    """redis_client is opened when redis_url is set; closed on teardown.
+
+    The lifecycle contract under test is OPEN/CLOSE behavior, not broker
+    latency. The ping rides the product's own production socket budget
+    (deliberately not opted out - the deps client is the worker-loop's
+    real client), and the SHARED co-tenanted broker's stall band
+    measurably exceeds 5s under -n 2 load (the same weather class the
+    test-built clients opt out of, and the same disease the
+    ``test_ratelimit_provider`` provider pin was cured for): a single
+    ping is a lottery. Bounded retries prove pingability while
+    tolerating the stall; a broker down for all three is a real failure
+    that the open/close contract still wants surfaced.
+    """
     settings = make_integration_settings(pg_dsn, REDIS_URL=redis_url)
 
     async with open_worker_deps(settings) as deps:
         assert deps.redis_client is not None
-        ping_result = await deps.redis_client.ping()  # pyright: ignore[reportGeneralTypeIssues] # Why: redis-py stub may not expose ping() return type as Awaitable; runtime client is async.
-        assert ping_result is True
+        last_error: Exception | None = None
+        for _attempt in range(3):
+            try:
+                ping_result: bool = await deps.redis_client.ping()  # pyright: ignore[reportGeneralTypeIssues, reportUnknownMemberType, reportUnknownVariableType] # Why: redis-py shares sync/async stubs; ping() returns Awaitable[bool] at runtime but pyright sees bool
+                assert ping_result is True
+                last_error = None
+                break
+            except TimeoutError as exc:  # the 5s production budget against a stalled broker
+                last_error = exc
+                await asyncio.sleep(0.5)
+        assert last_error is None, (
+            f"deps.redis_client never pinged clean in 3 attempts: {last_error!r}"
+        )
