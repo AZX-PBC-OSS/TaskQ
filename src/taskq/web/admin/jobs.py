@@ -334,9 +334,38 @@ def _build_paginated_sql(
     from_clause = f'SELECT {cols} FROM "{schema}".{table}'
 
     cursor_clause = ""
+    union_shape = False
     if page.cursor is not None:
+        # The forward walk past a VALUE cursor on a nullable leading column
+        # is rendered as TWO ordered branches UNION ALL'd, not one
+        # OR-wrapped predicate. The single-statement shape renders
+        # `(lead IS NULL OR row-compare)`; the OR defeats the planner's
+        # index-condition extraction (a row-wise compare alone extracts as
+        # Index Cond; the OR turns it into a Filter), so every cursor page
+        # filter-scanned the index from its start -- page cost linear in
+        # the walked depth, the keyset walk quadratic (measured on
+        # PostgreSQL 18.6, a 100k archive, the tab's own page statement:
+        # 23.9 ms per cursor page, 58k rows removed by filter, where the
+        # bare compare seeks at 0.13 ms -- the full A/B series in
+        # benchmarks/results/archive-scale-red-probe.json, the 10M-scale
+        # extension in archive-scale.json's pagination_pathology). The
+        # split restores the seek without changing the rows:
+        # under NULLS LAST the NULL range is wholly after the values, so
+        # rows strictly past a value cursor are exactly {tuple-compare}
+        # UNION {NULL range} -- branch one seeks the values past the
+        # cursor, branch two seeks the index's NULL range, and the
+        # appended order IS the ordering. Outer ORDER BY re-asserts it
+        # over the at-most-2x-page-size union (a deterministic total
+        # order: id is unique). A cursor inside the NULL range (cursor
+        # value None) keeps the single-statement seam shape: there is no
+        # value tail past it.
+        lead = ordering.columns[0]
+        union_shape = page.forward and lead.nullable and page.cursor[0] is not None
         predicate, cursor_params = ordering.sql_after(
-            page.cursor, len(params) + 1, forward=page.forward
+            page.cursor,
+            len(params) + 1,
+            forward=page.forward,
+            null_tail=not union_shape,
         )
         cursor_clause = f" AND {predicate}"
         params = [*params, *cursor_params]
@@ -348,6 +377,16 @@ def _build_paginated_sql(
             f"ORDER BY {ordering.order_by_sql(forward=False)} LIMIT {_FETCH_SIZE}"
         )
         return f"SELECT * FROM ({inner}) sub ORDER BY {outer_order}", params
+    if union_shape:
+        lead = ordering.columns[0]
+        inner = (
+            f"({from_clause} WHERE {where} {cursor_clause} "
+            f"ORDER BY {outer_order} LIMIT {_FETCH_SIZE}) "
+            f"UNION ALL "
+            f"({from_clause} WHERE {where} AND {lead.name} IS NULL "
+            f"ORDER BY {outer_order} LIMIT {_FETCH_SIZE})"
+        )
+        return f"SELECT * FROM ({inner}) sub ORDER BY {outer_order} LIMIT {_FETCH_SIZE}", params
     sql = f"{from_clause} WHERE {where} {cursor_clause} ORDER BY {outer_order} LIMIT {_FETCH_SIZE}"
     return sql, params
 
