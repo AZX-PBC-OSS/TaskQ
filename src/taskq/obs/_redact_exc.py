@@ -79,6 +79,7 @@ __all__ = [
     "ExceptionText",
     "ScrubbedText",
     "add_exception_event",
+    "mask_credentials",
     "record_exception_safe",
     "record_exception_text",
     "render_exception",
@@ -569,6 +570,23 @@ def _scrub_text(text: str) -> str:
     if any(trigger in lowered for trigger in _CRED_PARAM_TRIGGERS):
         return _URI_PARAM_CRED_RE.sub(r"\1***", text)
     return text
+
+
+def mask_credentials(text: str) -> str:
+    """The credential masks of :func:`_scrub_text`, for a plain string that
+    crosses a trust boundary outside the exception-rendering paths.
+
+    Same chain, same unconditional application (the ``_redaction_enabled``
+    guard covers only the PG-DETAIL drop, which never applies here): bearer
+    headers, OAuth-named token values, standalone JWT shapes, presigned-URL
+    signature parameters, URI userinfo, password-family connection
+    parameters, and the tors token families. Clean text pays only the
+    substring prefilters and returns unchanged -- so callers can compare
+    before/after to DETECT credential material (the audit subject's
+    redact-and-log binding, #463) without a second detector to keep in
+    sync with this chain.
+    """
+    return _scrub_text(text)
 
 
 def set_exception_message_max_chars(limit: int) -> None:

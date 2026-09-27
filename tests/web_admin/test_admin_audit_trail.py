@@ -121,6 +121,81 @@ def test_principal_subject_string_principal() -> None:
     assert principal_subject("deployment-operator") == "deployment-operator"
 
 
+# ── credential-shaped principals never reach the ledger (#463) ───────────
+
+
+# A realistic bearer JWT: three base64url segments, two dots.
+_JWT_TOKEN = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIn0."
+    "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+)
+
+
+def test_principal_subject_redacts_a_credential_shaped_string() -> None:
+    """A bare credential-shaped principal must never reach the bound
+    subject verbatim (#463). The admin-ui guide's own worked example
+    returns ``credentials.credentials``, so a host following the docs puts
+    the raw bearer credential on ``request.state.principal``; the audit
+    table is never pruned and the subject is rendered on the job detail
+    page. The binding site masks the credential material with the house
+    redaction marker; the non-secret frame survives so the row still says
+    SOMETHING about what arrived."""
+    for principal in (_JWT_TOKEN, f"Bearer {_JWT_TOKEN}", f"Authorization: Bearer {_JWT_TOKEN}"):
+        subject = principal_subject(principal)
+        assert _JWT_TOKEN not in subject, "the raw token reached the bound subject"
+        assert "***" in subject, f"the credential was dropped silently, not redacted: {subject!r}"
+
+
+def test_principal_subject_redaction_is_loud() -> None:
+    """The credential redaction is logged loudly -- the operator must learn
+    their auth dependency is leaking credentials into the trail -- and the
+    log line carries no token material itself."""
+    import structlog.testing
+
+    with structlog.testing.capture_logs() as logs:
+        subject = principal_subject(f"Authorization: Bearer {_JWT_TOKEN}")
+    assert any(log["event"] == "admin-audit-principal-credential-redacted" for log in logs), (
+        f"the redaction was silent: {logs}"
+    )
+    for log in logs:
+        assert _JWT_TOKEN not in str(log), "the loud log leaked the token it redacted"
+    assert _JWT_TOKEN not in subject
+
+
+def test_principal_subject_clean_strings_run_unmasked() -> None:
+    """A legitimate bare subject (the documented custom-dependency shape)
+    binds verbatim: the redaction must not over-redact identity."""
+    assert principal_subject("deployment-operator") == "deployment-operator"
+    assert principal_subject("ops-admin@example.com") == "ops-admin@example.com"
+
+
+def test_credential_principal_never_reaches_the_audit_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(#463) Through the route with the guide's own worked-example
+    dependency shape (it returns the raw bearer credential): the
+    ``admin_audit`` INSERT's ``principal_subject`` bind carries the
+    redacted marker, never the token."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
+
+    async def _token_auth() -> str:
+        return f"Authorization: Bearer {_JWT_TOKEN}"
+
+    conn = _RecordingConnection()
+    client = _make_app(_RecordingPool(conn), auth_dependency=_token_auth)
+    sid = new_uuid()
+    csrf = _get_csrf_token(client)
+    resp = client.post(
+        f"/schedules/{sid}/enable", data={"csrf_token": csrf}, follow_redirects=False
+    )
+    assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
+    inserts = _audit_inserts(conn)
+    assert len(inserts) == 1
+    assert _JWT_TOKEN not in str(inserts[0][1]), "the raw token reached the audit INSERT bind"
+
+
 # ── Schedule enable / disable / skip (admin-owned SQL, same transaction) ─
 
 
