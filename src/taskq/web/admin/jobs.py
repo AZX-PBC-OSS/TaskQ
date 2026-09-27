@@ -311,6 +311,23 @@ def _cursor_values(
         return None
 
 
+def _display_slice(rows: list[asyncpg.Record], *, forward: bool) -> list[asyncpg.Record]:
+    """The page's display rows from one fetch, direction-aware.
+
+    A forward fetch serves its FIRST ``_PAGE_SIZE`` rows: the overfetch
+    marker is the FARTHEST row, which the slice correctly leaves
+    unserved.  A backward ("prev") fetch is the ``_FETCH_SIZE`` rows
+    NEAREST the cursor, re-sorted into forward display order -- the
+    overfetch row sits at the END of that list (it is the row nearest
+    the cursor), so the page is its LAST ``_PAGE_SIZE`` rows.  Truncating
+    from the front on a backward fetch drops the row closest to the
+    cursor: exactly one row stranded on every full prev-page turn
+    (backward from ``reference[95]`` served ``reference[44:94]``,
+    stranding ``reference[94]``).
+    """
+    return list(rows[:_PAGE_SIZE] if forward else rows[-_PAGE_SIZE:])
+
+
 def _build_paginated_sql(
     schema: str,
     table: str,
@@ -656,8 +673,12 @@ def register(router: APIRouter) -> None:
         async with pool.acquire() as conn:
             rows = await conn.fetch(query_sql, *query_params)
 
+        # The walk direction resolves ONCE, before the display truncation,
+        # because the truncation itself is direction-aware -- see
+        # :func:`_display_slice`.
+        page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
         overfetched = len(rows) > _PAGE_SIZE
-        display_rows = [_normalize_row(dict(r)) for r in rows[:_PAGE_SIZE]]
+        display_rows = [_normalize_row(dict(r)) for r in _display_slice(rows, forward=page.forward)]
 
         # `overfetched` only tells us whether more rows exist on the side of
         # the result set we just queried (the direction actually walked).
@@ -669,7 +690,8 @@ def register(router: APIRouter) -> None:
         # page reports: the query string alone cannot say so, because a
         # malformed cursor is dropped and the first page served, and on a
         # NULLS LAST column the seam value itself is legitimately empty.
-        page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
+        # (``page`` was resolved above the display truncation -- the
+        # truncation reads its direction.)
         cursor_dir = "next" if page.forward else "prev"
         if not page.forward:
             has_prev = overfetched
