@@ -3,13 +3,16 @@
 {# The queues overview' polled fragment: the full page and the htmx poll
    both render this partial (the jobs page's partial-poll pattern), so a
    poll tick never downloads or re-renders the document around it. The
-   wrapper carries the poll attributes, so the swap keeps the poll alive. #}
+   wrapper carries the poll attributes ONLY in real-time mode - the poll
+   is the realtime transport; polling mode keeps the meta refresh as the
+   page's single refresh (both firing at once was the double-fetch), so
+   the attributes must not render there. #}
 <div id="queue-table-wrap"
-     hx-get="{{ base_path }}/queues"
+     {% if realtime_mode | default("polling") == "realtime" %}hx-get="{{ base_path }}/queues"
      hx-trigger="every {{ poll_interval_ms }}ms"
      hx-select="#queue-table-wrap"
      hx-swap="outerHTML"
-     hx-target="#queue-table-wrap">
+     hx-target="#queue-table-wrap"{% endif %}>
 
 {% if orphan_queues %}
 <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm mb-4 text-yellow-700 dark:text-yellow-300">

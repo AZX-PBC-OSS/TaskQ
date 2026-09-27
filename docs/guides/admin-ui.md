@@ -282,7 +282,7 @@ Redirects (302) to `/admin/queues`.
 
 Queue overview. Lists all queues that have jobs in `pending`, `scheduled`, `running`, or `failed` state. For each queue shows the count of jobs in each of those four statuses, the number of live workers subscribed to it, and a stranded count. The roll-up is capped at 200 queue labels and says so when the cap is reached; there is no pagination.
 
-The page refreshes through the jobs page's partial-poll pattern: the htmx poll re-renders the table fragment alone (no full-page meta refresh), so a poll tick costs one fragment request, not a whole-document reload.
+The page refreshes with exactly one transport per mode: in real-time mode the htmx poll re-renders the table fragment alone (no full-page meta refresh), so a poll tick costs one fragment request, not a whole-document reload; in polling mode the meta refresh is the page's only refresh and it keeps working without JavaScript — the two never run together (that was the double-fetch).
 
 The **Live Workers** column counts workers whose `last_seen_at` falls inside the `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` window, per queue subscription. It is the same read the leader's queue-depth sampler runs (`statement_timestamp()` bound over `workers_last_seen_idx`), so the page, the orphan banner, and the stranded-jobs detector all agree on which worker counts as alive. A queue with pending depth and zero live workers is unserved; that is the condition the `TaskQQueueUnserved` alert fires on.
 

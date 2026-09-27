@@ -559,22 +559,36 @@ def test_queue_overview_sql_caps_its_rows() -> None:
     )
 
 
-def test_queue_overview_page_does_not_double_fetch(
+def test_queue_overview_page_uses_exactly_one_refresh_transport_per_mode(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The queues page renders the partial-poll pattern, not meta refresh +
-    htmx poll together: the htmx poll is the only refresh, so a poll tick
-    costs one request, not a full page reload plus one."""
+    """The queues page never runs BOTH refresh transports at once (that
+    double-fetch was #337's complaint), and polling mode keeps its no-JS
+    liveness (test_web_admin_integration pins the meta refresh there):
+    POLLING mode renders the meta refresh and no htmx poll; REALTIME mode
+    renders the htmx poll and no meta refresh."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    client = make_app()
-    response = client.get("/queues")  # pyright: ignore[reportUnknownVariableType]
-    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
-    html = response.text  # pyright: ignore[reportUnknownVariableType]
-    assert 'http-equiv="refresh"' not in html, (
-        "the page polled by htmx must not ALSO meta-refresh the whole "
-        "document: that is the double-fetch"
+    polling = make_app()
+    polling_html = polling.get("/queues").text  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    assert 'http-equiv="refresh"' in polling_html, (
+        "polling mode's no-JS liveness: the meta refresh is the transport"
     )
-    assert "hx-get" in html, "the htmx poll is the page's remaining refresh"
+    assert "hx-get" not in polling_html, (
+        "polling mode runs ONE transport: the htmx poll must be off"
+    )
+
+    async def _realtime_ctx() -> tuple[str, str]:
+        return ("realtime", "real-time mode")
+
+    import taskq.web.admin.queues as queues_module
+
+    monkeypatch.setattr(queues_module, "get_realtime_ctx", _realtime_ctx)
+    realtime_html = make_app().get("/queues").text  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    assert 'http-equiv="refresh"' not in realtime_html, (
+        "realtime mode's htmx poll is the page's only refresh: a meta "
+        "refresh alongside it is the double-fetch"
+    )
+    assert "hx-get" in realtime_html, "the htmx poll is realtime's transport"
 
 
 def test_queue_overview_htmx_poll_returns_the_table_partial(
@@ -594,9 +608,18 @@ def test_queue_overview_htmx_poll_returns_the_table_partial(
 def test_queue_overview_poll_fragment_carries_the_poll_attributes(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The swapped-in fragment keeps the hx-get poll alive: the wrapper's
-    poll attributes ride the partial, or the second tick never fires."""
+    """The swapped-in fragment keeps the hx-get poll alive in REALTIME mode:
+    the wrapper's poll attributes ride the partial, or the second tick
+    never fires. Polling mode's fragment carries none - the meta refresh
+    is that mode's only transport."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+
+    async def _realtime_ctx() -> tuple[str, str]:
+        return ("realtime", "real-time mode")
+
+    import taskq.web.admin.queues as queues_module
+
+    monkeypatch.setattr(queues_module, "get_realtime_ctx", _realtime_ctx)
     client = make_app()
     response = client.get("/queues", headers={"HX-Request": "true"})  # pyright: ignore[reportUnknownVariableType]
     html = response.text  # pyright: ignore[reportUnknownVariableType]

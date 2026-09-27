@@ -178,10 +178,14 @@ def register(router: APIRouter) -> None:
             q["live_workers"] = live_by_queue.get(str(q["queue"]), 0)
             q["stranded_count"] = stranded_by_queue.get(str(q["queue"]), 0)
         realtime_mode, mode_label = realtime_ctx
-        # The jobs page's partial-poll pattern: the meta refresh is OFF
-        # (suppress_refresh) and the htmx poll is the page's only refresh --
-        # both firing was the double-fetch. A poll tick renders the table
-        # partial alone, never the whole document.
+        # The jobs page's partial-poll pattern, split by mode so both
+        # refresh transports never fire at once (that double-fetch was
+        # #337's complaint) and the polling contract keeps its teeth
+        # (test_web_admin_integration pins it): POLLING mode renders the
+        # meta refresh - the page stays live without JS - and the htmx
+        # poll is off; REALTIME mode suppresses the meta refresh and the
+        # htmx poll is the page's only refresh. A poll tick renders the
+        # table partial alone, never the whole document.
         context = {
             "queues": queues,
             "orphan_queues": orphan_queues,
@@ -189,7 +193,7 @@ def register(router: APIRouter) -> None:
             "page_size": _QUEUE_ROW_CAP,
             "realtime_mode": realtime_mode,
             "mode_label": mode_label,
-            "suppress_refresh": True,
+            "suppress_refresh": realtime_mode == "realtime",
         }
         if request.headers.get("HX-Request") == "true":
             html = tmpl.get_template("_partials/queue_table.html").render(**context)
