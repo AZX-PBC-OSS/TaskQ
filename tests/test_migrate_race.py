@@ -198,6 +198,60 @@ async def _gate_on_ledger_rows(dsn: str, schema: str, *, minimum: int) -> int:
         await conn.close()
 
 
+async def _gate_on_queued_join(conn: asyncpg.Connection, schema: str) -> None:
+    """Fail-closed proof that the second pod's join landed MID-first-run.
+
+    Spawning pod B after a ledger gate proves pod A was mid-chain at
+    GATE-FIRE time, not that B's own ledger read landed inside A's apply
+    window: B's interpreter boot (~0.8s) is on the same order as the
+    whole-chain apply (~0.8s), so a broken-lock mutant can finish A before
+    B arrives and the join degenerates to a sequential no-op — silently.
+
+    So the gate demands a POSITIVE observation, sampled in one instant,
+    that the serialization actually engaged: the ledger already carries
+    rows (pod A provably inside the chain) AND at least one session is
+    BLOCKED on the migration advisory lock (``pg_locks``: locktype
+    'advisory', NOT granted, keyed on the migration lock key's two 32-bit
+    halves — B queueing
+    behind A). Every ``migrate up`` acquires the lock before reading the
+    ledger, even a no-op one, so on correct code B must queue whenever it
+    arrives before A releases; the gate fails closed if that instant is
+    never observed, with a lock mutant (barge / early-release / private
+    key) B never queues at all and the test reds.
+    """
+    name = migration_lock_name(schema)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _GATE_BUDGET_SECS
+    while True:
+        try:
+            rows: int = await conn.fetchval(f'SELECT count(*) FROM "{schema}".schema_migrations')
+        except asyncpg.UndefinedTableError:
+            rows = 0
+        if rows >= 1:
+            # A single-bigint advisory key is stored in pg_locks split
+            # across classid (low 32 bits) and objid (high 32 bits);
+            # comparing objid against the full 64-bit hash is an OID
+            # range error. Reconstruct both halves.
+            waiters = await conn.fetchval(
+                "SELECT count(*) FROM pg_locks "
+                "WHERE locktype = 'advisory' AND NOT granted "
+                "AND classid::bigint = ((hashtextextended($1, 0) >> 32) & 4294967295) "
+                "AND objid::bigint = (hashtextextended($1, 0) & 4294967295)",
+                name,
+            )
+            if waiters >= 1:
+                return
+        if loop.time() > deadline:
+            pytest.fail(
+                f"the join was never proven mid-run: no instant showed the "
+                f"ledger mid-chain ({rows} row(s)) AND a session blocked on "
+                f"the migration advisory lock — either the second pod "
+                f"arrived after the first finished (overlap window missed) "
+                f"or the advisory-lock serialization did not engage"
+            )
+        await asyncio.sleep(0.025)
+
+
 async def _gate_on_advisory_lock_free(conn: asyncpg.Connection, schema: str) -> None:
     """Poll until the killed pod's session-level advisory lock is gone
     (SIGKILL closes the socket, the backend notices and releases)."""
@@ -452,27 +506,38 @@ async def test_five_pods_migrate_up_storm(pg_dsn: str, race_schema: str) -> None
 @pytest.mark.load_sensitive
 @pytest.mark.timeout(2 * 180 + 180)
 async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str) -> None:
-    """Not concurrently-launched: pod A is proven INSIDE the chain (the
-    ledger already carries rows) when pod B launches. B must queue on the
-    advisory lock and finish the story honestly - never apply over A."""
+    """Not concurrently-launched-and-hoped: the join must be PROVEN mid-run.
+    Pod B launches alongside pod A and ``_gate_on_queued_join`` then demands
+    one sampled instant showing the ledger mid-chain AND B blocked behind
+    the advisory lock — B provably queued on the lock while the chain
+    applied, never apply-over-A. Spawn order does not buy the lock: either
+    pod may win, so the outcome contract is "exactly one applied the whole
+    chain, the other no-oped", not a name. Both finish the story honestly."""
     schema = race_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
         await _drop_schema(conn, schema)
         pod_a = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
-        seen = await _gate_on_ledger_rows(pg_dsn, schema, minimum=1)
-        assert seen < len(discover()), (
-            "the gate must fire mid-chain for this test to prove anything; "
-            f"pod A finished the whole chain before the gate ({seen} rows)"
-        )
         pod_b = await _spawn_migrate(pg_dsn, schema, ["migrate", "up"], flag=False)
-        budget = _pod_budget(2)
-        outcome_a, outcome_b = await asyncio.gather(
-            _collect(pod_a, budget), _collect(pod_b, budget)
-        )
+        try:
+            await _gate_on_queued_join(conn, schema)
+            budget = _pod_budget(2)
+            outcome_a, outcome_b = await asyncio.gather(
+                _collect(pod_a, budget), _collect(pod_b, budget)
+            )
+        except BaseException:
+            # The gate failed (or the collect did) with both pods possibly
+            # still alive: reap them BEFORE the finally's DROP SCHEMA, which
+            # otherwise deadlocks against a live migrator's schema locks.
+            for pod in (pod_a, pod_b):
+                pod.kill()
+            await asyncio.gather(pod_a.wait(), pod_b.wait(), return_exceptions=True)
+            raise
         _assert_honest([outcome_a, outcome_b], "mid-run join")
-        assert outcome_a.stdout.count(".sql") == len(discover()), (
-            f"pod A must complete the chain: {outcome_a.stdout!r} {outcome_a.stderr!r}"
+        applied_counts = [outcome_a.stdout.count(".sql"), outcome_b.stdout.count(".sql")]
+        assert sorted(applied_counts) == [0, len(discover())], (
+            f"exactly one pod may apply the chain; got {applied_counts}: "
+            f"{[o.stdout for o in (outcome_a, outcome_b)]}"
         )
         await _assert_ledger_converged(conn, schema)
         await _assert_no_pending_via_third_pod(pg_dsn, schema)
