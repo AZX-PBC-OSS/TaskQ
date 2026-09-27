@@ -31,7 +31,7 @@ the route.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -40,6 +40,7 @@ import pytest
 pytest.importorskip(
     "fastapi"
 )  # Why: this module attacks the admin's builders; the extras legs without fastapi must skip, not error at collection.
+from jinja2 import Environment, PackageLoader
 
 from taskq import (
     migrate as migrate_mod,  # Why: importorskip must precede the optional-import chain.
@@ -47,7 +48,12 @@ from taskq import (
 from taskq._ids import new_base62
 from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]
 from taskq.web.admin._constants import (  # pyright: ignore[reportPrivateUsage]
+    _FETCH_SIZE,
     _PAGE_SIZE,
+)
+from taskq.web.admin._factory import (  # pyright: ignore[reportPrivateUsage]  # Why: the template filters the route's own Environment registers; the render pins below run the SAME environment shape.
+    _iso_attr,
+    _time_ago,
 )
 from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why: the admin module's own builders are the queries under attack; a hand-copied SQL shape would drift from the real page.
     _ARCHIVE_COLS,
@@ -68,7 +74,8 @@ _TERMINAL = sorted({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
 # The exact cursor-width constants the page walk runs with: the boundary
 # attacks size their populations from these, so a future change to either
 # constant re-lands the attacks at the NEW boundary instead of silently
-# testing nothing.
+# testing nothing. The equality is pinned against the admin's own
+# _FETCH_SIZE below (test_display_slice_boundary_arithmetic), not assumed.
 FETCH = _PAGE_SIZE + 1
 
 
@@ -143,6 +150,54 @@ def _shown(
         "desc",
     )
     return _display_slice(rows, forward=page.forward)
+
+
+def _render_job_table(
+    *,
+    jobs: list[dict[str, Any]],
+    has_next: bool,
+    has_prev: bool,
+    next_cursor_at: str,
+    next_cursor_id: str,
+    prev_cursor_at: str,
+    prev_cursor_id: str,
+) -> str:
+    """The route's own partial template, rendered with the context shape
+    jobs_list builds (jobs.py's ``context`` dict): the same Environment
+    construction _factory registers, so a render here is the render the
+    route serves."""
+    env = Environment(autoescape=True, loader=PackageLoader("taskq.web", "templates"))
+    env.globals["base_path"] = ""
+    env.filters["time_ago"] = _time_ago
+    env.filters["iso_attr"] = _iso_attr
+    return env.get_template("_partials/job_table.html").render(
+        jobs=jobs,
+        tab="archived",
+        statuses=_TERMINAL,
+        actor_filter="",
+        queue_filter="",
+        time_range="",
+        time_from="",
+        time_to="",
+        identity_key="",
+        fairness_key="",
+        search="",
+        tags_filter="",
+        live="on",
+        has_next=has_next,
+        has_prev=has_prev,
+        next_cursor_at=next_cursor_at,
+        next_cursor_id=next_cursor_id,
+        prev_cursor_at=prev_cursor_at,
+        prev_cursor_id=prev_cursor_id,
+        cursor_dir="prev",
+        sort="",
+        order="desc",
+        total_rows=len(jobs),
+        realtime_mode="off",
+        mode_label="off",
+        suppress_refresh=True,
+    )
 
 
 # ── seed shapes ──────────────────────────────────────────────────────────
@@ -492,3 +547,213 @@ async def test_prev_walk_survives_an_identical_finished_at_tie_seam(
     walked = _flatten_backward(await _walk_backward_pages(walk_conn, walk_schema, deep_boundary))
     expected = reference[: 3 * _PAGE_SIZE]
     _assert_row_exact(walked, expected, "backward walk across tie seams")
+
+
+# ── the slice's boundary arithmetic, against the ACTUAL constants ────────
+
+
+def _fake_rows(n: int, *, offset: int = 0) -> list[asyncpg.Record]:
+    """Rows shaped enough for :func:`_display_slice` (it only slices)."""
+    return cast("list[asyncpg.Record]", [{"id": offset + i} for i in range(n)])
+
+
+def test_display_slice_boundary_arithmetic() -> None:
+    """The display slice against the constants the fetch actually runs
+    with — including the shapes that left the blind slice looking fine.
+
+    A BACKWARD fetch whose inner LIMIT returned FEWER than _FETCH_SIZE
+    rows (the last prev page: fewer than _PAGE_SIZE rows before the
+    cursor) must serve the WHOLE fetch: Python's negative slice on a
+    3-row list returns 3 — proven here, not assumed.  A fetch EXACTLY
+    _PAGE_SIZE long serves whole in both directions.  A full _FETCH_SIZE
+    fetch serves the rows NEAREST the cursor backward (its LAST
+    _PAGE_SIZE) and the FARTHEST forward (its FIRST _PAGE_SIZE).  An
+    empty fetch serves an empty page in both directions — no crash, no
+    negative-slice wraparound.
+    """
+    assert _FETCH_SIZE == _PAGE_SIZE + 1, (
+        "the walk's overfetch width is _PAGE_SIZE + 1; the boundary attacks "
+        "below are sized from that relationship"
+    )
+
+    # The dry LAST prev page: only 3 rows before the cursor.
+    short = _fake_rows(3)
+    shown = _display_slice(short, forward=False)
+    assert len(shown) == 3, "a short backward fetch serves every row it brought back"
+    assert [r["id"] for r in shown] == [0, 1, 2], "the short fetch's order is untouched"
+    # The explicit negative-slice proof the claim leans on:
+    assert short[-_PAGE_SIZE:] == short, "[-_PAGE_SIZE:] on a 3-row list returns all 3"
+
+    # A fetch exactly _PAGE_SIZE long: the whole fetch is the page, both ways.
+    exact = _fake_rows(_PAGE_SIZE)
+    assert [r["id"] for r in _display_slice(exact, forward=False)] == list(range(_PAGE_SIZE))
+    assert [r["id"] for r in _display_slice(exact, forward=True)] == list(range(_PAGE_SIZE))
+
+    # A FULL fetch (51 rows): the two directions drop OPPOSITE ends.
+    full = _fake_rows(_FETCH_SIZE)
+    back = [r["id"] for r in _display_slice(full, forward=False)]
+    fwd = [r["id"] for r in _display_slice(full, forward=True)]
+    assert len(back) == _PAGE_SIZE and len(fwd) == _PAGE_SIZE
+    assert back == list(range(1, _PAGE_SIZE + 1)), (
+        "backward: the LAST _PAGE_SIZE rows — the row nearest the cursor survives"
+    )
+    assert fwd == list(range(_FETCH_SIZE - 1)), (
+        "forward: the FIRST _PAGE_SIZE rows — the overfetch marker is dropped"
+    )
+    assert back != fwd, "the directions are not the same slice on a full fetch"
+
+    # An empty fetch (the prev turn with nothing before the cursor):
+    # empty page, no crash, no wraparound.
+    empty: list[asyncpg.Record] = []
+    assert _display_slice(empty, forward=False) == []
+    assert _display_slice(empty, forward=True) == []
+
+
+async def test_prev_turn_from_the_population_s_first_row_is_an_honest_empty_page(
+    walk_conn: asyncpg.Connection, walk_schema: str
+) -> None:
+    """A prev cursor parked ON the population's first row has no rows
+    before it: the fetch comes back empty, the page derives
+    has_prev=False / has_next=True, and the real template renders the
+    empty state without a prev link — no crash, no fabricated turn."""
+    base = datetime.now(UTC) - timedelta(days=10)
+    rows = [base - timedelta(days=i) for i in range(_PAGE_SIZE + 45)]
+    await walk_conn.execute(f'TRUNCATE TABLE "{walk_schema}".jobs_archive CASCADE')
+    await _seed(walk_conn, walk_schema, rows)
+    reference = await _reference_ids(walk_conn, walk_schema)
+    assert len(reference) == _PAGE_SIZE + 45
+
+    top = reference[0]
+    row = await walk_conn.fetchrow(
+        f'SELECT finished_at FROM "{walk_schema}".jobs_archive WHERE id = $1', top
+    )
+    assert row is not None
+    cursor = (_cursor_field(row["finished_at"]), str(top))
+
+    fetched = await _fetch_page(walk_conn, walk_schema, cursor, "prev")
+    assert fetched == [], "there is nothing before the population's first row"
+
+    # The route's own derivation (jobs.py, the lines around _display_slice):
+    shown = _shown(fetched, cursor, "prev")
+    page = _paginated_page(
+        dict(_SORTABLE_ARCHIVE), cursor[0], cursor[1], "prev", "finished_at", "desc"
+    )
+    overfetched = len(fetched) > _PAGE_SIZE
+    has_prev = overfetched if not page.forward else page.paged_in
+    has_next = True if not page.forward else overfetched
+    assert page.forward is False, "the request asked for prev and the cursor parsed"
+    assert shown == []
+    assert has_prev is False, "no prev link may render for a turn with nothing before it"
+    assert has_next is True, "the walk CAME from a next page; back-pointing is honest"
+
+    # The real template, rendered with exactly this context shape: no
+    # crash, no prev href, and the empty state — never a phantom page.
+    html = _render_job_table(
+        jobs=[dict(r) for r in shown],
+        has_next=has_next,
+        has_prev=has_prev,
+        next_cursor_at="",
+        next_cursor_id="",
+        prev_cursor_at="",
+        prev_cursor_id="",
+    )
+    assert "cursor_dir=prev" not in html, "the empty turn must not render a prev link"
+    assert "No jobs found" in html, "the empty page renders the template's empty state"
+
+
+async def test_short_prev_fetch_serves_the_rows_nearest_the_cursor(
+    walk_conn: asyncpg.Connection, walk_schema: str
+) -> None:
+    """The last prev page of a walk — a backward fetch that returns
+    FEWER than _PAGE_SIZE rows — serves all of them, row-exact against
+    the reference prefix: the short fetch is the page, nothing stranded."""
+    base = datetime.now(UTC) - timedelta(days=10)
+    rows = [base - timedelta(days=i) for i in range(_PAGE_SIZE + 45)]
+    await walk_conn.execute(f'TRUNCATE TABLE "{walk_schema}".jobs_archive CASCADE')
+    await _seed(walk_conn, walk_schema, rows)
+    reference = await _reference_ids(walk_conn, walk_schema)
+
+    # The population's row 3: exactly 3 rows before it.
+    deep = reference[3]
+    row = await walk_conn.fetchrow(
+        f'SELECT finished_at FROM "{walk_schema}".jobs_archive WHERE id = $1', deep
+    )
+    assert row is not None
+    cursor = (_cursor_field(row["finished_at"]), str(deep))
+
+    fetched = await _fetch_page(walk_conn, walk_schema, cursor, "prev")
+    assert len(fetched) == 3, "exactly 3 rows precede reference[53] — under the page size"
+    shown = [r["id"] for r in _shown(fetched, cursor, "prev")]
+    assert shown == reference[:3], (
+        "the dry last prev page is exactly the 3 rows nearest the cursor, in forward order"
+    )
+
+
+async def test_next_prev_next_cycle_at_a_seam_is_row_exact(
+    walk_conn: asyncpg.Connection, walk_schema: str
+) -> None:
+    """The resolution-order twin: the route resolves _paginated_page ONCE
+    before the truncation, and the NEXT cursor is built from the SHOWN
+    rows' last element — so a full next→prev→next cycle around one seam
+    must re-serve each page row-exact.  This is the reader the moved
+    resolution could have broken while fixing PREV."""
+    base = datetime.now(UTC) - timedelta(days=10)
+    rows = [base - timedelta(days=i) for i in range(3 * _PAGE_SIZE - 5)]  # 145 rows, 3 pages
+    await walk_conn.execute(f'TRUNCATE TABLE "{walk_schema}".jobs_archive CASCADE')
+    await _seed(walk_conn, walk_schema, rows)
+    reference = await _reference_ids(walk_conn, walk_schema)
+
+    # Cache every row's finished_at first, so cursor construction mirrors
+    # the route's (display_rows[-1] under the active sort column).
+    value_rows = await walk_conn.fetch(f'SELECT id, finished_at FROM "{walk_schema}".jobs_archive')
+    _ids_by_id = {r["id"]: r["finished_at"] for r in value_rows}
+
+    def _cursor_of(row_id: UUID) -> tuple[str, str]:
+        return (_cursor_field(_ids_by_id[row_id]), str(row_id))
+
+    # 1. next: unpaged first page, then one turn.
+    page1 = [r["id"] for r in _shown(await _fetch_page(walk_conn, walk_schema, None), None, "next")]
+    assert page1 == reference[:_PAGE_SIZE]
+    # 2. next again from page 1's last SHOWN row.
+    page2 = [
+        r["id"]
+        for r in _shown(
+            await _fetch_page(walk_conn, walk_schema, _cursor_of(page1[-1])),
+            _cursor_of(page1[-1]),
+            "next",
+        )
+    ]
+    assert page2 == reference[_PAGE_SIZE : 2 * _PAGE_SIZE]
+    # 3. prev from page 2's FIRST shown row (the seam the operator clicked).
+    seam = _cursor_of(page2[0])
+    back = [
+        r["id"]
+        for r in _shown(await _fetch_page(walk_conn, walk_schema, seam, "prev"), seam, "prev")
+    ]
+    assert back == reference[:_PAGE_SIZE], "prev from page 2's seam re-serves page 1 row-exact"
+    # 4. next AGAIN, from the prev page's LAST shown row — the route's
+    # next-cursor construction on a prev-served page.
+    resume = _cursor_of(back[-1])
+    again = [
+        r["id"] for r in _shown(await _fetch_page(walk_conn, walk_schema, resume), resume, "next")
+    ]
+    assert again == reference[_PAGE_SIZE : 2 * _PAGE_SIZE], (
+        "next from the prev page's last row re-serves page 2 row-exact"
+    )
+
+    # The #564 deep seam through the same cycle: prev from reference[95]
+    # serves reference[45:95]; its next turn serves reference[95:].
+    deep = _cursor_of(reference[95])
+    deep_page = [
+        r["id"]
+        for r in _shown(await _fetch_page(walk_conn, walk_schema, deep, "prev"), deep, "prev")
+    ]
+    assert deep_page == reference[45:95]
+    resume = _cursor_of(deep_page[-1])
+    assert resume == (_cursor_field(_ids_by_id[reference[94]]), str(reference[94])), (
+        "the next cursor rides the row NEAREST the seam — the one the blind slice dropped"
+    )
+    tail = [
+        r["id"] for r in _shown(await _fetch_page(walk_conn, walk_schema, resume), resume, "next")
+    ]
+    assert tail == reference[95:], "next from the #564 prev page resumes exactly at the seam"
