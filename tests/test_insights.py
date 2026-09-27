@@ -960,3 +960,684 @@ async def test_explain_no_seq_scan_on_hot_paths(
         assert not bad, (
             f"Seq Scan on protected relation(s) {sorted(bad)} in plan:\n{json.dumps(root)[:4000]}"
         )
+
+
+# ── Attack wave: census seams, confound edges, drain honesty, hygiene ───
+#
+# An adversarial pass over the seven read functions.  Each test attacks
+# one claim from the module's contract: the UNION's census at the
+# live/archive seam, the deferral/retry segmentation's documented
+# answers, the drain estimate's NULL verdict and arithmetic sanity, the
+# cron ledger's prior-window bound, and the binding seams' hygiene.
+
+
+async def _seed_fire(
+    conn: asyncpg.Connection,
+    schema: str,
+    schedule_id: uuid.UUID | None,
+    actor: str,
+    *,
+    created_age_s: float | None = None,
+    status: str = "succeeded",
+    scheduled_age_s: float | None = None,
+    started_age_s: float | None = None,
+    finished_age_s: float | None = None,
+    wait_s: float = 1.0,
+    snooze_count: int = 0,
+    rate_limit_blocked_count: int = 0,
+    attempt: int = 0,
+    archived: bool = False,
+    extra_metadata: dict[str, Any] | None = None,
+    queue: str = "attack_q",
+) -> uuid.UUID:
+    """One cron-fire-shaped row with FULL timestamp control (the
+    existing helpers fix created_at to the wait arithmetic; the ledger's
+    created_at windows need their own hands).  Terminal rows derive
+    started/finished from the given ages and scheduled_at from the wait;
+    created_at defaults to scheduled_at (a fire's enqueue ≈ its due
+    stamp).  Non-terminal rows leave started_at/finished_at NULL."""
+    jid = new_job_id()
+    now = datetime.now(UTC)
+    if status in ("pending", "scheduled"):
+        scheduled = now - timedelta(seconds=scheduled_age_s or 0.0)
+        started = finished = None
+    else:
+        assert started_age_s is not None and finished_age_s is not None
+        started = now - timedelta(seconds=started_age_s)
+        finished = now - timedelta(seconds=finished_age_s)
+        scheduled = started - timedelta(seconds=wait_s)
+    created = now - timedelta(seconds=created_age_s) if created_age_s is not None else scheduled
+    meta: dict[str, Any] = dict(extra_metadata or {})
+    if schedule_id is not None:
+        meta["cron_schedule_id"] = str(schedule_id)
+    table = "jobs_archive" if archived else "jobs"
+    expire_clause = ", expire_at" if archived else ""
+    expire_value = ", statement_timestamp() + interval '365 days'" if archived else ""
+    await conn.execute(
+        f"""INSERT INTO {schema}.{table} (
+                id, actor, queue, payload, max_attempts, retry_kind, status, attempt,
+                created_at, scheduled_at, started_at, finished_at,
+                snooze_count, rate_limit_blocked_count, metadata{expire_clause}
+            ) VALUES (
+                $1, $2, $3, '{{"v": 1}}'::jsonb, 3, 'transient',
+                $4::{schema}.job_status, $5, $6, $7, $8, $9, $10, $11, $12::jsonb{expire_value}
+            )""",
+        jid,
+        actor,
+        queue,
+        status,
+        attempt,
+        created,
+        scheduled,
+        started,
+        finished,
+        snooze_count,
+        rate_limit_blocked_count,
+        json.dumps(meta),
+    )
+    return jid
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "taskq; DROP TABLE public.jobs",  # statement smuggling past the match
+        "taskq\n",  # the trailing-newline $-anchor regression constants.py documents
+        'taskq"',  # quote-escape of the interpolation seam
+        "taskq'",  # dblink-style literal escape attempt
+        'taskq"--x',  # comment tail
+        "public.tasks",  # qualified identifier
+        "taskq$; --",  # dollar-quote opener
+        "",  # empty
+    ],
+)
+async def test_attack_schema_guard_rejects_injection_and_newline(bad: str) -> None:
+    """The schema identifier is the ONLY interpolated value: every
+    fetcher and builder must reject metacharacter, comment-tail,
+    qualified and trailing-newline schemas BEFORE touching a
+    connection — _IDENT_RE's \\A/\\Z anchors close the $-matches-before-
+    newline hole (the exact regression constants.py's own comment
+    records)."""
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        await fetch_wait_distribution(None, schema=bad, window=timedelta(hours=1))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        await fetch_cron_ledger(None, schema=bad, window=timedelta(hours=1))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        _build_wait_sql(bad, per_actor=False)
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        _build_cron_ledger_sql(bad)
+
+
+async def test_attack_union_census_seam_and_duplicate_trust(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The census at the live/archive seam: a row the prune ALREADY
+    moved counts once (archive arm), its pre-prune live twin counts once
+    (live arm), a 40-day-old terminal row outside every named window
+    counts zero on BOTH tiers (the bound, not the tier, decides), and a
+    same-id row physically present in BOTH tiers double counts — pinned
+    deliberately: UNION ALL trusts the prune's atomic
+    insert-then-delete exclusivity, and the alternative (a UNION on the
+    four-column projection) would silently DEDUPE two genuinely
+    distinct jobs whose queue/actor/segment/wait all agree, corrupting
+    every percentile.  The trust is the correct trade."""
+    conn, schema = matrix
+    q = "attack_seam_q"
+    # Post-prune: the row lives ONLY in the archive now.
+    await _seed_terminal_job(
+        conn,
+        schema,
+        queue=q,
+        actor="attack_seam_a",
+        wait_s=100.0,
+        finished_age_s=600.0,
+        archived=True,
+    )
+    # Pre-prune: a terminal row still inside the live retention.
+    await _seed_terminal_job(
+        conn, schema, queue=q, actor="attack_seam_a", wait_s=50.0, finished_age_s=600.0
+    )
+    # The seam's other side: terminalised 40 days ago, past the default
+    # 30d prune retention (the sweep would have moved it) — outside
+    # every named window on both tiers, so neither arm may count it.
+    await _seed_terminal_job(
+        conn,
+        schema,
+        queue=q,
+        actor="attack_seam_a",
+        wait_s=5.0,
+        finished_age_s=40 * 24 * 3600.0,
+        archived=True,
+    )
+    rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=1))
+    mine = [r for r in rows if r["queue"] == q]
+    assert len(mine) == 1 and mine[0]["segment"] == "clean"
+    assert mine[0]["count"] == 2  # the archive row + the live row, once each
+    assert mine[0]["p50_wait_s"] == pytest.approx(75.0)
+    assert mine[0]["max_wait_s"] == pytest.approx(100.0)
+    # The duplicate probe: physically the same id in BOTH tiers (a
+    # prune that violated its own exclusivity) is counted by both arms.
+    dup = new_job_id()
+    for table in ("jobs", "jobs_archive"):
+        expire = ", expire_at" if table == "jobs_archive" else ""
+        value = ", statement_timestamp() + interval '365 days'" if table == "jobs_archive" else ""
+        await conn.execute(
+            f"""INSERT INTO {schema}.{table} (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    created_at, scheduled_at, started_at, finished_at, metadata{expire}
+                ) VALUES (
+                    $1, 'attack_dup_a', 'attack_dup_q', '{{"v": 1}}'::jsonb, 3, 'transient',
+                    'succeeded'::{schema}.job_status,
+                    statement_timestamp() - interval '10 minutes',
+                    statement_timestamp() - interval '10 minutes' - interval '7 seconds',
+                    statement_timestamp() - interval '10 minutes' - interval '5 seconds',
+                    statement_timestamp() - interval '10 minutes', '{{}}'::jsonb{value}
+                )""",
+            dup,
+        )
+    dup_rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=1))
+    dup_mine = [r for r in dup_rows if r["queue"] == "attack_dup_q"]
+    assert len(dup_mine) == 1 and dup_mine[0]["count"] == 2  # the honest double count
+
+
+async def test_attack_ledger_anchor_admits_prior_and_current_archived_fires(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The archive arm's finished_at anchor ($2 = 2 x window) must admit
+    EVERY archived fire the created_at windows ask for: a fire created
+    in the prior window finished strictly after creating, so its
+    finished_at clears now - 2 x window — and a fire created in the
+    CURRENT window a fortiori.  Neither fire may be dropped, and
+    cleared_prior must count ONLY prior-window fires (the documented
+    'prior equal window') — a current-window fire finishing fast and
+    pruning fast may not inflate it."""
+    conn, schema = matrix
+    sid = await _seed_schedule(conn, schema, actor="attack_anchor_a")
+    # Prior-window fire: created 90 min ago, terminalised 72 min ago,
+    # pruned (short-retention deployment).  finished 72m ago clears the
+    # 2h anchor; created 90m ago lands in the PRIOR 1h window.
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_anchor_a",
+        queue="attack_anchor_q",
+        created_age_s=5400.0,
+        started_age_s=4320.5,
+        finished_age_s=4320.0,
+        archived=True,
+    )
+    # Current-window fire: created 30 min ago, terminalised 25 min ago,
+    # already pruned.
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_anchor_a",
+        queue="attack_anchor_q",
+        created_age_s=1800.0,
+        started_age_s=1500.5,
+        finished_age_s=1500.0,
+        archived=True,
+    )
+    rows = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["schedule_id"]: r for r in rows}[sid]
+    assert mine["fires_window"] == 1
+    assert mine["cleared_window"] == 1
+    assert mine["fires_prior"] == 1
+    assert mine["cleared_prior"] == 1  # the prior fire ONLY — not the current one too
+    assert mine["outstanding"] == 0
+    assert mine["runaway_trending"] is False
+
+
+async def test_attack_runaway_not_suppressed_by_current_window_archived_fires(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """THE runaway-suppression attack.  A short-retention deployment
+    (prune retention < 2 x window — explicitly supported, the module's
+    own 'retention floor is the analytics floor' doctrine): a schedule
+    whose fires are NOT clearing (one stuck pending fire per window,
+    two windows running) PLUS one fast fire this window that already
+    terminalised AND pruned into the archive.  The documented verdict is
+    TRUE — fires > cleared in both windows.  An archive-arm cleared_prior
+    that lacks the prior window's upper created_at bound counts the
+    fast fire's clearance as a PRIOR-window clearance, inflating
+    cleared_prior to 1 and silently flipping the trend to FALSE."""
+    conn, schema = matrix
+    sid = await _seed_schedule(conn, schema, actor="attack_runaway_a")
+    # Prior window: one fire, created 90 min ago, STILL pending —
+    # never claimed (fires_prior=1 live, cleared_prior=0 live).
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_runaway_a",
+        queue="attack_runaway_q",
+        created_age_s=5400.0,
+        status="pending",
+        scheduled_age_s=5400.0,
+    )
+    # Current window: one fire, created 10 min ago, STILL pending
+    # (fires_window=1 live, cleared_window=0 live).
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_runaway_a",
+        queue="attack_runaway_q",
+        created_age_s=600.0,
+        status="pending",
+        scheduled_age_s=600.0,
+    )
+    # Current window: one fast fire, created 30 min ago, terminalised
+    # 25 min ago, pruned into the archive by the short retention
+    # (fires_window=1 archive, cleared_window=1 archive).
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_runaway_a",
+        queue="attack_runaway_q",
+        created_age_s=1800.0,
+        started_age_s=1500.5,
+        finished_age_s=1500.0,
+        archived=True,
+    )
+    rows = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["schedule_id"]: r for r in rows}[sid]
+    assert mine["fires_window"] == 2  # 1 live + 1 archived
+    assert mine["cleared_window"] == 1  # only the archived fire terminalised
+    assert mine["fires_prior"] == 1
+    assert mine["cleared_prior"] == 0  # NO prior-window fire ever cleared
+    assert mine["outstanding"] == 2
+    assert mine["runaway_trending"] is True  # two windows of fan-out outrunning clearance
+
+
+async def test_attack_deferred_five_times_wait_is_final_leg_only(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """A job deferred five times then succeeding: its wait appears ONLY
+    in the deferred segment, with the FINAL leg's value
+    (started_at - final scheduled_at) — the four deferred legs fold into
+    no bucket, and the rate-limit counter alone (snooze_count = 0)
+    segments deferred too."""
+    conn, schema = matrix
+    q = "attack_defer5_q"
+    await _seed_fire(
+        conn,
+        schema,
+        None,
+        "attack_defer5_a",
+        queue=q,
+        created_age_s=3600.0,
+        started_age_s=120.5,
+        finished_age_s=120.0,
+        wait_s=3.0,
+        snooze_count=5,
+    )
+    # The rate-limit-only twin: blocked 4x by the bucket, never snoozed.
+    await _seed_fire(
+        conn,
+        schema,
+        None,
+        "attack_defer5_a",
+        queue=q,
+        created_age_s=3600.0,
+        started_age_s=60.5,
+        finished_age_s=60.0,
+        wait_s=9.0,
+        rate_limit_blocked_count=4,
+    )
+    rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=6))
+    mine = {r["segment"]: r for r in rows if r["queue"] == q}
+    assert set(mine) == {"deferred"}  # NEITHER row reaches the clean subset
+    assert mine["deferred"]["count"] == 2
+    assert mine["deferred"]["p50_wait_s"] == pytest.approx(6.0)  # median of {3, 9}
+    assert mine["deferred"]["max_wait_s"] == pytest.approx(9.0)
+
+
+async def test_attack_retry_attempt_seven_lands_clean(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The documented answer, pinned: a job at attempt 7 from RETRIES
+    (the retry arm re-stamps scheduled_at and touches NO deferral
+    counter) lands in the CLEAN segment — its wait is the final
+    attempt's claim latency, because the earlier legs left no
+    per-attempt due stamp.  The deferral counters, not the attempt
+    number, decide the segment."""
+    conn, schema = matrix
+    q = "attack_retry7_q"
+    await _seed_fire(
+        conn,
+        schema,
+        None,
+        "attack_retry7_a",
+        queue=q,
+        created_age_s=7200.0,
+        started_age_s=45.5,
+        finished_age_s=45.0,
+        wait_s=2.0,
+        attempt=7,
+    )
+    rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=6))
+    mine = [r for r in rows if r["queue"] == q]
+    assert len(mine) == 1
+    assert mine[0]["segment"] == "clean"  # attempt 7, counters zero → clean
+    assert mine[0]["count"] == 1
+    assert mine[0]["p50_wait_s"] == pytest.approx(2.0)
+
+
+async def test_attack_budget_deferred_fire_is_clean_when_finally_enqueued(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """A budget-deferred cron fire enqueues NO row at deferral time (its
+    deferral is invisible to this layer — the taskq.cron.budget_deferrals
+    counter's record); when the budget finally admits it, the tick
+    enqueues a FRESH row whose created_at/scheduled_at are the actual
+    enqueue instant with zero deferral counters — so its wait lands in
+    the CLEAN bucket (the operator's deferral choice is not the queue's
+    latency), and the ledger counts the fire in the window containing
+    the ACTUAL enqueue, not the skipped one."""
+    conn, schema = matrix
+    sid = await _seed_schedule(conn, schema, actor="attack_budget_a")
+    # The eventually-enqueued fire: created/scheduled 20 min ago (the
+    # budget's admittance instant), claimed and terminalised normally.
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_budget_a",
+        queue="attack_budget_q",
+        created_age_s=1200.0,
+        started_age_s=1194.5,
+        finished_age_s=1194.0,
+        wait_s=4.0,
+    )
+    ledger = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["schedule_id"]: r for r in ledger}[sid]
+    assert mine["fires_window"] == 1  # counted at the actual enqueue instant
+    assert mine["cleared_window"] == 1
+    assert mine["runaway_trending"] is False
+    rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=6))
+    seg = {r["segment"]: r for r in rows if r["queue"] == "attack_budget_q"}
+    assert set(seg) == {"clean"}  # clean bucket, zero deferral counters
+    assert seg["clean"]["p50_wait_s"] == pytest.approx(4.0)
+
+
+async def test_attack_dst_allof_twins_double_the_ledger_honestly(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The DST allof twins: the overlap hour's double enqueue IS two
+    fires, and the forward-stamped SECOND occurrence is a third —
+    fires_window counts every enqueue honestly (the ledger keys on
+    created_at, not status), cleared_window doubles in lockstep as the
+    two terminalise, and the future-armed twin rides in outstanding AND
+    in fires (both by design).  Nothing corrupts: the verdict stays
+    FALSE on an empty prior window.  In the wait distribution each
+    terminal twin is its own clean observation (two rows, not one)."""
+    conn, schema = matrix
+    sid = await _seed_schedule(conn, schema, actor="attack_allof_a")
+    for _ in range(2):  # the twins: identical, both cleared
+        await _seed_fire(
+            conn,
+            schema,
+            sid,
+            "attack_allof_a",
+            queue="attack_allof_q",
+            created_age_s=1200.0,
+            started_age_s=1194.5,
+            finished_age_s=1194.0,
+            wait_s=2.0,
+        )
+    # The allof SECOND occurrence: forward-stamped, still armed.
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        "attack_allof_a",
+        queue="attack_allof_armed_q",
+        created_age_s=60.0,
+        status="scheduled",
+        scheduled_age_s=None,
+    )
+    ledger = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["schedule_id"]: r for r in ledger}[sid]
+    assert mine["fires_window"] == 3  # both twins AND the forward-armed occurrence
+    assert mine["cleared_window"] == 2  # doubling in lockstep
+    assert mine["outstanding"] == 1  # the forward-armed twin
+    assert mine["runaway_trending"] is False  # ratio uncorrupted
+    rows = await fetch_wait_distribution(conn, schema=schema, window=timedelta(hours=6))
+    seg = [r for r in rows if r["queue"] == "attack_allof_q"]
+    assert len(seg) == 1 and seg[0]["segment"] == "clean" and seg[0]["count"] == 2
+    assert seg[0]["p50_wait_s"] == pytest.approx(2.0)
+
+
+async def test_attack_drain_burst_rate_overstatement_is_documented_extrapolation(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The burst-overhang attack: the trailing window's terminalisations
+    all came from a burst that is NOW over — the realised rate
+    overstates the present, so eta_seconds understates the drain.  The
+    estimate does NOT pretend to detect the burst: has_traffic stays
+    TRUE and the arithmetic is exactly depth ÷ (terminalisations/window),
+    because the docstring's contract is 'a THROUGHPUT extrapolation that
+    assumes the next window looks like the last one' — the raw inputs
+    ride beside the verdict so a dashboard can trend the overhang."""
+    conn, schema = matrix
+    q = "attack_burst_q"
+    for _ in range(50):
+        await _seed_active_job(
+            conn,
+            schema,
+            queue=q,
+            actor="attack_burst_a",
+            status="pending",
+            scheduled_age_s=30.0,
+        )
+    for i in range(100):  # the burst: 100 terminalisations inside the hour
+        await _seed_terminal_job(
+            conn,
+            schema,
+            queue=q,
+            actor="attack_burst_a",
+            wait_s=1.0,
+            finished_age_s=600.0 + i,
+        )
+    rows = await fetch_drain_estimates(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["queue"]: r for r in rows}[q]
+    assert mine["has_traffic"] is True
+    assert mine["terminalisations"] == 100
+    assert mine["eta_seconds"] == pytest.approx(50 / (100 / 3600.0))  # 1800 s — understated
+    assert mine["completions_per_second"] == pytest.approx(100 / 3600.0)
+
+
+async def test_attack_drain_armed_only_queue_renders_null_verdict(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """A queue whose only population is future-armed: the row must
+    RENDER (the queues CTE admits the armed arm), with depth 0,
+    has_traffic FALSE, eta NULL — no division by zero, no eta 0 — and
+    the wave's span beside it."""
+    conn, schema = matrix
+    q = "attack_armed_q"
+    for _ in range(3):
+        await _seed_active_job(
+            conn,
+            schema,
+            queue=q,
+            actor="attack_armed_a",
+            status="scheduled",
+            scheduled_age_s=None,
+        )
+    rows = await fetch_drain_estimates(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["queue"]: r for r in rows}[q]
+    assert mine["depth"] == 0
+    assert mine["terminalisations"] == 0
+    assert mine["has_traffic"] is False
+    assert mine["eta_seconds"] is None
+    assert mine["scheduled_depth"] == 3
+    assert mine["wave_min_scheduled_at"] is not None
+
+
+async def test_attack_drain_rate_half_per_minute_and_zero_depth_eta(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The arithmetic's edges: depth 1 against a realised rate of one
+    completion per two minutes reads eta 120 s (sane, exact); depth 0
+    WITH traffic reads eta 0.0 (legitimately 'already drained' —
+    has_traffic TRUE distinguishes it from the undefined NULL verdict)."""
+    conn, schema = matrix
+    q = "attack_rate_q"
+    await _seed_active_job(
+        conn, schema, queue=q, actor="attack_rate_a", status="pending", scheduled_age_s=30.0
+    )
+    await _seed_terminal_job(
+        conn, schema, queue=q, actor="attack_rate_a", wait_s=1.0, finished_age_s=60.0
+    )
+    rows = await fetch_drain_estimates(conn, schema=schema, window=timedelta(minutes=2))
+    mine = {r["queue"]: r for r in rows}[q]
+    assert mine["depth"] == 1
+    assert mine["terminalisations"] == 1
+    assert mine["completions_per_second"] == pytest.approx(1 / 120.0)  # 0.5/min
+    assert mine["eta_seconds"] == pytest.approx(120.0)
+    # Depth 0 with traffic: eta 0.0, not NULL.
+    q0 = "attack_zero_depth_q"
+    await _seed_terminal_job(
+        conn, schema, queue=q0, actor="attack_rate_a", wait_s=1.0, finished_age_s=60.0
+    )
+    rows0 = await fetch_drain_estimates(conn, schema=schema, window=timedelta(minutes=2))
+    mine0 = {r["queue"]: r for r in rows0}[q0]
+    assert mine0["has_traffic"] is True
+    assert mine0["eta_seconds"] == 0.0
+
+
+async def test_attack_metacharacter_names_round_trip_through_bindings(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """Actor/queue names carrying SQL metacharacters ride EVERY binding
+    seam ($N) — never the f-string (only the validated schema is
+    interpolated): the reads answer the exact rows and the hot table is
+    untouched afterwards."""
+    conn, schema = matrix
+    evil_actor = "act'; DROP TABLE x; --"
+    evil_queue = 'q"$1) UNION SELECT 1 --'
+    await _seed_terminal_job(
+        conn, schema, queue=evil_queue, actor=evil_actor, wait_s=6.0, finished_age_s=60.0
+    )
+    sid = await _seed_schedule(conn, schema, actor=evil_actor)
+    await _seed_fire(
+        conn,
+        schema,
+        sid,
+        evil_actor,
+        queue=evil_queue,
+        created_age_s=1200.0,
+        started_age_s=1194.5,
+        finished_age_s=1194.0,
+    )
+    rows = await fetch_wait_distribution(
+        conn, schema=schema, window=timedelta(hours=1), per_actor=True
+    )
+    mine = [r for r in rows if r["queue"] == evil_queue]
+    assert len(mine) == 1 and mine[0]["actor"] == evil_actor
+    assert mine[0]["segment"] == "clean" and mine[0]["count"] == 2
+    drain = await fetch_drain_estimates(conn, schema=schema, window=timedelta(hours=1))
+    dmine = [r for r in drain if r["queue"] == evil_queue]
+    assert len(dmine) == 1 and dmine[0]["terminalisations"] == 2
+    ledger = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    lmine = {r["schedule_id"]: r for r in ledger}[sid]
+    assert lmine["fires_window"] == 1
+    # The injection never executed: the seeded rows are all still there.
+    n = await conn.fetchval(f"SELECT count(*) FROM {schema}.jobs WHERE queue = $1", evil_queue)
+    assert n == 2
+
+
+async def test_attack_gin_containment_type_and_key_strictness(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """The GIN containment lateral's key handling: the cron tick stamps
+    metadata {'cron_schedule_id': str(id)} — TEXT.  The bound
+    jsonb_build_object('cron_schedule_id', s.id::text) matches exactly
+    that (extra keys are fine, @> is containment), a NUMBER-valued stamp
+    matches NOTHING (jsonb containment is type-strict — a divergence
+    from the ->> '123' text-coercion the naive reader would write), and
+    a NULL-metadata job matches nothing."""
+    conn, schema = matrix
+    sid = await _seed_schedule(conn, schema, actor="attack_gin_a")
+    await _seed_fire(  # the real stamp shape + an extra key: matches
+        conn,
+        schema,
+        sid,
+        "attack_gin_a",
+        queue="attack_gin_q",
+        created_age_s=1200.0,
+        started_age_s=1194.5,
+        finished_age_s=1194.0,
+        extra_metadata={"lane": "a"},
+    )
+    await _seed_fire(  # numeric stamp: must NOT match
+        conn,
+        schema,
+        sid,
+        "attack_gin_a",
+        queue="attack_gin_num_q",
+        created_age_s=1200.0,
+        started_age_s=1194.5,
+        finished_age_s=1194.0,
+        extra_metadata={},  # replaced below — the seeder always stamps text
+    )
+    # Overwrite the second row's stamp with the numeric form.
+    await conn.execute(
+        f"""UPDATE {schema}.jobs SET metadata = '{{"cron_schedule_id": 123}}'::jsonb
+            WHERE queue = 'attack_gin_num_q'""",
+    )
+    await conn.execute(  # a no-cron-key terminal row: must NOT match
+        f"""INSERT INTO {schema}.jobs (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                created_at, scheduled_at, started_at, finished_at, metadata
+            ) VALUES (
+                gen_random_uuid(), 'attack_gin_a', 'attack_gin_null_q',
+                '{{"v": 1}}'::jsonb, 3, 'transient', 'succeeded'::{schema}.job_status,
+                statement_timestamp() - interval '20 minutes',
+                statement_timestamp() - interval '20 minutes',
+                statement_timestamp() - interval '20 minutes' - interval '1 seconds',
+                statement_timestamp() - interval '20 minutes', '{{}}'::jsonb
+            )""",
+    )
+    rows = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
+    mine = {r["schedule_id"]: r for r in rows}[sid]
+    assert mine["fires_window"] == 1  # only the text-stamped row
+    assert mine["cleared_window"] == 1
+    assert mine["outstanding"] == 0  # the numeric and NULL rows are not the schedule's
+
+
+async def test_attack_elapsed_scheduled_row_is_armed_transient(
+    matrix: tuple[asyncpg.Connection, str],
+) -> None:
+    """A 'scheduled' row whose snooze delay ELAPSED but whose
+    scheduled→pending promotion (sweep 3's own transition) has not run
+    yet is a TRANSIENT state: the imbalance read counts it in
+    scheduled_depth with a PAST wave_min — pinned as the point-in-time
+    census contract (the read does not pre-empt the sweep's ownership of
+    the flip; between the stamp elapsing and the sweep tick the row is
+    neither pending-due nor future-armed, and this read shows it as
+    armed) — and the drain read carries the same population."""
+    conn, schema = matrix
+    q = "attack_elapsed_q"
+    await _seed_active_job(
+        conn,
+        schema,
+        queue=q,
+        actor="attack_elapsed_a",
+        status="scheduled",
+        scheduled_age_s=60.0,  # elapsed: scheduled_at is 60 s in the PAST
+    )
+    rows = await fetch_queue_imbalance(conn, schema=schema)
+    mine = {r["queue"]: r for r in rows}[q]
+    assert mine["scheduled_depth"] == 1
+    assert mine["depth"] == 0  # not pending — the sweep owns the flip
+    assert mine["wave_min_scheduled_at"] is not None
+    assert mine["wave_min_scheduled_at"] < datetime.now(UTC)  # the past-armed confound
+    drain = await fetch_drain_estimates(conn, schema=schema, window=timedelta(hours=1))
+    dmine = {r["queue"]: r for r in drain}[q]
+    assert dmine["scheduled_depth"] == 1

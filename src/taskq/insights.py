@@ -213,22 +213,29 @@ def _build_wait_sql(schema: str, *, per_actor: bool) -> str:
     The outer shape is the only difference between the two groupings;
     the inner UNION (terminal rows, both retention tiers, the
     finished_at anchor) is one definition either way.
+
+    The schema is validated before any interpolation — the same guard
+    the fetcher applies, restated here because the builder is called
+    directly (the EXPLAIN pins, scripts): asyncpg cannot bind
+    identifiers, so ``schema`` is the one value that reaches the SQL
+    text.
     """
+    s = _require_ident(schema)
     select_cols = (
         "u.queue,\n    u.actor,\n    u.segment," if per_actor else "u.queue,\n    u.segment,"
     )
     group_cols = "u.queue, u.actor, u.segment" if per_actor else "u.queue, u.segment"
     order_cols = "u.queue, u.actor, u.segment" if per_actor else "u.queue, u.segment"
     rendered = _WAIT_SQL_TEMPLATE.format(
-        schema=schema,
+        schema=s,
         select_cols=select_cols,
         group_cols=group_cols,
         order_cols=order_cols,
         live=_WAIT_INNER.format(
-            schema=schema, table="jobs", _TERMINAL_IN=_TERMINAL_IN, bound=_FINISHED_BOUND
+            schema=s, table="jobs", _TERMINAL_IN=_TERMINAL_IN, bound=_FINISHED_BOUND
         ),
         archive=_WAIT_INNER.format(
-            schema=schema, table="jobs_archive", _TERMINAL_IN=_TERMINAL_IN, bound=_FINISHED_BOUND
+            schema=s, table="jobs_archive", _TERMINAL_IN=_TERMINAL_IN, bound=_FINISHED_BOUND
         ),
     )
     return rendered
@@ -814,6 +821,17 @@ async def fetch_drain_estimates(
 # vanilla Postgres and the chunk-pruning key on hypertables, instead
 # of a full-archive scan per schedule.
 #
+# The archive arm's cleared FILTERS carry the same created_at windows as
+# the live arm's.  cleared_window may keep only its lower bound because
+# ``created_at`` is the enqueue statement's transaction-start now() and
+# so is ALWAYS strictly before this read's statement_timestamp() — the
+# upper bound would be vacuously true.  cleared_prior's upper bound is
+# NOT vacuous: without it a current-window fire that finished AND pruned
+# fast (a short prune retention against a long window — a supported
+# configuration) counts as a PRIOR-window clearance, inflating
+# cleared_prior and silently suppressing runaway_trending (pinned by
+# tests/test_insights.py's attack wave).
+#
 # runaway_trending is TRUE when fires > cleared in BOTH the current
 # and the prior window: two consecutive windows of fan-out outrunning
 # clearance is the runaway shape (one window is a burst; two is a
@@ -863,7 +881,8 @@ LEFT JOIN LATERAL (
         count(*) FILTER (WHERE j.created_at >= statement_timestamp() - $1::interval) AS cleared_window,
         count(*) FILTER (WHERE j.created_at >= statement_timestamp() - $2::interval
                           AND j.created_at < statement_timestamp() - $1::interval) AS fires_prior,
-        count(*) FILTER (WHERE j.created_at >= statement_timestamp() - $2::interval) AS cleared_prior,
+        count(*) FILTER (WHERE j.created_at >= statement_timestamp() - $2::interval
+                          AND j.created_at < statement_timestamp() - $1::interval) AS cleared_prior,
         0::bigint AS outstanding
     FROM "{schema}".jobs_archive j
     WHERE j.metadata @> jsonb_build_object('cron_schedule_id', s.id::text)
