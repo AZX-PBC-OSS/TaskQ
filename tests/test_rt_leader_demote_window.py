@@ -10,8 +10,9 @@ election lock) goes away and a contender can promote, and it closes when the dea
 leader's own probe loop notices its connection is gone and demotes.  The bound on
 that window is therefore the demote latency: heartbeat_interval (the probe
 cadence) + dispatcher_command_timeout (the probe bound), per the failover SLA in
-``leader.py``'s docstring ("PG failover ≤ heartbeat_interval", "Worker killed
-≤ heartbeat_interval + 1 s").
+``leader.py``'s docstring ("Worker killed
+≤ leader_lease + heartbeat_interval + one round trip"; the demote window here
+is the connection-loss detection half, not the fleet failover bound).
 
 Contract under test (expected GREEN): after ``pg_terminate_backend`` of the
 leader's election connection, ``is_leader`` must clear within

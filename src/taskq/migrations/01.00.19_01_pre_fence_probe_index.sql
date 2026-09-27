@@ -55,18 +55,67 @@
 -- plain DROP INDEX + CREATE INDEX, whose ordinary locks queue behind
 -- the advisory-lock waiter without a snapshot-wait cycle.
 --
--- OPS NOTE (locks), same caveat as 01.00.10_01: the pair below takes a
--- write-blocking lock on jobs for the duration of the drop+build;
--- build time is proportional to the current RUNNING row count (the
--- partial predicate), not the whole table. Operators with a large
--- in-flight population should run the equivalent
--- `CREATE INDEX CONCURRENTLY IF NOT EXISTS
--- jobs_locked_by_worker_running_idx_new ON "{schema}".jobs
--- (locked_by_worker, id) WHERE status = 'running'` (then swap the two
--- indexes by name in one transaction) manually outside the migration
--- runner during a maintenance window, and let this migration's
--- IF NOT EXISTS no-op.
-DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx;
+-- OPS NOTE (locks), same caveat as 01.00.17_01: the DROP INDEX below
+-- takes ACCESS EXCLUSIVE on jobs and shares this migration's
+-- transaction with the CREATE INDEX that follows, so the lock is held
+-- until COMMIT — for the whole build — and it blocks reads and writes
+-- alike, not writes only. Build time is proportional to the whole
+-- table: a non-concurrent CREATE INDEX heap-scans every row; the
+-- partial predicate only decides which tuples are written into the
+-- index, not how much of the table is read.
+--
+-- OPS NOTE (escape hatch), for operators with a large jobs table.
+-- UNLIKE the precedent files, which contain no DROP INDEX at all, this
+-- file must drop the legacy one-key form that currently owns the
+-- canonical name — so a bare CONCURRENTLY pre-build under the canonical
+-- name would be destroyed by this migration's own drop before its
+-- IF NOT EXISTS could no-op. The swap below works around that by
+-- parking the legacy form under a known name, and the drop in this
+-- file is definition-conditional: it fires only while the LEGACY
+-- one-key form owns the canonical name. Run, outside the migration
+-- runner during a maintenance window:
+--
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS
+--   jobs_locked_by_worker_running_idx_new ON "{schema}".jobs
+--   (locked_by_worker, id) WHERE status = 'running';
+--
+-- then swap by name in ONE transaction (both statements are
+-- metadata-only; the locks are momentary):
+--
+--   BEGIN;
+--   ALTER INDEX "{schema}".jobs_locked_by_worker_running_idx
+--       RENAME TO jobs_locked_by_worker_running_idx_old;
+--   ALTER INDEX "{schema}".jobs_locked_by_worker_running_idx_new
+--       RENAME TO jobs_locked_by_worker_running_idx;
+--   COMMIT;
+--
+-- then apply this migration normally: the conditional drop sees the
+-- two-key form already owning the canonical name and leaves it alone,
+-- the parked `..._old` is dropped, and the CREATE INDEX IF NOT EXISTS
+-- below no-ops. Final state is identical to the plain path: the
+-- canonical name carries the two-key index, valid and in place.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = '{schema}'
+          AND c.relname = 'jobs_locked_by_worker_running_idx'
+          AND NOT EXISTS (
+              -- the two-key form carries `id` among its key columns;
+              -- the legacy one-key form does not
+              SELECT 1 FROM pg_catalog.pg_attribute a
+              WHERE a.attrelid = c.oid
+                AND a.attname = 'id'
+                AND a.attisdropped = false
+          )
+    ) THEN
+        EXECUTE 'DROP INDEX "{schema}".jobs_locked_by_worker_running_idx';
+    END IF;
+END
+$$;
+DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx_old;
 CREATE INDEX IF NOT EXISTS jobs_locked_by_worker_running_idx
     ON "{schema}".jobs (locked_by_worker, id)
     WHERE status = 'running';

@@ -1,7 +1,7 @@
 """Admin audit trail: durable record of who did what through the admin UI.
 
 Every admin-UI operator mutation inserts one ``admin_audit`` row through
-this module. The table (migration ``01.00.19_01_pre_admin_audit``) carries
+this module. The table (migration ``01.00.19_03_pre_admin_audit``) carries
 no foreign key to jobs on purpose: its targets are exactly the rows routine
 maintenance prunes, archives, and deregisters, and an audit trail that dies
 with its target is not a trail.

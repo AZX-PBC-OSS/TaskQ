@@ -335,7 +335,7 @@ async def test_cron_schedules_has_consecutive_failures_column(
 async def test_cron_schedules_has_disabled_by_column(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """The ``01.00.19_01_pre_cron_disabled_by`` migration adds a nullable
+    """The ``01.00.19_02_pre_cron_disabled_by`` migration adds a nullable
     ``disabled_by text`` column to ``cron_schedules``: the ownership model's
     who-disabled-it marker ('auto' = the cron loop's failure-count
     auto-disable, 'operator' = a deliberate disable, NULL = enabled or
@@ -398,3 +398,121 @@ async def test_queues_has_max_concurrent_column(
     col = rows[0]
     assert col["data_type"] == "integer"
     assert col["is_nullable"] == "YES"
+
+
+# ── The fence-probe index migration's OPS NOTE escape hatch ────────────
+
+
+async def _reset_fence_probe_to_legacy_form(pg_conn: asyncpg.Connection, schema: str) -> None:
+    """Drag ``01.00.19_01`` back to its pre-migration state: the ledger row
+    deleted and the LEGACY one-key form owning the canonical name, as on a
+    pre-``01.00.19`` database awaiting upgrade."""
+    await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx')
+    await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx_old')
+    await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx_new')
+    await pg_conn.execute(
+        f'CREATE INDEX jobs_locked_by_worker_running_idx ON "{schema}".jobs'  # Why: schema is a fixture-provided identifier.
+        " (locked_by_worker) WHERE status = 'running'"
+    )
+    await pg_conn.execute(
+        f"DELETE FROM \"{schema}\".schema_migrations WHERE version = '01.00.19_01:pre'"  # noqa: S608  # Why: schema is a fixture-provided identifier.
+    )
+
+
+async def test_fence_probe_migration_replaces_legacy_index(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The plain path: with the legacy one-key form owning the canonical
+    name (the pre-upgrade state), re-applying ``01.00.19_01`` drops it and
+    lands the two-key form under the canonical name, valid."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
+
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    row = await pg_conn.fetchrow(
+        """
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert row is not None, "canonical index missing after the plain path"
+    assert "(locked_by_worker, id)" in row["indexdef"], (
+        "the plain path must land the two-key form under the canonical name"
+    )
+    leftover = await pg_conn.fetchval(
+        """
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = $1 AND indexname LIKE 'jobs_locked_by_worker_running_idx_%'
+        """,
+        settings.schema_name,
+    )
+    assert leftover == 0, "the plain path must leave no swap leftovers"
+
+
+async def test_fence_probe_migration_survives_the_documented_swap(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The OPS NOTE's escape hatch, end to end: pre-build concurrently, swap
+    by name (legacy form parked under ``..._old``, two-key form installed as
+    canonical), then apply the migration. The migration's drop must NOT
+    undo the swap: the canonical two-key form survives, valid, and the
+    parked legacy form is cleaned up."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
+
+    # The recipe, exactly as the migration's OPS NOTE documents it. (The
+    # index name is deliberately NOT schema-qualified: CREATE INDEX takes
+    # the table's schema, and a qualified name is a syntax error.)
+    await pg_conn.execute(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS"  # Why: schema is a fixture-provided identifier.
+        f" jobs_locked_by_worker_running_idx_new"
+        f' ON "{settings.schema_name}".jobs (locked_by_worker, id)'
+        f" WHERE status = 'running'"
+    )
+    async with pg_conn.transaction():
+        await pg_conn.execute(
+            f'ALTER INDEX "{settings.schema_name}".jobs_locked_by_worker_running_idx'
+            " RENAME TO jobs_locked_by_worker_running_idx_old"
+        )
+        await pg_conn.execute(
+            f'ALTER INDEX "{settings.schema_name}".jobs_locked_by_worker_running_idx_new'
+            " RENAME TO jobs_locked_by_worker_running_idx"
+        )
+
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    row = await pg_conn.fetchrow(
+        """
+        SELECT i.indisvalid, i.indisready
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert row is not None, "the swap's canonical index must survive the migration"
+    assert row["indisvalid"] and row["indisready"], (
+        "the surviving canonical index must be valid and ready"
+    )
+    indexdef = await pg_conn.fetchval(
+        """
+        SELECT indexdef FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'jobs_locked_by_worker_running_idx'
+        """,
+        settings.schema_name,
+    )
+    assert "(locked_by_worker, id)" in indexdef, (
+        "the surviving canonical index must be the two-key form the operator built"
+    )
+    leftover = await pg_conn.fetchval(
+        """
+        SELECT count(*) FROM pg_indexes
+        WHERE schemaname = $1 AND indexname LIKE 'jobs_locked_by_worker_running_idx_%'
+        """,
+        settings.schema_name,
+    )
+    assert leftover == 0, "the parked legacy form must be cleaned up"

@@ -190,7 +190,7 @@ these endpoints in production: they can modify job state.
 ### Audit trail
 
 Every admin-UI operator mutation records one row in the `{schema}.admin_audit`
-table (migration `01.00.19_01_pre_admin_audit`): **who** did **what** to
+table (migration `01.00.19_03_pre_admin_audit`): **who** did **what** to
 **which target**, **why**, and when. The table exists because before it, an
 admin mutation left no principal anywhere - the auth dependency verified the
 session and then its identity was discarded, so "who cancelled this job?"
@@ -260,6 +260,13 @@ Semantics worth knowing:
   that maintenance erase the record of who did what. `target_id` stays
   readable after the target is gone, and the job detail page renders the
   per-job trail for live and archived jobs alike.
+- **Checking whether the table has landed? Probe the ledger for
+  `01.00.19_03:pre`, not `01.00.19_01:pre`.** The `01.00.19_01` slot belongs
+  to the fence-probe index migration, so a `01.00.19_01:pre` ledger row can
+  exist while the audit table is still missing - and because the
+  backend-mediated mutations degrade to warn-mode when the table is absent,
+  nothing else announces the gap. The audit table's own migration is
+  `01.00.19_03_pre_admin_audit`.
 
 **Retention:** no sweep touches `admin_audit`; rows accumulate for the life
 of the schema. That is deliberate - a silent retention window is a hole in
