@@ -1261,28 +1261,48 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # operator's request itself (_SWEEP_1_SQL's lease arm). A row
             # inside that window is the contract's designed shape, not a
             # stuck lease; anything else lapsed-and-running is.
-            limbo = await conn.fetch(
-                f"""
-                SELECT id, actor, status::text AS status, attempt, cancel_phase,
-                       lock_expires_at, locked_by_worker,
-                       id = ANY($1::uuid[]) AS is_recovery_job
-                FROM "{schema}".jobs
-                WHERE status = 'running'
-                  AND lock_expires_at < clock_timestamp()
-                  AND (cancel_phase = 0
-                       OR lock_expires_at < clock_timestamp()
-                          - make_interval(secs => $2::double precision)
-                          - make_interval(secs => $3::double precision)
-                          - interval '60 seconds')
-                """,
-                recovery_ids,
-                _CANCELLATION_GRACE_S,
-                _CLEANUP_GRACE_S,
-            )
-            assert not limbo, (
-                f"{len(limbo)} running row(s) hold a lapsed lease the sweep should have "
-                f"reclaimed: {[dict(r) for r in limbo]}; worker map: {worker_id_by_pid}"
-            )
+            # POLLED, not single-shot: the reclaim is the sweep's own
+            # eventual act - its tick must land AND the killed holder's
+            # worker row must expire before the lease arm is eligible -
+            # and neither synchronises with the moment the recovery poll
+            # above returns. A single glance raced that arithmetic and
+            # flaked; the poll fails only if the sweep NEVER reclaims.
+            limbo: list[Any] = []
+
+            async def _sweep_reclaimed_all_lapsed() -> bool:
+                nonlocal limbo
+                limbo = await conn.fetch(
+                    f"""
+                    SELECT id, actor, status::text AS status, attempt, cancel_phase,
+                           lock_expires_at, locked_by_worker,
+                           id = ANY($1::uuid[]) AS is_recovery_job
+                    FROM "{schema}".jobs
+                    WHERE status = 'running'
+                      AND lock_expires_at < clock_timestamp()
+                      AND (cancel_phase = 0
+                           OR lock_expires_at < clock_timestamp()
+                              - make_interval(secs => $2::double precision)
+                              - make_interval(secs => $3::double precision)
+                              - interval '60 seconds')
+                    """,
+                    recovery_ids,
+                    _CANCELLATION_GRACE_S,
+                    _CLEANUP_GRACE_S,
+                )
+                return not limbo
+
+            try:
+                await _poll(
+                    _sweep_reclaimed_all_lapsed,
+                    120.0,
+                    "the sweep to reclaim every lapsed-lease running row",
+                )
+            except AssertionError:
+                assert not limbo, (
+                    f"{len(limbo)} running row(s) hold a lapsed lease the sweep should have "
+                    f"reclaimed: {[dict(r) for r in limbo]}; worker map: {worker_id_by_pid}"
+                )
+                raise
 
             # The reclaim is visible in the ledger: at least one recovery
             # job re-ran at a NEW attempt.
