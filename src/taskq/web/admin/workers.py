@@ -21,6 +21,10 @@ from taskq.web.admin._jsonb import decode_jsonb
 
 logger = structlog.get_logger("taskq.web.admin.workers")
 
+# The workers read is capped like every read-only page (the batches idiom):
+# freshest first, so the cap keeps the live fleet and truncates the stale
+# corpses a wedge can leave behind.
+_WORKERS_PAGE_SIZE = 200
 
 _WORKERS_SQL = (
     "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader, "
@@ -32,7 +36,8 @@ _WORKERS_SQL = (
     "  WHERE j.locked_by_worker = w.id AND j.status = 'running'"
     ") running ON true "
     'LEFT JOIN "{schema}".maintenance_leader ml ON ml.worker_id = w.id '
-    "ORDER BY w.last_seen_at DESC"
+    "ORDER BY w.last_seen_at DESC "
+    f"LIMIT {_WORKERS_PAGE_SIZE}"
 )
 
 # The watchdog freshness verdict is computed by the SERVER, the same
@@ -132,6 +137,8 @@ def register(router: APIRouter) -> None:
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("workers.html").render(
             workers=workers,
+            truncated=len(rows) == _WORKERS_PAGE_SIZE,
+            page_size=_WORKERS_PAGE_SIZE,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
         )
