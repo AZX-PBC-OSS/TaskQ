@@ -403,10 +403,14 @@ async def test_queues_has_max_concurrent_column(
 # ── The fence-probe index migration's OPS NOTE escape hatch ────────────
 
 
-async def _reset_fence_probe_to_legacy_form(pg_conn: asyncpg.Connection, schema: str) -> None:
-    """Drag ``01.00.19_01`` back to its pre-migration state: the ledger row
-    deleted and the LEGACY one-key form owning the canonical name, as on a
-    pre-``01.00.19`` database awaiting upgrade."""
+async def _reset_fence_probe_to_legacy_form(
+    pg_conn: asyncpg.Connection, schema: str, version: str = "01.00.21_02"
+) -> None:
+    """Drag the fence-probe index back to a pre-migration state: the carrier
+    migration's ledger row deleted and the LEGACY one-key form owning the
+    canonical name, as on a pre-upgrade database. The condition under test
+    ships in ``01.00.21_02`` — the restored ``01.00.19_01`` is immutable and
+    keeps its originally-shipped (weaker) condition."""
     await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx')
     await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx_old')
     await pg_conn.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx_new')
@@ -415,7 +419,7 @@ async def _reset_fence_probe_to_legacy_form(pg_conn: asyncpg.Connection, schema:
         " (locked_by_worker) WHERE status = 'running'"
     )
     await pg_conn.execute(
-        f"DELETE FROM \"{schema}\".schema_migrations WHERE version = '01.00.19_01:pre'"  # noqa: S608  # Why: schema is a fixture-provided identifier.
+        f"DELETE FROM \"{schema}\".schema_migrations WHERE version = '{version}:pre'"  # noqa: S608  # Why: schema is a fixture-provided identifier.
     )
 
 
@@ -423,8 +427,11 @@ async def test_fence_probe_migration_replaces_legacy_index(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
     """The plain path: with the legacy one-key form owning the canonical
-    name (the pre-upgrade state), re-applying ``01.00.19_01`` drops it and
-    lands the two-key form under the canonical name, valid."""
+    name (the pre-upgrade state), re-applying the ``01.00.21_02`` carrier
+    drops it and lands the two-key form under the canonical name, valid.
+    The restored ``01.00.19_01`` is immutable and keeps its originally
+    shipped condition; the pg_index-conditioned rebuild ships in the
+    carrier."""
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
     await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
 
@@ -526,8 +533,10 @@ async def test_fence_probe_migration_rebuilds_an_include_id_canonical(
     recipe — is NOT holding the two-key form: an INCLUDE column is payload,
     never an Index Cond, so the fence probe still walks the whole running
     set. ``pg_attribute`` lists INCLUDE columns, so a definition check that
-    reads attributes cannot tell the two forms apart. The conditional drop
-    must fire on this form: after the migration, ``id`` must be a KEY
+    reads attributes cannot tell the two forms apart — which is why the
+    restored ``01.00.19_01`` (immutable, original condition) spares this
+    form and the ``01.00.21_02`` carrier's pg_index-conditioned drop must
+    fire on it: after the migration, ``id`` must be a KEY
     column of the canonical index, valid."""
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
     await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
