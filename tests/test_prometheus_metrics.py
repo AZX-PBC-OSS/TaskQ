@@ -18,6 +18,7 @@ Covers all unit tests:
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import time
 from collections.abc import Generator
@@ -158,6 +159,8 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_cron_budget_deferrals_total",
         "counter",
     ),
+    ("taskq.cron.skipped_slots", "taskq_cron_skipped_slots_total", "counter"),
+    ("taskq.cron.slots_behind", "taskq_cron_slots_behind", "gauge"),
     ("taskq.jobs.by_status", "taskq_jobs_by_status", "gauge"),
     ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count", "gauge"),
     (
@@ -230,6 +233,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQRateLimitDependencyOutage",
     "TaskQCronLockContention",
     "TaskQCronBudgetDeferrals",
+    "TaskQCronSkippedSlots",
     "TaskQRunningLeaseExpired",
     "TaskQQueueUnserved",
     "TaskQStrandedJobs",
@@ -320,6 +324,10 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
     meter.create_counter("taskq.cron.lock_contention", unit="1").add(1)
     meter.create_counter("taskq.cron.budget_deferrals", unit="1").add(1, {"actor": "a"})
+    meter.create_counter("taskq.cron.skipped_slots", unit="1").add(1, {"actor": "a"})
+    meter.create_observable_gauge(
+        "taskq.cron.slots_behind", unit="1", callbacks=[lambda _: [Observation(3, {"actor": "a"})]]
+    )
     meter.create_observable_gauge(
         "taskq.jobs.by_status",
         unit="1",
@@ -379,13 +387,13 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 22 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 23 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 22
+    assert len(rules) == 23
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -398,11 +406,50 @@ def test_rules_yaml_parses_correctly() -> None:
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 22 alerts with the names."""
+    """rules.yaml contains exactly 23 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 22
+    assert len(rules) == 23
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
+
+
+# ── the docs' rule citation is bound to the file ────────────────────
+
+
+def test_docs_rule_citation_matches_rules_yaml() -> None:
+    """The guides' ``22 rules (...)`` citation is bound to rules.yaml itself.
+
+    The existing pins above go red when rules.yaml drifts from the
+    hard-coded count and name set - but those pins live on the FILE side:
+    a rule deleted from rules.yaml with the tests updated in step left the
+    guides' "(22 rules: ...)" citation and its enumerated summary stale and
+    nothing went red. This closes that asymmetry from the DOCS side: the
+    claimed count and the length of the comma-separated enumeration in
+    BOTH guides must equal the file's actual rule count, so any change to
+    rules.yaml that is not mirrored into the docs' citation fails here.
+    """
+    actual = len(yaml.safe_load(_RULES_YAML.read_text())["groups"][0]["rules"])
+    citations = (
+        (
+            Path(__file__).parent.parent / "docs" / "guides" / "observability.md",
+            re.compile(r":\s*(\d+) rules \(([^)]+)\)"),
+        ),
+        (
+            Path(__file__).parent.parent / "docs" / "guides" / "ops.md",
+            re.compile(r"\((\d+) rules: ([^)]+)\)"),
+        ),
+    )
+    for page, pattern in citations:
+        match = pattern.search(page.read_text(encoding="utf-8"))
+        assert match, (
+            f"{page.name} no longer carries the rules.yaml citation in the "
+            "expected shape - if the citation moved or was rewritten, re-point "
+            "this pin; do not unpin the docs' rule count"
+        )
+        claimed, enumeration = int(match.group(1)), match.group(2)
+        named = len(" ".join(enumeration.split()).split(", "))
+        detail = f"cites {claimed} rules naming {named}; rules.yaml ships {actual}"
+        assert claimed == actual == named, f"{page.name} {detail} - update the citation"
 
 
 # ── plain rules.yaml and k8s PrometheusRule stay in lockstep ────────

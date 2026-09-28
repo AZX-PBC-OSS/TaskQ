@@ -456,6 +456,36 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ---
 
+## TaskQCronSkippedSlots
+
+**What fired.** A sustained rate of `taskq_cron_skipped_slots_total` (one increment per cron fire attempt, carrying that attempt's full drop count, labeled by actor): the schedule's `next_fire_at` fell behind `now() - TASKQ_CRON_CATCH_UP_WINDOW`, and every schedule occurrence between the owed slot and the recomputed one is a fire the system could not even attempt. The count is in FIRE UNITS — a `*/5` schedule reported as 3 means three dropped fires (about 15 minutes of schedule time). Skipped slots are never replayed: the recompute lands `next_fire_at` in the future, so the count IS the record of what was dropped. A brief burst is a leader failover or a paused fleet crossing the window once; a rate sustained for 5 minutes means the schedule is losing the race every period — the **runaway fan-out**: a cron-triggered sync whose actor's jobs clear slower than the cron period fires them.
+
+**How to confirm.**
+
+- Metric: `rate(taskq_cron_skipped_slots_total[5m])` — sustained non-zero is the runaway; a spike that decays to zero is a one-off (failover, paused fleet). The depth (how far behind the actor's worst schedule was at the skip) is `taskq_cron_slots_behind{actor}` — a depth that keeps CLIMBING period over period is the fan-out compounding; a depth that returns to 0 on the next fire is a one-time drop.
+- Logs: the `cron missed slots skipped` WARNING carries `skipped_slots` and `schedule_id` per drop; the `cron fired` line for the same fire repeats the depth, so one schedule's timeline shows exactly which periods were dropped.
+- SQL: the clearance comparison — is the actor's job completion rate slower than the cron period? — is the runaway predicate in `src/taskq/insights.py` (the per-schedule fires-vs-clearance SQL; fires are attributable to their schedule through the durable `metadata->>'cron_schedule_id'` stamp on every cron-enqueued job). Run it to name the schedule and quantify the gap:
+
+  ```sql
+  SELECT id, actor, name, cron_expr, next_fire_at,
+         now() - next_fire_at AS overdue_by, last_fired_at
+  FROM taskq.cron_schedules
+  WHERE enabled AND next_fire_at <= now()
+  ORDER BY next_fire_at
+  LIMIT 10;
+  ```
+
+- Distinguish the sibling signals: `taskq.cron.budget_deferrals` is a budget-shaped lag (the fire is DEFERRED one tick and retried — nothing dropped); `taskq.cron.skipped_slots` is a real drop (the slot is gone). A schedule can carry both.
+
+**How to remediate.**
+
+1. Widen the fan-out's capacity: the actor's jobs take longer than the cron period, so the backlog compounds period over period — raise the actor's concurrency (a second worker on its queue) or make each job cheaper, until jobs clear faster than the period. The `taskq.jobs.actor_backlog` / `taskq.jobs.oldest_pending_age_seconds` gauges show the pile-up on the job plane while the counter shows the drops on the cron plane.
+2. Lengthen the cron period on the schedule (or fan out from one fire into a batched job) so the period fits the actor's real clearance time.
+3. If the drops are acceptable (the schedule only needs the LATEST occurrence, and stale ones may be dropped — a common and legitimate shape for sync triggers), widen `TASKQ_CRON_CATCH_UP_WINDOW` to stop the drops, or leave it: the counter then documents the drops instead of hiding them. What the system never does is drop a slot without counting it.
+4. Confirm recovery: the counter's rate returns to 0 and `taskq_cron_slots_behind` re-observes the actor at 0 on its next clean fire.
+
+---
+
 ## TaskQCronScheduleDisabled
 
 **What fired.** `taskq_cron_disabled_schedules > 0` (for 0m, immediately): one or more cron schedules have been auto-disabled after `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) consecutive `payload_factory` failures. The gauge is refreshed by the leader's cron tick from the database's own count of disabled rows, so it settles on what every process has left behind after each tick. A disabled schedule enqueues nothing: its jobs stop firing, silently, on the schedule's own cadence.
@@ -522,6 +552,22 @@ Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive
   ```
 
 - The admin `/jobs` page renders the same state per row (Lease column): a red `expired` badge with the holding worker.
+
+  A note on the two clocks this runbook lives between: a holder can read as
+  **dead** on the liveness surfaces (the admin banner, `taskq doctor`'s
+  "no live worker serves", `taskq.queue.live_workers`) while its RUNNING
+  rows are **not yet zombies**. Liveness is the worker row's heartbeat
+  window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`, default 30 s); the
+  reclaim is the ROW's own lease (`lock_expires_at`, default lease 60 s)
+  or its per-job heartbeat deadline - whichever fires first governs, and
+  neither consults the banner. So "doctor says no live worker" plus a
+  stuck `running` row inside its lease is the designed shape, not a
+  contradiction: the row's job follows the lease (this runbook), the
+  queue's *pending* work follows liveness ([TaskQStrandedJobs](#taskqstrandedjobs)).
+  The worker row itself is removed later still, by the stale-worker sweep's
+  own window (`heartbeat_interval * (max_heartbeat_failures + 3)`, 60 s at
+  the defaults) - the band between the liveness edge and that removal is
+  where the surfaces legitimately disagree.
 
 **How to remediate.**
 

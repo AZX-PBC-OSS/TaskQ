@@ -1029,7 +1029,7 @@ Resolving the reference is also what lets validate warn about an actor whose que
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK: 2 worker(s), actors='billing.actors:registry'
+# config OK, 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```

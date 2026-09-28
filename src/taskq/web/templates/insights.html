@@ -1,0 +1,10 @@
+{% extends "_base.html" %}
+{% set active_page = "insights" %}
+
+{% block title %}Insights — TaskQ Admin{% endblock %}
+
+{% block content %}
+{# The page's body (and its htmx poll) live in the partial: the poll
+   renders the fragment alone, the queues page's partial-poll pattern. #}
+{% include "_partials/insights_body.html" %}
+{% endblock %}

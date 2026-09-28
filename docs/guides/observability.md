@@ -70,8 +70,11 @@ through structlog). Startup logs one line saying what was wired:
 otel-exporter-configured  traces=otlp  metrics=otlp  logs=  source=env
 ```
 
-and `source=none` when nothing asked for an exporter. Two other startup
-lines matter:
+and `source=none` when nothing asked for an exporter. (That is the
+`console` renderer's shape; the default `TASKQ_LOG_FORMAT=json` emits the
+same line as the `otel-exporter-configured` event with `traces`/`metrics`/
+`logs`/`source` — and the port fields — as JSON fields, so grep for the
+event name there.) Two other startup lines matter:
 
 - `otel-exporter-unavailable` (WARNING, with `extra=otel` or
   `extra=prometheus`); the variables are set but the package that
@@ -381,7 +384,9 @@ TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
 ```
 
 The startup line reads `otel-exporter-configured metrics=prometheus
-source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
+source=prometheus prometheus_port=9464` (the console shape; the default
+`TASKQ_LOG_FORMAT=json` emits the same fields on the `otel-exporter-configured`
+event); with an OTLP endpoint set as well,
 `metrics=otlp,prometheus source=env,prometheus`: both exporters share one
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
@@ -484,6 +489,7 @@ you *which* jobs absorbed them.
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
 | `taskq.cron.lock_contention` | `1` | n/a | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
 | `taskq.cron.budget_deferrals` | `1` | `actor` | Cron fires deferred because the tick's funded factory budget had no fundable grant left for them: a schedule planned ahead consumed the budget, or the leftover fell below the minimum fundable grant. A brief burst is catch-up draining in tick-sized batches; a SUSTAINED rate means one schedule's payload factory is monopolizing the tick budget every tick: a slow-but-successful factory never strikes and never auto-disables, so its peers retry every tick without ever being funded (delayed, not lost; the deferral advances `next_fire_at` one leader tick). Per-schedule attribution is on the `cron-fire-budget-deferred` log line; the operator resolution (tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the monopolizer's duration, or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`) is the cron guide's tick-budget section and the `TaskQCronBudgetDeferrals` runbook. The `actor` label is capped like `taskq.cron.consecutive_failures`. | yes |
+| `taskq.cron.skipped_slots` | `1` | `actor` | Cron schedule occurrences a fire attempt DROPPED because the schedule's `next_fire_at` fell behind `now() - TASKQ_CRON_CATCH_UP_WINDOW`: fires the system could not even attempt, counted in FIRE UNITS (a `*/5` schedule reported as 3 is three dropped fires, the unit the runaway predicate compares against the cron period). One increment per fire attempt carrying that attempt's full drop count; skipped slots are never replayed (the recompute lands `next_fire_at` in the future), so the count IS the record of what was dropped. This is the producer side of the runaway-fan-out detection — the system admitting it is losing the race; the clearance predicate itself is the fires-vs-clearance SQL in `src/taskq/insights.py` (the `taskq.insights` module). Read beside `taskq.cron.slots_behind` (the depth) and `taskq.cron.budget_deferrals` (a different, budget-shaped lag). Emitted from the tick's commit-gated emission, so a rolled-back tick (whose owed slots are re-attempted) reports nothing. The `actor` label is capped like `taskq.cron.consecutive_failures`. `TaskQCronSkippedSlots` reads it. | yes |
 | `taskq.jobs.interrupted` | `1` | `actor`, `hold` | Running attempts released back to the fleet by a worker shutdown (`mark_interrupted` landed). The spent attempt stands: the attempt did start executing, so its increment is NOT refunded (see `interrupt_count` and the release contract in [cancellation.md](cancellation.md)). `hold` buckets the release by whether the row was parked behind a hold (`">0"`, the actor was still running when the graces expired) or re-pended immediately (`"0"`), the split an operator reads to see whether deploys are interrupting responsive or unresponsive actors. | yes |
 | `taskq.jobs.interrupted_noop` | `1` | `actor` | `mark_interrupted` calls declined by the fence (the row is no longer this worker's running row at the attempt epoch, or an operator cancel is in flight, which wins). A silent no-op on a release path would look like a release that never landed, so the fenced-out arm has its own counter; `actor` is empty when the fenced-out read cannot attribute one. | yes |
 | `taskq.progress.flush_failures` | `1` | `stage`, `error_type` | Progress flush failures to Postgres, by stage. `stage="per_job"`: one job's flush UPDATE failed, that job's progress since the last flush is lost; `stage="pool"`: a pool could not be obtained at all (the loop-level getter failed, or the per-job acquire failed or was exhausted), so every job's progress is lost. The two are materially different incidents and the pool-stage sites log a different kind than the per-job one, so an alert rule can separate them. `error_type` is the exception class name. | yes |
@@ -536,6 +542,7 @@ One counter outside this table's worker/producer population: `taskq.admin.audit.
 | `taskq.reservation.slots_used` | `1` | `bucket` | In-use reservation slots per rate-limit bucket. Sampled by the leader every 15 s. |
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | n/a | Count of currently disabled cron schedules. |
+| `taskq.cron.slots_behind` | `1` | `actor` | How far behind its schedule a cron actor's fire was when it skipped, in FIRE UNITS (a `*/5` schedule reported as 3 was three dropped fires deep): the depth companion of `taskq.cron.skipped_slots`. Per actor, the most recent committed cron tick's worst schedule depth; a clean fire re-observes the actor at 0, so a depth that keeps climbing period over period is the runaway fan-out compounding, and one that decays to 0 was a one-time drop. Published by the leader's cron tick only (the tick is the only place the drop is computed), so a non-leader process carries no series — the leader-observable pattern, like `taskq.cron.disabled_schedules`. The `actor` label is capped like `taskq.cron.consecutive_failures`. |
 | `taskq.heartbeat.consecutive_failures` | n/a | n/a | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
 | `taskq.notify.connected` | `1` | `schema` | `1` if this process's NOTIFY listener connection is healthy, `0` otherwise (sample-on-scrape). A `0` beside a rising `taskq.notify.reconnects` rate is a listener that cannot hold a connection; see [NOTIFY connection failures](troubleshooting.md#5-notify-connection-failures). |
 | `taskq.worker.active_jobs` | `1` | n/a | Jobs in flight on this worker process: the OTel twin of the health socket's hand-rendered `taskq_active_jobs`, which no scrape reaches. One series per process; divide by `taskq.worker.max_concurrency` for utilisation. |
@@ -680,7 +687,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above: import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 22 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 23 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml`: the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -703,6 +710,7 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 | `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
 | `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
 | `TaskQCronBudgetDeferrals` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) | [TaskQCronBudgetDeferrals](runbooks.md#taskqcronbudgetdeferrals) |
+| `TaskQCronSkippedSlots` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) (same tuning surface: period, actor capacity, catch-up window) | [TaskQCronSkippedSlots](runbooks.md#taskqcronskippedslots) |
 | `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
 | `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
 | `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |
@@ -717,6 +725,40 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 
 The remaining tuned-by-dashboard conditions (actor saturation, event-loop lag) ship no
 alert on purpose; both are read off the gauges in the playbook table.
+
+### Runaway fan-out: what the operator sees first
+
+A cron-triggered sync fans out to actor jobs. When those jobs take longer to
+clear than the cron period fires them, the schedule falls further behind every
+period until its `next_fire_at` crosses `now() - TASKQ_CRON_CATCH_UP_WINDOW` —
+and the tick's catch-up branch starts DROPPING occurrences: fires the system
+cannot even attempt. That skip is the system admitting it is losing the race,
+and it is fully instrumented so the runaway is a paged alert, never a silent
+loss:
+
+1. **What the operator sees first**: `TaskQCronSkippedSlots` fires on a
+   sustained `taskq.cron.skipped_slots` rate. The counter is in FIRE UNITS (a
+   `*/5` schedule reported as 3 is three dropped fires) and never replays —
+   the count is the record of what was dropped.
+2. **What to check next**, in order:
+   - `taskq.cron.slots_behind{actor}` — the depth. Climbing period over
+     period: the fan-out is compounding. Decaying to 0 on the next fire: a
+     one-time drop (failover, paused fleet), not a runaway.
+   - `taskq.cron.budget_deferrals` — a DIFFERENT lag: budget-shaped
+     (deferred one tick and retried, nothing dropped), not a skip. Both can
+     fire on the same actor; their remedies are different knobs.
+   - `taskq.jobs.actor_backlog` / `taskq.jobs.oldest_pending_age_seconds` —
+     the job-plane pile-up behind the cron-plane drops.
+   - The fires-vs-clearance SQL in `src/taskq/insights.py` (`taskq.insights`,
+     the runaway predicate): jobs cleared per schedule period vs. the cron
+     period, joined through the durable `metadata->>'cron_schedule_id'` stamp
+     every cron-enqueued job carries. It names the schedule and quantifies
+     the gap.
+3. **What the system guarantees while you investigate**: every dropped slot
+   is counted (the counter), its depth visible (the gauge, the
+   `cron missed slots skipped` warning, and the `cron fired` line both carry
+   `skipped_slots`), and the fan-out job itself lands with its schedule stamp
+   — nothing vanishes without a trace.
 
 ---
 

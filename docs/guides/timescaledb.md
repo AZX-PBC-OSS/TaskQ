@@ -162,6 +162,89 @@ The details that matter:
   where vanilla mode expires the same rows gradually, row by row, in bounded
   batch deletes. Size the post-deploy window for that first policy run too.
 
+## The NULL `finished_at` tail (the pre-flight refusal)
+
+`jobs_archive.finished_at` is nullable — the archive mirrors every `jobs`
+column, and a job's `finished_at` is NULL through its whole non-terminal
+life (dispatch stamps `finished_at = NULL` on claim). TimescaleDB cannot
+convert the table while the column holds NULLs: the partition column must
+be NOT NULL, and `create_hypertable(..., migrate_data => TRUE)` aborts on
+them with `NotNullViolationError`.
+
+No production write can put one there. Every terminal transition stamps
+`finished_at = clock_timestamp()` (all ten terminal arms in
+`backend/_sql_templates.py`, plus the sweeps, the batch-cancel drains, and
+the actor-deregistration drain), and the prune's archive COPY could not
+pick a NULL row up anyway: both the candidate window and the lock-time
+re-read require `finished_at < statement_timestamp() - retention`, and
+`NULL < x` is NULL. What the shape's provenance is: version skew — an
+older reclaim sweep's pre-reorder shape terminalised budget-carrying
+cancelled rows without stamping (the shape the `finished_at` CASE comment
+in `backend/_sweeps.py` names). Those rows are the un-draining NULL tail
+of the prune's cursor walk — invisible to the age predicate forever — and
+a hand-run backfill or migration tooling that moves them into the archive
+by hand carries the NULLs along. Direct SQL produces them trivially.
+
+The verdict is **debris**, and the enable path refuses it loudly with a
+pre-flight census that runs BEFORE any DDL:
+
+```text
+TASKQ_TIMESCALEDB_HYPERTABLES=true: the conversion refuses to run —
+"taskq".jobs_archive holds 2 row(s) whose finished_at is NULL, ...
+Complete or discard them explicitly, then re-run `taskq migrate up`:
+  UPDATE "taskq".jobs_archive SET finished_at = archived_at WHERE finished_at IS NULL;
+  DELETE FROM "taskq".jobs_archive WHERE finished_at IS NULL;
+```
+
+The refusal names the row count and both remediations — complete the rows
+(stamp the archive time as the finish, or any timestamp the operator
+audits against) or discard them. The operator decides; the conversion
+never invents a finish timestamp and never deletes on its own.
+
+Why the refusal fires before any DDL, and why that is the whole point:
+the conversion's statements run one per transaction on the deploy
+connection's autocommit. Without the census, the failure surfaced
+mid-`migrate_data` — after the foreign-key drop, both primary-key drops,
+and both unique-constraint adds had already committed, and after
+`job_events` had converted whole. The stranded state was a half-converted
+schema: `jobs_archive` with no primary key (a duplicate-id insert
+succeeds; the archive-once guard is then app-level only), no attempts
+foreign key, and `job_events` already a hypertable — degraded until an
+operator diagnosed it, while every re-run failed at the same spot. The
+census makes the refusal atomic: the schema stays byte-identical to what
+the operator arrived with, debris included.
+
+The census re-runs on every deploy but only counts while the table is
+still vanilla (an already-converted hypertable's partition column is NOT
+NULL, so there is nothing to count and no scan). `job_attempts_archive`
+and `job_events` need no census: both partition columns are NOT NULL in
+the bundled schema, so the NULL shape is structurally impossible there.
+Once converted, the NOT NULL partition column enforces the shape at DML
+time: the same insert vanilla accepts is rejected with
+`NotNullViolationError` on the converted schema (pinned in
+`tests/web_admin/test_admin_on_hypertables.py`), and the admin history
+walk's NULL-sentinel cursor range is unreachable — harmless — on
+hypertable mode.
+
+**The census is a point-in-time gate, not a lock.** It counts in its own
+autocommit transaction, and the conversion's statements each commit
+separately after it, so a row written with a NULL `finished_at` between
+the census and `jobs_archive`'s `create_hypertable` re-enters the
+mid-`migrate_data` failure and can strand the half-converted schema the
+census exists to prevent. No lock taken at census time can close that
+window: the conversion is deliberately per-statement autocommit DDL —
+each statement independently re-runnable, the same discipline the
+constraint surgery relies on — so nothing acquired by a lone `SELECT`
+spans it. What closes it in practice is the same maintenance window rule
+the constraint surgery already requires: no TaskQ writer can produce a
+NULL `finished_at` row (see above), so the only writer that can poison
+the window is direct SQL against the database during the enabling
+deploy. Run the enabling deploy with no writers against the schema, as
+the pkey-drop window above already requires. If it happens anyway, the
+refusal's own remediations still converge the wreck: discard (or
+complete) the NULL rows and re-run `taskq migrate up` — the census
+counts whenever the table is still vanilla, wrecked or not.
+
 ## The columnstore (compression) is adopted for the archive tables
 
 The deploy step arms the columnstore on the two archive tables when it

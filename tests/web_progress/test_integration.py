@@ -8,8 +8,11 @@ Pattern notes
 -------------
 - Session-scoped PG container from ``tests/conftest.py`` (``pg_container``,
   ``pg_dsn``).
-- Session-scoped Redis container from ``tests/conftest.py`` (``redis_container``,
-  ``redis_url``).
+- Per-test PRIVATE Dragonfly from ``private_redis_url`` (a disposable
+  ``killable_redis_container``): these pins assert pub/sub FANOUT TIMING and
+  probe broker state (``PUBSUB NUMSUB``), so they must never share the
+  invocation's shared pair - see ``taskq.testing.fixtures.redis_url``'s
+  tenancy contract and the ``redis_client`` fixture's note below.
 - Per-test ``pool`` fixture: drops schema CASCADE, applies migrations, yields
   an asyncpg pool.
 - ``httpx.AsyncClient(transport=httpx.ASGITransport(app=app))`` for async
@@ -100,8 +103,21 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 @pytest_asyncio.fixture
-async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    client = aioredis.from_url(redis_url, socket_timeout=None)
+async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
+    # PRIVATE broker (killable_redis_container + redis_url_for, db 0), not the
+    # shared pair: these pins assert pub/sub FANOUT TIMING - stream frames
+    # delivered within bounded windows (overall_timeout, the disconnect
+    # probe's PUBSUB NUMSUB settle). The shared pair's co-tenancy stall band
+    # lands on exactly that surface: a sibling test's broker-wide stretch
+    # delays the fanout past the window and reds the pin with no defect in
+    # the code under test (the historical weather class: subscriber wake,
+    # then the ping pins, then attack478's CLIENT PAUSE - each cured a
+    # single test and the band found the next). A per-test disposable
+    # Dragonfly (~1s boot) ends the class by construction: no co-tenants.
+    # socket_timeout explicit: redis-py 8's 5s default fires on a fresh
+    # connection's handshake read under a loaded runner; the scenario's
+    # real bounds are the tests' own overall_timeouts.
+    client = aioredis.from_url(private_redis_url, socket_timeout=None)
     try:
         yield client
     finally:

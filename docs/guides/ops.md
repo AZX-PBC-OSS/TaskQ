@@ -762,6 +762,14 @@ every trigger, not just one.
       silently (no strike). The window must cover the cadence, and it single-flights the *root*
       only (see the dedup rule above).
     - An app-level running-run guard is the robust option for chains that outrun their cadence.
+- **Misses past the catch-up window are dropped, and counted.** A fire overdue by more than
+  `TASKQ_CRON_CATCH_UP_WINDOW` is skipped: the recompute lands `next_fire_at` in the future and
+  the dropped occurrences are never replayed. The drop is instrumented, not silent —
+  `taskq.cron.skipped_slots` (per actor, in fire units), the skip depth on
+  `taskq.cron.slots_behind`, and `skipped_slots` on both the `cron missed slots skipped` warning
+  and the `cron fired` line. A sustained skip rate is the runaway fan-out (jobs clearing slower
+  than the cron period): the `TaskQCronSkippedSlots` alert pages on it, and the fires-vs-clearance
+  SQL in `taskq.insights` (`src/taskq/insights.py`) names the schedule.
 - **Decorator registration is create-only.** `@cron(...)` creates the schedule row on first sight
   and never updates it; a changed expression, timezone, or a *removed* decorator has no effect
   on an existing row. Manage live schedules with `client.update_schedule` / `delete_schedule`
@@ -1030,6 +1038,8 @@ supported shapes:
   and set `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
   `OTEL_RESOURCE_ATTRIBUTES`. `taskq worker` installs the SDK providers from those variables
   at startup and logs `otel-exporter-configured traces=otlp metrics=otlp source=env`
+  (the console renderer's shape; under the default `TASKQ_LOG_FORMAT=json`
+  the same fields ride the `otel-exporter-configured` JSON event)
   (`opentelemetry-instrument taskq worker` is the equivalent launcher; an embedded worker
   calls `taskq.obs.configure_exporters(settings)` or initializes the SDK in-process (
   `examples/otel_setup.py`).
@@ -1076,6 +1086,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.jobs.timeouts` (by actor and `kind`) | `start_to_close` hits per attempt; `schedule_to_close` hits however the deadline was enforced (sweep or handler arm); `taskq.deadline_exceeded_sweep.jobs_failed` is the sweep's own count |
 | `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections: producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
+| `taskq.cron.skipped_slots` (by actor) + `taskq.cron.slots_behind` (depth, fire units) | the runaway fan-out: a cron-triggered sync whose jobs clear slower than the cron period — the leader is dropping fire slots past the catch-up window, counted, never replayed; run the fires-vs-clearance SQL in `taskq.insights` (`src/taskq/insights.py`) to name the schedule |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
 
 When metrics are unavailable or suspect, **query the tables, not the logs**; during one
@@ -1155,11 +1166,11 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(22 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+(23 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
 jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
 scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded
 tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget
-deferrals, unserved queue, stranded jobs, expired-lease zombies) and the equivalent PrometheusRule
+deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough; make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md: Prometheus scrape](deployment.md#observability-setup)): the rules read

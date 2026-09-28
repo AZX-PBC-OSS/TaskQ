@@ -177,6 +177,7 @@ __all__ = [
     "module_pg_pool",
     "module_pg_schema",
     "module_redis_url",
+    "private_redis_url",
     "redis_container",
     "redis_url",
     "redis_url_for",
@@ -793,8 +794,54 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
     keys. DB indices are drawn from the invocation's counter (see
     ``next_redis_logical_db``) so consumers on different xdist workers can never
     collide inside the ONE shared Dragonfly.
+
+    Tenancy contract (what MAY run here, and what MUST NOT)
+    -------------------------------------------------------
+    ``redis_url`` (and the SHARED Dragonfly behind it) is one broker for every
+    redis-marked test of the invocation across all xdist workers. A test may
+    keep it as its broker only if ALL of these hold:
+
+    * every command is scoped to the test's own logical DB (get/set/eval/
+      subscribe on unique keys and channels) — no broker-GLOBAL command
+      (``CLIENT PAUSE``/``CLIENT KILL``/``CONFIG``/``FLUSHALL``/restart), which
+      hits every co-tenant's connection at once;
+    * no assertion measures broker latency (a PING budget, a fanout deadline) —
+      a co-tenant's stall band lands on the shared broker and reds the
+      assertion without any defect in the code under test;
+    * no assertion depends on wall-clock boundary timing measured across
+      broker round trips — the same stall band shifts the boundary.
+
+    Everything else (chaos kills/restarts, ``CLIENT PAUSE`` scenarios, ping
+    assertions, pub/sub fanout- and boundary-timing pins) takes
+    :func:`private_redis_url` — a per-test disposable Dragonfly, ~1s boot, the
+    same image and flags as the shared pair. The historical record: every
+    cross/extras-leg "weather" red of this class (the subscriber wake, the
+    ping pins, the attack478 ``CLIENT PAUSE``) was the shared broker's
+    co-tenancy, and every cure that patched ONE test's budget found the NEXT
+    exposed test in the following run. The durable cure is tenancy
+    discipline, not budget inflation.
     """
     return redis_url_for(redis_container, db=_next_redis_db(redis_container))
+
+
+@pytest.fixture
+def private_redis_url(killable_redis_container: RedisContainer) -> str:
+    """Per-test PRIVATE Dragonfly URL — for every test the shared pair must not host.
+
+    This is the ``killable_redis_container`` + ``redis_url_for`` idiom as a
+    drop-in URL fixture: one function-scoped container (``creator_labels()``
+    ownership tags, same image/flags as the shared pair, ~1s boot), DB 0, and
+    no co-tenants — not even a sibling test on another xdist worker. A test on
+    ``private_redis_url`` may pause it, kill it, time its replies, and assert
+    fanout deadlines: whatever it does to this broker, it does to NOBODY else,
+    and a stall band on the shared pair cannot reach its assertions.
+
+    Consumers: the ``CLIENT PAUSE`` conservation attacks, the ping-budget
+    pins, the pub/sub fanout-timing pins, the skew-proxy crossings, and the
+    wall-clock boundary pins — see the tenancy contract on :func:`redis_url`
+    for the line between the two brokers.
+    """
+    return redis_url_for(killable_redis_container, db=0)
 
 
 # ── Redis DB counter ──────────────────────────────────────────────────────

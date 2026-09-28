@@ -21,7 +21,7 @@ import socket
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, NamedTuple
+from typing import IO, TYPE_CHECKING, NamedTuple
 from urllib.parse import urlparse, urlunparse
 
 from taskq.testing.health import unique_health_sock_path
@@ -130,10 +130,19 @@ def scoped_dsn(pg_dsn: str, schema: str) -> str:
 
 
 class WorkerProc(NamedTuple):
-    """A spawned worker subprocess plus the readiness socket it was given."""
+    """A spawned worker subprocess plus the readiness socket it was given.
+
+    ``log_path``: when the spawn was given a ``log_sink``, the file BOTH
+    streams write to - the diagnostic surface a partitioned worker's own
+    failure record needs, and the reason partition scenarios use the sink
+    at all: a worker whose PG path is cut logs every failed tick, and a
+    64KB PIPE nobody drains fills in seconds, blocking the worker's
+    logging write - a WEDGE THE HARNESS ITSELF would manufacture, exactly
+    the "hang" the partition contracts say must not happen."""
 
     proc: subprocess.Popen[bytes]
     sock_path: str
+    log_path: str | None = None
 
     @property
     def returncode(self) -> int | None:
@@ -150,6 +159,7 @@ def spawn_worker(
     redis_url: str | None = None,
     tag: str = "sys",
     extra_env: dict[str, str] | None = None,
+    log_sink: str | None = None,
 ) -> WorkerProc:
     """One worker subprocess: a real OS process running the real bootstrap.
 
@@ -163,6 +173,13 @@ def spawn_worker(
     forensic, a failed-tick cascade - reads the file instead of the
     pipe, and an undrained 64K pipe can never block a chatty worker
     mid-write.
+
+    ``log_sink``: a file path to redirect BOTH streams into. Scenarios
+    whose workers log continuously (chaos windows, failing heartbeats)
+    MUST pass one: the default PIPE pair is sized for short-lived
+    readiness-spawned workers, and a full pipe blocks the child's first
+    logging write - a harness-manufactured wedge.
+>>>>>>> origin/main
     """
     sock_path = unique_health_sock_path(f"syse2e-{tag}")
     env = {**os.environ, **_BASE_ENV}
@@ -177,15 +194,32 @@ def spawn_worker(
         env["TASKQ_REDIS_URL"] = redis_url
     if extra_env is not None:
         env.update(extra_env)
+    stdout: IO[str] | int = subprocess.PIPE
+    stderr: IO[str] | int = subprocess.PIPE
+    log_file: IO[str] | None = None
+    if log_sink is not None:
+        log_file = open(log_sink, "w")  # noqa: SIM115  # Why: closed by reap/graceful_stop's communicate, the same lifetime the PIPEs' reader has.
+        stdout = log_file
+        stderr = log_file
     proc = subprocess.Popen(  # noqa: S603  # Why: fixed argv, no shell, binary is this interpreter, module is project-owned; no untrusted input.
         [sys.executable, "-m", _WORKER_ENTRY],
         env=env,
         cwd=os.environ.get("TASKQ_REPO_ROOT", os.getcwd()),
+<<<<<<< HEAD
         stderr=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
     )
     _tee_stderr(proc, f"{sock_path}.worker.log")
     return WorkerProc(proc=proc, sock_path=sock_path)
+=======
+        stderr=stderr,
+        stdout=stdout,
+    )
+    if log_file is not None:
+        # The child owns the dup'ed descriptors now.
+        log_file.close()
+    return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink)
+>>>>>>> origin/main
 
 
 def _tee_stderr(proc: subprocess.Popen[bytes], log_path: str) -> None:
