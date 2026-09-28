@@ -13,3 +13,7 @@
 !hotpath-fix-sweep-render.json
 !hotpath-profile.json
 !hotpath-profile.md
+!attack-shape-*.json
+!attack-tracemalloc-*.json
+!attack-insights-scale.json
+!attack-hotpath-findings.md
