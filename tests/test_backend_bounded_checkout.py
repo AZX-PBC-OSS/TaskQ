@@ -164,6 +164,10 @@ async def test_reads_get_release_is_bounded_against_a_silently_dead_server(
     result, elapsed, logs = await _run_get_through_dead_server(pool, shrunk_bound, monkeypatch)
 
     assert result is None, "the op's own result must survive a parked release"
+    # Derived bound: the op's own bound is shrunk_bound=0.2s; the parked
+    # release must cost the bound plus loop-turn epsilon, not the full park.
+    # 1.0 s = the 0.2s bound + 4x epsilon — scheduler slack only; the
+    # unbounded shape this replaces waited the full _PARK_SECS.
     assert elapsed < 1.0, (
         f"the parked release cost {elapsed:.2f}s; the bound is {shrunk_bound}s; "
         "only the bound plus epsilon should have elapsed"
