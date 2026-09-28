@@ -43,9 +43,17 @@ check cannot express the invariant.
    importing `taskq.progress._flush` drags worker subsystems into
    `sys.modules`. Both primitives are consumer-agnostic loop-hygiene
    machinery that history parked in `worker/`. Fix shape (recommended, not
-   executed — it moves two classes used by eight worker modules): promote
-   `LoopLiveness` and `UnexpectedLoopErrorGuard` to a neutral
-   `taskq/_loophealth.py`, keep worker-module re-exports for one release.
+   executed — it moves two classes whose consumers are these EIGHT modules,
+   seven worker + one progress, each verified by grep against the current
+   tree): promote `LoopLiveness` and `UnexpectedLoopErrorGuard` to a neutral
+   `taskq/_loophealth.py`; the consumers to re-point (or re-export) are
+   `worker/deps.py` (LoopLiveness field type + default),
+   `worker/health.py` (LoopLiveness probe), `worker/notify.py`
+   (LoopLiveness tick), `worker/heartbeat.py` (UnexpectedLoopErrorGuard),
+   `worker/leader.py` (guard, 8 uses), `worker/_leader_sweeps.py` (guard,
+   6 uses), `worker/run.py` (guard), and the inverted `progress/_flush.py`
+   itself (both classes); `worker/_transient.py`/`worker/_watchdog.py`
+   keep the definitions and re-export from the new home for one release.
 2. **`web/health.py` imports `taskq.worker.health` at module level.**
    Tolerable, not accidental: web is a HIGHER layer than worker, and the
    imported names (`compute_health`, `build_ready_body`, `_check_live`) are
@@ -125,7 +133,19 @@ before. Adding a sweep is now: a `call` closure + one `_SweepSpec` entry
 
 Proof: the sweep family (22 files: the wiring, coverage, bounded, parity,
 breaker, ladder, drain-domain, timeout-metrics, retention, and validation
-suites) green 3× — 368 passed per run — plus ruff/pyright clean.
+suites) green 3× — 368 passed per run — plus ruff/pyright clean. The
+verbatim claim is additionally executed, not just asserted:
+`tests/test_audit_sweep_registry_differential.py` runs the VENDORED
+pre-refactor module (extracted verbatim from `origin/main` by AST) and the
+spec-driven runner through the same scripted fault matrix — per sweep:
+deadline-family and plain-transient failures, the pre-migration
+`UndefinedColumnError`/`UndefinedTableError` tolerances (on the sweep that
+has them AND on the siblings that must propagate them), the
+`NotImplementedError` warn-once arms, the `timedelta(0)` period gates, the
+`hasattr` backend gates, and the drain discipline — and asserts the two
+event streams (call order, `record_sweep_*`, metric emissions, warn/debug/
+err events, drains) are EQUAL; the harness's sensitivity to a real
+tolerance mutation is itself pinned.
 
 ### (d) A new metric — **1 file (+ call sites); nothing else**
 
