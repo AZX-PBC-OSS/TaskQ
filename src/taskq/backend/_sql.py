@@ -48,9 +48,9 @@ WITH holder AS (
 )
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
- error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+ error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
 VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
-        (SELECT id FROM holder), $10::jsonb)
+        (SELECT id FROM holder), $10::jsonb, $11::timestamptz)
 -- A claim-clamped attempt number repeats at the smallint ceiling (the
 -- dispatch claim saturates its increment there): keep the first record
 -- of the number, never raise a PK collision on the hot path (the
@@ -60,7 +60,9 @@ ON CONFLICT (job_id, attempt) DO NOTHING"""
 # (INSERT_ATTEMPT_SQL, formatted by worker/heartbeat.py for its
 # isolate-self attempt write) runs on a caller's existing transaction or
 # dedicated connection, where clock_timestamp() is the actual wall-clock
-# time of execution (not transaction start time like now()).
+# time of execution (not transaction start time like now()). $11 is the
+# attempt's due time (the job row's claim-time scheduled_at, read by the
+# caller's snapshot SELECT - see 01.00.20_04_pre_attempt_due_at.sql).
 # The explicit-finished_at variant is _sql_templates.insert_attempt_explicit,
 # bound by _terminal.py's _write_attempt (the write_attempt path): it takes
 # $4 for finished_at from the caller instead of stamping clock_timestamp().

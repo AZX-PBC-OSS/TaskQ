@@ -678,7 +678,11 @@ class TestAttemptRowRoundTrip:
         assert flds["outcome"].type is AttemptOutcome
 
     def test_field_count(self) -> None:
-        expected = 11  # field list
+        # + the claim-time due_at stamp
+        # (01.00.20_04_pre_attempt_due_at.sql): the jobs.scheduled_at the
+        # attempt's claim dispatched against; None for a pre-migration
+        # attempt (historical due times are unrecoverable, no backfill).
+        expected = 12
         assert len(fields(AttemptRow)) == expected
 
     def test_frozen(self) -> None:

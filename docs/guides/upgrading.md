@@ -2450,6 +2450,45 @@ mirrors the semantics exactly. No operator action is needed beyond applying
 the migration first; the column is never read by user-facing surfaces and
 the displayed `attempt` counter is unchanged.
 
+### The per-attempt due-time stamp (`job_attempts.due_at`)
+
+> **Unreleased.** Observability addition with one additive pre migration
+> (`01.00.20_04_pre_attempt_due_at.sql`; apply it before rolling the code, as
+> with every `pre` file). Nothing breaks; no consumer of the old shape changes.
+
+Every `job_attempts` row (and its `job_attempts_archive` twin) now carries
+`due_at timestamptz`: the `jobs.scheduled_at` the attempt's claim took the row
+against — the due time the attempt was waiting for when it was dispatched.
+Before this, only the FIRST attempt's wait was reconstructable from the row:
+`jobs.scheduled_at` is overwritten by every retry's reschedule
+(`mark_retry`/`mark_retry_after` and the reclaim re-pends stamp it for the
+NEXT attempt), so attempts 2..N had no surviving due time and a retry chain's
+wait spans were unreconstructable from the ledger.
+
+The stamp is written by every attempt-row writer (the terminal `mark_*`
+statements, the reclaim sweeps' batched INSERTs, the isolate write): each
+sources `due_at` from the job row's `scheduled_at` as it stood at that
+attempt's claim. On the arms that reschedule in the same statement that write
+an attempt row (`mark_retry`'s retried arm, `mark_retry_after`'s consuming
+snoozed arm), the statement pre-reads `scheduled_at` in a same-snapshot CTE —
+the pre-read is the claim-time value, the statement's RETURNING carries the
+NEXT attempt's. The chain therefore reconstructs from the ledger alone:
+`due_at(k) → started_at(k) → due_at(k+1)` is attempt k's wait, execution, and
+the next attempt's wait. There is deliberately NO index on the column: its
+reads are per-job (served by the primary key) or archive-analytics scans that
+already bound by time, and the archive twin's hypertable conversion keeps
+`started_at` as its chunk key untouched.
+
+NULL semantics: `NULL` means a **pre-migration attempt** (or, during a rolling
+deploy, a row written by an old worker that named no such column). Historical
+due times are unrecoverable — `jobs.scheduled_at` was overwritten by every
+subsequent reschedule before this column existed — so there is **no backfill**;
+a backfill would fabricate data the ledger never recorded. Consumers reading
+attempt history should treat `due_at IS NULL` as "wait span unknown", never as
+"zero wait". The in-memory testing backend stamps the same semantics (the
+pre-write row's `scheduled_at`) so the differential tier exercises the column.
+
+
 ### Migration `01.00.17_01` holds `ACCESS EXCLUSIVE` on `jobs` for the whole index rebuild
 
 > **Unreleased.** Operational note for the archive-candidate index

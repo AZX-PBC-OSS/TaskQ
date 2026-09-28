@@ -195,6 +195,7 @@ async def _get_attempts(
             duration_ms=rec["duration_ms"],
             worker_id=rec["worker_id"],
             metadata=jsonb_to_dict(rec["metadata"]) or {},
+            due_at=rec["due_at"],
         )
         for rec in records
     ]

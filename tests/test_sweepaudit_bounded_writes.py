@@ -102,6 +102,19 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
     ),
+    "_SWEEP_2_ATTEMPTS_BATCH_SQL": (
+        "FROM unnest($1::uuid[]",
+        "sweep 2's batched synthetic attempt insert (01.00.20_04's due_at "
+        "column); its write set is the candidate batch the caller binds "
+        "as arrays - the unnest above, populated from the LIMIT-ed "
+        "windowing CTE in _SWEEP_2_SQL's same bounded transaction - never "
+        "a table scan, so the row count is the sweep's batch size. The "
+        "statement is an INSERT ... ON CONFLICT DO NOTHING; it matches "
+        "the UPDATE/DELETE walk only through a comment's word ('the "
+        "sweep's UPDATE re-stamps'), and the unnest substring here is the "
+        "tripwire: a rewrite that reads rows from anywhere but the bound "
+        "batch fails this scope check",
+    ),
     # ── Keyed single-row writes: the predicate names one primary key ──
     "_INCREMENT_BATCH_FAILURES_SQL": (
         "WHERE id = $1",

@@ -30,7 +30,10 @@ import taskq.obs as obs_mod  # noqa: E402  # Why: importorskip guard must preced
 import taskq.obs._otel as otel_mod  # noqa: E402
 from taskq.actor import actor  # noqa: E402
 from taskq.testing.otel import counter_data_points  # noqa: E402
-from taskq.worker._stall_tally import StallAttributionTally  # noqa: E402
+from taskq.worker._stall_tally import (  # noqa: E402
+    LoopIdleWindow,
+    StallAttributionTally,
+)
 from taskq.worker._watchdog import LoopLagWatchdog, LoopLiveness  # noqa: E402
 
 
@@ -183,3 +186,60 @@ def test_unattributed_stall_carries_the_overflow_label(
     assert _points(otel_reader, "taskq.worker.loop_stall_attributions") == [
         (1, {"actor": otel_mod._ACTOR_LABEL_OVERFLOW, "kind": "gil_held"})  # pyright: ignore[reportPrivateUsage]  # Why: the overflow label is the counter's own closed-set contract, asserted where it is consumed.
     ]
+
+
+# ── The idle-fraction window: the same watchdog, sampled every poll ──
+
+
+async def test_idle_window_fills_from_a_real_loop_and_drains() -> None:
+    """The watchdog records one parked/not-parked sample per poll once
+    armed, and the window drains to the aggregate exactly once: a mostly
+    idle loop (this test only sleeps) reads a majority-parked fraction
+    with a full sample count, and the drain resets to empty."""
+    idle_window = LoopIdleWindow()
+    watchdog = LoopLagWatchdog(
+        asyncio.get_running_loop(),
+        LoopLiveness(),
+        budget=100.0,
+        warn_budget=50.0,
+        startup_grace=0.0,
+        poll_interval=0.05,
+        idle_window=idle_window,
+    )
+    watchdog.start()
+    try:
+        await asyncio.sleep(0.35)  # ~7 polls, the loop parked between beats
+    finally:
+        watchdog.stop()
+
+    drained = idle_window.drain()
+    assert drained is not None
+    assert drained.samples >= 4
+    assert 0.5 <= drained.idle_fraction <= 1.0
+    assert drained.window_seconds >= 0.2
+    # The drain starts a fresh window.
+    assert idle_window.drain() is None
+
+
+async def test_idle_window_is_absent_before_arming() -> None:
+    """The sampling rides the beat gate: before the startup grace lapses
+    (and before the first liveness tick arms the watchdog) no poll
+    records a sample, so the drained window is None - the honest
+    'nothing observed' for a worker still in import-heavy startup."""
+    idle_window = LoopIdleWindow()
+    watchdog = LoopLagWatchdog(
+        asyncio.get_running_loop(),
+        LoopLiveness(),
+        budget=100.0,
+        warn_budget=50.0,
+        startup_grace=60.0,
+        poll_interval=0.02,
+        idle_window=idle_window,
+    )
+    watchdog.start()
+    try:
+        await asyncio.sleep(0.08)
+    finally:
+        watchdog.stop()
+
+    assert idle_window.drain() is None

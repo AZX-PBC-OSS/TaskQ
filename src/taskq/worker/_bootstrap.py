@@ -2198,6 +2198,7 @@ async def _main(
                 enabled=settings.watchdog_enabled,
                 actor_code_names=actor_code_names,
                 stall_tally=deps.stall_tally,
+                idle_window=deps.loop_idle,
                 list_running_jobs=_running_job_actors,
             )
 

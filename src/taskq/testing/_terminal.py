@@ -265,6 +265,9 @@ async def _mark_succeeded(
         error_message=None,
         error_traceback=None,
         worker_id=worker_id,
+        # The pre-write row's scheduled_at: the claim-time due time the
+        # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+        due_at=row.scheduled_at,
     )
     self._append_state_change_event(
         job_id=job_id,
@@ -414,6 +417,10 @@ async def _mark_failed_or_retry(
                 error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
                 error_traceback=None,
                 worker_id=worker_id,
+                # The pre-write row's scheduled_at: the claim-time due time
+                # the PG terminal write stamps
+                # (01.00.20_04_pre_attempt_due_at.sql).
+                due_at=row.scheduled_at,
             )
             self._append_state_change_event(
                 job_id=job_id,
@@ -466,6 +473,9 @@ async def _mark_failed_or_retry(
             error_message=error_info.error_message,
             error_traceback=error_info.error_traceback,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,
@@ -509,6 +519,9 @@ async def _mark_failed_or_retry(
         error_message=error_info.error_message,
         error_traceback=error_info.error_traceback,
         worker_id=worker_id,
+        # The pre-write row's scheduled_at: the claim-time due time the
+        # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+        due_at=row.scheduled_at,
     )
     self._append_state_change_event(
         job_id=job_id,
@@ -583,6 +596,9 @@ async def _mark_cancelled(
         error_message=None,
         error_traceback=None,
         worker_id=worker_id,
+        # The pre-write row's scheduled_at: the claim-time due time the
+        # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+        due_at=row.scheduled_at,
     )
     self._append_state_change_event(
         job_id=job_id,
@@ -685,6 +701,9 @@ async def _mark_abandoned(
         error_message=None,
         error_traceback=None,
         worker_id=row.locked_by_worker,
+        # The pre-write row's scheduled_at: the claim-time due time the
+        # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+        due_at=row.scheduled_at,
     )
     self._append_state_change_event(
         job_id=job_id,
@@ -879,6 +898,10 @@ async def _mark_snoozed(
                 error_message=None,
                 error_traceback=None,
                 worker_id=worker_id,
+                # The pre-write row's scheduled_at: the claim-time due time
+                # the PG terminal write stamps
+                # (01.00.20_04_pre_attempt_due_at.sql).
+                due_at=row.scheduled_at,
             )
             self._append_state_change_event(
                 job_id=job_id,
@@ -928,6 +951,9 @@ async def _mark_snoozed(
             error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,
@@ -1102,6 +1128,10 @@ async def _mark_retry_after(
                 error_message=None,
                 error_traceback=None,
                 worker_id=worker_id,
+                # The pre-write row's scheduled_at: the claim-time due time
+                # the PG terminal write stamps
+                # (01.00.20_04_pre_attempt_due_at.sql).
+                due_at=row.scheduled_at,
             )
             self._append_state_change_event(
                 job_id=job_id,
@@ -1145,6 +1175,9 @@ async def _mark_retry_after(
             error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,
@@ -1208,6 +1241,9 @@ async def _mark_retry_after(
             error_message="retry budget exhausted",
             error_traceback=None,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,
@@ -1283,6 +1319,9 @@ async def _mark_retry_after(
             error_message=None,
             error_traceback=None,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,
@@ -1366,6 +1405,9 @@ async def _mark_interrupted(
             error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
+            # The pre-write row's scheduled_at: the claim-time due time the
+            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+            due_at=row.scheduled_at,
         )
         self._append_state_change_event(
             job_id=job_id,

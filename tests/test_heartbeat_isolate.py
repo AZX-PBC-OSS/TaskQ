@@ -156,6 +156,9 @@ async def test_isolate_self_writes_reclaim_event_rows() -> None:
             "id": new_uuid(),
             "attempt": 1,
             "started_at": "2025-01-01T00:00:00Z",
+            # scheduled_at rides the snapshot for the attempt ledger's
+            # due_at stamp (01.00.20_04_pre_attempt_due_at.sql).
+            "scheduled_at": "2025-01-01T00:00:00Z",
             "max_attempts": 3,
             "retry_kind": "transient",
             "cancel_phase": 0,
@@ -164,6 +167,7 @@ async def test_isolate_self_writes_reclaim_event_rows() -> None:
             "id": new_uuid(),
             "attempt": 2,
             "started_at": "2025-01-01T00:00:01Z",
+            "scheduled_at": "2025-01-01T00:00:01Z",
             "max_attempts": 2,
             "retry_kind": "non_retryable",
             "cancel_phase": 0,
@@ -375,6 +379,9 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             "id": new_uuid(),
             "attempt": 1,
             "started_at": "2025-01-01T00:00:00Z",
+            # scheduled_at rides the snapshot for the attempt ledger's
+            # due_at stamp (01.00.20_04_pre_attempt_due_at.sql).
+            "scheduled_at": "2025-01-01T00:00:00Z",
             "max_attempts": 3,
             "retry_kind": "transient",
             "cancel_phase": 0,
@@ -383,6 +390,7 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             "id": new_uuid(),
             "attempt": 2,
             "started_at": "2025-01-01T00:00:01Z",
+            "scheduled_at": "2025-01-01T00:00:01Z",
             "max_attempts": 2,
             "retry_kind": "non_retryable",
             "cancel_phase": 0,
@@ -423,6 +431,19 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             assert args[3] == "crashed"
             assert args[4] == "HeartbeatLost"
             assert args[8] == worker_id
+            # The column shape: eleven bindings - the eleven job_attempts
+            # columns through due_at. A dropped or appended binding is a
+            # statement-shape change this pin must see.
+            assert len(args) == 11
+            # The due_at stamp (the 11th binding): the SNAPSHOT's
+            # scheduled_at - the claim-time due time this attempt
+            # dispatched against. The arbiter's re-pend already
+            # rescheduled the row, so its RETURNING cannot carry it; the
+            # snapshot SELECT is the only source
+            # (01.00.20_04_pre_attempt_due_at.sql). A due_at bound off
+            # anything else (clock_timestamp, the rescheduled value) is
+            # the mis-stamp this asserts against.
+            assert args[10] == job_rows[i]["scheduled_at"]
     finally:
         apg.connect = orig_connect  # type: ignore[method-assign]
 

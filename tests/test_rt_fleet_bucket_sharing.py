@@ -126,28 +126,77 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str
         name=f"rt_boundary_{new_base62()}", capacity=1.0, refill_per_second=1.0, backend="redis"
     )
     client = redis_async.from_url(private_redis_url, decode_responses=False, socket_timeout=None)
+    key = f"taskq:rt_fleet_pin:rl:tb:{{{tb.name}}}"
 
     try:
-        first = await tb.acquire(1.0, redis_client=client, settings=settings)
-        assert first.allowed is True
+        # The deny-stands assert is only meaningful on an attempt whose
+        # early acquire provably ran STRICTLY INSIDE the hint window, so
+        # the premise is verified per attempt from the hash's own stamps
+        # and a stalled attempt retries on a fresh slate rather than
+        # asserting against a window that no longer exists.
+        #
+        # Why the premise can fail without any product lie: the window is
+        # anchored at the DENIAL's ts stamp (the Redis TIME the deny
+        # script read), but this test's sleep runs on the client's wall
+        # clock and starts only when the denial reply lands. A runner
+        # stall between the two expires the window before the early
+        # acquire runs, and the refill - the hint honored exactly -
+        # legitimately grants. Observed on CI (run 36353068609): a 5.5s
+        # deschedule between the denial and the early acquire against a
+        # 0.999s hint; the bucket had refilled to full (remaining=0.0 on
+        # the grant), the stored state self-consistent end to end.
+        for _attempt in range(4):
+            first = await tb.acquire(1.0, redis_client=client, settings=settings)
+            assert first.allowed is True
 
-        denied = await tb.acquire(1.0, redis_client=client, settings=settings)
-        assert denied.allowed is False
-        assert denied.retry_after is not None
-        hint = denied.retry_after.total_seconds()
-        assert 0.0 < hint <= 1.0, f"retry hint {hint}s: a zero hint is a spin, > 1s is a lie"
+            denied = await tb.acquire(1.0, redis_client=client, settings=settings)
+            assert denied.allowed is False
+            assert denied.retry_after is not None
+            hint = denied.retry_after.total_seconds()
+            assert 0.0 < hint <= 1.0, f"retry hint {hint}s: a zero hint is a spin, > 1s is a lie"
 
-        # Strictly inside the hint window the deficit is not repaid: the
-        # deny must stand. (Halfway: 0.5 tokens accrued against 1.0
-        # owed, comfortably below the boundary under load jitter.)
-        await asyncio.sleep(hint / 2)
-        early = await tb.acquire(1.0, redis_client=client, settings=settings)
-        assert early.allowed is False, (
-            "an acquire strictly inside the retry_after window was granted: the "
-            "denial branch wrote a spend or lost the refilled count"
-        )
+            # The denial script stamped ts with its own TIME read: the
+            # window's exact start, not a client-side estimate.
+            denial_raw = await client.hget(key, "ts")
+            assert denial_raw is not None
+            denial_ts = float(denial_raw)
+
+            # Strictly inside the hint window the deficit is not repaid:
+            # the deny must stand. (Halfway: 0.5 tokens accrued against
+            # 1.0 owed, comfortably below the boundary under load jitter.)
+            await asyncio.sleep(hint / 2)
+            early = await tb.acquire(1.0, redis_client=client, settings=settings)
+            if not early.allowed:
+                break  # the deny stood: the pin holds this attempt
+
+            # Granted: was the window intact when the script read TIME?
+            # The grant overwrote ts with the early script's own instant,
+            # so the server-side elapsed since the denial is exact.
+            early_raw = await client.hget(key, "ts")
+            assert early_raw is not None
+            elapsed = float(early_raw) - denial_ts
+            if elapsed < hint:
+                # Granted while the script's own TIME read was still
+                # strictly inside the window: the denial branch wrote a
+                # spend or lost the refilled count.
+                pytest.fail(
+                    f"an acquire granted {elapsed:.6f}s into the {hint:.6f}s "
+                    f"retry_after window - strictly inside it: the denial "
+                    f"branch wrote a spend or lost the refilled count"
+                )
+            # The wall clock overran the window between the denial and
+            # the early acquire (a stalled attempt, the refill honestly
+            # repaid the deficit before the script ran): fresh slate,
+            # retry the scenario.
+            await client.delete(key)
+        else:
+            pytest.fail(
+                "the retry_after window was overrun by wall-clock stalls on every "
+                "attempt, the deny-stands boundary could not be exercised"
+            )
 
         # Past the hint the refill repays the deficit exactly: admitted.
+        # A stall here only refills further, the grant cannot false-fail.
         await asyncio.sleep(hint / 2 + 0.1)
         late = await tb.acquire(1.0, redis_client=client, settings=settings)
         assert late.allowed is True, (

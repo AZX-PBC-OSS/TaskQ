@@ -162,6 +162,11 @@ def _heartbeat_deps(pool: _ScriptedPool, max_heartbeat_failures: int) -> WorkerD
     deps.liveness = MagicMock()
     deps.stall_tally = MagicMock()
     deps.stall_tally.metadata_value.return_value = {}
+    # The idle-fraction window, the stall tally's sibling seam: the tick
+    # drains it once per tick and merges a None drain as a no-op (the
+    # honest quiet window - no samples, nothing published).
+    deps.loop_idle = MagicMock()
+    deps.loop_idle.drain.return_value = None
     deps.progress_buffers = {}
     deps.shutdown_started_at = None
     deps.producer_stop_event = asyncio.Event()

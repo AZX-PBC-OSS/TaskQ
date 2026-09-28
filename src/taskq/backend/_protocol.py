@@ -1141,6 +1141,13 @@ class AttemptRow:
     duration_ms: int | None
     worker_id: UUID | None
     metadata: dict[str, object]
+    # The claim-time due time this attempt was dispatched against (the
+    # jobs.scheduled_at standing at the claim), migration
+    # 01.00.20_04_pre_attempt_due_at.sql. None = a pre-migration attempt:
+    # historical due times are unrecoverable (scheduled_at was overwritten
+    # by every subsequent reschedule), so there is no backfill. A retry
+    # chain reconstructs as due_at(k) -> started_at(k) -> due_at(k+1).
+    due_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
