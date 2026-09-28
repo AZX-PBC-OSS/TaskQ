@@ -1542,9 +1542,6 @@ async def consume_one_job(
                             _progress_buffers,
                         )
                     )
-            elif _progress_buffers is not None and _buf is not None:
-                if _progress_buffers.get(job.id) is _buf:
-                    del _progress_buffers[job.id]
 
             if active_jobs is not None and _active_entry is not None:
                 await active_jobs.deregister(job.id, _active_entry)
