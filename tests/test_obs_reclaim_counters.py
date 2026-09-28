@@ -357,6 +357,13 @@ def _fabricated_row(status: str, actor: str = "actor_alpha") -> dict[str, object
         "locked_by_worker": new_uuid(),
         "reclaim_reason": "lock_expired",
         "now_ts": now,
+        # The snap's RETURNING now carries the claim-time due time
+        # (``scheduled_at AS due_at``, the attempt ledger's due stamp -
+        # 01.00.20_04_pre_attempt_due_at.sql). None is the honest legacy
+        # value: the column is nullable and the batched attempt INSERT
+        # accepts it, a row migrated from before the stamp has no due
+        # time to report.
+        "due_at": None,
     }
 
 
