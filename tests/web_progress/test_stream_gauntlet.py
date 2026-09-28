@@ -1,7 +1,7 @@
 """The SSE stream gauntlet: proxy lies and broker hangs on the progress
 stream (``web/progress.py``'s ``_event_generator``).
 
-Two defensive families previously had no unit execution:
+Unit execution for two defensive families:
 
 1. The READ-TIMEOUT fail-visible arm (``web/progress.py``'s
    ``asyncio.wait_for`` around ``pubsub.get_message``). A broker whose

@@ -496,10 +496,10 @@ class TokenBucket:
           preseeds ``ON CONFLICT DO NOTHING`` and reads the existing state
           under the row lock). The registry entry is pure bookkeeping,
           dropping it loses nothing, so no PG fixed-quota bucket is held.
-          Holding them anyway (the pre-fix shape) was worse than a
-          wasted entry: every PG fixed-quota key ever seen counted against
+          Holding them anyway is worse than a
+          wasted entry: every PG fixed-quota key ever seen would count against
           ``max_keyed_rate_limits`` forever, so once the cap filled, every
-          NEW key was refused with ``ReservationUnavailable`` and its jobs
+          NEW key would be refused with ``ReservationUnavailable`` and its jobs
           snooze-looped until process restart.
         * **redis**: the backend keeps fixed-quota state for 24 h of its
           own accord (see ``_compute_ttl_seconds``), so a re-materialized
@@ -713,7 +713,7 @@ class TokenBucket:
             # empty-hash default shape (the control pin
             # ``test_token_bucket_peek_honest_reads_pass``), not a
             # container lie. Mirrors the sibling withscores container
-            # check (6305615b) in ``_sliding_window_redis``.
+            # check in ``_sliding_window_redis``.
             raise RateLimitStoreCorrupt(f"token-bucket peek read a non-list hash reply: {raw!r}")
 
         tokens_raw = raw[0] if raw else None  # pyright: ignore[reportUnknownVariableType]  # Why: raw is untyped from redis-py hmget stub; validated at runtime.

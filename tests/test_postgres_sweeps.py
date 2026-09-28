@@ -460,7 +460,7 @@ class TestSweepExpiredLocks:
         RETRYABLE job terminalises 'cancelled' and keeps its cancel
         columns as the audit trail of the honored request.
 
-        The pre-fix statement evaluated the retry budget before
+        The unguarded statement evaluated the retry budget before
         ``cancel_phase``, so this row went back 'pending' with
         ``cancel_phase``/``cancel_requested_at`` wiped: the operator's
         cancel silently lost, addressed to a worker the reclaim itself
@@ -639,7 +639,7 @@ class TestSweepExpiredLocks:
         # The audit trail of the honored request survives the terminal
         # write: the sweep's cancelled arm keeps both cancel
         # columns, the same doctrine mark_cancelled carries: the
-        # pre-fix statement wiped them here too.
+        # unguarded statement wiped them here too.
         assert row["cancel_phase"] == 1
         assert row["cancel_requested_at"] is not None
         assert row["finished_at"] is not None

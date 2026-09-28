@@ -387,12 +387,12 @@ type SqlOutcomeBranch = Literal[
 """Closed set of ``outcome_branch`` values the fused terminal statements'
 RETURNING arms emit (``backend/_sql_templates.py``).
 
-Why a closed ``Literal`` and not the bare ``str`` the rows used to be read
-as: the value decides which observability and return contract a terminal
+Why a closed ``Literal`` and not a bare ``str``: the value decides which
+observability and return contract a terminal
 write reports, and the multi-arm statements emit only a SUBSET of the set
 (``mark_retry`` never emits ``"snoozed"``; ``mark_interrupted`` never emits
-``"max_attempts_failed"``), so a typo'd arm literal or a renamed branch used
-to degrade silently into a fall-through arm's semantics. Parsing at the
+``"max_attempts_failed"``), so a typo'd arm literal or a renamed branch would
+degrade silently into a fall-through arm's semantics. Parsing at the
 read site plus pyright's exhaustiveness checking over the union in the
 consumers makes a future or renamed arm a compile error instead.
 """
@@ -863,8 +863,8 @@ def batch_cap_refusal_kernel(
     per-actor live pending+scheduled counts (*existing_counts*). The PG
     tier fetches them as aggregated rows, the in-memory mirror scans its
     own index and job table, but the arithmetic over them is THIS
-    function's alone -- previously it was hand-maintained twice, once per
-    backend, and only test pins held the copies together. Refusal ORDER
+    function's alone -- one copy here, not one hand-maintained copy per
+    backend held together only by test pins. Refusal ORDER
     is batch order (``batch_cap_groups`` insertion order), and each
     refusal carries the resolved effective cap as ``max_pending``, the
     number the caller must relax to admit more.
@@ -1141,6 +1141,13 @@ class AttemptRow:
     duration_ms: int | None
     worker_id: UUID | None
     metadata: dict[str, object]
+    # The claim-time due time this attempt was dispatched against (the
+    # jobs.scheduled_at standing at the claim), migration
+    # 01.00.20_04_pre_attempt_due_at.sql. None = a pre-migration attempt:
+    # historical due times are unrecoverable (scheduled_at was overwritten
+    # by every subsequent reschedule), so there is no backfill. A retry
+    # chain reconstructs as due_at(k) -> started_at(k) -> due_at(k+1).
+    due_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

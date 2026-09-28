@@ -969,11 +969,11 @@ async def _enqueue_on_conn(
         #
         # Why a BOUNDED wait (the two-tier acquire in
         # _acquire_unique_for_lock, same machinery as max_pending below):
-        # the pre-fix blocking acquire queued same-key racers with
-        # unbounded tail latency, N racers serialized meant the last
+        # an unbounded blocking acquire queues same-key racers with
+        # unbounded tail latency: N racers serialized means the last
         # waited ~N holder critical sections, and a black-holed holder (a
-        # session the server has not yet reaped) pinned every same-key
-        # enqueue until TCP keepalives cleared it. The correct outcome of
+        # session the server has not yet reaped) pins every same-key
+        # enqueue until TCP keepalives clear it. The correct outcome of
         # waiting is usually the dedup return just below (the winner's
         # row), and a holder's critical section is one preflight SELECT +
         # one INSERT, so a bounded budget still delivers that outcome for

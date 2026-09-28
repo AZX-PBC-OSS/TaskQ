@@ -1013,9 +1013,9 @@ async def test_ti9_catch_up_recompute_anchored_to_server_clock_no_fire_loop(
     """C7 pin: a schedule stale beyond the catch-up window (2h vs the 1h
     default) catch-up-fires exactly once and re-anchors its chain to the
     SERVER clock. The leader's Python clock is shimmed 10 minutes BEHIND:
-    pre-fix the beyond-window recompute seeds croniter from the skewed now,
+    unguarded the beyond-window recompute seeds croniter from the skewed now,
     landing ``next_fire_at`` in the server's past - the next tick sees it
-    due again and fires in a loop. Post-fix the recompute seeds from
+    due again and fires in a loop. The recompute seeds from
     ``clock_timestamp()`` read inside the tick transaction, so the second
     tick finds nothing due."""
     import taskq.worker.cron_loop as cron_loop_mod
@@ -1072,10 +1072,10 @@ async def test_ti10_catch_up_continues_when_python_clock_ahead(
 ) -> None:
     """C7 pin: a schedule stale WITHIN the catch-up window (55 min vs the
     1h default) catches up sequentially even when the leader's Python clock
-    is 10 minutes AHEAD. Pre-fix the cutoff is computed from the skewed now
-    (server_now + 10min - 1h), so a 55-minute-old miss looks beyond-window
-    and the whole backlog is silently skipped; post-fix the cutoff comes
-    from the server clock, the miss is within-window, and the next tick
+    is 10 minutes AHEAD. A cutoff computed from the skewed now
+    (server_now + 10min - 1h) makes a 55-minute-old miss look beyond-window
+    and the whole backlog is silently skipped; the server-clock cutoff
+    keeps the miss within-window, and the next tick
     fires the next missed slot."""
     import taskq.worker.cron_loop as cron_loop_mod
 
@@ -1196,10 +1196,10 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
     """C7 pin: a schedule due by the SERVER clock fires while the leader's
     Python clock is 10 minutes AHEAD, and the fired job is immediately
     dispatch-eligible - ``status='pending'`` and ``scheduled_at <=
-    clock_timestamp()``. Pre-fix the enqueue stamped the job with the
-    skewed Python ``datetime.now(UTC)`` (10 min in the server's future),
-    landing it ``status='scheduled'`` and invisible to dispatch for the
-    skew duration. Post-fix the fire passes ``scheduled_at=None`` so the
+    clock_timestamp()``. An enqueue stamping the job with the
+    skewed Python ``datetime.now(UTC)`` (10 min in the server's future) lands it
+    ``status='scheduled'`` and invisible to dispatch for the
+    skew duration. The fire passes ``scheduled_at=None`` so the
     enqueue SQL stamps the server clock (``COALESCE($n, now())``) and
     decides status in the same statement."""
     import taskq.worker.cron_loop as cron_loop_mod

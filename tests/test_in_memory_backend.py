@@ -1134,8 +1134,8 @@ class TestReclaimExpiredLocks:
         and, operator intent outranking the retry budget, the reclaim
         terminalises it 'cancelled' (whatever the budget) with the
         cancel columns preserved as the audit trail of the honored
-        request. The pre-fix twin re-pended this row 'pending' with the
-        columns wiped, exactly as the pre-fix SQL did."""
+        request. The unguarded twin re-pended this row 'pending' with the
+        columns wiped, exactly as the unguarded SQL does."""
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend, max_attempts=3, retry_kind="transient")
 

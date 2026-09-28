@@ -2,7 +2,7 @@
 and worker boot stays consistent at every intermediate state of the rolling
 deploy that ships the matching ``@actor(queue=...)`` literal.
 
-Pre-fix failure mode these pins replace: a move took four coordinated writes -
+The failure mode these pins replace: a move of four coordinated writes -
 the ``@actor`` literal, the stored ``actor_config.queue`` row, the worker's
 consumed-queue set, and the ``queues`` row for the target - and the first pair
 was fail-closed: whichever order the operator picked, one side of a rolling
@@ -166,8 +166,8 @@ def _config(actor: str, *, queue: str, metadata: dict[str, object] | None = None
 async def test_mid_transition_boot_succeeds_and_preserves_assignment() -> None:
     """The mid-transition state - stored row already moved to the new queue,
     worker still carrying the OLD code literal - must boot, and its startup
-    UPSERT must not flip the stored assignment back. Pre-fix this exact state
-    raised ``ActorConfigDriftList`` and refused boot."""
+    UPSERT must not flip the stored assignment back. This exact state
+    must not raise ``ActorConfigDriftList`` and refuse boot."""
     fake_conn = _FakeConn()
     fake_conn.set_select_rows([_stored_row(_ACTOR, queue=_NEW_QUEUE)])
 
@@ -421,7 +421,7 @@ class TestMoveActorQueue:
 
         await move_actor_queue(conn, _ACTOR, _NEW_QUEUE, schema=schema)
 
-        # Old-literal worker boots mid-window - pre-fix: ActorConfigDriftList.
+        # Old-literal worker boots mid-window - unguarded: ActorConfigDriftList.
         await sync_actor_config(
             conn,
             [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],

@@ -7,7 +7,7 @@ the cancel folds the principal into the job's ``cancel_request`` event;
 the disabled (403) paths write nothing; the no-auth dev router records
 ``anonymous``; and the job detail page renders the entries.
 
-RED evidence (pre-fix tree): every assertion below that reads
+RED evidence (unguarded tree): every assertion below that reads
 ``admin_audit`` fails on the un-fixed tree -- the table does not exist,
 which is exactly the defect: no audit trail.
 """

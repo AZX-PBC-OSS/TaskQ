@@ -277,6 +277,10 @@ async def test_held_table_lock_fails_the_migration_within_the_bound(
             async with asyncio.timeout(20):
                 await migrate_mod.apply_pending(migrator, schema=schema, ddl_lock_timeout=1.0)
         elapsed = time.monotonic() - started
+        # Derived bound: ddl_lock_timeout=1.0 — the failure must surface at
+        # the lock budget plus statement scheduling epsilon, not at the
+        # holder's leisure. 10 s = 10x the budget, still half the enclosing
+        # asyncio.timeout(20): the pin trips strictly inside the guard.
         assert elapsed < 10, f"the migration did not fail within the bound: {elapsed:.1f}s"
 
         message = str(excinfo.value)
@@ -337,6 +341,9 @@ async def test_held_ledger_lock_fails_the_run_within_the_bound(
             async with asyncio.timeout(20):
                 await migrate_mod.apply_pending(migrator, schema=schema, ddl_lock_timeout=1.0)
         elapsed = time.monotonic() - started
+        # Derived bound: ddl_lock_timeout=1.0 — same arithmetic as the
+        # migration pin above (10x the budget, half the enclosing
+        # asyncio.timeout(20)).
         assert elapsed < 10, f"the ledger upgrade did not fail within the bound: {elapsed:.1f}s"
 
         assert excinfo.value.migration is None

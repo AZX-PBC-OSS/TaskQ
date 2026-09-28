@@ -193,9 +193,9 @@ class ChaosPool:
      can never fire, matching a real pool that is not exhausted, and
      leaving the mid-transaction-failure tests unaffected.
 
-     ``timeout`` was previously accepted and silently discarded, which made
-     it impossible for any test built on this pool to observe an acquire
-     bound at all.
+     ``timeout`` raising (rather than being accepted and silently
+     discarded) is what makes an acquire bound observable to any test
+     built on this pool at all.
 
      Deliberate divergences from ``asyncpg.Pool``, all inherent to a
      single-connection double and none of them silent: there is no holder

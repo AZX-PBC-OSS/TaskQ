@@ -284,7 +284,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         assert conn.fused_results[0]["granted"] is True
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
-        """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
+        """``lock_timeout_ms <= 0`` disables the bound (the unguarded
         behavior), matching the ``lock_timeout`` GUC convention - pinned
         by contract, not by waiting forever: the granted fake proves the
         indefinite mode takes the plain blocking read with no GUC

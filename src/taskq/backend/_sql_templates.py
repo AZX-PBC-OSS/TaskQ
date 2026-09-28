@@ -224,9 +224,10 @@ def render(schema: str) -> SqlTemplates:
         # ── Terminal-write statements ──────────────────────────────
         # Every mark_* statement below is ONE self-contained
         # data-modifying-CTE statement: the fenced jobs UPDATE, the
-        # job_attempts INSERT, and the job_events INSERT that previously
-        # ran as three awaited round trips inside one transaction are
-        # fused into a single statement (see _terminal.py's module
+        # job_attempts INSERT, and the job_events INSERT are
+        # fused into a single statement where three awaited round trips
+        # inside one transaction would otherwise run
+        # (see _terminal.py's module
         # docstring for the measured rationale and the preserved
         # invariants).  The fencing predicate, the clock_timestamp()
         # time base, the holder-CTE worker_id resolution, the per-arm
@@ -282,10 +283,10 @@ def render(schema: str) -> SqlTemplates:
         # for the invariant.
         #
         # duration_ms is computed IN the statement from the same
-        # database-written timestamp pair Python used to receive and
-        # multiply back, but server-side, with exact numeric arithmetic
-        # instead of Python's float path: values can differ from the old
-        # Python computation by 1ms on exactly-whole-millisecond
+        # database-written timestamp pair Python would otherwise receive
+        # and multiply back, but server-side, with exact numeric arithmetic
+        # instead of Python's float path: values can differ from Python's
+        # float computation by 1ms on exactly-whole-millisecond
         # boundaries (where the float product drifted just below the
         # integer), and the server-side values are the strictly more
         # accurate ones.  trunc() keeps the same
@@ -316,11 +317,15 @@ WITH upd AS (
 ), att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'succeeded',
            NULL, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time: this arm does not reschedule, so
+           -- scheduled_at still carries the value the claim took the row
+           -- against (see 01.00.20_04_pre_attempt_due_at.sql).
+           upd.scheduled_at
     FROM upd
     -- A claim-clamped attempt number repeats at the smallint ceiling
     -- (dispatch saturates its increment there): keep the first record of
@@ -355,11 +360,14 @@ WITH upd AS (
 ), att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'failed',
            $3, $4, $5,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           upd.scheduled_at
     FROM upd
     -- A claim-clamped attempt number repeats at the smallint ceiling
     -- (dispatch saturates its increment there): keep the first record of
@@ -451,6 +459,18 @@ WITH params AS (
            $9::int AS attempt,
            $10::bigint AS claim_epoch
 ),
+-- The claim-time due time, read BEFORE the retried arm overwrites
+-- scheduled_at. Every part of one statement shares one snapshot, so this
+-- read sees the pre-statement scheduled_at (the value the claim took the
+-- row against) even though the retried arm's RETURNING exposes the NEW
+-- reschedule. A fenced-out write matches no row here either way: the
+-- attempt insert joins `retried`, so a fence failure leaves no attempt
+-- row and no due_at (see 01.00.20_04_pre_attempt_due_at.sql).
+claimed_due AS (
+    SELECT j.id, j.scheduled_at AS due_at
+    FROM "{s}".jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+),
 retried AS (
     UPDATE "{s}".jobs j
     SET status = CASE WHEN (SELECT effective_delay FROM params) > interval '0' THEN 'scheduled'::"{s}".job_status
@@ -510,15 +530,20 @@ holder AS (
 retried_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT r.id, r.attempt, r.started_at, clock_timestamp(), 'failed',
            $4, $5, $6,
            -- The retried arm leaves finished_at NULL (the job lives on),
            -- so the attempt's end is the arm's own now_ts, mirroring the
            -- Python that read rec["now_ts"] off the same RETURNING.
            trunc(EXTRACT(EPOCH FROM (r.now_ts - r.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time from the pre-reschedule read (see
+           -- the claimed_due CTE): this arm reschedules, so r.scheduled_at
+           -- is already the NEXT attempt's due time and must not be read.
+           c.due_at
     FROM retried r
+    JOIN claimed_due c ON c.id = r.id
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
     -- mark_succeeded insert's comment).
@@ -536,12 +561,15 @@ retried_evt AS (
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_RETRY_EXCEEDED_MESSAGE}', NULL,
            -- Terminal arm: duration reads the arm's finished_at, not now_ts.
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (the deadline arm does not
+           -- reschedule; see mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_failed d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -602,11 +630,14 @@ WITH upd AS (
 ), att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
            upd.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           upd.scheduled_at
     FROM upd
     -- A claim-clamped attempt number repeats at the smallint ceiling
     -- (dispatch saturates its increment there): keep the first record of
@@ -659,7 +690,7 @@ WITH upd AS (
 ), att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT upd.id, upd.attempt,
            -- A NULL started_at falls back to the per-row clock. Unlike
            -- the reclaim sweep's attempt INSERT (whose standing-claim
@@ -678,7 +709,10 @@ WITH upd AS (
            COALESCE(upd.started_at, clock_timestamp()), clock_timestamp(), 'cancelled',
            '{CANCEL_ORIGIN_ABANDONED}', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           upd.scheduled_at
     FROM upd
     -- A claim-clamped attempt number repeats at the smallint ceiling
     -- (dispatch saturates its increment there): keep the first record of
@@ -857,8 +891,8 @@ deadline_cancelled AS (
     -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
     -- mirrors branch-for-branch): a row carrying a cancel phase whose
     -- schedule_to_close lapses at deferral time terminalises 'cancelled'
-    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
-    -- the deadline arm below and failed a row the operator had already
+    -- here, never 'failed:DeadlineExceeded': a shape that left this row
+    -- to the deadline arm below would fail a row the operator had already
     -- claimed, firing DeadlineExceeded hooks and error reports on a
     -- cancel in flight. This arm runs BEFORE the failure arm; the
     -- failure arm reads cancel_phase = 0 by construction (and re-guards
@@ -925,11 +959,14 @@ cancelled_att AS (
     -- deadline did not fail this job, the operator's cancel decided it).
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
            d.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_cancelled d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -948,11 +985,14 @@ cancelled_evt AS (
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_failed d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -994,6 +1034,18 @@ WITH params AS (
            $6::int AS attempt,
            $7::bigint AS claim_epoch
 ),
+-- The claim-time due time, read BEFORE the snoozed arm overwrites
+-- scheduled_at. Every part of one statement shares one snapshot, so this
+-- read sees the pre-statement scheduled_at (the value the claim took the
+-- row against) even though the snoozed arm's RETURNING exposes the NEW
+-- reschedule. A fenced-out write matches no row here either way: the
+-- attempt insert joins `snoozed`, so a fence failure leaves no attempt
+-- row and no due_at (see 01.00.20_04_pre_attempt_due_at.sql).
+claimed_due AS (
+    SELECT j.id, j.scheduled_at AS due_at
+    FROM "{s}".jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+),
         snoozed AS (
     UPDATE "{s}".jobs j
     SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
@@ -1031,8 +1083,8 @@ deadline_cancelled AS (
     -- isolate template mirrors branch-for-branch): a row carrying a
     -- cancel phase whose schedule_to_close lapses at deferral time
     -- terminalises 'cancelled' here, never
-    -- 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded': the
-    -- pre-fix shape matched the budget/deadline arms below and failed a
+    -- 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded': a shape
+    -- that left this row to the budget/deadline arms below would fail a
     -- row the operator had already claimed, firing DeadlineExceeded and
     -- retry-exhausted hooks on a cancel in flight. This arm runs BEFORE
     -- both; those arms read cancel_phase = 0 by construction (and
@@ -1119,11 +1171,14 @@ cancelled_att AS (
     -- the budget failed this job, the operator's cancel decided it).
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
            d.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_cancelled d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1142,12 +1197,17 @@ cancelled_evt AS (
 snoozed_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT sn.id, sn.attempt, sn.started_at, clock_timestamp(), 'snoozed',
            'RetryAfter', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time from the pre-reschedule read (the
+           -- claimed_due CTE above): this arm reschedules, so
+           -- sn.scheduled_at is already the NEXT attempt's due time.
+           c.due_at
     FROM snoozed sn
+    JOIN claimed_due c ON c.id = sn.id
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
     -- mark_succeeded insert's comment).
@@ -1164,11 +1224,14 @@ snoozed_evt AS (
 max_attempts_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}', 'retry budget exhausted', NULL,
            trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           m.scheduled_at
     FROM max_attempts_failed m
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1187,11 +1250,14 @@ max_attempts_evt AS (
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_failed d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1271,8 +1337,8 @@ deadline_cancelled AS (
     -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
     -- mirrors branch-for-branch): a row carrying a cancel phase whose
     -- schedule_to_close lapses at deferral time terminalises 'cancelled'
-    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
-    -- the deadline arm below and failed a row the operator had already
+    -- here, never 'failed:DeadlineExceeded': a shape that left this row
+    -- to the deadline arm below would fail a row the operator had already
     -- claimed, firing DeadlineExceeded hooks and error reports on a
     -- cancel in flight. This arm runs BEFORE the failure arm; the
     -- failure arm reads cancel_phase = 0 by construction (and re-guards
@@ -1330,11 +1396,14 @@ cancelled_att AS (
     -- deadline did not fail this job, the operator's cancel decided it).
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
            d.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_cancelled d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1353,11 +1422,14 @@ cancelled_evt AS (
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_failed d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1504,11 +1576,14 @@ released_evt AS (
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
     (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
            '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           -- The claim-time due time (this arm does not reschedule; see
+           -- mark_succeeded's insert).
+           d.scheduled_at
     FROM deadline_failed d
     -- A claim-clamped attempt number repeats at the smallint ceiling:
     -- keep the first record, never roll the transition back (see the
@@ -1536,9 +1611,9 @@ WITH holder AS (
 )
 INSERT INTO "{s}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
- error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+ error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-        (SELECT id FROM holder), $11::jsonb)
+        (SELECT id FROM holder), $11::jsonb, $12::timestamptz)
 -- A claim-clamped attempt number repeats at the smallint ceiling: keep
 -- the first record, never raise a PK collision (see the mark_succeeded
 -- insert's comment).
@@ -1895,7 +1970,7 @@ ORDER BY occurred_at, event_id""",
 -- come back in a later poll, id order preserved, the cursor never
 -- advances past an unserved row.  Under co-monotone stamps (no step-
 -- back) the held-back rows are the recent tail of the id space and the
--- ceiling is exactly the old behavior.  The subquery repeats the
+-- ceiling is exactly the plain no-ceiling behavior.  The subquery repeats the
 -- partial index's verbatim predicate (01.00.02_01) so the planner
 -- confines the min() walk to job_events_reclaim_idx, an ascending scan
 -- from the cursor that stops at the first held-back row.

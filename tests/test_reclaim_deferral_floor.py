@@ -46,7 +46,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LOCK_LEASE = timedelta(seconds=60)
 _GRACE = timedelta(seconds=30)
 
-#: The degenerate curve a pre-fix release stamps: a zero base (with cap = 0,
+#: The degenerate curve an unguarded release stamps: a zero base (with cap = 0,
 #: the only shape the old cap >= base rule admitted alongside it) draws zero
 #: from its own curve at every attempt.
 _ZERO_BASE = timedelta(0)

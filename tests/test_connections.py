@@ -555,7 +555,7 @@ async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowle
     op marked its write durable (the connection died between the INSERT's
     acknowledgement and a LATER statement of the same attempt: a
     post-INSERT read, a savepoint RELEASE) must NOT re-run the op. The
-    unguarded wrapper read every ``InternalClientError`` as
+    unguarded wrapper reads every ``InternalClientError`` as
     dead-on-acquire and re-issued the write with the same identity;
     against the enqueue table's ``uuid PRIMARY KEY`` that cannot land a
     second row; it raised ``UniqueViolationError`` for an enqueue that

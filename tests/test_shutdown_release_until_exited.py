@@ -47,6 +47,7 @@ from taskq.backend.clock import Clock
 from taskq.context import CancelOrigin, JobContext
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker import (
@@ -584,11 +585,26 @@ async def test_the_transactional_release_lands_only_after_the_unwind() -> None:
             transaction_conn=tx_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; the stand-in supplies the transaction()/execute() surface the transactional consumer uses.
         )
     )
-    await asyncio.sleep(0.05)
+    # Poll-asserted, not bare sleeps: the attempt must be registered (the
+    # body parked on its 3600s sleep) before the origin stamp + cancel mean
+    # what the pin assumes, and the cancellation must have entered the tx
+    # task's unwind before the absence assert below is meaningful. 2.0 s per
+    # poll = generous loop-turn slack; the regressions this pins (release
+    # landing before the unwind, cancellation never reaching the tx task)
+    # still time the polls out red.
+    await wait_for_condition(
+        lambda: registry.get(job.id) is not None,
+        description="the attempt to register (the body parked on its sleep)",
+        timeout=2.0,
+    )
     await _stamp_shutdown_origin(registry, job.id)
 
     attempt.cancel()
-    await asyncio.sleep(0.1)
+    await wait_for_condition(
+        lambda: "rollback_entered" in tx_conn.events,
+        description="the cancellation to reach the tx task and enter its transaction unwind",
+        timeout=2.0,
+    )
     # The unwind (the parked rollback) is what the consumer is now waiting
     # on: the release write has not happened yet.
     assert "release_write" not in tx_conn.events, (

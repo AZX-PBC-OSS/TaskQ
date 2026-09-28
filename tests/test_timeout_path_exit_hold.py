@@ -56,6 +56,7 @@ from taskq.testing.actor import (
     as_backend,
     default_actor_config,
 )
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker._consumer import consume_one_job
@@ -246,7 +247,15 @@ async def test_a_sync_actor_outliving_the_exit_park_repends_behind_the_release_h
     )
     await asyncio.to_thread(body_started.wait, 10.0)
     # timeout at ~0.2s; the 0.4s park expires with the body still gated.
-    await asyncio.sleep(1.0)
+    # Poll-asserted, not a bare sleep: the write lands after the 0.4s
+    # cleanup_grace park expires, so the budget is 5x that park (2.0s) —
+    # park + loop-turn/executor slack. The unbounded-hang shape this pins
+    # (the write never landing) still times the poll out red.
+    await wait_for_condition(
+        lambda: len(backend.mark_failed_or_retry_calls) == 1,
+        description="the deferred re-pend write to land behind the release hold",
+        timeout=5 * 0.4,
+    )
 
     assert len(backend.mark_failed_or_retry_calls) == 1, (
         "the bounded park expires and the write lands: the row is never stranded"
@@ -306,6 +315,10 @@ async def test_an_async_actor_timeout_keeps_the_immediate_repend() -> None:
 
     assert outcome in ("scheduled", "failed")
     assert len(backend.mark_failed_or_retry_calls) == 1
+    # Derived bound: the timeout fires on the test's own clock (loop turns,
+    # not wall time) and the re-pend is one terminal write on a fake backend;
+    # 2.0 s is the co-tenancy tripwire over an observed sub-100ms path, an
+    # order of magnitude inside the enclosing wait_for(15.0) guard.
     assert elapsed < 2.0, (
         f"an async actor's timeout re-pend must stay immediate; took {elapsed:.2f}s"
     )

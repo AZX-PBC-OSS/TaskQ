@@ -177,8 +177,9 @@ def _logout_pins_for(
 ) -> None:
     """Shared logout hardening assertions for one backend's mounted router.
 
-    A forced top-level navigation is a GET and used to clear the admin
-    session on both backends; the pins below hold either backend to the same
+    A forced top-level navigation is a GET and would clear the admin
+    session on both backends without the CSRF gate; the pins below hold
+    either backend to the same
     contract, which is why they live with the shared session machinery's
     tests rather than in one backend's family.
     """
