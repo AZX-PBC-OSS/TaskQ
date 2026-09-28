@@ -625,6 +625,11 @@ async def test_teardown_bounds_the_publish_drain_by_the_shared_constant(
             "the drain must time out on an unfinished publish, not await it"
         )
         assert elapsed < 1.0, (
+            # Derived bound: the drain bound is PUBLISH_DRAIN_TIMEOUT_SECS
+            # = 0.05s (set in this test's settings); teardown must cost the
+            # drain bound plus loop-turn epsilon. 1.0 s = 20x the bound —
+            # co-tenancy slack (this pin's own stretch; the publish-storm
+            # pin stretches its larger 0.2s bound only 5x).
             f"teardown took {elapsed:.2f}s with the drain bound at 0.05s - the "
             "publish drain is not using PUBLISH_DRAIN_TIMEOUT_SECS, so "
             "worst_case_teardown_tail() no longer models the real teardown"
