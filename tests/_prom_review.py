@@ -169,8 +169,18 @@ PROBE_DIR = os.environ["PROBE_DIR"]
 sys.path.insert(0, PROBE_DIR)
 
 PG_DSN = os.environ["PROBE_PG_DSN"]
-SCHEMA = os.environ["PROBE_SCHEMA"]
 METRICS_PORT = int(os.environ["PROBE_METRICS_PORT"])
+
+
+def _schema() -> str:
+    """The probe's TaskQ schema, read per call.
+
+    A module-level ``SCHEMA`` constant is the shared/stale-constant
+    anti-pattern the suite-hygiene pin bans; the env var is the one honest
+    source and every site reads it at call time instead.
+    """
+    return os.environ["PROBE_SCHEMA"]
+
 
 from pydantic import BaseModel
 
@@ -385,7 +395,7 @@ async def _run() -> None:
     configure_exporters(settings)
 
     global _abandon_handle
-    async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+    async with TaskQ(dsn=PG_DSN, schema=_schema()) as tq:
         for i in range(3):
             await tq.enqueue(probe_ok_actor, P(value=i))
         await tq.enqueue(probe_slow_actor, P())
@@ -467,14 +477,14 @@ async def _run() -> None:
         # swallowing actor - the real abandonment pathology.
         try:
             await asyncio.sleep(3)
-            async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+            async with TaskQ(dsn=PG_DSN, schema=_schema()) as tq:
                 await tq.cancel(_abandon_handle.job_id)  # type: ignore[union-attr]
             print("CANCEL_REQUESTED:OK", flush=True)
             await asyncio.sleep(5)
             conn = await asyncpg.connect(PG_DSN)
             try:
                 await conn.execute(
-                    f'DELETE FROM "{SCHEMA}".actor_config WHERE actor = $1',
+                    f'DELETE FROM "{_schema()}".actor_config WHERE actor = $1',
                     "probe_ok_actor",
                 )
                 # Break the rate limiter's PG fallback (the store behind
@@ -484,12 +494,12 @@ async def _run() -> None:
                 # the acquire fails closed - the dependency-outage
                 # pathology.
                 await conn.execute(
-                    f'ALTER TABLE "{SCHEMA}".rate_limit_buckets '
+                    f'ALTER TABLE "{_schema()}".rate_limit_buckets '
                     "ADD CONSTRAINT probe_check CHECK (false) NOT VALID"
                 )
             finally:
                 await conn.close()
-            async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+            async with TaskQ(dsn=PG_DSN, schema=_schema()) as tq:
                 for i in range(2):
                     await tq.enqueue(probe_ok_actor, P(value=i))
                 await tq.enqueue(probe_ratelimited_actor, P())
@@ -503,12 +513,12 @@ async def _run() -> None:
             conn = await asyncpg.connect(PG_DSN)
             try:
                 await conn.execute(
-                    f'UPDATE "{SCHEMA}".cron_schedules '
+                    f'UPDATE "{_schema()}".cron_schedules '
                     "SET next_fire_at = statement_timestamp() - interval "
                     f"'1 second' WHERE name = 'probe-failing-cron'"
                 )
                 await conn.execute(
-                    f'UPDATE "{SCHEMA}".cron_schedules '
+                    f'UPDATE "{_schema()}".cron_schedules '
                     "SET next_fire_at = statement_timestamp() - interval "
                     # Two minutes of backlog: two drain ticks (~9s), so the
                     # failing schedule's own strikes land well before the
@@ -525,12 +535,12 @@ async def _run() -> None:
             try:
                 await lock_conn.execute(
                     "SELECT pg_advisory_lock(hashtextextended($1, 0))",
-                    f"taskq:cron:{SCHEMA}",
+                    f"taskq:cron:{_schema()}",
                 )
                 await asyncio.sleep(3)
                 await lock_conn.execute(
                     "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                    f"taskq:cron:{SCHEMA}",
+                    f"taskq:cron:{_schema()}",
                 )
             finally:
                 await lock_conn.close()
@@ -540,7 +550,7 @@ async def _run() -> None:
             try:
                 # Heal: the limiter recovers on the job's next dispatch.
                 await conn.execute(
-                    f'ALTER TABLE "{SCHEMA}".rate_limit_buckets '
+                    f'ALTER TABLE "{_schema()}".rate_limit_buckets '
                     "DROP CONSTRAINT probe_check"
                 )
             finally:
@@ -587,8 +597,14 @@ import signal
 import urllib.request
 
 PG_DSN = os.environ["PROBE_PG_DSN"]
-SCHEMA = os.environ["PROBE_SCHEMA"]
 METRICS_PORT = int(os.environ["PROBE_METRICS_PORT"])
+
+
+def _schema() -> str:
+    """The probe's TaskQ schema, read per call - never a shared module
+    constant (the suite-hygiene pin's anti-pattern)."""
+    return os.environ["PROBE_SCHEMA"]
+
 
 from pydantic import BaseModel
 
@@ -633,7 +649,7 @@ async def _run() -> None:
     settings = WorkerSettings.load()
     configure_exporters(settings)
 
-    async with TaskQ(dsn=PG_DSN, schema=SCHEMA) as tq:
+    async with TaskQ(dsn=PG_DSN, schema=_schema()) as tq:
         for i in range(2):
             await tq.enqueue(hostile_ok_actor, P(value=i))
 
