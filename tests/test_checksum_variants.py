@@ -120,8 +120,8 @@ class TestTheGuardKeepsItsTeeth:
         settings: TaskQSettings,
         _applied_schema: None,
     ) -> None:
-        await pg_conn.execute(  # Why: schema is a fixture-provided identifier.
-            f'UPDATE "{settings.schema_name}".schema_migrations'
+        await pg_conn.execute(
+            f'UPDATE "{settings.schema_name}".schema_migrations'  # noqa: S608  # Why: schema is a fixture-provided identifier.
             " SET checksum = $1 WHERE version = '01.00.13_03:pre'",
             UNKNOWN_CHECKSUM,
         )
