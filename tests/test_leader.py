@@ -3196,7 +3196,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
     leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]
     monitor.close_wait.clear()  # close() blocks forever from now on
 
-    # Why the outer timeout: pre-fix this awaited conn.close() unbounded, so
+    # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
     # the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._close_leader_owned_conns()
@@ -3212,8 +3212,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
 
 async def test_close_leader_owned_conns_fast_close_not_terminated() -> None:
     """Healthy close(): both leader-owned conns close gracefully - nothing is
-    terminated; attrs nulled; is_leader cleared. Pins the no-regression
-    behaviour (passes pre- and post-fix)."""
+    terminated; attrs nulled; is_leader cleared. A no-regression pin."""
     leader, deps, _backend, _, _, _shutdown = await _make_leader()
     deps.is_leader.set()
     cron = FakeConn()
@@ -3270,7 +3269,7 @@ async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
     cron.close_wait.clear()  # both close()s block forever from now on
     monitor.close_wait.clear()
 
-    # Why the outer timeout: pre-fix the clear runs only after BOTH bounded
+    # Why the outer timeout: unguarded, the clear runs only after BOTH bounded
     # closes finish, so the RED state's assertion window is bounded by the
     # 0.05s shrink seam; the guard keeps a regression from hanging.
     async with asyncio.timeout(5):
@@ -3279,7 +3278,7 @@ async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
         await cron.close_entered.wait()
         await monitor.close_entered.wait()
         # ...then, while the closes are still parked, the flag must ALREADY
-        # be clear. Pre-fix it stays set until both closes finish → RED.
+        # be clear. Unguarded it stays set until both closes finish → RED.
         assert not monitor.is_closed()
         assert not deps.is_leader.is_set()
         await task
@@ -3330,8 +3329,7 @@ async def test_close_leader_owned_conns_default_mid_run_logs_mid_run_family(
     """The default stays the mid-run family: the watchdog/election/cron
     demotion paths call without mid_run, and a conn so dead that even
     close() hung while the worker is alive must keep paging as
-    ``conn-close-*`` (existing behaviour pinned - passes pre- and
-    post-fix)."""
+    ``conn-close-*`` (existing behaviour pinned)."""
     import taskq.worker.leader as leader_mod
 
     monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
@@ -3415,7 +3413,7 @@ async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
     deps.owns_leader_conn = True
     leader_conn.close_wait.clear()  # close() blocks forever from now on
 
-    # Why the outer timeout: pre-fix this awaited conn.close() unbounded, so
+    # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
     # the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._drop_leader_conn(reason="test_hung_close")
@@ -3427,8 +3425,7 @@ async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
 
 async def test_drop_leader_conn_fast_close_not_terminated() -> None:
     """TaskQ-owned leader_conn with a healthy close(): closed once, never
-    terminated, reference dropped. Pins the no-regression behaviour
-    (passes pre- and post-fix)."""
+    terminated, reference dropped. A no-regression pin."""
     leader_conn = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, _shutdown = await _make_leader(leader_conn=leader_conn)
     deps.owns_leader_conn = True
@@ -4235,7 +4232,7 @@ async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> No
     task = asyncio.create_task(leader._watchdog_loop(shutdown))
     await asyncio.sleep(0.05)  # let the watchdog park on is_leader.wait()
     shutdown.set()
-    # Pre-fix this parks forever; the race wakes it promptly.
+    # Unguarded this parks forever; the race wakes it promptly.
     await asyncio.wait_for(task, timeout=2.0)
 
 

@@ -242,7 +242,7 @@ async def test_transient_failures_alone_isolate_at_the_documented_tick() -> None
 
 async def test_unexpected_failures_alone_isolate_at_the_documented_tick() -> None:
     """F unexpected failures (a REVOKE'd UPDATE, a driver contract
-    violation) alone: the same ledger, the same tick. The pre-fix
+    violation) alone: the same ledger, the same tick. The unguarded
     asymmetric ledger looped here forever - the zombie this PR closes."""
     ticks, isolated, at = await _run_script([UNEXPECTED] * 4, max_heartbeat_failures=3)
     assert isolated, (

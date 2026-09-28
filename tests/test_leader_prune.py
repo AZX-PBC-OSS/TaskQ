@@ -401,7 +401,7 @@ async def test_atomicity_on_error(pg_conn: asyncpg.Connection, settings: TaskQSe
 # The sweep now names every column explicitly on both sides
 # (_JOBS_COLUMNS_CSV in _leader_shared.py). These tests lock the mapping in:
 # EVERY mirrored column must round-trip byte-for-byte, and the two
-# archive-only trailing columns must be real timestamps. On the pre-fix SQL
+# archive-only trailing columns must be real timestamps. On the unguarded SQL
 # the first test fails outright (text → timestamptz type error).
 
 
@@ -1121,8 +1121,8 @@ async def test_prune_cutoff_anchored_to_server_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A job finished 40 s ago (server-stamped) with 30 s retention MUST be
-    pruned even when the worker's Python clock is 120 s behind.  Pre-fix:
-    cutoff = python_now - 30 s = server_now - 150 s → ``finished_at <
+    pruned even when the worker's Python clock is 120 s behind.  A
+    Python-domain cutoff = python_now - 30 s = server_now - 150 s → ``finished_at <
     cutoff`` is false → retention silently extended.  The predicate must be
     computed by the same clock that wrote ``finished_at`` - the server's."""
     from taskq.worker import _leader_shared
@@ -1147,11 +1147,11 @@ async def test_prune_cutoff_anchored_to_server_clock(
         archive_retention=timedelta(days=1),
         schema=settings.schema_name,
     )
-    assert result.total_deleted == 1  # pre-fix: 0 - the job survives past its retention
+    assert result.total_deleted == 1  # unguarded: 0 - the job survives past its retention
 
 
 # The in-flight-retry protocol's bounds. The grace must sit well under the
-# batch statement_timeout: on the pre-fix shape the blocked delete arm is
+# batch statement_timeout: on the unguarded shape the blocked delete arm is
 # released by the retry's commit, not killed by the batch timeout - a cancel
 # would roll the batch back and mask which side won.
 _RACE_GRACE_S = 10.0
@@ -1172,12 +1172,12 @@ async def _prune_with_retry_in_flight(
 
     This is the deterministic form of the window a concurrent retry
     occupies - the interleaving an asyncio.gather race leaves to the
-    scheduler, which on the pre-fix single-statement shape never landed
+    scheduler, which on the unguarded single-statement shape never lands
     it (the retry either committed before the statement's snapshot or
     blocked behind its delete arm until the batch committed). Here the
     candidate window reads the pre-retry committed version whatever the
     scheduler does, and the retry's commit lands between that snapshot
-    and the write side's lock-time re-read: on the pre-fix shape the
+    and the write side's lock-time re-read: on the unguarded shape the
     delete arm blocks on the retry's in-flight lock, the grace above
     expires (the proof the statement is blocked mid-flight), and the
     commit is what releases it - the exact window the ghost forms in.
@@ -1204,7 +1204,7 @@ async def _prune_with_retry_in_flight(
         )
     )
     # Wait for either the batch's completion (fixed shape: it commits
-    # around the in-flight retry) or the grace's expiry (pre-fix shape:
+    # around the in-flight retry) or the grace's expiry (unguarded shape:
     # the write statement is blocked on the retry's lock). The shield
     # keeps the task alive through the expiry - canceling it would cancel
     # the statement mid-flight and roll the batch back before the retry's
@@ -1437,13 +1437,13 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
     retry_sql = render(schema).retry_job
 
     race_conn = await asyncpg.connect(str(settings.pg_dsn))
-    # The pre-fix shape cannot interleave an external statement between its
+    # The unguarded shape cannot interleave an external statement between its
     # snapshot and its write - one statement is both - so the injected
     # retry blocks on the row lock the batch's own delete arm holds until
     # the batch commits, a commit that cannot happen while this test waits
     # on the prune (the first draft of this pin died as a 300 s
     # pytest-timeout deadlock exactly there). lock_timeout bounds that wait
-    # server-side and turns the pre-fix failure into the fast, precise one
+    # server-side and turns the unguarded failure into the fast, precise one
     # below: this pin's scenario only exists on the two-statement shape.
     await race_conn.execute("SET lock_timeout = '2s'")
     reterminalize_sql = (
@@ -1476,7 +1476,7 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
         )
     except asyncpg.LockNotAvailableError:
         pytest.fail(
-            "pre-fix: the archive is one statement, so the injected "
+            "unguarded: the archive is one statement, so the injected "
             "retry+re-run cannot commit between its snapshot and its lock "
             "acquisition - the retry's UPDATE blocks on the lock the batch's "
             "own delete arm holds until the batch commits. The lock-time "

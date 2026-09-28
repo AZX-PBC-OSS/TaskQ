@@ -499,8 +499,8 @@ async def _enqueue_batch(
     # items never reach the PG INSERT either) before the loop below
     # stores its first row, so the same batch raises the same
     # UniqueViolationError with the same empty stored-row state on both
-    # backends. The per-item loop previously discovered the collision at
-    # the poisoned item's index and left the good prefix stored ,
+    # backends. A per-item loop discovers the collision at
+    # the poisoned item's index and leaves the good prefix stored ,
     # certifying code that leaves phantom rows behind on PG.
     _check_batch_job_ids(self, admitted_args)
     _check_batch_singletons(self, admitted_args)

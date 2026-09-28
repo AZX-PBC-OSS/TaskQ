@@ -834,7 +834,7 @@ async def test_chunk_dropped_archive_row_loses_the_fold_guard(
     chunks live.
 
     The archive write's NOT EXISTS guard is keyed on the archive row's
-    EXISTENCE. Plant the pre-fix ghost (an archive row whose job is live
+    EXISTENCE. Plant the unguarded ghost (an archive row whose job is live
     and aged again) with the ghost row INSIDE a policy-droppable chunk:
 
     * vanilla: the guard folds the re-archive — the standing ghost row is
@@ -954,7 +954,7 @@ async def _no_floor(
     partition_col: str,
     now: datetime | None = None,
 ) -> None:
-    """The floor probe's counterfactual twin: always None (pre-fix behavior)."""
+    """The floor probe's counterfactual twin: always None (unguarded behavior)."""
     return None
 
 
@@ -986,7 +986,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
 ) -> None:
     """H7, RED/GREEN: with the archive policy armed, the expiry sweep's
     deleted-count over the BELOW-FLOOR range is zero — and the counterfactual
-    (floor off, the pre-fix wiring) shows the sweep paying to delete exactly
+    (floor off, the unguarded wiring) shows the sweep paying to delete exactly
     those rows.
 
     Three bands, all with ``expire_at`` in the past except the fresh one:
@@ -1018,7 +1018,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
 
     aged_at = now - _AGED_ARCHIVE_FINISHED_AT
     expired_at = now - timedelta(hours=1)
-    # ── RED: the floor off — the pre-fix sweep deletes the aged rows too.
+    # ── RED: the floor off — the unguarded sweep deletes the aged rows too.
     aged_red = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
     inside_red = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
     monkeypatch.setattr(_leader_shared, "retention_policy_floor", _no_floor)
@@ -1109,7 +1109,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     below_red = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
     inside_red = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
 
-    # ── RED: the floor off — the pre-fix sweep deletes the below-floor
+    # ── RED: the floor off — the unguarded sweep deletes the below-floor
     # event too.
     monkeypatch.setattr(pg_sweeps, "retention_policy_floor", _no_floor)
     try:
@@ -1118,7 +1118,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
         )
     finally:
         monkeypatch.undo()
-    assert pre_fix == 2, "the counterfactual: the pre-fix sweep re-deletes the policy's range"
+    assert pre_fix == 2, "the counterfactual: the unguarded sweep re-deletes the policy's range"
 
     # ── GREEN: the real floor — exactly the inside-window event deletes,
     # row-exact, watermark-advancing.
@@ -1162,7 +1162,7 @@ async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn:
     aged outbox event, fresh survivors of each), run twice on two fresh
     hypertable schemas:
 
-    * no-floor (today's pre-fix behavior): the sweeps row-delete the aged
+    * no-floor (today's unguarded behavior): the sweeps row-delete the aged
       range; the policy run then drops the aged chunks the sweeps
       emptied (the outbox row's chunk included — H2).
     * floor (the fix): the sweeps skip the below-floor range; the policy
@@ -1219,7 +1219,7 @@ async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn:
             if use_floor:
                 await _run_both_sweeps()
             else:
-                # The pre-fix wiring: both sweeps probe through a stub that
+                # The unguarded wiring: both sweeps probe through a stub that
                 # always answers None. Scoped patch, undone before the
                 # policy run so the real policies drive the drop.
                 with _no_floor_patch():
@@ -1421,7 +1421,7 @@ async def test_probe_row_without_the_drop_after_key_fails_open_and_the_sweep_run
     whose ``fetch`` answers a row WITHOUT the probe's keys (the leader
     tests' stub-conn shape — dict-like rows that know nothing of
     ``drop_after``/``db_now``) must yield floor None, never the naked
-    ``KeyError: 'drop_after'`` the pre-fix parse raised from OUTSIDE the
+    ``KeyError: 'drop_after'`` the unguarded parse raises from OUTSIDE the
     fail-open try.  And the sweep built on that None must render the
     FULL-RANGE statement — no floor conjunct, no floor parameter —
     byte-identical to vanilla behavior (the fetch-level twin of H10a,

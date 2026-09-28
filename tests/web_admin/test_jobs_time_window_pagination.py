@@ -62,7 +62,7 @@ _BASE = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
 # the older rows instead).
 _N_INSIDE = 51
 # Rows the window must exclude on each side: enough that an unfiltered
-# page 2 (the pre-fix behavior) cannot pass by accident, and enough rows
+# page 2 (the unguarded behavior) cannot pass by accident, and enough rows
 # on the far side of _BASE for the lone-bound windows to have real
 # populations on both sides of the cut.
 _N_BEFORE = 6
@@ -278,8 +278,8 @@ async def _walk(app: FastAPI, first_path: str, *, max_pages: int = 20) -> list[s
 async def test_page_turn_carries_the_absolute_time_window(lab: _Lab) -> None:
     """Page 1 filtered + page 2 ALSO filtered, walked via the REAL cursor.
 
-    The seed makes the pre-fix failure maximally loud: 51 in-window rows
-    means a filtered page 2 holds exactly ONE row; the pre-fix page 2 (the
+    The seed makes the unguarded failure maximally loud: 51 in-window rows
+    means a filtered page 2 holds exactly ONE row; the unguarded page 2 (the
     filter dropped) held the OLDER, out-of-window rows instead. The Next
     href itself is pinned too: the macro must carry BOTH bounds, the same
     ride status/queue/actor get.
@@ -317,21 +317,21 @@ async def test_windowed_walks_match_the_seed_oracle(lab: _Lab) -> None:
     """Every window shape, walked to exhaustion, equals the seed plan's
     own Python-derived order — the differential harness's shapes, pinned
     against one engine (the shapes ARE the oracle here, not another
-    engine). A pre-fix walk diverges on page 2 for every bracketed shape.
+    engine). An unguarded walk diverges on page 2 for every bracketed shape.
     """
     for label, window_qs, expected_rows in _window_shapes(lab.plan):
         walked = await _walk(lab.app, f"/admin/jobs?tab=live{window_qs}")
         assert walked == _expected_order(expected_rows), (
             f"the walk of the {label} returned rows the seed oracle does not "
-            "(pre-fix: page 2 dropped the filter)"
+            "(unguarded: page 2 drops the filter)"
         )
 
 
 @pytest.mark.integration
 async def test_lone_time_from_is_an_open_ended_window(lab: _Lab) -> None:
     """A lone lower bound FILTERS ("everything after X") — it must not be
-    silently ignored. Pre-fix: _parse_time_range required the pair, so
-    this request served the UNFILTERED list. The count endpoint parses
+    silently ignored. A parser that requires the pair serves
+    this request as the UNFILTERED list. The count endpoint parses
     through the same function; it must agree with the walk.
     """
     (_label, _qs, _expected) = _window_shapes(lab.plan)[0]
@@ -373,8 +373,8 @@ async def test_lone_time_to_is_an_open_ended_window(lab: _Lab) -> None:
 @pytest.mark.integration
 async def test_a_lone_absolute_bound_outranks_a_named_range(lab: _Lab) -> None:
     """An explicit bound beside a named range keeps the pair's precedence:
-    the caller's explicit instants are the more specific ask. (Pre-fix a
-    lone bound fell THROUGH to the named range — the same silent-ignore
+    the caller's explicit instants are the more specific ask. (A lone
+    bound falling through to the named range is the same silent-ignore
     bug wearing a different hat.)"""
     path = f"/admin/jobs?tab=live&time_from={quote_plus(_BASE.isoformat())}&time_range=24h"
     walked = await _walk(lab.app, path)
@@ -403,8 +403,8 @@ async def test_a_malformed_lone_bound_is_still_a_clean_400(lab: _Lab) -> None:
 
 def test_parse_time_range_lone_bounds_are_open_ended_windows() -> None:
     """_parse_time_range passes a LONE bound through as the open-ended
-    window it is (the other side None). Pre-fix this returned no filter
-    at all — the silent-ignore the E2E pins catch from above."""
+    window it is (the other side None). Returning no filter
+    at all is the silent-ignore the E2E pins catch from above."""
     from datetime import datetime as dt
 
     t0 = dt(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
@@ -431,7 +431,7 @@ def test_parse_time_range_lone_bound_outranks_a_named_range() -> None:
 
 def test_pagination_macro_carries_the_time_bounds(stub_pool: Any) -> None:
     """The pagination macro's filter_qs must render time_from/time_to into
-    every page-turn URL — the exact seam that dropped them pre-fix (the
+    every page-turn URL — the exact seam that dropped them unguarded (the
     macro carried status/queue/actor/tags/search and even the relative
     time_range, but not the absolute bounds)."""
     from taskq._ids import new_uuid

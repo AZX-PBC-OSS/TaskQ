@@ -333,9 +333,9 @@ class _FakeAsyncCM:
 class _FakeRedis:
     """Fake redis.asyncio.Redis for UI-lifespan bounded-close tests.
 
-    Supports both lifecycle styles: async-CM (pre-fix enter_async_context
+    Supports both lifecycle styles: async-CM (unguarded enter_async_context
     path) and explicit initialize() + pushed bounded-aclose callback
-    (post-fix path). aclose() blocks while aclose_wait is cleared (hung
+    (the guarded path). aclose() blocks while aclose_wait is cleared (hung
     broker). Mirrors the _FakeRedisClient conventions in
     tests/test_jobs_client.py.
     """
@@ -502,7 +502,7 @@ async def test_ui_serve_lifespan_terminates_hung_pool_close(
     from fastapi import FastAPI
 
     assert isinstance(app, FastAPI)
-    # Why the outer timeout: pre-fix lifespan exit awaited Pool.__aexit__
+    # Why the outer timeout: unguarded, lifespan exit awaits Pool.__aexit__
     # (unbounded close), so the RED state would hang forever instead of
     # failing fast.
     async with asyncio.timeout(5):
@@ -517,7 +517,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Healthy pool close at lifespan exit: closed once, never terminated.
-    Pins the no-regression behaviour (passes pre- and post-fix)."""
+    A no-regression pin."""
     pool = _FakePool()
     app = _capture_app_for_lifespan(monkeypatch, pool)
 
@@ -564,7 +564,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
     from fastapi import FastAPI
 
     assert isinstance(app, FastAPI)
-    # Why the outer timeout: pre-fix lifespan exit awaited Redis.__aexit__
+    # Why the outer timeout: unguarded, lifespan exit awaits Redis.__aexit__
     # (shielded, unbounded aclose), so the RED state would hang forever
     # instead of failing fast.
     with structlog.testing.capture_logs() as captured:
@@ -593,7 +593,7 @@ async def test_ui_serve_lifespan_fast_redis_close_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Healthy redis close at lifespan exit: aclose happens exactly once.
-    Pins the no-regression behaviour (passes pre- and post-fix)."""
+    A no-regression pin."""
     redis_client = _FakeRedis()
     app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
 

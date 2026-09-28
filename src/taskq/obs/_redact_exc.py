@@ -48,8 +48,8 @@ Two concrete leaks, both verified by execution rather than assumed:
 
 Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
 suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
-neither quotes a row value, and both were previously deleted for no privacy
-benefit. Losing them left an operator with a constraint name and nothing else.
+neither quotes a row value, and neither needs deletion for privacy's
+sake. Dropping them leaves an operator with a constraint name and nothing else.
 
 The DETAIL drop is switchable off by :func:`set_exception_redaction_enabled`
 (``TASKQ_EXCEPTION_REDACTION_ENABLED=false``) for advanced debugging, and the
@@ -960,8 +960,8 @@ EXCEPTION_TRACEBACK_FIELDS = frozenset(
 def scrub_exception_field(field: str, value: object) -> object:
     """Scrub a known exception-bearing log-field value; everything else passes through.
 
-    Exception objects render as the scrubbed safe message (they previously
-    reached the orjson fallback and dropped the whole log line). Strings in
+    Exception objects render as the scrubbed safe message (unhandled, they
+    reach the orjson fallback and drop the whole log line). Strings in
     message-style fields get the message scrub; strings in traceback-style
     fields get the line-wise stacktrace scrub. A :class:`ScrubbedText` has
     already had the treatment its type promises and passes through, as do

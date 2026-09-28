@@ -116,9 +116,9 @@ async def test_sync_actor_systemexit_is_a_typed_attempt_outcome() -> None:
     truthfully: ``dispatch_one_job`` returns ``failed``, the failure write
     carries the actor's own exception (error_class ``SystemExit``, the
     actor's frame in the traceback via the cause chain), and nothing
-    escapes the await. The pre-fix behavior killed the event loop: the
-    consumer teardown recorded the job cancelled and the ``SystemExit``
-    escaped ``asyncio.run``."""
+    escapes the await. The unguarded behavior kills the event loop: the
+    consumer teardown records the job cancelled and the ``SystemExit``
+    escapes ``asyncio.run``."""
     registry = ProviderRegistry()
     process_scope, thread_scope, loop_scope = make_scopes(registry)
     await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
@@ -166,7 +166,7 @@ async def test_sync_actor_systemexit_is_a_typed_attempt_outcome() -> None:
 async def test_sync_actor_systemexit_leaves_the_sibling_and_worker_alive() -> None:
     """A sibling job in flight when the exiter dies completes succeeded:
     the failure is the dying job's alone, the consumer loop task never
-    dies, and the worker keeps its fleet (the pre-fix loop death cancelled
+    dies, and the worker keeps its fleet (the unguarded loop death cancelled
     the sibling through the teardown)."""
     registry = ProviderRegistry()
     process_scope, thread_scope, loop_scope = make_scopes(registry)
@@ -179,7 +179,7 @@ async def test_sync_actor_systemexit_leaves_the_sibling_and_worker_alive() -> No
     async def slow_sibling(payload: _Payload, ctx: object) -> dict[str, object]:
         del payload, ctx
         # Long enough that the exiter's thread failure lands mid-flight;
-        # pre-fix the loop died here and the teardown cancelled this task.
+        # unguarded the loop dies here and the teardown cancels this task.
         await asyncio.sleep(0.2)
         return {"ok": True}
 

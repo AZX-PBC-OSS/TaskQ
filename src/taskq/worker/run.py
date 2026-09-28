@@ -970,23 +970,23 @@ async def di_consumer_loop(
         actor_ref = actor_registry[job.actor]
         # The attempt runs in a per-job child task, and the child is what
         # consume_one_job registers as the job's inflight attempt
-        # (asyncio.current_task() inside the child). The pre-fix code awaited
-        # dispatch_one_job inline, so the registered task was THIS loop task,
-        # and the cancel ladder's phase-2 escalation
-        # (cancel.py's active.task.cancel()) cancelled the whole loop:
+        # (asyncio.current_task() inside the child). Registering THIS loop
+        # task instead (awaiting dispatch_one_job inline) would let the
+        # cancel ladder's phase-2 escalation
+        # (cancel.py's active.task.cancel()) cancel the whole loop:
         # CancelledError is a BaseException, the handlers below catch only
-        # SlotPoolAcquireError and Exception, so it propagated out of the
-        # while, the TaskGroup discarded the cancelled sibling, nothing
-        # respawned it, and the slot never served another row (the producer's
+        # SlotPoolAcquireError and Exception, so it would propagate out of the
+        # while, the TaskGroup would discard the cancelled sibling, nothing
+        # would respawn it, and the slot would never serve another row (the producer's
         # availability counts queue depth minus active jobs, never live
         # consumers, so the worker stranded max_concurrency rows and parked).
         # The child scopes every cancel of a registered attempt task to the
         # one job: phase-2 escalation, the shutdown orchestrator's
         # CANCELLING/FORCING phases, and the isolate path all cancel the
         # child, this loop survives, and the cancel's delivery semantics are
-        # unchanged (a cancel of this loop while it awaits the child
-        # propagates into the child first, exactly as it used to hit these
-        # frames inline).
+        # the inline ones (a cancel of this loop while it awaits the child
+        # propagates into the child first, through the same frames an inline
+        # cancel hits).
         dispatch_task = asyncio.create_task(
             dispatch_one_job(
                 backend=backend,
@@ -1014,7 +1014,7 @@ async def di_consumer_loop(
                 # cancellation (the TaskGroup's teardown cancel, count
                 # elevated) or any shutdown signal means the child was killed
                 # as part of the worker coming down: re-raise, the loop dies
-                # with the job exactly as the pre-fix inline path did. The
+                # with its job. The
                 # remaining case is the child ALONE being cancelled while
                 # this loop lives: an operator cancel's phase-2 escalation
                 # (or an actor that raised CancelledError itself). The child
@@ -1051,11 +1051,10 @@ async def di_consumer_loop(
             # worker's lock with no runner left to move it: disown it so
             # the heartbeat stops renewing the lease and the reclaim
             # sweep hands it back - the same treatment the
-            # actor-not-found release-failure arm above gets (the
-            # pre-fix comment here said "leave the job to lease
-            # reclaim", but the tick's renewal kept that lease alive
-            # forever, so the recovery it named never came and the row
-            # was lost).
+            # actor-not-found release-failure arm above gets (leaving
+            # the job to lease reclaim would be a no-op: the tick's
+            # renewal keeps that lease alive forever, so the recovery
+            # it names never comes and the row stays lost).
             _disown_job(deps.disowned_jobs, job)
             continue
         except Exception:

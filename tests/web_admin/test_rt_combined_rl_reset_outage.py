@@ -1,6 +1,6 @@
 """Cross-PR attack: a redis outage rejection on the admin rate-limit reset.
 
-#421 taught the redis rate-limit primitives to absorb ``ReadOnlyError``
+#421's outage absorption: the redis rate-limit primitives absorb ``ReadOnlyError``
 and ``OutOfMemoryError`` (besides ConnectionError/TimeoutError) by
 falling back to Postgres -- on the ACQUIRE path. The admin reset route
 (#429) reaches the SAME redis-backed primitive through a path with no

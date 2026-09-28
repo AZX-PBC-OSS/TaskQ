@@ -222,9 +222,10 @@ def render(schema: str) -> SqlTemplates:
         # ── Terminal-write statements ──────────────────────────────
         # Every mark_* statement below is ONE self-contained
         # data-modifying-CTE statement: the fenced jobs UPDATE, the
-        # job_attempts INSERT, and the job_events INSERT that previously
-        # ran as three awaited round trips inside one transaction are
-        # fused into a single statement (see _terminal.py's module
+        # job_attempts INSERT, and the job_events INSERT are
+        # fused into a single statement where three awaited round trips
+        # inside one transaction would otherwise run
+        # (see _terminal.py's module
         # docstring for the measured rationale and the preserved
         # invariants).  The fencing predicate, the clock_timestamp()
         # time base, the holder-CTE worker_id resolution, the per-arm
@@ -280,10 +281,10 @@ def render(schema: str) -> SqlTemplates:
         # for the invariant.
         #
         # duration_ms is computed IN the statement from the same
-        # database-written timestamp pair Python used to receive and
-        # multiply back, but server-side, with exact numeric arithmetic
-        # instead of Python's float path: values can differ from the old
-        # Python computation by 1ms on exactly-whole-millisecond
+        # database-written timestamp pair Python would otherwise receive
+        # and multiply back, but server-side, with exact numeric arithmetic
+        # instead of Python's float path: values can differ from Python's
+        # float computation by 1ms on exactly-whole-millisecond
         # boundaries (where the float product drifted just below the
         # integer), and the server-side values are the strictly more
         # accurate ones.  trunc() keeps the same
@@ -895,8 +896,8 @@ deadline_cancelled AS (
     -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
     -- mirrors branch-for-branch): a row carrying a cancel phase whose
     -- schedule_to_close lapses at deferral time terminalises 'cancelled'
-    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
-    -- the deadline arm below and failed a row the operator had already
+    -- here, never 'failed:DeadlineExceeded': a shape that left this row
+    -- to the deadline arm below would fail a row the operator had already
     -- claimed, firing DeadlineExceeded hooks and error reports on a
     -- cancel in flight. This arm runs BEFORE the failure arm; the
     -- failure arm reads cancel_phase = 0 by construction (and re-guards
@@ -1096,8 +1097,8 @@ deadline_cancelled AS (
     -- isolate template mirrors branch-for-branch): a row carrying a
     -- cancel phase whose schedule_to_close lapses at deferral time
     -- terminalises 'cancelled' here, never
-    -- 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded': the
-    -- pre-fix shape matched the budget/deadline arms below and failed a
+    -- 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded': a shape
+    -- that left this row to the budget/deadline arms below would fail a
     -- row the operator had already claimed, firing DeadlineExceeded and
     -- retry-exhausted hooks on a cancel in flight. This arm runs BEFORE
     -- both; those arms read cancel_phase = 0 by construction (and
@@ -1362,8 +1363,8 @@ deadline_cancelled AS (
     -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
     -- mirrors branch-for-branch): a row carrying a cancel phase whose
     -- schedule_to_close lapses at deferral time terminalises 'cancelled'
-    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
-    -- the deadline arm below and failed a row the operator had already
+    -- here, never 'failed:DeadlineExceeded': a shape that left this row
+    -- to the deadline arm below would fail a row the operator had already
     -- claimed, firing DeadlineExceeded hooks and error reports on a
     -- cancel in flight. This arm runs BEFORE the failure arm; the
     -- failure arm reads cancel_phase = 0 by construction (and re-guards
@@ -2011,7 +2012,7 @@ ORDER BY occurred_at, event_id""",
 -- come back in a later poll, id order preserved, the cursor never
 -- advances past an unserved row.  Under co-monotone stamps (no step-
 -- back) the held-back rows are the recent tail of the id space and the
--- ceiling is exactly the old behavior.  The subquery repeats the
+-- ceiling is exactly the plain no-ceiling behavior.  The subquery repeats the
 -- partial index's verbatim predicate (01.00.02_01) so the planner
 -- confines the min() walk to job_events_reclaim_idx, an ascending scan
 -- from the cursor that stops at the first held-back row.
