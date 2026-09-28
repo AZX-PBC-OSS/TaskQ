@@ -477,11 +477,15 @@ async def test_refresh_read_timeout_fails_open_instead_of_hanging() -> None:
     start = time.monotonic()
     # Literal fallback applies and the call returns promptly.
     assert await cache.effective_max_pending("cap_timeout", 7) == 7
+    # Derived bound: the read budget is read_timeout=50 ms; each call costs at
+    # most one failed read + one literal fallback (a couple of loop turns).
+    # 2.0 s = 40x the budget — co-tenancy slack for the loop turns, while
+    # still pinning fail-open (the unbounded shape parked on the dead lock).
     assert time.monotonic() - start < 2.0
     # The lock was released: the next caller takes the same bounded
     # fail-open path (failure stamped → no retry within the TTL).
     assert await cache.effective_max_pending("cap_timeout", 7) == 7
-    assert time.monotonic() - start < 2.0
+    assert time.monotonic() - start < 2.0  # same 40x-budget arithmetic as above
 
 
 async def test_refresh_failure_is_retried_no_more_often_than_ttl() -> None:
