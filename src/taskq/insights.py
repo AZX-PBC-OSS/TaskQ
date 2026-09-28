@@ -617,6 +617,27 @@ LEFT JOIN done dn ON dn.queue = q.queue
 ORDER BY q.queue"""
 
 
+def _build_overprovisioning_sql(schema: str) -> str:
+    """Return the per-queue overprovisioning SQL (schema baked in).
+
+    Wholly composed of the shared CTE arms (due, live, done, queues) at
+    the overprovisioning statement's bind positions: the liveness floor
+    is ``$2`` on the live arm and the window on the finished bounds.
+    """
+    s = _require_ident(schema)
+    return _QUEUE_OVERPROVISIONING_SQL.format(
+        schema=s,
+        _DUE_CTE=_DUE_CTE.format(schema=s, _DUE_NOW=_DUE_NOW),
+        _LIVE_CTE=_LIVE_CTE.format(schema=s, bind="$2"),
+        _DONE_CTE=_DONE_CTE.format(
+            schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND
+        ),
+        _QUEUES_CTE=_QUEUES_CTE.format(
+            arms="due\n    UNION SELECT queue FROM live\n    UNION SELECT queue FROM done"
+        ),
+    )
+
+
 async def fetch_overprovisioning(
     conn: ConnLike,
     *,
@@ -637,18 +658,7 @@ async def fetch_overprovisioning(
     """
     if window <= timedelta(0):
         raise ValueError(f"overprovisioning window must be positive, got {window!r}")
-    s = _require_ident(schema)
-    sql = _QUEUE_OVERPROVISIONING_SQL.format(
-        schema=s,
-        _DUE_CTE=_DUE_CTE.format(schema=s, _DUE_NOW=_DUE_NOW),
-        _LIVE_CTE=_LIVE_CTE.format(schema=s, bind="$2"),
-        _DONE_CTE=_DONE_CTE.format(
-            schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND
-        ),
-        _QUEUES_CTE=_QUEUES_CTE.format(
-            arms="due\n    UNION SELECT queue FROM live\n    UNION SELECT queue FROM done"
-        ),
-    )
+    sql = _build_overprovisioning_sql(_require_ident(schema))
     rows = await conn.fetch(sql, window, worker_liveness_seconds)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
     # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
     # connection, so pyright cannot see fetch on the union.
