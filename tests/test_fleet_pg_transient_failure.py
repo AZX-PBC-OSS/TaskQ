@@ -529,9 +529,9 @@ async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
     An enqueue is one autocommit INSERT under the dead-on-acquire retry
     guard. When the server's FATAL parks a pooled connection between the
     INSERT's acknowledgement and the pool's release-time reset, the
-    unguarded wrapper read the release's ``InternalClientError`` as
-    dead-on-acquire and re-ran the enqueue with the same ``args.id`` --
-    against the jobs table's ``uuid PRIMARY KEY`` that re-run raised
+    unguarded wrapper reads the release's ``InternalClientError`` as
+    dead-on-acquire and re-runs the enqueue with the same ``args.id`` --
+    against the jobs table's ``uuid PRIMARY KEY`` that re-run raises
     ``UniqueViolationError`` for an enqueue that had committed and would
     run (observed live under old-contract emulation: 11
     UniqueViolations in 400 jittered kills), and that error-for-committed-

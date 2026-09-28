@@ -190,6 +190,10 @@ async def test_invoke_on_cancel_is_best_effort_and_timeout_bounded() -> None:
     await invoke_on_cancel(_hanging, job_row, timeout=0.05)
     elapsed = time.monotonic() - started
 
+    # Derived bound: the hook's own timeout is 0.05s; the await must return at
+    # the timeout plus loop-turn epsilon. 5.0 s = 100x the budget — generous
+    # scheduler slack, but two orders of magnitude below the hanging hook's
+    # own 30s sleep this pin exists to bound.
     assert elapsed < 5.0, (
         "invoke_on_cancel must bound a hanging on_cancel hook by its timeout so "
         "cleanup never blocks the terminal cancel write; the call took "
@@ -522,6 +526,10 @@ async def test_a_hanging_on_cancel_hook_is_bounded_by_its_timeout_end_to_end() -
         )
     elapsed = time.monotonic() - start
 
+    # Derived bound: identical arithmetic to the enclosing wait_for — the
+    # consume path must return inside its own 5s guard (the hung hook's
+    # configured on_cancel_timeout bounds the terminal write long before).
+    # The pin is the guard's twin, not a separate measurement.
     assert elapsed < 5.0, (
         "consume_one_job did not return within the outer 5s guard; a "
         "hanging on_cancel hook stalled the terminal write past its "

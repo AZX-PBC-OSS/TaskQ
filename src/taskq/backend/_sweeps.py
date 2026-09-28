@@ -577,7 +577,13 @@ _SWEEP_1_BODY = """\
 -- locking clause is legal, and the disjoint arms make the lock
 -- semantics uninteresting: no row can be visited by both arms.
 WITH lease_arm AS MATERIALIZED (
-    SELECT id, locked_by_worker, 'lock_expired'::text AS reason
+    SELECT id, locked_by_worker,
+           -- scheduled_at rides the pre-UPDATE read: the snap is taken
+           -- before this statement's re-pend arm reschedules the row, so
+           -- the value is the claim-time due time the crashed attempt's
+           -- ledger row stamps (01.00.20_04_pre_attempt_due_at.sql).
+           scheduled_at,
+           'lock_expired'::text AS reason
     FROM "{schema}".jobs
     WHERE status = 'running'
       AND lock_expires_at < statement_timestamp()
@@ -588,7 +594,7 @@ WITH lease_arm AS MATERIALIZED (
     FOR UPDATE SKIP LOCKED
 ),
 heartbeat_arm AS MATERIALIZED (
-    SELECT id, locked_by_worker, 'heartbeat_timeout'::text AS reason
+    SELECT id, locked_by_worker, scheduled_at, 'heartbeat_timeout'::text AS reason
     FROM "{schema}".jobs
     WHERE status = 'running'
       AND heartbeat_timeout > interval '0'
@@ -712,6 +718,9 @@ WHERE j.id = snap.id
 -- two, is the invariant).
 RETURNING j.id, j.status, j.attempt, j.started_at, j.actor,
           snap.locked_by_worker,
+          -- The pre-UPDATE scheduled_at (see the lease_arm comment): the
+          -- claim-time due time the batched attempt INSERT stamps.
+          snap.scheduled_at AS due_at,
           snap.reason AS reclaim_reason, clock_timestamp() AS now_ts"""
 
 #: The sweep with its shared fragments bound, still carrying ``{schema}``
@@ -751,7 +760,10 @@ _SWEEP_2_SQL = """\
 -- LOCKED steps over contention instead of blocking on a front-of-order
 -- row.
 WITH snap AS MATERIALIZED (
-    SELECT id, status AS prev_status
+    -- scheduled_at rides the pre-UPDATE read: the value is the row's due
+    -- time (this sweep's rows are pending/scheduled, never claimed), read
+    -- before the UPDATE re-stamps it (01.00.20_04_pre_attempt_due_at.sql).
+    SELECT id, status AS prev_status, scheduled_at
     FROM "{schema}".jobs
     WHERE status IN ('pending', 'scheduled')
       AND schedule_to_close IS NOT NULL
@@ -768,6 +780,7 @@ SET status = 'failed'::"{schema}".job_status,
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
+          snap.scheduled_at AS due_at,
           clock_timestamp() AS now_ts""".replace(
     "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
 ).replace("{deadline_message}", DEADLINE_EXCEEDED_MESSAGE)
@@ -1158,7 +1171,7 @@ WITH holder AS (
 )
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
- error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+ error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
 SELECT a.job_id, a.attempt,
        -- The standing-claim fence above keeps NULL started_at out of this
        -- statement entirely (a refunded row records no attempt row, the
@@ -1168,9 +1181,13 @@ SELECT a.job_id, a.attempt,
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
        'crashed', '{worker_crashed_class}',
        a.error_message, NULL,
-       a.duration_ms, holder.id, '{{}}'::jsonb
-FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
-    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, ord)
+       a.duration_ms, holder.id, '{{}}'::jsonb,
+       -- The claim-time due time: the candidate SELECT reads
+       -- scheduled_at before the reclaim's re-pend arm reschedules the
+       -- row (see 01.00.20_04_pre_attempt_due_at.sql).
+       a.due_at
+FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[], $7::timestamptz[])
+    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, due_at, ord)
 LEFT JOIN holder ON holder.id = a.worker_id
 -- The standing-claim fence: a reclaimed row whose started_at the
 -- reconcile's refund un-stamped carries NO standing claim, so it
@@ -1191,14 +1208,20 @@ ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome, error_class, error_message,
- error_traceback, duration_ms, worker_id, metadata)
+ error_traceback, duration_ms, worker_id, metadata, due_at)
 SELECT a.job_id, a.attempt,
        COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
        'failed', '{deadline_exceeded_class}', '{deadline_message}',
-       NULL, a.duration_ms, NULL, '{{}}'::jsonb
-FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
-    WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, ord)
+       NULL, a.duration_ms, NULL, '{{}}'::jsonb,
+       -- The row's due time: a never-dispatched pending/scheduled row's
+       -- own scheduled_at IS the due time this synthetic (deadline
+       -- lapsed, never claimed) attempt record waited against; the
+       -- candidate SELECT reads it before the sweep's UPDATE re-stamps
+       -- the row (see 01.00.20_04_pre_attempt_due_at.sql).
+       a.due_at
+FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[], $5::timestamptz[])
+    WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, due_at, ord)
 -- A pending/scheduled row can legitimately sit at an attempt number that
 -- already ran: the transient-retry arm, a crash reclaim, and an operator
 -- retry all leave the spent attempt's row behind and keep the counter
@@ -1501,13 +1524,12 @@ async def sweep_expired_locks(
     row (not one per row) so that fleet-wide consumers using
     ``watch_reclaims`` get a low-latency wakeup on both branches.
 
-    .. note:: This is a **channel-semantics change**, not purely a
-       bugfix: ``wake_channel`` previously meant "new dispatchable work"
-       (enqueue, scheduled-to-pending promotion); it now *also* means
+    .. note:: The wake channel is **not** exclusively a dispatch signal:
+       it fires for "new dispatchable work"
+       (enqueue, scheduled-to-pending promotion) *and* for
        "something changed on job_events."  Every crash-reclaim therefore
        wakes every subscriber, including pure-dispatch workers with no
-       interest in reclaim events.  Crashes are rare so the cost is low,
-       but the wake channel is no longer exclusively a dispatch signal.
+       interest in reclaim events.  Crashes are rare so the cost is low.
 
     Returns the count of rows reclaimed by this call.
     """
@@ -1542,6 +1564,10 @@ async def sweep_expired_locks(
             duration_mss: list[int | None] = []
             error_messages: list[str] = []
             details: list[str | None] = []
+            # The claim-time due time of each reclaimed row's attempt,
+            # read pre-reschedule by the snap's RETURNING (see
+            # _SWEEP_1_ATTEMPTS_BATCH_SQL).
+            due_ats: list[datetime | None] = []
 
             for rec in rows:
                 job_id: JobId = JobId(rec["id"])
@@ -1592,6 +1618,7 @@ async def sweep_expired_locks(
                 # sibling arm's, see _SWEEP_1_ATTEMPTS_BATCH_SQL's comment.
                 error_messages.append(_ATTEMPT_MESSAGES[reclaim_reason])
                 details.append(jsonb_param(detail))
+                due_ats.append(rec["due_at"])
                 reclaimed.append(_ReclaimedRow(job_id, attempt, new_status, reclaim_reason))
 
             await conn.execute(
@@ -1602,6 +1629,7 @@ async def sweep_expired_locks(
                 worker_ids,
                 duration_mss,
                 error_messages,
+                due_ats,
             )
             await conn.execute(event_sql, job_ids, details, "state_change")
             await conn.execute(
@@ -1697,6 +1725,9 @@ async def sweep_deadline_exceeded(
             started_ats: list[datetime | None] = []
             duration_mss: list[int | None] = []
             details: list[str | None] = []
+            # The row's due time, read pre-UPDATE by the snap's RETURNING
+            # (see _SWEEP_2_ATTEMPTS_BATCH_SQL).
+            due_ats: list[datetime | None] = []
 
             for rec in rows:
                 job_id: JobId = JobId(rec["id"])
@@ -1724,10 +1755,11 @@ async def sweep_deadline_exceeded(
                 started_ats.append(started_at)
                 duration_mss.append(duration_ms)
                 details.append(jsonb_param(detail))
+                due_ats.append(rec["due_at"])
                 swept.append(_DeadlineRow(job_id, prev_status, actor))
                 actor_counts[actor] += 1
 
-            await conn.execute(attempt_sql, job_ids, attempts, started_ats, duration_mss)
+            await conn.execute(attempt_sql, job_ids, attempts, started_ats, duration_mss, due_ats)
             await conn.execute(event_sql, job_ids, details, "state_change")
         # Success path only: restore the caller's timeout inside the
         # still-open transaction (a savepoint RELEASE would otherwise

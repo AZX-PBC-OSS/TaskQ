@@ -1478,7 +1478,7 @@ async def _main(
     is called with a :class:`ScheduleCreateArgs` inside ``try/except
     asyncpg.UniqueViolationError``, the ``(actor, name)`` UNIQUE constraint
     makes this registration pass create-only and skip-on-conflict. The conflict
-    branch is no longer a bare ``pass``: it calls
+    branch calls
     :func:`_warn_on_cron_drift`, which compares the code-declared spec against
     the stored row and warns when they differ. Write semantics are unchanged ,
     detection only.
@@ -1653,7 +1653,7 @@ async def _main(
 
         # Schema-currency guard: refuse boot BEFORE any boot step writes to
         # the database (sync_rate_limit_buckets, register_worker, ...). A
-        # schema one release behind used to pass every boot step except the
+        # schema one release behind passes every boot step except the
         # queue-cap query's 01.00.04 guard: the enqueue INSERT's column list
         # omits whatever the missing migration adds, so writes half-work,
         # and the first dispatch claim's RETURNING then dies in the strict
@@ -2198,6 +2198,7 @@ async def _main(
                 enabled=settings.watchdog_enabled,
                 actor_code_names=actor_code_names,
                 stall_tally=deps.stall_tally,
+                idle_window=deps.loop_idle,
                 list_running_jobs=_running_job_actors,
             )
 
@@ -2503,8 +2504,9 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     consumer's terminal routing reads the registry entry's ``cancel_origin``:
     OPERATOR keeps the cancel ladder, SHUTDOWN releases the attempt back to
     the fleet via ``mark_interrupted``, and NONE falls through to
-    ``mark_cancelled``, which fences only on id/status/worker/attempt. The
-    pre-fix shape terminalised every in-flight job 'cancelled' with
+    ``mark_cancelled``, which fences only on id/status/worker/attempt. Without
+    this stamp the terminal routing would fall through to that
+    ``mark_cancelled`` arm and terminalise every in-flight job 'cancelled' with
     ``cancel_phase = 0`` and ``cancel_requested_at = NULL``, a phantom
     operator cancel no operator ever issued: it spent an attempt, wrote a
     ``job_attempts`` row with ``outcome='cancelled'``, fired ``on_cancel``,
@@ -2522,8 +2524,8 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     fresh claim in the gap between the stamp and the delivery of that
     task's own cancellation, and the entry registered there is still
     origin-less when the consumer's terminal routing reads it: that one
-    in-flight dispatch falls through to ``mark_cancelled`` exactly as
-    pre-fix. Closing the window fully would need a claim-side fence the
+    in-flight dispatch falls through to ``mark_cancelled``. Closing the
+    window fully would need a claim-side fence the
     crash path does not have, so the residual exposure is bounded to the
     claims racing the stamp. Only
     origin-less entries are stamped: a real operator cancel already carries
@@ -2890,12 +2892,12 @@ def worker_main(
             )
         )
     # The drain's verdict is guarded by the ENTRYPOINTS (the taskq worker
-    # command and the e2e/system-e2e worker entries), not here. This used to
-    # end with ``signal.signal(SIGTERM, SIG_IGN)`` - correct for a process
-    # about to ``sys.exit``, poison for any other caller: an ignored
-    # disposition is inherited by every process this host forks from then
-    # on (proven: a child spawned after an in-process ``worker_main``
-    # ignored SIGTERM and died to SIGKILL, rc -9). A library function
+    # command and the e2e/system-e2e worker entries), not here. This must
+    # not end with ``signal.signal(SIGTERM, SIG_IGN)`` - correct for a
+    # process about to ``sys.exit``, poison for any other caller: an
+    # ignored disposition is inherited by every process this host forks
+    # from then on (a child spawned after an in-process ``worker_main``
+    # ignores SIGTERM and dies to SIGKILL, rc -9). A library function
     # returns control to its caller and must leave the host's signal state
     # exactly as it found it; the verdict guard belongs where the process
     # is genuinely about to die. SIGINT is left alone everywhere: its

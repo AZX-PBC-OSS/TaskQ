@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-27T16:30:00+00:00",
+  "name": "archive-scale-red-probe",
+  "meta": {
+    "purpose": "The 100k-archive red-probe series behind the numbers cited in migration 01.00.21_01, src/taskq/web/admin/jobs.py's UNION-shape comment, and tests/test_scan_budget.py's docstrings. Measured during the scale campaign on PostgreSQL 18.6 (timescale/timescaledb:2.30.1-pg18 image run vanilla), a 100,000-row jobs_archive seeded by the campaign's seed shape, the admin page statement built by taskq.web.admin.jobs._build_paginated_sql verbatim, EXPLAIN (ANALYZE, FORMAT JSON). The 10M-scale series these legs extend is benchmarks/results/archive-scale.json (pagination_pathology).",
+    "page_size": 51,
+    "archive_rows": 100000,
+    "python": "3.13"
+  },
+  "page1_unserved_ordering": {
+    "what": "page 1 (no cursor) of the archive tab on the SHIPPED indexes (pre-01.00.21_01): the finished_at DESC NULLS LAST, id DESC ordering is matched by no index, so the plan is a full sort of the matching population",
+    "execution_ms": 16.61,
+    "plan_nodes": ["Limit", "Gather Merge"],
+    "with_page_index_execution_ms": 0.12,
+    "with_page_index_plan_nodes": ["Limit", "Index Scan"],
+    "ratio": 138
+  },
+  "cursor_page_or_wrapped_predicate": {
+    "what": "a value-cursor page (~150d deep) with the page index present, before the builder's UNION split: the keyset predicate rendered (finished_at IS NULL OR row-compare); the OR defeats index-condition extraction",
+    "execution_ms": 23.85,
+    "plan_nodes": ["Limit", "Index Scan"],
+    "index_cond": null,
+    "filter": "(((finished_at IS NULL) OR (ROW(finished_at, id) < ROW($2, $3))) AND (status = ANY(...)))",
+    "rows_removed_by_filter": 58379,
+    "note": "the scan runs from the index start and filters; page cost linear in walked depth"
+  },
+  "cursor_page_union_shape": {
+    "what": "the same page after the builder's UNION split: two ordered index branches (values seek + NULL-range seek) under a Merge Append",
+    "execution_ms": 0.113,
+    "plan_nodes": ["Limit", "Merge Append", "Limit", "Index Scan", "Limit", "Index Scan"],
+    "branch_index_conds": [
+      "ROW(finished_at, id) < ROW($2::timestamptz, $3::uuid)",
+      "(finished_at IS NULL)"
+    ],
+    "rows_removed_by_filter": 0,
+    "ratio_vs_or_wrapped": 211
+  },
+  "row_wise_index_cond_proof": {
+    "what": "the bare row-wise compare (no OR wrapper) extracts as an Index Cond and seeks: the A/B that isolates the OR as the blocker",
+    "bare_row_wise_execution_ms": 0.129,
+    "or_wrapped_execution_ms": 17.257,
+    "lexicographic_or_execution_ms": 18.143
+  },
+  "walk_row_exactness": {
+    "what": "the UNION shape walked 5,049 rows over 99 pages (seed with NULL finished_at rows present) and matched a reference ORDER BY finished_at DESC NULLS LAST, id DESC walk exactly; page p50 0.30 ms, p95 0.90 ms",
+    "rows": 5049,
+    "pages": 99,
+    "page_p50_ms": 0.3,
+    "page_p95_ms": 0.9,
+    "order_matches_reference": true
+  }
+}

@@ -70,8 +70,11 @@ through structlog). Startup logs one line saying what was wired:
 otel-exporter-configured  traces=otlp  metrics=otlp  logs=  source=env
 ```
 
-and `source=none` when nothing asked for an exporter. Two other startup
-lines matter:
+and `source=none` when nothing asked for an exporter. (That is the
+`console` renderer's shape; the default `TASKQ_LOG_FORMAT=json` emits the
+same line as the `otel-exporter-configured` event with `traces`/`metrics`/
+`logs`/`source` — and the port fields — as JSON fields, so grep for the
+event name there.) Two other startup lines matter:
 
 - `otel-exporter-unavailable` (WARNING, with `extra=otel` or
   `extra=prometheus`); the variables are set but the package that
@@ -381,7 +384,9 @@ TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
 ```
 
 The startup line reads `otel-exporter-configured metrics=prometheus
-source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
+source=prometheus prometheus_port=9464` (the console shape; the default
+`TASKQ_LOG_FORMAT=json` emits the same fields on the `otel-exporter-configured`
+event); with an OTLP endpoint set as well,
 `metrics=otlp,prometheus source=env,prometheus`: both exporters share one
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
@@ -484,6 +489,7 @@ you *which* jobs absorbed them.
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
 | `taskq.cron.lock_contention` | `1` | n/a | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
 | `taskq.cron.budget_deferrals` | `1` | `actor` | Cron fires deferred because the tick's funded factory budget had no fundable grant left for them: a schedule planned ahead consumed the budget, or the leftover fell below the minimum fundable grant. A brief burst is catch-up draining in tick-sized batches; a SUSTAINED rate means one schedule's payload factory is monopolizing the tick budget every tick: a slow-but-successful factory never strikes and never auto-disables, so its peers retry every tick without ever being funded (delayed, not lost; the deferral advances `next_fire_at` one leader tick). Per-schedule attribution is on the `cron-fire-budget-deferred` log line; the operator resolution (tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the monopolizer's duration, or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`) is the cron guide's tick-budget section and the `TaskQCronBudgetDeferrals` runbook. The `actor` label is capped like `taskq.cron.consecutive_failures`. | yes |
+| `taskq.cron.skipped_slots` | `1` | `actor` | Cron schedule occurrences a fire attempt DROPPED because the schedule's `next_fire_at` fell behind `now() - TASKQ_CRON_CATCH_UP_WINDOW`: fires the system could not even attempt, counted in FIRE UNITS (a `*/5` schedule reported as 3 is three dropped fires, the unit the runaway predicate compares against the cron period). One increment per fire attempt carrying that attempt's full drop count; skipped slots are never replayed (the recompute lands `next_fire_at` in the future), so the count IS the record of what was dropped. This is the producer side of the runaway-fan-out detection — the system admitting it is losing the race; the clearance predicate itself is the fires-vs-clearance SQL in `src/taskq/insights.py` (the `taskq.insights` module). Read beside `taskq.cron.slots_behind` (the depth) and `taskq.cron.budget_deferrals` (a different, budget-shaped lag). Emitted from the tick's commit-gated emission, so a rolled-back tick (whose owed slots are re-attempted) reports nothing. The `actor` label is capped like `taskq.cron.consecutive_failures`. `TaskQCronSkippedSlots` reads it. | yes |
 | `taskq.jobs.interrupted` | `1` | `actor`, `hold` | Running attempts released back to the fleet by a worker shutdown (`mark_interrupted` landed). The spent attempt stands: the attempt did start executing, so its increment is NOT refunded (see `interrupt_count` and the release contract in [cancellation.md](cancellation.md)). `hold` buckets the release by whether the row was parked behind a hold (`">0"`, the actor was still running when the graces expired) or re-pended immediately (`"0"`), the split an operator reads to see whether deploys are interrupting responsive or unresponsive actors. | yes |
 | `taskq.jobs.interrupted_noop` | `1` | `actor` | `mark_interrupted` calls declined by the fence (the row is no longer this worker's running row at the attempt epoch, or an operator cancel is in flight, which wins). A silent no-op on a release path would look like a release that never landed, so the fenced-out arm has its own counter; `actor` is empty when the fenced-out read cannot attribute one. | yes |
 | `taskq.progress.flush_failures` | `1` | `stage`, `error_type` | Progress flush failures to Postgres, by stage. `stage="per_job"`: one job's flush UPDATE failed, that job's progress since the last flush is lost; `stage="pool"`: a pool could not be obtained at all (the loop-level getter failed, or the per-job acquire failed or was exhausted), so every job's progress is lost. The two are materially different incidents and the pool-stage sites log a different kind than the per-job one, so an alert rule can separate them. `error_type` is the exception class name. | yes |
@@ -523,6 +529,7 @@ One counter outside this table's worker/producer population: `taskq.admin.audit.
 | `taskq.lock.expires_in_seconds` | `s` | n/a | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
 | `taskq.heartbeat.tick_duration_seconds` | `s` | n/a | Wall-clock seconds per heartbeat tick. |
 | `taskq.worker.event_loop_lag_seconds` | `s` | n/a | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it: one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. See [The watchdog family](#the-watchdog-family). |
+| `taskq.worker.loop_idle_fraction` | `1` | n/a | Sampled idle fraction of this worker's event loop, one sample per heartbeat window: the share of the watchdog's polls whose loop thread was parked in its idle selector wait. A sampled proportion, not a utilisation integral (sub-poll busy bursts invisible; unreadable frame samples count as not parked). Read beside the windowed stall tally: stalls attributed + low idle = a loop with no spare scheduling capacity; a healed worker's idle fraction recovers while its cumulative stall counts stand still. See [The watchdog family](#the-watchdog-family) and [the limits](#windowed-stall-tally-and-loop-idle-fraction). |
 | `taskq.worker.shutdown_duration_seconds` | `s` | n/a | Wall-clock seconds from the first shutdown signal to clean worker teardown; recorded only on a clean exit (a watchdog trip force-exits without recording). |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | n/a | Per-sweep-tick wall-clock duration. |
 | `taskq.ratelimit.reclaim_drain_duration` | `s` | n/a | Wall-clock duration of one keyed-reservation reclaim drain statement. Recorded on success and failure alike (the caller passes it from a `finally`), so a timeout that aborted the drain still leaves a duration sample. |
@@ -536,6 +543,7 @@ One counter outside this table's worker/producer population: `taskq.admin.audit.
 | `taskq.reservation.slots_used` | `1` | `bucket` | In-use reservation slots per rate-limit bucket. Sampled by the leader every 15 s. |
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | n/a | Count of currently disabled cron schedules. |
+| `taskq.cron.slots_behind` | `1` | `actor` | How far behind its schedule a cron actor's fire was when it skipped, in FIRE UNITS (a `*/5` schedule reported as 3 was three dropped fires deep): the depth companion of `taskq.cron.skipped_slots`. Per actor, the most recent committed cron tick's worst schedule depth; a clean fire re-observes the actor at 0, so a depth that keeps climbing period over period is the runaway fan-out compounding, and one that decays to 0 was a one-time drop. Published by the leader's cron tick only (the tick is the only place the drop is computed), so a non-leader process carries no series — the leader-observable pattern, like `taskq.cron.disabled_schedules`. The `actor` label is capped like `taskq.cron.consecutive_failures`. |
 | `taskq.heartbeat.consecutive_failures` | n/a | n/a | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
 | `taskq.notify.connected` | `1` | `schema` | `1` if this process's NOTIFY listener connection is healthy, `0` otherwise (sample-on-scrape). A `0` beside a rising `taskq.notify.reconnects` rate is a listener that cannot hold a connection; see [NOTIFY connection failures](troubleshooting.md#5-notify-connection-failures). |
 | `taskq.worker.active_jobs` | `1` | n/a | Jobs in flight on this worker process: the OTel twin of the health socket's hand-rendered `taskq_active_jobs`, which no scrape reaches. One series per process; divide by `taskq.worker.max_concurrency` for utilisation. |
@@ -569,6 +577,7 @@ The in-worker watchdog (`taskq.worker._watchdog`; [workers.md: In-worker watchdo
 | `taskq.worker.loop_stall_attributions` | counter | `1` | `actor` (bounded), `kind` (`blocking_call`, `gil_held`) | Attributed event-loop stalls: each warn-tier and trip-tier stall names the registered actor whose frame sat under the work holding the interpreter, and classifies it (below). |
 | `taskq.worker.sibling_crashes_total` | counter | `1` | `loop` | Sibling task exits by exception (never cancellations): the crash that sets the shutdown event and takes the worker down. |
 | `taskq.worker.shutdown_duration_seconds` | histogram | `s` | n/a | Clean shutdown wall-clock time; a trip records nothing here, so a missing sample beside a `shutdown-deadline` trip is the expected shape. |
+| `taskq.worker.loop_idle_fraction` | histogram | `1` | n/a | Sampled idle fraction of this worker's event loop, ONE SAMPLE PER HEARTBEAT WINDOW: the share of the lag watchdog's polls in the window whose event-loop thread was parked in its idle selector wait (the CPython asyncio loop's no-ready-callbacks state), published beside the windowed stall tally in the `workers` row metadata as `loop_idle`. Buckets: 0, 0.05, 0.1, 0.2 ... 0.9, 1.0 (bounded - the value is a fraction). Read [its limits](#windowed-stall-tally-and-loop-idle-fraction) before alerting on it: it is a sampled proportion, not a utilisation integral. |
 
 Read them together: `event_loop_lag_seconds` rising → `watchdog_loop_lag_warns_total` → `watchdog_trips_total{detector="event-loop-lag"}` is one stall escalating through the tiers; `loop_tick_age_seconds{loop="heartbeat"}` climbing while the lag histogram stays flat is a loop that is scheduling but not ticking (blocked on an await: a pool acquire, a wedged connection), the `stale-loop-tick` shape.
 
@@ -582,6 +591,22 @@ The lag watchdog's daemon thread joins two signals while a stall persists, sampl
 Loop lag with a quiet watchdog thread classifies the stall `blocking_call`: a synchronous call that released the GIL (an I/O wait, a subprocess), where `sys._current_frames` sampling from the still-running watchdog thread lands exactly on the blocking frame. Loop lag with a starved watchdog thread classifies it `gil_held`: the interpreter is held (a C extension that does not detach, or a hot pure-Python loop); that sample is approximate and its line points at or just after the C call.
 
 Each attribution is emitted as the `event-loop-stall-attributed` WARNING (with `actor`, `job_id` when exactly one running job matched the actor, `frame` as `file:line:function` of the deepest non-taskq frame, `kind`, `lag_seconds`, the sample count, a truncated stack, and the remedy in `remedy`), bumps `taskq.worker.loop_stall_attributions`, and records into the rolling tally the heartbeat merges into the worker's `workers` row metadata, which is what `/admin/workers`' Stall hotspots column and `taskq doctor` read. No span event is recorded on the running attempt's span: span operations are not thread-safe, and the attempt's span lives on the loop thread, so writing to it from the watchdog's daemon thread would risk corrupting it mid-block.
+
+### Windowed stall tally and loop idle fraction
+
+The stall tally's counts are cumulative since worker boot, which answers "which actor ever stalled this process" but not "is it stalling NOW": a worker that stalled once yesterday re-publishes the same counts on every beat and reads identically to one stalling on every beat. Two windowed signals ride the SAME heartbeat publish (the same workers-row metadata write, one extra dict merge, no extra round trip), both drained per heartbeat window so the published value always describes exactly the span since the previous publish:
+
+- **`loop_stalls_window`** (metadata key beside the unchanged `loop_stalls`): the delta of the cumulative per-actor per-kind counts between consecutive heartbeat publishes — the per-window stall rate. Shape: `{"window_seconds": <span>, "stalls": {actor: {kind: count}}}`. A healed worker's `stalls` map is empty (or missing the actor) while its cumulative counts stand still; an active staller shows fresh counts every window. Delta counts clamp at zero, so the tally's eviction of its coldest actors can never fabricate a negative rate. A worker's FIRST publish has no predecessor window: the delta is the full cumulative tally and the span is the process age — the honest summary a fresh beat can give.
+- **`loop_idle`** (metadata key) and **`taskq.worker.loop_idle_fraction`** (the histogram): the fraction of the window's watchdog polls where the event-loop thread was PARKED in its idle selector wait — an idle CPython asyncio loop with no ready callbacks sits in `selectors.py:select` directly under `base_events.py:_run_once`, the exact frame shape the watchdog's existing stall sampler reads. One sample per watchdog poll (armed polls only — the same gate the beat rides), classified parked / not-parked, aggregated per window and published as `{"idle_fraction", "samples", "samples_parked", "samples_unreadable", "window_seconds"}`.
+
+What the idle signal does and does not measure, stated exactly:
+
+- It is a **sampled proportion, not an integral**. At the default poll cadence that is ~2 binary verdicts per second; sub-second busy bursts below the sampling resolution are invisible, and the fraction carries binomial noise of order `1/sqrt(samples)` (`samples` is published beside it — do not compare two windows with different sample counts).
+- It measures the **loop thread's state, not job concurrency or CPU**: a loop stepping many coroutines reads the same as one running a single hot callback. `taskq.worker.active_jobs / max_concurrency` remains the job-count view; this is the only loop-time view.
+- The complement is the honest read: a window whose `idle_fraction` is ~1.0 is a loop that held no ready work at any sampled instant (it scheduled immediately every time the watchdog looked). A LOW fraction is suggestive, not diagnostic — read it beside `loop_stalls_window` (stalls attributed + low idle = a loop with no spare scheduling capacity) and `taskq.worker.event_loop_lag_seconds` (the responsiveness view, which saturates only on real blocks).
+- The classifier is defined against **CPython's selector-based event loop** (the only loop TaskQ runs on). Any readable frame shape that is not the parked pair counts as not parked, and an unreadable frame chain (`samples_unreadable`) also counts as not parked — the metric biases toward busy. The idle direction is guarded: the zero-timeout select `_run_once` makes when ready callbacks are queued (measured: a hot `call_soon` spinner sits inside `select(0)` for nearly all of its wall time, so shape-only classification read a 100%-busy loop as ~100% parked) is classified NOT parked via the `_run_once` frame's `timeout` local; the residual over-report window is one sample where that local cannot be read.
+
+Read all three views on one clock: the windowed tally, the idle fraction, and the lag histogram are drained/recorded at the same heartbeat publish and cover the same span.
 
 ### Sweep samples: rows and duration are different populations
 
@@ -680,7 +705,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above: import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 22 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 23 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml`: the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -703,6 +728,7 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 | `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
 | `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
 | `TaskQCronBudgetDeferrals` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) | [TaskQCronBudgetDeferrals](runbooks.md#taskqcronbudgetdeferrals) |
+| `TaskQCronSkippedSlots` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) (same tuning surface: period, actor capacity, catch-up window) | [TaskQCronSkippedSlots](runbooks.md#taskqcronskippedslots) |
 | `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
 | `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
 | `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |
@@ -717,6 +743,40 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 
 The remaining tuned-by-dashboard conditions (actor saturation, event-loop lag) ship no
 alert on purpose; both are read off the gauges in the playbook table.
+
+### Runaway fan-out: what the operator sees first
+
+A cron-triggered sync fans out to actor jobs. When those jobs take longer to
+clear than the cron period fires them, the schedule falls further behind every
+period until its `next_fire_at` crosses `now() - TASKQ_CRON_CATCH_UP_WINDOW` —
+and the tick's catch-up branch starts DROPPING occurrences: fires the system
+cannot even attempt. That skip is the system admitting it is losing the race,
+and it is fully instrumented so the runaway is a paged alert, never a silent
+loss:
+
+1. **What the operator sees first**: `TaskQCronSkippedSlots` fires on a
+   sustained `taskq.cron.skipped_slots` rate. The counter is in FIRE UNITS (a
+   `*/5` schedule reported as 3 is three dropped fires) and never replays —
+   the count is the record of what was dropped.
+2. **What to check next**, in order:
+   - `taskq.cron.slots_behind{actor}` — the depth. Climbing period over
+     period: the fan-out is compounding. Decaying to 0 on the next fire: a
+     one-time drop (failover, paused fleet), not a runaway.
+   - `taskq.cron.budget_deferrals` — a DIFFERENT lag: budget-shaped
+     (deferred one tick and retried, nothing dropped), not a skip. Both can
+     fire on the same actor; their remedies are different knobs.
+   - `taskq.jobs.actor_backlog` / `taskq.jobs.oldest_pending_age_seconds` —
+     the job-plane pile-up behind the cron-plane drops.
+   - The fires-vs-clearance SQL in `src/taskq/insights.py` (`taskq.insights`,
+     the runaway predicate): jobs cleared per schedule period vs. the cron
+     period, joined through the durable `metadata->>'cron_schedule_id'` stamp
+     every cron-enqueued job carries. It names the schedule and quantifies
+     the gap.
+3. **What the system guarantees while you investigate**: every dropped slot
+   is counted (the counter), its depth visible (the gauge, the
+   `cron missed slots skipped` warning, and the `cron fired` line both carry
+   `skipped_slots`), and the fan-out job itself lands with its schedule stamp
+   — nothing vanishes without a trace.
 
 ---
 

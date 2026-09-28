@@ -482,6 +482,21 @@ anywhere:
 taskq doctor --actors myapp.actors:registry
 ```
 
+The report's **first finding family is the detected storage mode** —
+`vanilla`, `timescale-apache`, or `timescale-tsl`, detected from the
+connected server (the extension catalog, then the extension's
+`timescaledb.license` setting), never read from settings — with that
+mode's capability consequences in one glance (which retention mechanisms
+exist, what the sweeps own). The family's red arms: the flag on in an
+environment whose server detects `vanilla` gets named as drift, because
+the next `taskq migrate up` refuses; and a license downgrade — an
+apache-licensed server still carrying conversion-era policy jobs from an
+earlier timescale-license deployment (they fail on every run under the
+downgraded license, and the sweeps defer the aged end to them, so aged
+rows strand) gets named as drift with the license-restore remedy. The
+mode × capability
+matrix is [timescaledb.md's support matrix](timescaledb.md#the-three-storage-modes-the-support-matrix).
+
 TaskQ refuses boot only on structural stored-config drift, so a whole
 family of capacity and configuration problems fails silently, so their only
 symptom is work that quietly does not happen. `doctor` names them together:
@@ -1095,7 +1110,7 @@ Resolving the reference is also what lets validate warn about an actor whose que
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK: 2 worker(s), actors='billing.actors:registry'
+# config OK, 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```

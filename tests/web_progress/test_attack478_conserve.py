@@ -91,7 +91,17 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 @pytest_asyncio.fixture
-async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
+async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
+    # PRIVATE broker (killable_redis_container + redis_url_for, db 0), not the
+    # shared pair: this module's pins pause the broker. A ``CLIENT PAUSE`` is a
+    # broker-GLOBAL command - it starves EVERY co-tenant connection on the
+    # broker it targets, and the shared pair hosts every redis-marked test of
+    # the invocation across all xdist workers (the historical record: this
+    # module's shared-broker PAUSE band turned the leg's 5s-budget pings into
+    # TimeoutError-at-read, the exact CI signature). A per-test disposable
+    # Dragonfly (~1s boot) keeps the scenario's premise - admin, stream and
+    # publisher ride ONE broker - while the pause reaches no one else.
+    #
     # socket_timeout is EXPLICIT here because redis-py 8 defaults it to 5s
     # (redis._defaults.DEFAULT_SOCKET_TIMEOUT), and the default fires on a
     # fresh connection's handshake read (HELLO/PING inside
@@ -103,7 +113,7 @@ async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # the tests' own (the stream reader's overall_timeout, the explicit
     # asyncio.timeout around the paused-broker publish), so the client
     # here waits as long as those bounds allow, the pre-8 default.
-    client = aioredis.from_url(redis_url, socket_timeout=None)
+    client = aioredis.from_url(private_redis_url, socket_timeout=None)
     try:
         yield client
     finally:
@@ -271,7 +281,7 @@ async def test_reconnect_delivers_every_sequence_exactly_once(
 
 @pytest.mark.asyncio
 async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once(
-    pool: asyncpg.Pool, redis_client: aioredis.Redis, redis_url: str, server: str
+    pool: asyncpg.Pool, redis_client: aioredis.Redis, private_redis_url: str, server: str
 ) -> None:
     """Dragonfly paused mid-stream: the fanout drops, recovery heals exactly.
 
@@ -284,6 +294,10 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     write); the reconnect at the pre-pause cursor must deliver the
     durable state exactly once, and the surviving connection must never
     deliver a sequence twice.
+
+    The broker here is the test's PRIVATE Dragonfly (``private_redis_url``):
+    a ``CLIENT PAUSE`` is broker-global and must never target the shared
+    pair - see the ``redis_client`` fixture's note.
     """
     job_id = await _seed_running_job(pool, progress_seq=3, progress_state={"step": 3})
     channel = progress_channel(SCHEMA_LABEL, job_id)
@@ -293,7 +307,7 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     # (redis-py 8's 5s default socket_timeout is a handshake-read
     # timeout, not part of this scenario's contract; the publish inside
     # the pause is bounded by its own asyncio.timeout below).
-    admin = aioredis.from_url(redis_url, socket_timeout=None)
+    admin = aioredis.from_url(private_redis_url, socket_timeout=None)
     try:
         # Healthy start: the snapshot (seq 3), then one delta whose flush
         # lands. Once that delta is OBSERVED as delivered, the broker

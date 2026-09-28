@@ -128,6 +128,9 @@ def test_live_default_disposition_child_dies_to_sigterm(tmp_path: Path) -> None:
     # a handler's clean exit would be 0).
     assert proc.returncode == -15
     assert logs == ""
+    # Derived bound: kernel-default SIGTERM death is immediate once the
+    # signal lands; 5.0 s = the same CI-scheduling headroom as the handled
+    # case above (a fraction of the helper's 10s SIGKILL escalation window).
     assert elapsed < 5.0
 
 
@@ -142,4 +145,7 @@ def test_already_exited_child_is_drained_without_terminate() -> None:
     elapsed = time.monotonic() - start
 
     assert logs == "bye"
+    # Derived bound: the child is already dead — the helper only drains a
+    # pipe and reaps, no signaling, no waiting; 5.0 s is pure CI-scheduling
+    # headroom over an effectively zero-cost path.
     assert elapsed < 5.0

@@ -51,10 +51,10 @@ Invariants preserved verbatim from the three-statement form:
   ``_sql.py``'s INSERT_ATTEMPT_SQL).
 * Every timestamp is database-written (``clock_timestamp()``; the
   retry/snooze arms' ``now_ts``); ``duration_ms`` is computed in the
-  statement from the same started/finished pair Python used to receive
-  and re-multiply, but server-side, with exact numeric arithmetic
-  instead of Python's float path.  Values can differ from the old
-  Python computation by 1ms on exactly-whole-millisecond boundaries
+  statement from the same started/finished pair Python would otherwise
+  receive and re-multiply, but server-side, with exact numeric arithmetic
+  instead of Python's float path.  Values can differ from Python's float
+  computation by 1ms on exactly-whole-millisecond boundaries
   (where the float product drifted just below the integer); the
   server-side values are strictly more accurate.  ``trunc()`` keeps
   the same truncation toward zero (a bare ``::int`` cast rounds to
@@ -888,7 +888,7 @@ async def _mark_snoozed(
             # mark_snoozed's statement RETURNs exactly the three branches
             # handled above; any other parsed branch is template drift
             # and must fail loudly rather than fall through to the
-            # "failed" contract a stale arm spelling used to get.
+            # "failed" contract a stale arm spelling would get.
             raise AssertionError(f"mark_snoozed cannot emit outcome branch: {branch}")
         case _:  # pragma: no cover - the union is closed upstream by parse_outcome_branch's ValueError (pinned in tests/test_terminal_drift_guards.py)
             assert_never(branch)
@@ -989,9 +989,9 @@ async def _mark_retry_after(
             )
             # The two terminal arms report the class that decided the row:
             # a budget exhaustion is a different operator conversation from
-            # a lapsed schedule_to_close, so the fall-through that used to
-            # report DeadlineExceeded for every unrecognized branch is a
-            # per-arm return now.
+            # a lapsed schedule_to_close, so every unrecognized branch gets
+            # a per-arm report instead of a shared DeadlineExceeded
+            # fall-through.
             return (
                 "failed:MaxAttemptsExceeded"
                 if branch == "max_attempts_failed"
@@ -1118,4 +1118,8 @@ async def _write_attempt(
                 attempt.duration_ms,
                 attempt.worker_id,
                 jsonb_param(attempt.metadata),
+                # The claim-time due time (01.00.20_04): a direct write the
+                # caller knows it for stamps it, the ledger paths' twin
+                # (None) stays NULL - the documented pre-migration shape.
+                attempt.due_at,
             )

@@ -31,7 +31,7 @@ Failover SLA:
                        wake is never the guarantee: a lost, duplicated,
                        malformed, or disabled broadcast, and a killed
                        leader (that can notify no one), degrades to
-                       exactly the old bound
+                       the plain bound
                       ≤ heartbeat_interval + one round trip (the resign
                         deletes the row; the next election wins it - the
                         bound the hint degrades to, and the crash bound)
@@ -118,6 +118,8 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     record_sweep_success,
     record_sweep_timeout,
     update_queue_depth_cache,
+    update_queue_live_workers_cache,
+    update_queue_utilization_cache,
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
 )
@@ -562,6 +564,8 @@ class MaintenanceLeader:
         # series and clearing them would mute the detectors under the exact
         # leadership failure they exist to expose.
         update_queue_depth_cache({})
+        update_queue_live_workers_cache({})
+        update_queue_utilization_cache({})
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
         # The sweep-health stamps (last success, batch size) are leader-loop
@@ -628,8 +632,7 @@ class MaintenanceLeader:
                 # Why bounded: same dead-PG stall risk on the watchdog/
                 # election drop path. The helper never raises, so
                 # leader_conn is always nulled below and the loop can
-                # rebuild - previously a close error propagated out of the
-                # drop path and skipped the nulling.
+                # rebuild even on a wedged conn.
                 await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS, mid_run=True)
         else:
             log.warning(
@@ -804,7 +807,7 @@ class MaintenanceLeader:
         refused privilege, is logged and leadership proceeds, because a
         lock that outlives the row behind it (a candidate dead between the
         lock attempt and the election write, a departed leader's lingering
-        session) must never again gate the election it used to decide.
+        session) must never gate the election the row decides.
         """
         conn = self._deps.leader_conn
         if conn is None or conn.is_closed():
@@ -1760,13 +1763,12 @@ class MaintenanceLeader:
                         )
                 guard.ok()
             except TRANSIENT_PG_ERRORS as exc:
-                # Why TRANSIENT_PG_ERRORS first: the cron loop used to
-                # hand-roll its error classification with isinstance checks
-                # that missed 7 of 12 transient shapes (DeadlockDetectedError,
-                # SerializationError, AdminShutdownError, etc.). Deadlock and
-                # serialization inside a transaction are routine, not
-                # surprises, 5 consecutive killed the worker via the
-                # backstop guard before this fix.
+                # Why TRANSIENT_PG_ERRORS first: a hand-rolled isinstance
+                # classification misses 7 of the 12 transient shapes
+                # (DeadlockDetectedError, SerializationError,
+                # AdminShutdownError, etc.). Deadlock and serialization
+                # inside a transaction are routine, not surprises, and 5
+                # consecutive ones kill the worker via the backstop guard.
                 if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
                     # Deadline family (iteration deadline or server-side
                     # cancel): the conn is provably responsive, because it

@@ -35,7 +35,8 @@
                 <input type="text" name="reason" maxlength="512"
                        placeholder="Reason (recorded in the audit trail)"
                        class="px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-red-500">
-                <button type="submit" onclick="return confirm('Cancel job {{ job.id }}?')"
+                <button type="submit"
+                        data-confirm-label="Cancel job {{ job.id }}?"
                         class="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors">
                     Cancel Job
                 </button>
@@ -44,7 +45,8 @@
             {% if job.status in terminal_statuses and not is_archived %}
             <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/retry" class="inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit" onclick="return confirm('Retry job {{ job.id }}?')"
+                <button type="submit"
+                        data-confirm-label="Retry job {{ job.id }}?"
                         class="px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
                     Retry Job
                 </button>
@@ -52,6 +54,19 @@
             {% endif %}
         </div>
     </div>
+
+    {# The confirms are the rate-limits page's delegated-listener idiom, not
+       inline onclick strings: the HTML parser decodes attribute entities
+       BEFORE the JS runs, so an interpolated value carrying '); breaks the
+       string and executes. The label rides as escaped DATA; a document-level
+       submit listener reads it. #}
+    <script>
+    document.addEventListener('submit', function(e) {
+      var button = e.target.querySelector('[data-confirm-label]');
+      if (!button) return;
+      if (!confirm(button.dataset.confirmLabel)) e.preventDefault();
+    });
+    </script>
 
     {# Job Card #}
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
@@ -300,7 +315,12 @@
        deployments (no Redis) with a progress section nothing ever updated.
        POLL_INTERVAL_MS feeds both paths. #}
     <script>const POLL_INTERVAL_MS = {{ poll_interval_ms }};</script>
-    <script>window.TASKQ_BASE_PATH = "{{ base_path }}";</script>
+    {# A config string in a script context is a JS literal, not an HTML
+       attribute: ``{{ base_path }}`` HTML-escapes, and entities never
+       decode inside a script block - an ``&`` in the deployed prefix
+       reached realtime.js as ``&amp;`` and corrupted every URL it built.
+       | tojson is both the raw value and the script-safe encoding. #}
+    <script>window.TASKQ_BASE_PATH = {{ base_path | tojson }};</script>
     <script src="{{ base_path }}/static/realtime.js"></script>
 
     {# Attempt History #}

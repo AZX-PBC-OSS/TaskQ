@@ -58,16 +58,19 @@ def _settings(redis_url: str) -> WorkerSettings:
 # ── acceptance definition - 100 burst + 10 denied + 10 after refill ──
 
 
-async def test_burst_acceptance(redis_url: str) -> None:
+async def test_burst_acceptance(private_redis_url: str) -> None:
     """100 burst all allowed with monotonically decreasing remaining;
     then denied acquires have retry_after≈1s (refill=1 makes this robust
     against Docker/TCP latency); sleep 2s → 2 more allowed.
 
     Mean-per-acquire latency < 1 ms is an smoke test, not a true P99.
+    Timed on a private broker: a mean-per-acquire assert times the
+    broker's replies, and the tenancy contract reserves every
+    broker-latency assert for a per-test private Dragonfly.
     """
     tb = _redis_bucket(capacity=100, refill=1)
-    client = await _make_client(redis_url)
-    settings = _settings(redis_url)
+    client = await _make_client(private_redis_url)
+    settings = _settings(private_redis_url)
     clock = SystemClock()
 
     try:

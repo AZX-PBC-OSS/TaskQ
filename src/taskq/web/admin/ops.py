@@ -70,10 +70,19 @@ logger = structlog.get_logger("taskq.web.admin.ops")
 _last_schedule_run: dict[UUID, float] = {}
 _SCHEDULE_RUN_COOLDOWN_SECONDS = 10.0
 
+# Read-only pages with no filters cap their renders like the batches page
+# and say so when the cap bites: a 50k-row table population must paginate
+# the render, never drag every row of it out per page view.
+_SCHEDULES_PAGE_SIZE = 200
+_RATE_LIMITS_PAGE_SIZE = 200
+_RESERVATIONS_PAGE_SIZE = 200
+_HELD_SLOTS_PAGE_SIZE = 200
+
 _SCHEDULES_SQL = (
     "SELECT id, actor, cron_expr, timezone, enabled, next_fire_at, "
     "last_fired_at, last_fire_error, consecutive_failures, metadata "
-    'FROM "{schema}".cron_schedules ORDER BY next_fire_at'
+    'FROM "{schema}".cron_schedules ORDER BY next_fire_at '
+    f"LIMIT {_SCHEDULES_PAGE_SIZE}"
 )
 
 _SCHEDULE_ENABLE_SQL = (
@@ -107,7 +116,8 @@ _ACTOR_CONFIG_SQL = (
 
 _RATE_LIMITS_SQL = (
     "SELECT bucket_name, kind, state, updated_at "
-    'FROM "{schema}".rate_limit_buckets ORDER BY bucket_name'
+    'FROM "{schema}".rate_limit_buckets ORDER BY bucket_name '
+    f"LIMIT {_RATE_LIMITS_PAGE_SIZE}"
 )
 
 _RESERVATIONS_SQL = (
@@ -116,14 +126,16 @@ _RESERVATIONS_SQL = (
     "count(*) FILTER (WHERE job_id IS NULL) AS free_count, "
     "count(*) AS total_slots "
     'FROM "{schema}".reservation_slots '
-    "GROUP BY bucket_name ORDER BY bucket_name"
+    "GROUP BY bucket_name ORDER BY bucket_name "
+    f"LIMIT {_RESERVATIONS_PAGE_SIZE}"
 )
 
 _HELD_SLOTS_SQL = (
     "SELECT bucket_name, slot_index, job_id, held_by_worker_id, lease_expires_at "
     'FROM "{schema}".reservation_slots '
     "WHERE job_id IS NOT NULL "
-    "ORDER BY bucket_name, slot_index"
+    "ORDER BY bucket_name, slot_index "
+    f"LIMIT {_HELD_SLOTS_PAGE_SIZE}"
 )
 
 # Log-frame escapes for caller-controlled text. A raw control character in a
@@ -260,6 +272,8 @@ def register(router: APIRouter) -> None:
             cron_installed=cron_installed,
             notice_text="cron scheduling not installed, run taskq migrate up to enable",
             error=error,
+            truncated=len(rows) == _SCHEDULES_PAGE_SIZE,
+            page_size=_SCHEDULES_PAGE_SIZE,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
             csrf_token=csrf_token,
@@ -596,9 +610,8 @@ def register(router: APIRouter) -> None:
                     ac_row["max_pending"],
                     getattr(policy, "max_pending", None) if policy is not None else None,
                 ),
-                # The stamped metadata replaces the bare dict the handler
-                # used to build: singleton parity (above) rides the same
-                # provenance key.
+                # The stamped metadata, not a bare dict, so singleton
+                # parity (above) rides the same provenance key.
                 metadata=metadata,
             )
 
@@ -878,6 +891,8 @@ def register(router: APIRouter) -> None:
             redis_configured=redis_configured,
             live_peek_error=live_peek_error,
             has_memory_buckets=has_memory_buckets,
+            truncated=ratelimit_installed and len(rows) == _RATE_LIMITS_PAGE_SIZE,
+            page_size=_RATE_LIMITS_PAGE_SIZE,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
         )
@@ -1018,8 +1033,7 @@ def register(router: APIRouter) -> None:
         # This is an admin-UI operator mutation (it reopens a throttled
         # bucket, which is a state change a throttle-dependent system
         # feels immediately), so it gets an audit row like every other
-        # mutation route -- previously it was the one mutation the trail
-        # did not see. The reset's store write has its own committed
+        # mutation route. The reset's store write has its own committed
         # transaction inside the registry (backend-mediated shape): the
         # row rides a separate checkout and degrades loudly
         # (record_admin_action_safe) rather than failing a reset that
@@ -1156,6 +1170,10 @@ def register(router: APIRouter) -> None:
             sync_error=sync_error,
             notice_text="reservations not installed, run taskq migrate up to enable",
             held_slots=held_slots,
+            truncated=reservations_installed and len(rows) == _RESERVATIONS_PAGE_SIZE,
+            page_size=_RESERVATIONS_PAGE_SIZE,
+            held_truncated=reservations_installed and len(held_slot_rows) == _HELD_SLOTS_PAGE_SIZE,
+            held_page_size=_HELD_SLOTS_PAGE_SIZE,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
         )

@@ -252,6 +252,24 @@ _QUERY_QUEUE_DEPTH_SQL_TEMPLATE = (
     'SELECT queue, count(*) FROM "{schema}".jobs '
     "WHERE status IN ('pending', 'scheduled') GROUP BY queue"
 )
+
+#: Due-NOW depth per queue — the dispatch index's own population (pending
+#: AND scheduled_at <= statement_timestamp()): the work a worker could
+#: claim this instant. This is the depth numerator
+#: :func:`taskq.insights.fetch_queue_imbalance`'s ``utilization`` column
+#: divides by effective capacity, and the utilization gauge must divide
+#: the SAME population or the ratio's threshold semantics drift from the
+#: SQL contract: a big future-armed wave inflates the pending+scheduled
+#: ``taskq.queue.depth`` gauge without any queue being starved.
+#: statement_timestamp() (STABLE), not clock_timestamp(), so the bound
+#: stays an Index Cond on jobs_dispatch_idx (queue, priority DESC,
+#: scheduled_at) WHERE status = 'pending' — the same two-clock rule as
+#: every sibling sampler here.
+_QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE = (
+    'SELECT queue, count(*) FROM "{schema}".jobs '
+    "WHERE status = 'pending' AND scheduled_at <= statement_timestamp() "
+    "GROUP BY queue"
+)
 _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
     'SELECT bucket_name, count(*) FROM "{schema}".reservation_slots '
     "WHERE job_id IS NOT NULL GROUP BY bucket_name"
@@ -283,6 +301,9 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
     "duration_ms",
     "worker_id",
     "metadata",
+    # 01.00.20_04: the archive twin mirrors every job_attempts column
+    # (explicit lists, never source.* - see the block comment above).
+    "due_at",
 )
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)

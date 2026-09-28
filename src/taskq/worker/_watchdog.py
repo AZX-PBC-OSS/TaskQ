@@ -29,6 +29,13 @@ else in the worker grows a health responsibility:
 - Detector 3 lives in the sibling spawner
   (:func:`_make_sibling_spawner`): a sibling returning cleanly while
   ``shutdown_event`` is clear is a contract violation and is re-raised.
+- The stall-attribution sidecar (:mod:`taskq.worker._stall_tally`'s
+  :class:`~taskq.worker._stall_tally.StallAttributionTally` and
+  :class:`~taskq.worker._stall_tally.LoopIdleWindow`, wired through
+  :class:`LoopLiveness`): the loop thread records what it was doing
+  when a beat ran long (a blocking call, the GIL held), and the
+  watchdog's stale-tick report reads the tally so the alert names a
+  remedy, not just a delay.
 
 Trip semantics (:func:`trip`): critical log + metric, dump, flush, then
 ``os._exit(EXIT_WATCHDOG)`` with no further awaits, a wedged process
@@ -58,6 +65,7 @@ from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
 from taskq.worker._stall_tally import (
     KIND_BLOCKING_CALL,
     KIND_GIL_HELD,
+    LoopIdleWindow,
     StallAttributionTally,
     remedy_for_kind,
 )
@@ -697,6 +705,102 @@ class ShutdownWatchdog:
                 )
 
 
+#: Sentinel for "the ``_run_once`` frame's ``timeout`` local could not be
+#: read" (a frame-shape drift across CPython versions, or a read that
+#: raced the frame resuming). The classifier degrades to the shape-only
+#: verdict, never raises: a missed discriminator is one sample of the
+#: documented churn over-report, not a dead watchdog thread.
+_TIMEOUT_UNREAD = object()
+
+
+def _run_once_frame_timeout(frame: Any) -> float | object | None:
+    """The ``timeout`` argument the sampled ``base_events._run_once`` frame
+    passed to its ``selector.select`` call, ``_TIMEOUT_UNREAD`` when no
+    such frame (or no such local) is in the chain.
+
+    Read from the SAME off-loop frame walk that produced the stack sample:
+    a thread suspended inside the select syscall has its ``_run_once``
+    frame frozen, and ``f_locals`` of a suspended frame is a plain
+    snapshot. When the loop thread resumes mid-read the GIL serialises the
+    local-cell read; the worst case is one poll's staleness, the same
+    sampling noise every verdict here already carries.
+
+    The value is the idle/churn discriminator: ``_run_once`` sets
+    ``timeout = 0`` exactly when ready callbacks are queued (the loop is
+    mid-dispatch, about to run work - NOT idle) and a positive or ``None``
+    timeout when it is about to wait for timers/IO (the genuine park).
+    """
+    walk = frame
+    seen_base = False
+    while walk is not None:
+        filename = walk.f_code.co_filename
+        if filename.endswith("base_events.py"):
+            seen_base = True
+            if walk.f_code.co_name == "_run_once":
+                try:
+                    local = walk.f_locals.get("timeout", _TIMEOUT_UNREAD)
+                except (
+                    Exception
+                ):  # Why: a locals-read racing teardown must degrade, not kill the watchdog thread.
+                    return _TIMEOUT_UNREAD
+                return (
+                    local if isinstance(local, (int, float)) or local is None else _TIMEOUT_UNREAD
+                )
+        elif seen_base:
+            # The base_events run_forever chain ends at the loop's caller:
+            # no _run_once in it, the shape's pair is not this loop's.
+            break
+        walk = walk.f_back
+    return _TIMEOUT_UNREAD
+
+
+def _classify_loop_parked(
+    sample: _StackSample,
+    *,
+    run_once_timeout: float | object | None = _TIMEOUT_UNREAD,
+) -> bool | None:
+    """Is the event-loop thread parked in its idle selector wait?
+
+    Reads one sampled frame chain of the loop thread (the watchdog thread
+    already samples these for stall attribution - this is the SAME
+    mechanism, applied every poll instead of only during stalls). A
+    CPython asyncio loop with no ready callbacks parks inside its
+    selector: the innermost Python frame is ``selectors.py:select``
+    directly under ``base_events.py:_run_once``. Any other readable shape
+    means the loop thread was executing a callback (busy), and a chain
+    too short to classify (the thread exited, the read raced teardown)
+    returns None - the caller counts that as not parked, the conservative
+    direction: the idle fraction may under-report, never over-report.
+
+    The selector shape alone cannot distinguish the idle wait from the
+    ZERO-TIMEOUT select ``_run_once`` makes when ready callbacks are
+    queued (measured: a hot ``call_soon`` spinner sits inside
+    ``select(0)`` for nearly all of its wall time, so shape-only
+    classification read a 100%-busy loop as ~100% parked). The
+    ``_run_once`` frame's ``timeout`` local is the discriminator: 0 means
+    ready callbacks are queued (mid-dispatch, NOT parked); a positive or
+    ``None`` timeout is the genuine park. Callers that could not read the
+    local (``_TIMEOUT_UNREAD`` - a CPython frame-shape drift) fall back to
+    the shape-only verdict, which keeps the churn over-report for that
+    one sample rather than fabricating busy.
+    """
+    if len(sample) < 2:
+        return None
+    inner, outer = sample[0], sample[1]
+    if not (
+        os.path.basename(inner[0]) == "selectors.py"
+        and inner[2] == "select"
+        and os.path.basename(outer[0]) == "base_events.py"
+        and outer[2] == "_run_once"
+    ):
+        return False
+    if run_once_timeout is _TIMEOUT_UNREAD:
+        return True
+    # timeout == 0: ready callbacks are queued - the loop is mid-dispatch.
+    # bool|None guard: the walker only passes float|None|_TIMEOUT_UNREAD.
+    return run_once_timeout != 0
+
+
 class LoopLagWatchdog:
     """Detector 4: daemon thread measuring event-loop scheduling lag.
 
@@ -751,6 +855,7 @@ class LoopLagWatchdog:
         clock: Callable[[], float] = time.monotonic,
         actor_code_names: dict[int, str] | None = None,
         stall_tally: StallAttributionTally | None = None,
+        idle_window: LoopIdleWindow | None = None,
         list_running_jobs: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self._loop = loop
@@ -763,6 +868,7 @@ class LoopLagWatchdog:
         self._clock = clock
         self._actor_code_names: dict[int, str] = dict(actor_code_names or {})
         self._stall_tally = stall_tally
+        self._idle_window = idle_window
         self._list_running_jobs = list_running_jobs
         self._last_beat = clock()
         self._started = clock()
@@ -874,6 +980,26 @@ class LoopLagWatchdog:
             gil_pressure = self._gil_pressure
         return KIND_GIL_HELD if gil_pressure else KIND_BLOCKING_CALL
 
+    def _loop_thread_parked(self) -> bool | None:
+        """The event-loop thread's park classification for THIS instant.
+
+        Same thread-safe off-loop frame read the stall sampler uses
+        (``sys._current_frames`` needs no cooperation from a blocked
+        loop); an unreadable chain (thread gone, teardown race) degrades
+        to None, which the window counts as not parked.
+        """
+        ident = threading.main_thread().ident
+        if ident is None:
+            return None
+        frame = sys._current_frames().get(ident)
+        if frame is None:
+            return None
+        # One frame read serves BOTH the shape sample and the timeout
+        # local: two reads could straddle a scheduling boundary and mix
+        # verdicts (the shape of one instant with the timeout of another).
+        sample = _sample_frame_stack(frame)
+        return _classify_loop_parked(sample, run_once_timeout=_run_once_frame_timeout(frame))
+
     def _unique_job_id(self, actor: str | None) -> str | None:
         """The running job id when exactly one matches the attributed actor.
 
@@ -983,6 +1109,13 @@ class LoopLagWatchdog:
         if not self._armed():
             return
         self._sample_landed_beat()
+        # One idle-fraction sample per poll, on the same cadence the beat
+        # rides: parked = the loop thread was in its idle selector wait at
+        # this instant. The stall sampler below reuses the same frame read
+        # when a stall is in progress; this one runs every poll so a full
+        # window's worth of samples lands beside the stall counts.
+        if self._idle_window is not None:
+            self._idle_window.record_sample(parked=self._loop_thread_parked())
         lag = self._clock() - self._last_beat
         if lag > self._warn_budget:
             # The loop has not scheduled for a warn budget: the stall is

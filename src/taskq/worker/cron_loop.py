@@ -53,8 +53,10 @@ from taskq.obs import (
     record_cron_budget_deferral,
     record_cron_failure,
     record_cron_lock_contention,
+    record_cron_skipped_slots,
     record_published_message,
     safe_start_span,
+    update_cron_slots_behind,
     update_disabled_schedules_count,
 )
 from taskq.obs._redact_exc import safe_exception_message
@@ -217,7 +219,21 @@ class _TickBudgetExhaustedError(TimeoutError):
     subclass because the outcome is a deadline expiring, but the
     message names the budget, not a hang: the factory never ran, so a
     "timed out" claim against it would be a lie.
+
+    ``skipped_slots`` rides along when the deferral happened AFTER the
+    catch-up skip branch already recomputed the fire time: the
+    suppression UPDATE then durably advances ``next_fire_at`` past the
+    owed slots, so those drops must reach the skipped-slots counter
+    (see :func:`taskq.obs.record_cron_skipped_slots`) even though no
+    fire committed.  Zero for the common case (a punctual schedule's
+    deferral drops nothing).
     """
+
+    skipped_slots: int = 0
+
+    def __init__(self, message: str, *, skipped_slots: int = 0) -> None:
+        super().__init__(message)
+        self.skipped_slots = skipped_slots
 
 
 _TICK_BUDGET_RETRY_DELAY: Final = timedelta(seconds=1.0)
@@ -629,6 +645,11 @@ class _FireSuccess:
     actor: str
     queue: str
     prev_consecutive: int
+    # How many schedule occurrences the catch-up skip branch dropped for
+    # this fire, in FIRE UNITS (see _plan_fire's skip branch): zero for a
+    # fire that owed nothing. The counter and gauge ride the tick's
+    # commit-gated emission; the plan merely CARRIES the count here.
+    skipped_slots: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -706,6 +727,11 @@ class _SuppressedFire:
     blocking_job_id: UUID | None
     current_count: int | None
     max_pending: int | None
+    # Skips the catch-up branch dropped before the suppression decided
+    # this fire: the suppression UPDATE durably advances next_fire_at past
+    # them, so the committed suppression must count them (a budget-deferred
+    # fire of an overdue schedule drops slots too -- silently otherwise).
+    skipped_slots: int = 0
 
 
 async def resolve_payload(
@@ -767,7 +793,7 @@ def _mark_failure_span(
     # exception (see _BufferedFailureTelemetry), not always an Exception.
     exc: BaseException,
 ) -> None:
-    """The telemetry half of the old per-failure except-branch: mark the
+    """The telemetry half of the per-failure handling: mark the
     (already-open) failure span ERROR and attach ``cron.auto_disabled``.
 
     The span status description and the event carry
@@ -951,6 +977,7 @@ def _singleton_suppressed(plan: _FireSuccess, blocking_job_id: UUID) -> _Suppres
         blocking_job_id=blocking_job_id,
         current_count=None,
         max_pending=None,
+        skipped_slots=plan.skipped_slots,
     )
 
 
@@ -963,6 +990,7 @@ def _max_pending_suppressed(plan: _FireSuccess, current_count: int, cap: int) ->
         blocking_job_id=None,
         current_count=current_count,
         max_pending=cap,
+        skipped_slots=plan.skipped_slots,
     )
 
 
@@ -1137,8 +1165,8 @@ async def _enqueue_planned_fires(
       failed batch rolls back to the savepoint, leaving the caller's
       transaction alive and the tick's remaining bookkeeping, the
       survivors' advance, the suppression UPDATE, the strikes, committable.
-      Without it, the failure UPDATE below the old inline except-branch
-      raised ``InFailedSQLTransactionError`` itself: no strike ever
+      Without it, the failure UPDATE below would raise
+      ``InFailedSQLTransactionError`` itself: no strike ever
       persisted, while the span/metric telemetry still claimed every
       schedule failed (and the leader's backstop guard counted the
       non-transient abort toward killing the worker).
@@ -1383,19 +1411,26 @@ async def tick_cron(
             },
             links=links,
             new_root=True,
-        ):
+        ) as fire_span:
             try:
-                successes.append(
-                    await _plan_fire(
-                        row,
-                        server_now,
-                        settings,
-                        actor_configs,
-                        actor_policies,
-                        tick_started=tick_started,
-                    )
+                plan = await _plan_fire(
+                    row,
+                    server_now,
+                    settings,
+                    actor_configs,
+                    actor_policies,
+                    tick_started=tick_started,
                 )
-            except _TickBudgetExhaustedError:
+                successes.append(plan)
+                if plan.skipped_slots:
+                    # The lag signal on the span, where per-schedule
+                    # attribution is free (see the cardinality notes in
+                    # obs/_otel.py): how many fire units this schedule was
+                    # behind when the catch-up branch skipped them. Zero is
+                    # not set -- a clean fire's span says nothing, the
+                    # attribute's ABSENCE is the clean reading.
+                    fire_span.set_attribute("taskq.cron.skipped_slots", plan.skipped_slots)
+            except _TickBudgetExhaustedError as budget_exc:
                 # Budget deferral, not a failure: ordered BEFORE the
                 # generic except because this exception subclasses
                 # TimeoutError (and Exception).  The factory NEVER RAN:
@@ -1419,6 +1454,12 @@ async def tick_cron(
                         blocking_job_id=None,
                         current_count=None,
                         max_pending=None,
+                        # A deferral AFTER the catch-up skip branch already
+                        # recomputed the fire time durably drops the owed
+                        # slots with the suppression UPDATE: carry the
+                        # count so the committed suppression counts them
+                        # (zero for a punctual schedule's deferral).
+                        skipped_slots=budget_exc.skipped_slots,
                     )
                 )
             except Exception as exc:
@@ -1576,6 +1617,13 @@ async def tick_cron(
     # a rollback delivers nothing and the tick reports nothing.
 
     def _emit() -> None:
+        # The per-actor skip depths this tick committed, for the
+        # slots-behind gauge: successes AND suppressions (both durably
+        # advance next_fire_at past whatever the plan skipped). Max per
+        # actor -- the depth of the actor's worst schedule; a clean fire
+        # contributes 0, so an actor that caught up decays on its next
+        # observation. Published after the loop, below.
+        slots_behind: dict[str, int] = {}
         for plan in successes:
             if plan.prev_consecutive > 0:
                 # Why actor, not schedule_id: the metric's dimension is the
@@ -1591,7 +1639,16 @@ async def tick_cron(
                 worker_id=str(worker_id),
                 schedule_id=str(plan.schedule_id),
                 next_fire_at=plan.next_fire_at.isoformat(),
+                # Fire units the catch-up branch dropped for this fire:
+                # 0 for a fire that owed nothing, so the field's presence
+                # never has to be guessed at on a log dashboard.
+                skipped_slots=plan.skipped_slots,
             )
+            if plan.skipped_slots:
+                record_cron_skipped_slots(plan.actor, plan.skipped_slots)
+            # A clean fire re-observes its actor at 0: the depth decays on
+            # the next committed observation, never stranding a stale level.
+            slots_behind[plan.actor] = max(slots_behind.get(plan.actor, 0), plan.skipped_slots)
             record_published_message(plan.actor, plan.queue)
 
         for entry in failure_telemetry:
@@ -1638,6 +1695,16 @@ async def tick_cron(
             update_disabled_schedules_count(disabled_count_after)
 
         for entry in suppressed:
+            if entry.skipped_slots:
+                # A suppressed fire of an OVERDUE schedule durably dropped
+                # its owed slots (the suppression UPDATE advanced
+                # next_fire_at past them): count them on the same series as
+                # any other skip. Without this, a budget-deferred runaway
+                # would vanish from the metrics plane -- the one silent-loss
+                # hole in the skip telemetry.
+                record_cron_skipped_slots(entry.actor, entry.skipped_slots)
+                if entry.skipped_slots > slots_behind.get(entry.actor, 0):
+                    slots_behind[entry.actor] = entry.skipped_slots
             if entry.reason == "singleton_collision":
                 # Mirrors the enqueue path's own event shape (log only, the
                 # enqueue path does not count singleton collisions), with the
@@ -1681,6 +1748,15 @@ async def tick_cron(
                     worker_id=str(worker_id),
                 )
                 record_backpressure_error(entry.actor, kind="max_pending")
+
+        # Last, so the gauge settles on what the COMMIT kept, alongside the
+        # failure reconcile above: a rollback delivers nothing, an actor
+        # with nothing committed this tick keeps its last known depth.
+        # Empty when the tick had no fires or suppressions at all -- an
+        # idle tick publishes nothing rather than clearing observations it
+        # did not make.
+        if slots_behind:
+            update_cron_slots_behind(slots_behind)
 
     await _emit_on_commit(conn, _emit, schema=schema)
     return len(successes)
@@ -1791,9 +1867,9 @@ async def _skip_already_delivered_overlap_twins(
         # (pending/scheduled), in progress (running), delivered
         # (succeeded), or deliberately suppressed by operator intent
         # (cancelled/abandoned - the cancel paths terminalise exactly the
-        # rows the old pending/scheduled filter matched, so an
-        # operator-refused twin dropped out of the covered prefix and the
-        # schedule re-fired it; GH issue #462).  Counting a claimed twin
+        # rows a bare pending/scheduled filter matches, so an
+        # operator-refused twin drops out of the covered prefix and the
+        # schedule re-fires it; GH issue #462).  Counting a claimed twin
         # is safe against over-coverage: a holder that dies WITH retry
         # budget is re-pended by the reclaim sweep with its delivery
         # obligation intact, and one that dies without it terminalises to
@@ -1894,15 +1970,44 @@ async def _plan_fire(
     # and the DST-overlap branch below was unreachable.
     dst_strategy_raw: str = row["dst_strategy"]
     dst_strategy: DstStrategy = dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
+    # The drop count, in FIRE UNITS: every schedule occurrence between the
+    # owed slot and the recomputed one is a fire this system will not even
+    # attempt -- the catch-up window's skip is the tick ADMITTING it lost
+    # the race. Counted by hopping the schedule forward from the owed slot
+    # (the same walk the DST overlap-twin probe makes, bounded by the
+    # recomputed fire, with the same monotonicity belt), because the count
+    # must be in the schedule's own period units -- "3" on a */5 schedule
+    # means three dropped fires, the number the runaway predicate compares
+    # against the cron period -- and no cheaper expression of that exists
+    # for arbitrary cron expressions. The walk runs at most once per
+    # beyond-window fire attempt: after this tick, next_fire_at is in the
+    # future, so a SUSTAINED drop count means the schedule keeps losing
+    # the race, exactly the signal.
+    skipped_slots = 0
     if fire_at < catch_up_cutoff:
-        fire_at = compute_next_fire_after(
+        recomputed_fire = compute_next_fire_after(
             row["cron_expr"], row["timezone"], server_now, dst_strategy=dst_strategy
         )[0]
+        recomputed_fire_utc = recomputed_fire.astimezone(UTC)
+        cursor = fire_at
+        while cursor.astimezone(UTC) < recomputed_fire_utc:
+            nxt = compute_next_fire_after(
+                row["cron_expr"], row["timezone"], cursor, dst_strategy=dst_strategy
+            )[0]
+            if nxt.astimezone(UTC) <= cursor.astimezone(UTC):
+                # Monotonicity belt, as in the overlap-twin walk: the
+                # computation is pinned to answer strictly after its seed;
+                # a regression there must not turn this count into a loop.
+                break
+            skipped_slots += 1
+            cursor = nxt
+        fire_at = recomputed_fire
         log.warning(
             "cron missed slots skipped",
             kind="cron_fire",
             actor=row["actor"],
             schedule_id=str(row["id"]),
+            skipped_slots=skipped_slots,
         )
 
     actor: str = row["actor"]
@@ -1940,7 +2045,8 @@ async def _plan_fire(
     if row["payload_factory"] is not None and payload_budget is None:
         raise _TickBudgetExhaustedError(
             "cron tick budget exhausted before payload factory "
-            f"{row['payload_factory']!r} could run"
+            f"{row['payload_factory']!r} could run",
+            skipped_slots=skipped_slots,
         )
     payload = await resolve_payload(row, timeout_s=payload_budget)
 
@@ -2041,4 +2147,5 @@ async def _plan_fire(
         actor=actor,
         queue=ac.queue,
         prev_consecutive=row["consecutive_failures"] or 0,
+        skipped_slots=skipped_slots,
     )

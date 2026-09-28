@@ -996,7 +996,7 @@ async def test_ui_serve_lifespan_redis_initialize_is_bounded(
 
 class _HangOnAcquirePool:
     """Fake asyncpg.Pool honouring the acquire contract: with NO timeout
-    kwarg the acquire parks forever (the pre-fix unbounded shape); with
+    kwarg the acquire parks forever (the unguarded unbounded shape); with
     one, it waits the bound then raises TimeoutError (asyncpg's own
     acquire-timeout shape). close() completes instantly so lifespan
     teardown never eats the test budget."""
@@ -1034,7 +1034,7 @@ class _HangOnAcquire:
 
     async def __aenter__(self) -> Any:
         if self._timeout is None:
-            await asyncio.Event().wait()  # pre-fix: no bound was passed
+            await asyncio.Event().wait()  # unguarded: no bound was passed
             raise AssertionError("unreachable: the hang gate is never set")
         await asyncio.sleep(self._timeout)
         raise TimeoutError  # asyncpg's acquire-timeout shape

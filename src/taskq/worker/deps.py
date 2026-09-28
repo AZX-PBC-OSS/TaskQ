@@ -44,7 +44,7 @@ from taskq.constants import wake_channel
 from taskq.obs import get_logger, set_slot_pool_occupancy_source
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
-from taskq.worker._stall_tally import StallAttributionTally
+from taskq.worker._stall_tally import LoopIdleWindow, StallAttributionTally
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.budget import compute_connection_budget
 from taskq.worker.cancel import ActiveJobRegistry
@@ -100,9 +100,8 @@ _TCP_KEEPCNT = 3
 # rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
 # that rejects unknown startup parameters (PgBouncer: "unsupported startup
 # parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
-# at the pooler, every TaskQ-built boot connection dies there. The
-# dispatcher pool previously carried ``jit = off`` this way; the guard it
-# provided is available server-side without the pooler hazard:
+# at the pooler, every TaskQ-built boot connection dies there. A
+# ``jit = off`` guard is available server-side without the pooler hazard:
 # ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
 # (docs/guides/ops.md §"Database performance knobs"), and a per-claim
 # ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
@@ -405,6 +404,13 @@ class WorkerDeps:
     worker's ``workers`` row metadata, which is the only thread-safe seam
     between the two: the tally object is the shared holder, never a
     reference into loop-owned state."""
+    loop_idle: LoopIdleWindow = field(default_factory=LoopIdleWindow)
+    """Sampled event-loop idle-fraction window, the same two-thread seam
+    as ``stall_tally``: the lag watchdog's daemon thread records one
+    parked/not-parked classification per poll, the heartbeat drains the
+    window once per tick and publishes ``loop_idle`` beside the stall
+    tally in the ``workers`` row metadata, plus the per-window
+    ``taskq.worker.loop_idle_fraction`` histogram."""
     leader_conn_factory: ConnFactory | None = None
     """Resolved factory that (re)builds ``leader_conn``. Same contract as
     ``notify_conn_factory``; used by :mod:`taskq.worker.leader`'s election

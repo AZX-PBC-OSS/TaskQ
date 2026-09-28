@@ -162,6 +162,11 @@ def _heartbeat_deps(pool: _ScriptedPool, max_heartbeat_failures: int) -> WorkerD
     deps.liveness = MagicMock()
     deps.stall_tally = MagicMock()
     deps.stall_tally.metadata_value.return_value = {}
+    # The idle-fraction window, the stall tally's sibling seam: the tick
+    # drains it once per tick and merges a None drain as a no-op (the
+    # honest quiet window - no samples, nothing published).
+    deps.loop_idle = MagicMock()
+    deps.loop_idle.drain.return_value = None
     deps.progress_buffers = {}
     deps.shutdown_started_at = None
     deps.producer_stop_event = asyncio.Event()
@@ -237,7 +242,7 @@ async def test_transient_failures_alone_isolate_at_the_documented_tick() -> None
 
 async def test_unexpected_failures_alone_isolate_at_the_documented_tick() -> None:
     """F unexpected failures (a REVOKE'd UPDATE, a driver contract
-    violation) alone: the same ledger, the same tick. The pre-fix
+    violation) alone: the same ledger, the same tick. The unguarded
     asymmetric ledger looped here forever - the zombie this PR closes."""
     ticks, isolated, at = await _run_script([UNEXPECTED] * 4, max_heartbeat_failures=3)
     assert isolated, (

@@ -304,8 +304,8 @@ def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
     (watchdog_healthy=True)
     must render Healthy even when this process's Python clock would call
     its last_seen_at stale: mixing the app clock into a server-written
-    timestamp's freshness verdict breaks under app↔DB skew.  Pre-fix the
-    route recomputed freshness in Python and rendered Unhealthy."""
+    timestamp's freshness verdict breaks under app↔DB skew.  A route that
+    recomputes freshness in Python renders Unhealthy."""
     row = StubRecord(
         worker_id="00000000-0000-0000-0000-000000000001",
         hostname="leader-1",

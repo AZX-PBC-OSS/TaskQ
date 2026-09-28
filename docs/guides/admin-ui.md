@@ -320,6 +320,32 @@ Returns `400` if `status` is not an allowed value, if only one of `cursor_at` / 
 
 **The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts. This is a behavior change for consumers of the HTML pages: a bookmarked URL or integration that carried an undeclared parameter used to receive a 200 page (rendered without the filter) and now receives a `400`; remove the stale parameter from the URL.
 
+### `GET /admin/insights`
+
+The operational-insights page. Renders the `taskq.insights` read layer's surfaces — the same statements `docs/guides/insights.md` documents — over a single pool checkout. The route writes **no SQL of its own**: every number comes from the module's parameterized statements (`fetch_wait_distribution`, `fetch_queue_imbalance`, `fetch_actor_backlog`, `fetch_overprovisioning`, `fetch_drain_estimates`, `fetch_cron_ledger`), so a shape change in the SQL layer cannot drift from the page.
+
+The page refreshes with exactly one transport per mode — the queues page's split, insights edition: in real-time mode the page's body polls itself (`hx-get` of the page's own URL, so the `window` and `per_actor` selections survive every tick), and a tick re-renders the body fragment alone, never the whole document — the body's six reads are archive-UNION aggregates, and the meta refresh would re-run all six every interval; in polling mode the meta refresh is the page's only refresh and it keeps working without JavaScript. The two transports never run together (that was the double-fetch).
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `window` | No (default `24h`) | The trailing window every windowed read bounds. Closed set: `1h`, `6h`, `24h`, `7d` (`taskq.insights.INSIGHTS_WINDOWS`). There is no all-time entry — on hypertables all-time IS the archive retention. |
+| `per_actor` | No (default `false`) | Groups the wait-distribution table per (actor, queue) instead of per queue. Values: `true`/`1`, `false`/`0`. |
+
+Returns `400` for an unknown `window` value, an invalid `per_actor` value, or any query parameter the page does not declare (the undeclared-filter contract above).
+
+**Sections:**
+
+- **Wait distribution** — per queue (or per actor × queue with the toggle): count / p50 / p95 / max of `started_at - scheduled_at`, terminal rows only, live UNION archive. The **clean** and **deferred** segments render as separate rows, and the page says why: a deferred row (snoozed or rate-limit-deferred) measures only the FINAL leg — its deferral moved `scheduled_at` forward, so the deferred time is excluded by construction. The two segments have different SLOs; read them separately.
+- **Fleet imbalance** — per queue: due depth, armed (future-scheduled) depth, live workers, effective capacity (summed actor `max_concurrent` × live workers), utilization, oldest-due age. **Utilization past the high-water mark (> 100%) renders an "Over capacity" badge, and due work with no live capacity renders an "Unservable" badge** — a visual verdict, not just numbers; a healthy queue renders none.
+- **Actor backlog** — per (actor, queue) against the actor's ROUTED queue: backlog, running, max concurrent, saturation, unservable backlog (what is still waiting after the next full claim wave).
+- **Drain estimates** — per queue: due depth ÷ realised window throughput, rendered as a human duration (`13m`, `2h 5m`). **A queue whose window carried no traffic says "no traffic in the window — estimate undefined" and renders no eta** — never eta=0, which would read as "already drained". The armed wave (future work the estimate excludes) is beside it.
+- **Overprovisioning** — per queue: live workers, due depth, window completions, and the idle-fleet verdict. A flagged queue (live workers, zero due depth, fewer than one completion per worker in the whole window) renders an **"Idle fleet · {window}"** badge with the window named on it — a single-window flag is a hypothesis; sustain it across windows before shrinking the fleet.
+- **Cron fan-out ledger** — per schedule: fires and cleared for the window, the same pair for the prior equal window, outstanding (windowless) backlog, and the **"Runaway" badge, which renders only when fires outran clearance in BOTH the current and the prior window** — one window is a burst; two consecutive is the trend.
+
+Read `docs/guides/insights.md` for each metric's confounds (wait-per-attempt semantics, the archive retention floor, DST `allof` fan-out, budget-deferred fires) — the page renders the numbers; that guide says how to read them.
+
 ### `GET /admin/history`
 
 Historical job list. Shows completed (terminal) jobs from both the live `jobs` table (not yet pruned) and the `jobs_archive` table (already pruned). Rows are ordered most-recent-first by `finished_at`. Results are paginated at 50 rows using keyset pagination on `(finished_at DESC, id DESC)`.

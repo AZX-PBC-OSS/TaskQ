@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Final, cast
 
@@ -41,6 +42,7 @@ from taskq.obs import (
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_queue_live_workers_cache,
+    update_queue_utilization_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
     update_scheduled_count_cache,
@@ -56,6 +58,7 @@ from taskq.worker._leader_shared import (
     _EK2,
     _EK3,
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,
+    _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
@@ -307,8 +310,77 @@ async def _drain_bounded(
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class _SweepSpec:
+    """One leader sweep's wiring, the tick table's row.
+
+    The hand-unrolled blocks this table replaced differed ONLY in these
+    fields (plus two structural booleans for the stale-batches sweep's
+    drain-within-its-own-tolerance arm); everything around them — the
+    try/except/finally skeleton, the metric sample discipline, the
+    bounded drain — is one shared runner (:func:`_sweep_loop`'s
+    ``run_sweep``).  Adding a sweep is appending a spec, never a
+    sixth copy of the boilerplate.
+    """
+
+    #: The sweep's label across the metrics, the drain, and the debug
+    #: events (``_metric_duration``/``_metric_rows``/``record_sweep_*``).
+    name: str
+    #: The zero-argument call: the sweep's single bounded batch.
+    call: Callable[[], Awaitable[int]]
+    #: The transient-failure warning's event and kind. The stale-batches
+    #: sweep's warning predates the worker_id convention and omits the
+    #: field — pinned verbatim (``warn_without_worker_id``), not unified.
+    warn_event: str
+    warn_kind: str
+    #: Backend attribute names every one of which must exist to run
+    #: (``hasattr`` gates: only PostgresBackend implements the
+    #: maintenance sweeps, so an in-memory backend skips them).
+    gated_on: tuple[str, ...] = ()
+    #: The settings attribute whose ``timedelta(0)`` disable sentinel
+    #: turns the sweep off for the deployment.
+    period_setting: str | None = None
+    #: Extra exception types the tolerance set covers (pre-migration
+    #: columns/tables riding a rolling deploy as a per-tick warn).
+    extra_except: tuple[type[BaseException], ...] = ()
+    #: The one-shot NotImplementedError arm (sweeps 1/2): the error event
+    #: and kind, warned exactly once per process. None for the sweeps
+    #: whose absence a backend signals by not having the attribute.
+    unimplemented: tuple[str, str] | None = None
+    #: Drain to zero within the tick after a non-empty first batch
+    #: (every batch commits, so a stopped drain is a pause, not a
+    #: rollback). Single-batch sweeps (retention) leave it False.
+    drain: bool = False
+    #: stale-batches only: the drain runs INSIDE the tolerated call, so
+    #: the pre-migration tolerance covers the drain too.
+    drain_in_try: bool = False
+    #: The warning log omits the worker_id field (the stale-batches
+    #: sweep's original shape, preserved verbatim).
+    warn_without_worker_id: bool = False
+    #: Success-path debug line (rows, start); the deadline sweep names
+    #: its own kind, the rest share the ``_dbg`` shape.
+    dbg_tick: Callable[[int, float], None] | None = None
+    #: Called when the first batch returned rows (the stale-batches
+    #: sweep's completion log).
+    on_rows: Callable[[int], None] | None = None
+
+
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Leader sweep loop: sweeps 1/2/4, result TTL, stale workers, batches.
+
+    The tick is TABLE-DRIVEN: every leader sweep is a :class:`SweepSpec`
+    entry — name, call, tolerance, gates, drain discipline, debug event —
+    and one runner executes them all, so adding a sweep is appending a
+    spec, never a sixth hand-copied try/except/finally block (the copy
+    the previous shape accrued per sweep, and the drift it invited: the
+    stale-batches block's hand-rolled transient tuple predated the shared
+    set and missed ``QueryCanceledError`` — see its spec's
+    ``extra_except`` below).  Tick ORDER, gates, log events, metric
+    names, and the per-sweep tolerance exceptions are carried by the
+    specs verbatim; the runner is the one implementation of the sample
+    discipline (duration always; rows and the success stamp only when
+    the awaited call returned, so a timed-out call cannot masquerade as
+    an empty sweep).
 
     Unexpected (non-transient) errors are backstopped by
     :class:`UnexpectedLoopErrorGuard` exactly like the election, watchdog,
@@ -319,8 +391,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     fully successful work iteration resets the streak; a transiently
     failing one must not buy a fault more time.
     """
-    warned_sweep_1 = warned_sweep_2 = False
     guard = UnexpectedLoopErrorGuard("leader.sweep")
+    # The one-shot NotImplementedError warnings: sweeps 1/2 predate the
+    # hasattr-gated maintenance sweeps, their absence on a backend is a
+    # warn-ONCE error (not a silent gate), so a backend that implements
+    # neither logs it exactly once per process instead of every tick.
+    unimplemented_warned: set[str] = set()
     # Loop-invariant sweep-1 arguments; hoisted so the drain closure below
     # binds outer names, not per-iteration locals.
     cancellation_grace = timedelta(seconds=ctx.deps.settings.cancellation_grace_period)
@@ -336,20 +412,61 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     async def sweep_2_call() -> int:
         return await ctx.backend.deadline_sweep()
 
-    # PG-only sweeps (gated on hasattr at the call site below): each call
-    # acquires its own dispatcher connection so every committed batch of a
-    # drain is independent, and the bound is the operator-tunable
-    # event_writer_batch_size, mirroring the stale-batch sweep's wiring.
-    async def sweep_rt_call() -> int:
+    async def leaked_slots_call() -> int:
+        # PG-only sweeps: each call acquires its own dispatcher connection
+        # so every committed batch of a drain is independent, and the
+        # bound is the operator-tunable event_writer_batch_size, mirroring
+        # the stale-batch sweep's wiring.
         async with ctx.deps.dispatcher_pool.acquire(
             timeout=ctx.deps.settings.dispatcher_command_timeout
         ) as conn:
             return cast(
                 "int",
-                await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate at the call site; only PostgresBackend implements these maintenance sweeps.
+                await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the spec's hasattr gate; only PostgresBackend implements these maintenance sweeps.
                     conn,
                     schema=ctx.deps.settings.schema_name,
                     batch_size=ctx.deps.settings.event_writer_batch_size,
+                ),
+            )
+
+    async def expired_results_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return cast(
+                "int",
+                await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the spec's hasattr gate; only PostgresBackend implements these maintenance sweeps.
+                    conn,
+                    schema=ctx.deps.settings.schema_name,
+                    batch_size=ctx.deps.settings.event_writer_batch_size,
+                ),
+            )
+
+    async def event_retention_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return cast(
+                "int",
+                await ctx.backend.sweep_expired_events(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the spec's hasattr gate; only PostgresBackend implements these maintenance sweeps.
+                    conn,
+                    schema=ctx.deps.settings.schema_name,
+                    retention=ctx.deps.settings.event_retention_period,
+                    batch_size=ctx.deps.settings.event_retention_batch_size,
+                ),
+            )
+
+    async def keyed_reclaim_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return cast(
+                "int",
+                await ctx.backend.sweep_idle_keyed_rows(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the spec's hasattr gate; only PostgresBackend implements these maintenance sweeps.
+                    conn,
+                    schema=ctx.deps.settings.schema_name,
+                    horizon=ctx.deps.settings.keyed_row_reclaim_period,
+                    batch_size=ctx.deps.settings.keyed_row_reclaim_batch_size,
                 ),
             )
 
@@ -365,22 +482,6 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 batch_size=ctx.deps.settings.event_writer_batch_size,
             )
 
-    # Sweep 4 and the stale-batch completion sweep: each drain call
-    # acquires its own dispatcher connection so every committed batch is
-    # independent, the same per-call acquire the sweeps above use.
-    async def leaked_slots_call() -> int:
-        async with ctx.deps.dispatcher_pool.acquire(
-            timeout=ctx.deps.settings.dispatcher_command_timeout
-        ) as conn:
-            return cast(
-                "int",
-                await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate at the call site; only PostgresBackend implements these maintenance sweeps.
-                    conn,
-                    schema=ctx.deps.settings.schema_name,
-                    batch_size=ctx.deps.settings.event_writer_batch_size,
-                ),
-            )
-
     async def stale_batches_call() -> int:
         async with ctx.deps.dispatcher_pool.acquire(
             timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -391,445 +492,284 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 batch_size=ctx.deps.settings.event_writer_batch_size,
             )
 
+    def _dbg_tick(event: str) -> Callable[[int, float], None]:
+        """The standard success-path debug line: the sweep's tick event."""
+
+        def _log(rows: int, start: float) -> None:
+            _dbg(event, event, rows, start)
+
+        return _log
+
+    def _dbg_deadline_exceeded_tick(rows: int, start: float) -> None:
+        # The deadline sweep's debug line predates _dbg and names its own
+        # kind; the shape is pinned verbatim so the log schema does not move.
+        log.debug(
+            "sweep_deadline_exceeded_tick",
+            kind="deadline_exceeded_sweep",
+            count=rows,
+            sweep_duration_ms=int((time.monotonic() - start) * 1000),
+        )
+
+    def _log_stale_batches_completed(rows: int) -> None:
+        log.info("stale-batches-completed", kind="batch", count=rows)
+
+    # The tick's sweep table, in execution order.  Each entry's comments
+    # carry the design rationale the hand-unrolled blocks documented.
+    specs: tuple[_SweepSpec, ...] = (
+        _SweepSpec(
+            # Sweep 1: reclaim_expired_locks.
+            name="expired_locks",
+            call=sweep_1_call,
+            warn_event="sweep-expired-locks-failed",
+            warn_kind="sweep_expired_locks_failed",
+            drain=True,
+            dbg_tick=_dbg_tick("sweep_expired_locks_tick"),
+            unimplemented=("sweep_expired_locks_unimplemented", _EK2),
+        ),
+        _SweepSpec(
+            # Sweep 2: deadline_sweep.
+            name="deadline_exceeded",
+            call=sweep_2_call,
+            warn_event="sweep-deadline-exceeded-failed",
+            warn_kind="sweep_deadline_exceeded_failed",
+            drain=True,
+            dbg_tick=_dbg_deadline_exceeded_tick,
+            unimplemented=("sweep_deadline_exceeded_unimplemented", _EK3),
+        ),
+        _SweepSpec(
+            # Sweep 4: leaked reservation slots.
+            name="leaked_slots",
+            call=leaked_slots_call,
+            warn_event="sweep-leaked-slots-failed",
+            warn_kind="sweep_leaked_slots_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            drain=True,
+            dbg_tick=_dbg_tick("sweep_leaked_slots_tick"),
+        ),
+        _SweepSpec(
+            # Result TTL expiry.
+            name="expired_results",
+            call=expired_results_call,
+            warn_event="sweep-expired-results-failed",
+            warn_kind="sweep_expired_results_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            drain=True,
+            dbg_tick=_dbg_tick("sweep_expired_results_tick"),
+        ),
+        _SweepSpec(
+            # Event retention: ONE committed batch per tick, deliberately
+            # NOT a _drain_bounded drain.  The design settles
+            # slow-and-constant: at the default 30 s sweep_interval and
+            # 10 000-row batch that is ~333 deletions/s against the
+            # measured ~200 events/s steady insert rate, so a 6.5 M-row
+            # backlog (a retention reduction from 30 d to 7 d) drains in
+            # ~5.4 h idle / ~13.6 h loaded, every batch committed, every
+            # tick short, and the tick's cost stays independent of the
+            # backlog it is recovering from.  The period gate is the
+            # settings-level disable sentinel: timedelta(0) disables the
+            # sweep, and a disabled sweep acquires no connection and logs
+            # nothing.
+            name="job_events_retention",
+            call=event_retention_call,
+            warn_event="sweep-job-events-retention-failed",
+            warn_kind="sweep_job_events_retention_failed",
+            gated_on=("sweep_leaked_reservation_slots", "sweep_expired_events"),
+            period_setting="event_retention_period",
+            dbg_tick=_dbg_tick("job_events_retention_tick"),
+        ),
+        _SweepSpec(
+            # Fleet-wide keyed-row reclaim: ONE bounded, committed batch
+            # per table per tick, deliberately NOT a _drain_bounded
+            # drain, the same slow-and-constant discipline the
+            # event-retention sweep settled.  This is the fleet half of
+            # keyed reclamation: the per-worker eviction+drain below only
+            # ever names rows its OWN process materialised, so keyed
+            # reservation_slots / rate_limit_buckets rows orphan when the
+            # worker that created them dies (the residual the keyed-row
+            # lifecycle exists to close).  The rows carry their own
+            # staleness, the keyed mark plus last_used_at, refreshed by
+            # the acquire/release/upsert statements that already touch
+            # them, and sweep_idle_keyed_rows deletes marked rows unused
+            # past the horizon, bounded per tick (static buckets and
+            # redis-backend keyed rows are never marked, never deleted).
+            # Period gate as above.  UndefinedColumnError rides the
+            # tolerance set (pre-migration tolerance, the stale-batches
+            # sweep's pattern): a rolling deploy runs this code against a
+            # schema whose keyed/last_used_at columns have not landed
+            # yet, which is a per-tick warn until migration
+            # 01.00.10_02 (keyed_row_fleet_reclaim) applies, not the
+            # deliberately-fatal unexpected-error streak.
+            name="keyed_row_reclaim",
+            call=keyed_reclaim_call,
+            warn_event="sweep-keyed-row-reclaim-failed",
+            warn_kind="sweep_keyed_row_reclaim_failed",
+            gated_on=("sweep_leaked_reservation_slots", "sweep_idle_keyed_rows"),
+            period_setting="keyed_row_reclaim_period",
+            extra_except=(asyncpg.exceptions.UndefinedColumnError,),
+            dbg_tick=_dbg_tick("keyed_row_reclaim_tick"),
+        ),
+        _SweepSpec(
+            # Stale-worker cleanup: one bounded batch per call, drained
+            # the same way.  The window bounds workers per call, which
+            # bounds the DDL ON DELETE fan-out (the job_attempts SET NULL
+            # rewrites) per transaction.
+            name="stale_workers",
+            call=stale_workers_call,
+            warn_event="cleanup-stale-workers-failed",
+            warn_kind="cleanup_stale_workers_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            drain=True,
+            dbg_tick=_dbg_tick("cleanup_stale_workers_tick"),
+        ),
+        _SweepSpec(
+            # Stale-batch completion is a LEADER sweep
+            # (docs/guides/workers.md; docs/architecture.md
+            # "``complete_stale_batches`` leader sweep"): batches whose
+            # completion hook was lost (consumer crash between the
+            # terminal write and complete_batch/abort_batch) stay
+            # `active` forever without it, wait_for_batch can snooze
+            # indefinitely and prune_old_batches only deletes completed
+            # rows.  Deliberately NOT nested under the keyed-registry
+            # conditions below: those are process-local and, in the
+            # default deployment, empty.
+            # UndefinedTableError rides the tolerance set (pre-migration
+            # tolerance): the hand-rolled tuple here predated the shared
+            # transient set and missed QueryCanceledError, a server-side
+            # cancel of the (now batched) completion statement escaped to
+            # the unexpected-error backstop as though it were a bug,
+            # counting toward the deliberately-fatal streak.
+            name="stale_batches",
+            call=stale_batches_call,
+            warn_event="stale-batches-sweep-failed",
+            warn_kind="batch",
+            gated_on=("sweep_leaked_reservation_slots",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            drain_in_try=True,
+            warn_without_worker_id=True,
+            on_rows=_log_stale_batches_completed,
+        ),
+    )
+
+    async def run_sweep(spec: _SweepSpec) -> bool:
+        """One leader sweep's tick: call, tolerance, metrics, drain.
+
+        Returns True when the iteration stayed clean; False marks it
+        unclean so the backstop streak is not reset by a failing tick.
+        Any error OUTSIDE the spec's tolerance set propagates — the
+        loop's ``UnexpectedLoopErrorGuard`` is the backstop, exactly as
+        the hand-unrolled blocks' uncaught arms were.
+        """
+        clean = True
+        start = time.monotonic()
+        # Bound only by the awaited call; the deadline that aborts it also
+        # aborts the binding, so the failure path records duration WITHOUT
+        # a row sample (a 0-row sample would be indistinguishable from a
+        # healthy empty sweep).
+        rows: int | None = None
+        try:
+            rows = await spec.call()
+            if spec.on_rows is not None and rows:
+                spec.on_rows(rows)
+            # Every batch commits, so a stopped drain is a pause, not
+            # a rollback (the stale-batches sweep drains within its
+            # tolerated call, the pre-migration arm covering the drain
+            # too).
+            if (
+                spec.drain
+                and spec.drain_in_try
+                and rows
+                and not await _drain_bounded(
+                    ctx,
+                    shutdown,
+                    sweep_name=spec.name,
+                    call=spec.call,
+                    warn_event=spec.warn_event,
+                    warn_kind=spec.warn_kind,
+                )
+            ):
+                clean = False
+        except NotImplementedError as exc:
+            if spec.unimplemented is None:
+                # A backend raising this outside the two warn-once sweeps
+                # was never tolerated: re-raise into the guard.
+                raise
+            clean = False
+            if spec.name not in unimplemented_warned:
+                unimplemented_warned.add(spec.name)
+                _err(spec.unimplemented[0], spec.unimplemented[1], ctx.worker_id, exc)
+        except (*TRANSIENT_PG_ERRORS, *spec.extra_except) as exc:
+            # PG loss is transient here: tolerated per tick, marked unclean,
+            # never a leader teardown.
+            clean = False
+            if _is_deadline_family(exc):
+                record_sweep_timeout(spec.name)
+            if spec.warn_without_worker_id:
+                log.warning(spec.warn_event, kind=spec.warn_kind, error=repr(exc))
+            else:
+                log.warning(
+                    spec.warn_event,
+                    kind=spec.warn_kind,
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
+        finally:
+            # The sample discipline: duration always; rows and the success
+            # stamp only when the awaited call returned, so a timed-out
+            # sweep records duration WITHOUT a row sample, and
+            # success-path-only instrumentation never hides a failure.
+            _metric_duration(spec.name, start)
+            if rows is not None:
+                _metric_rows(spec.name, rows)
+                record_sweep_success(spec.name)
+                if spec.dbg_tick is not None:
+                    spec.dbg_tick(rows, start)
+        if (
+            spec.drain
+            and not spec.drain_in_try
+            and rows
+            and not await _drain_bounded(
+                ctx,
+                shutdown,
+                sweep_name=spec.name,
+                call=spec.call,
+                warn_event=spec.warn_event,
+                warn_kind=spec.warn_kind,
+            )
+        ):
+            clean = False
+        return clean
+
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.leading():
             iteration_clean = True
             try:
-                # Sweep 1: reclaim_expired_locks
-                start = time.monotonic()
-                rows_1: int | None = None
-                try:
-                    # No `now` argument: the sweep's server-side predicates
-                    # (clock_timestamp()) are the single arbiter.
-                    rows_1 = await sweep_1_call()
-                except NotImplementedError as exc:
-                    iteration_clean = False
-                    if not warned_sweep_1:
-                        _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
-                        warned_sweep_1 = True
-                except TRANSIENT_PG_ERRORS as exc:
-                    # Why: PG loss is transient here, exactly as for the
-                    # already-guarded sweeps below. Unguarded, it escapes into
-                    # MaintenanceLeader.run's TaskGroup and on into the worker's,
-                    # cancelling every sibling WITHOUT setting shutdown_event ,
-                    # the heartbeat dies before it can reach isolate_self, so no
-                    # job is re-pended and the worker cannot exit cleanly.
-                    iteration_clean = False
-                    if _is_deadline_family(exc):
-                        record_sweep_timeout("expired_locks")
-                    log.warning(
-                        "sweep-expired-locks-failed",
-                        kind="sweep_expired_locks_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
-                finally:
-                    # rows_1 is bound only by the awaited call above; the
-                    # deadline that aborts it also aborts the binding, so the
-                    # failure path records duration WITHOUT a row sample (a
-                    # 0-row sample would be indistinguishable from a healthy
-                    # empty sweep).
-                    _metric_duration("expired_locks", start)
-                    if rows_1 is not None:
-                        _metric_rows("expired_locks", rows_1)
-                        record_sweep_success("expired_locks")
-                        _dbg(
-                            "sweep_expired_locks_tick",
-                            "sweep_expired_locks_tick",
-                            rows_1,
-                            start,
-                        )
-                # Every batch commits, so a stopped drain is a pause, not a
-                # rollback.
-                if rows_1 and not await _drain_bounded(
-                    ctx,
-                    shutdown,
-                    sweep_name="expired_locks",
-                    call=sweep_1_call,
-                    warn_event="sweep-expired-locks-failed",
-                    warn_kind="sweep_expired_locks_failed",
-                ):
-                    iteration_clean = False
-
-                # Sweep 2: deadline_sweep
-                start = time.monotonic()
-                rows_2: int | None = None
-                try:
-                    rows_2 = await sweep_2_call()
-                except NotImplementedError as exc:
-                    iteration_clean = False
-                    if not warned_sweep_2:
-                        _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
-                        warned_sweep_2 = True
-                except TRANSIENT_PG_ERRORS as exc:
-                    # Same transient-PG rationale as sweep 1 above.
-                    iteration_clean = False
-                    if _is_deadline_family(exc):
-                        record_sweep_timeout("deadline_exceeded")
-                    log.warning(
-                        "sweep-deadline-exceeded-failed",
-                        kind="sweep_deadline_exceeded_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
-                finally:
-                    # Same rows-bound-by-the-awaited-call discipline as
-                    # sweep 1 above.
-                    _metric_duration("deadline_exceeded", start)
-                    if rows_2 is not None:
-                        _metric_rows("deadline_exceeded", rows_2)
-                        record_sweep_success("deadline_exceeded")
-                        log.debug(
-                            "sweep_deadline_exceeded_tick",
-                            kind="deadline_exceeded_sweep",
-                            count=rows_2,
-                            sweep_duration_ms=int((time.monotonic() - start) * 1000),
-                        )
-                # Every batch commits, so a stopped drain is a pause, not a
-                # rollback.
-                if rows_2 and not await _drain_bounded(
-                    ctx,
-                    shutdown,
-                    sweep_name="deadline_exceeded",
-                    call=sweep_2_call,
-                    warn_event="sweep-deadline-exceeded-failed",
-                    warn_kind="sweep_deadline_exceeded_failed",
-                ):
-                    iteration_clean = False
-                if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
-                    start = time.monotonic()
-                    rows_4: int | None = None
-                    try:
-                        rows_4 = await leaked_slots_call()
-                    except TRANSIENT_PG_ERRORS as exc:
+                for spec in specs:
+                    # The hasattr gates keep the maintenance sweeps off the
+                    # backends that do not implement them (InMemoryBackend):
+                    # a pure attribute probe, the same check per spec the
+                    # hand-unrolled nesting applied per block.
+                    if any(not hasattr(ctx.backend, attr) for attr in spec.gated_on):
+                        continue
+                    # The period gates: the settings-level disable sentinel
+                    # timedelta(0) disables the sweep, and a disabled sweep
+                    # acquires no connection and logs nothing.
+                    if spec.period_setting is not None and getattr(
+                        ctx.deps.settings, spec.period_setting
+                    ) <= timedelta(0):
+                        continue
+                    if not await run_sweep(spec):
                         iteration_clean = False
-                        if _is_deadline_family(exc):
-                            record_sweep_timeout("leaked_slots")
-                        log.warning(
-                            "sweep-leaked-slots-failed",
-                            kind="sweep_leaked_slots_failed",
-                            worker_id=str(ctx.worker_id),
-                            error=repr(exc),
-                        )
-                    finally:
-                        # rows_4 is bound only by the awaited call above;
-                        # the deadline that aborts it also aborts the
-                        # binding, so the failure path records duration
-                        # WITHOUT a row sample, same discipline as sweeps
-                        # 1/2: a 0-row sample would be indistinguishable
-                        # from a healthy empty sweep, and success-path-only
-                        # instrumentation is the original invisibility.
-                        _metric_duration("leaked_slots", start)
-                        if rows_4 is not None:
-                            _metric_rows("leaked_slots", rows_4)
-                            record_sweep_success("leaked_slots")
-                            _dbg(
-                                "sweep_leaked_slots_tick",
-                                "sweep_leaked_slots_tick",
-                                rows_4,
-                                start,
-                            )
-                    # Every batch commits, so a stopped drain is a pause,
-                    # not a rollback, the same drain-to-zero-within-a-tick
-                    # wiring as sweeps 1/2/rt.
-                    if rows_4 and not await _drain_bounded(
-                        ctx,
-                        shutdown,
-                        sweep_name="leaked_slots",
-                        call=leaked_slots_call,
-                        warn_event="sweep-leaked-slots-failed",
-                        warn_kind="sweep_leaked_slots_failed",
-                    ):
-                        iteration_clean = False
-                    # Result TTL expiry: one bounded batch per call, drained
-                    # like sweeps 1/2, every batch commits, so a stopped
-                    # drain is a pause, not a rollback.
-                    start = time.monotonic()
-                    rows_rt: int | None = None
-                    try:
-                        rows_rt = await sweep_rt_call()
-                    except TRANSIENT_PG_ERRORS as exc:
-                        iteration_clean = False
-                        if _is_deadline_family(exc):
-                            record_sweep_timeout("expired_results")
-                        log.warning(
-                            "sweep-expired-results-failed",
-                            kind="sweep_expired_results_failed",
-                            worker_id=str(ctx.worker_id),
-                            error=repr(exc),
-                        )
-                    finally:
-                        # Same rows-bound-by-the-awaited-call discipline as
-                        # sweep 1 above: a timed-out sweep records duration
-                        # WITHOUT a row sample.
-                        _metric_duration("expired_results", start)
-                        if rows_rt is not None:
-                            _metric_rows("expired_results", rows_rt)
-                            record_sweep_success("expired_results")
-                            _dbg(
-                                "sweep_expired_results_tick",
-                                "sweep_expired_results_tick",
-                                rows_rt,
-                                start,
-                            )
-                    if rows_rt and not await _drain_bounded(
-                        ctx,
-                        shutdown,
-                        sweep_name="expired_results",
-                        call=sweep_rt_call,
-                        warn_event="sweep-expired-results-failed",
-                        warn_kind="sweep_expired_results_failed",
-                    ):
-                        iteration_clean = False
-                    # Event retention: ONE committed batch per tick,
-                    # deliberately NOT a _drain_bounded drain. The design
-                    # settles slow-and-constant: at the default 30 s
-                    # sweep_interval and 10 000-row batch that is ~333
-                    # deletions/s against the measured ~200 events/s
-                    # steady insert rate, so a 6.5 M-row backlog (a
-                    # retention reduction from 30 d to 7 d) drains in ~5.4 h
-                    # idle / ~13.6 h loaded, every batch committed, every
-                    # tick short, and the tick's cost stays independent of
-                    # the backlog it is recovering from. hasattr gate like
-                    # the stale-batches block below: only PostgresBackend
-                    # implements these maintenance sweeps. The period gate
-                    # is the settings-level disable sentinel: timedelta(0)
-                    # disables the sweep, and a disabled sweep acquires no
-                    # connection and logs nothing.
-                    if hasattr(
-                        ctx.backend, "sweep_expired_events"
-                    ) and ctx.deps.settings.event_retention_period > timedelta(0):
-                        start = time.monotonic()
-                        rows_er: int | None = None
-                        try:
-                            async with ctx.deps.dispatcher_pool.acquire(
-                                timeout=ctx.deps.settings.dispatcher_command_timeout
-                            ) as conn:
-                                rows_er = cast(
-                                    "int",
-                                    await ctx.backend.sweep_expired_events(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate above; only PostgresBackend implements these maintenance sweeps.
-                                        conn,
-                                        schema=ctx.deps.settings.schema_name,
-                                        retention=ctx.deps.settings.event_retention_period,
-                                        batch_size=ctx.deps.settings.event_retention_batch_size,
-                                    ),
-                                )
-                        except TRANSIENT_PG_ERRORS as exc:
-                            # Same transient-PG rationale as the sibling
-                            # sweeps above.
-                            iteration_clean = False
-                            if _is_deadline_family(exc):
-                                record_sweep_timeout("job_events_retention")
-                            log.warning(
-                                "sweep-job-events-retention-failed",
-                                kind="sweep_job_events_retention_failed",
-                                worker_id=str(ctx.worker_id),
-                                error=repr(exc),
-                            )
-                        finally:
-                            # Same rows-bound-by-the-awaited-call discipline
-                            # as sweeps 1/2/rt: a timed-out sweep records
-                            # duration WITHOUT a row sample (a 0-row sample
-                            # would be indistinguishable from a healthy
-                            # empty sweep, and success-path-only
-                            # instrumentation is the original invisibility).
-                            _metric_duration("job_events_retention", start)
-                            if rows_er is not None:
-                                _metric_rows("job_events_retention", rows_er)
-                                record_sweep_success("job_events_retention")
-                                _dbg(
-                                    "job_events_retention_tick",
-                                    "job_events_retention_tick",
-                                    rows_er,
-                                    start,
-                                )
-                    # Fleet-wide keyed-row reclaim: ONE bounded, committed
-                    # batch per table per tick, deliberately NOT a
-                    # _drain_bounded drain, the same slow-and-constant
-                    # discipline the event-retention block above settled.
-                    # This is the fleet half of keyed reclamation: the
-                    # per-worker eviction+drain below only ever names rows
-                    # its OWN process materialised, so keyed
-                    # reservation_slots / rate_limit_buckets rows orphan
-                    # when the worker that created them dies (the
-                    # residual the keyed-row lifecycle exists to close).
-                    # The rows carry their own staleness, the
-                    # keyed mark plus last_used_at, refreshed by the
-                    # acquire/release/upsert statements that already touch
-                    # them, and sweep_idle_keyed_rows deletes marked rows
-                    # unused past the horizon, bounded per tick (static
-                    # buckets and redis-backend keyed rows are never
-                    # marked, never deleted). hasattr gate like the
-                    # retention block above: only PostgresBackend
-                    # implements this maintenance sweep. The period gate is
-                    # the settings-level disable sentinel: timedelta(0)
-                    # disables the sweep, and a disabled sweep acquires no
-                    # connection and logs nothing. UndefinedColumnError
-                    # rides the except below (pre-migration tolerance, the
-                    # stale-batches block's pattern): a rolling deploy runs
-                    # this code against a schema whose keyed/last_used_at
-                    # columns have not landed yet, which is a per-tick warn
-                    # until migration 01.00.10_02 (keyed_row_fleet_reclaim)
-                    # applies, not the
-                    # deliberately-fatal unexpected-error streak.
-                    if hasattr(
-                        ctx.backend, "sweep_idle_keyed_rows"
-                    ) and ctx.deps.settings.keyed_row_reclaim_period > timedelta(0):
-                        start = time.monotonic()
-                        rows_kr: int | None = None
-                        try:
-                            async with ctx.deps.dispatcher_pool.acquire(
-                                timeout=ctx.deps.settings.dispatcher_command_timeout
-                            ) as conn:
-                                rows_kr = cast(
-                                    "int",
-                                    await ctx.backend.sweep_idle_keyed_rows(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate above; only PostgresBackend implements these maintenance sweeps.
-                                        conn,
-                                        schema=ctx.deps.settings.schema_name,
-                                        horizon=ctx.deps.settings.keyed_row_reclaim_period,
-                                        batch_size=ctx.deps.settings.keyed_row_reclaim_batch_size,
-                                    ),
-                                )
-                        except (
-                            *TRANSIENT_PG_ERRORS,
-                            asyncpg.exceptions.UndefinedColumnError,
-                        ) as exc:
-                            # Same transient-PG rationale as the sibling
-                            # sweeps above, plus the pre-migration
-                            # UndefinedColumnError tolerance (see the block
-                            # comment).
-                            iteration_clean = False
-                            if _is_deadline_family(exc):
-                                record_sweep_timeout("keyed_row_reclaim")
-                            log.warning(
-                                "sweep-keyed-row-reclaim-failed",
-                                kind="sweep_keyed_row_reclaim_failed",
-                                worker_id=str(ctx.worker_id),
-                                error=repr(exc),
-                            )
-                        finally:
-                            # Same rows-bound-by-the-awaited-call discipline
-                            # as every sibling sweep above: duration always,
-                            # rows and the success stamp only when the call
-                            # returned.
-                            _metric_duration("keyed_row_reclaim", start)
-                            if rows_kr is not None:
-                                _metric_rows("keyed_row_reclaim", rows_kr)
-                                record_sweep_success("keyed_row_reclaim")
-                                _dbg(
-                                    "keyed_row_reclaim_tick",
-                                    "keyed_row_reclaim_tick",
-                                    rows_kr,
-                                    start,
-                                )
-                    # Stale-worker cleanup: one bounded batch per call,
-                    # drained the same way. The window bounds workers per
-                    # call, which bounds the DDL ON DELETE fan-out (the
-                    # job_attempts SET NULL rewrites) per transaction.
-                    start = time.monotonic()
-                    rows_sr: int | None = None
-                    try:
-                        rows_sr = await stale_workers_call()
-                    except TRANSIENT_PG_ERRORS as exc:
-                        iteration_clean = False
-                        if _is_deadline_family(exc):
-                            record_sweep_timeout("stale_workers")
-                        log.warning(
-                            "cleanup-stale-workers-failed",
-                            kind="cleanup_stale_workers_failed",
-                            worker_id=str(ctx.worker_id),
-                            error=repr(exc),
-                        )
-                    finally:
-                        _metric_duration("stale_workers", start)
-                        if rows_sr is not None:
-                            _metric_rows("stale_workers", rows_sr)
-                            record_sweep_success("stale_workers")
-                            _dbg(
-                                "cleanup_stale_workers_tick",
-                                "cleanup_stale_workers_tick",
-                                rows_sr,
-                                start,
-                            )
-                    if rows_sr and not await _drain_bounded(
-                        ctx,
-                        shutdown,
-                        sweep_name="stale_workers",
-                        call=stale_workers_call,
-                        warn_event="cleanup-stale-workers-failed",
-                        warn_kind="cleanup_stale_workers_failed",
-                    ):
-                        iteration_clean = False
-                # Stale-batch completion is a LEADER sweep (docs/guides/workers.md;
-                # docs/architecture.md "``complete_stale_batches`` leader sweep"):
-                # batches whose completion hook was lost (consumer crash between
-                # the terminal write and complete_batch/abort_batch) stay `active`
-                # forever without it, wait_for_batch can snooze indefinitely and
-                # prune_old_batches only deletes completed rows. Deliberately NOT
-                # nested under the keyed-registry conditions below: those are
-                # process-local and, in the default deployment, empty.
-                # hasattr guard: complete_stale_batches needs a real PG connection
-                # (dispatcher_pool). InMemoryBackend does not implement
-                # sweep_leaked_reservation_slots, so this gate keeps the sweep off
-                # the in-memory backend, same pattern as the block above.
-                if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
-                    start = time.monotonic()
-                    stale_rows: int | None = None
-                    try:
-                        stale_rows = await stale_batches_call()
-                        if stale_rows:
-                            log.info("stale-batches-completed", kind="batch", count=stale_rows)
-                        # Drain the remainder within this tick, the same
-                        # _drain_bounded wiring as sweeps 1/2/rt: one
-                        # bounded call per tick left a large stale set
-                        # draining at one batch per sweep_interval, while
-                        # every sibling sweep drains to zero per tick.
-                        # UndefinedTableError rides the outer except below
-                        # (pre-migration tolerance), _drain_bounded's own
-                        # transient set deliberately does not carry it.
-                        if stale_rows and not await _drain_bounded(
-                            ctx,
-                            shutdown,
-                            sweep_name="stale_batches",
-                            call=stale_batches_call,
-                            warn_event="stale-batches-sweep-failed",
-                            warn_kind="batch",
-                        ):
-                            iteration_clean = False
-                    except (
-                        *TRANSIENT_PG_ERRORS,
-                        asyncpg.exceptions.UndefinedTableError,
-                    ) as exc:
-                        # Why the shared transient set (plus this block's
-                        # local UndefinedTableError tolerance for
-                        # pre-migration deployments): the hand-rolled tuple
-                        # here predated the shared set and missed
-                        # QueryCanceledError, a server-side cancel of the
-                        # (now batched) completion statement escaped to the
-                        # unexpected-error backstop as though it were a
-                        # bug, counting toward the deliberately-fatal
-                        # streak.
-                        iteration_clean = False
-                        if _is_deadline_family(exc):
-                            record_sweep_timeout("stale_batches")
-                        log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
-                    finally:
-                        # Same rows-bound-by-the-awaited-call discipline as
-                        # every sibling sweep above: duration always, rows
-                        # and the success stamp only when the call
-                        # returned.
-                        _metric_duration("stale_batches", start)
-                        if stale_rows is not None:
-                            _metric_rows("stale_batches", stale_rows)
-                            record_sweep_success("stale_batches")
+                # A fully successful work iteration resets the streak; any
+                # tolerated failure leaves it unclean.
                 if iteration_clean:
                     guard.ok()
             except Exception as exc:
                 # Backstop (see _transient.py): a non-transient error here is
                 # a bug, not a PG moment, loud, counted, tolerated briefly,
-                # then deliberately fatal. Pre-fix it escaped straight into
-                # MaintenanceLeader.run's TaskGroup and tore down the whole
+                # then deliberately fatal. An unguarded escape goes straight into
+                # MaintenanceLeader.run's TaskGroup and tears down the whole
                 # worker on the first hit.
                 guard.unexpected(exc)
         # Keyed-primitive eviction is process-local bookkeeping, NOT
@@ -838,8 +778,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # eviction). Always safe to call; with the singleton default this
         # is a no-op behavior change, N workers idempotently evict the
         # same shared registry (in a multi-process fleet each process has
-        # its OWN singleton copy, so non-leader processes previously got
-        # NO periodic eviction and now sweep their own copy).
+        # its OWN singleton copy, so every process, leader or not, sweeps
+        # its own copy periodically).
         # ctx.rate_limit_registry is None for direct SweepContext
         # constructions → fall back to the module singleton when None.
         rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry
@@ -1441,6 +1381,42 @@ _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE = (
     "GROUP BY q"
 )
 
+#: Routed actor capacity per queue: the sum of ``actor_config.max_concurrent``
+#: over the actors routed to the queue. This is the capacity input of
+#: ``taskq.queue.utilization`` — the same definition
+#: :func:`taskq.insights.fetch_queue_imbalance`'s ``cap`` CTE reports (the
+#: effective capacity multiplies the sum by the live worker count, because
+#: each worker can run every actor's jobs and the cap is enforced per
+#: worker). The table is operator-sized (one row per registered actor
+#: routing), so the grouped read is a config-table scan, not a hot-ledger
+#: one.
+_QUERY_QUEUE_ACTOR_CAPACITY_SQL_TEMPLATE = (
+    "SELECT queue, sum(max_concurrent)::int AS actor_capacity "
+    'FROM "{schema}".actor_config '
+    "WHERE max_concurrent IS NOT NULL "
+    "GROUP BY queue"
+)
+
+
+def _queue_utilization(
+    depth: dict[str, int], live_workers: dict[str, int], capacity: dict[str, int]
+) -> dict[str, float]:
+    """Compute the per-queue utilization ratio the utilization gauge
+    exports: due depth ÷ effective capacity, the definition
+    :func:`taskq.insights.fetch_queue_imbalance`'s ``utilization`` column
+    reports. A queue whose effective capacity is zero (no live worker or
+    no routed actor capacity) is OMITTED — the insights row's NULL: the
+    starvation shape is visible as depth > 0 beside a missing series (and
+    on ``taskq.jobs.stranded``), never as a frozen 0.0, which would read
+    as "idle".
+    """
+    utilization: dict[str, float] = {}
+    for queue, d in depth.items():
+        effective = capacity.get(queue, 0) * live_workers.get(queue, 0)
+        if effective > 0:
+            utilization[queue] = d / effective
+    return utilization
+
 
 async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Sample per-queue depth and per-queue live workers every
@@ -1465,6 +1441,8 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     live_workers_sql = _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE.format(schema=schema)
+    capacity_sql = _QUERY_QUEUE_ACTOR_CAPACITY_SQL_TEMPLATE.format(schema=schema)
+    due_depth_sql = _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     liveness_secs = ctx.deps.settings.admin_worker_liveness_seconds
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
@@ -1475,10 +1453,24 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 ) as conn:
                     rows = await conn.fetch(sql)
                     worker_rows = await conn.fetch(live_workers_sql, liveness_secs)
+                    capacity_rows = await conn.fetch(capacity_sql)
+                    due_rows = await conn.fetch(due_depth_sql)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
+                live_workers = {str(row["queue"]): int(row["count"]) for row in worker_rows}
+                capacity = {str(row["queue"]): int(row["actor_capacity"]) for row in capacity_rows}
+                due_depth = {str(row["queue"]): int(row["count"]) for row in due_rows}
                 update_queue_depth_cache(cache)
-                update_queue_live_workers_cache(
-                    {str(row["queue"]): int(row["count"]) for row in worker_rows}
+                update_queue_live_workers_cache(live_workers)
+                # All four reads share the tick's connection, so the ratio
+                # describes the same moment its due-depth and live-worker
+                # operands do — a join across ticks would mix a pre-burst
+                # depth with a post-scale capacity. The numerator is the
+                # DUE population (fetch_queue_imbalance's own `depth`
+                # definition), not the pending+scheduled population the
+                # depth gauge carries: a future-armed wave must not read
+                # as starvation.
+                update_queue_utilization_cache(
+                    _queue_utilization(due_depth, live_workers, capacity)
                 )
             except Exception as exc:
                 _sampler_read_failed(ctx, "queue_depth", "queue-depth-sampling-failed", exc)

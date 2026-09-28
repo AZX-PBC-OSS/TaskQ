@@ -119,9 +119,9 @@ def test_history_page_uses_the_shared_table_and_badge_styling(
     monkeypatch: pytest.MonkeyPatch, stub_pool: StubPool
 ) -> None:
     """The history page renders the same card/table chrome as the other list
-    pages: it previously shipped semantic-HTML-only markup with class names no
-    stylesheet defined, so it rendered as unstyled browser defaults between
-    the dark chrome and the footer."""
+    pages: it must ship class names the stylesheet defines, not
+    semantic-HTML-only markup, which renders as unstyled browser defaults
+    between the dark chrome and the footer."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = _make_prefixed_app(stub_pool)
     html = client.get(f"{_PREFIX}/history").text
@@ -199,8 +199,8 @@ def test_workers_table_headers_match_the_cell_order(
     monkeypatch: pytest.MonkeyPatch, stub_pool: StubPool
 ) -> None:
     """The thead order must read the row cells' order: NOTIFY, Last Seen,
-    Stall hotspots, Running / Max. The headers previously listed the middle
-    four columns in a different order than the cells, mislabeling every row."""
+    Stall hotspots, Running / Max. A header order differing from the cells'
+    mislabels every row."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]
     env = bundle.templates
@@ -373,4 +373,4 @@ def test_dark_class_is_applied_before_first_paint(
     html = client.get(f"{_PREFIX}/queues").text
     head = html[: html.find("</head>")]
     assert "documentElement.classList.add" in head
-    assert head.find("documentElement.classList.add") < head.find("alpinejs")
+    assert head.find("documentElement.classList.add") < head.find("alpine.min.js")

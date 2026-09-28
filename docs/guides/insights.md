@@ -262,6 +262,190 @@ designed fan-out, not a runaway. And a budget-deferred fire enqueues no
 row: a deferral reads as zero fires here, not as a growing backlog (the
 `taskq.cron.budget_deferrals` counter is its record).
 
+## Consuming the metrics: the scaling-operator contract
+
+The `fetch_*` functions above are the **in-database** path. The second
+consumption path is the **scrape**: the OTel metric surface the worker
+exports (`taskq.obs`; Prometheus-rendered names turn dots into
+underscores and suffix counters with `_total`). A future dynamic
+worker-scaling operator consumes *that* surface at fleet scale, so this
+section is the contract it may build on: the exact series, their labels,
+their bounds and their decision semantics. **Diagnostics now; automation
+later** — TaskQ ships the measurements, a human makes the scaling call
+(see the decision table's framing note).
+
+Sampling cadence: the leader-sampled gauges refresh every
+`TASKQ_QUEUE_DEPTH_INTERVAL` (default 15 s) and go STALE on demotion (a
+demoted process exports nothing rather than a frozen reading); the
+per-worker gauges are sampled unconditionally by every worker.
+
+### The series an operator scrapes
+
+| Prometheus series | Kind | Labels | The operator question it answers (SQL twin) |
+|---|---|---|---|
+| `taskq_queue_depth` | gauge | `queue` | How much work EXISTS per queue — pending **and** scheduled (the gauge's population is wider than the SQL `depth`, which is due-now only; see `fetch_queue_imbalance`) |
+| `taskq_queue_live_workers` | gauge | `queue` | Is anyone consuming it (`live_workers`) |
+| `taskq_queue_utilization` | gauge | `queue` | Starvation at a glance (`utilization`) — **first-class, do not recompute client-side** |
+| `taskq_jobs_by_status{status}` | gauge | `status` | The live population exactly, per status (no SQL twin needed) |
+| `taskq_jobs_scheduled_count` | gauge | — | Label-less twin of `by_status{status="scheduled"}` for direct comparison with the age gauges |
+| `taskq_jobs_oldest_due_age_seconds` | gauge | — | Is promotion stalled (`oldest_due_age_s`'s fleet-wide form) |
+| `taskq_jobs_oldest_pending_age_seconds` | gauge | `actor`, `queue` | Which (actor, queue) has a stranded head of line |
+| `taskq_jobs_actor_backlog` | gauge | `actor`, `queue` | Per-actor pending depth (`fetch_actor_backlog.backlog`) |
+| `taskq_jobs_running` | gauge | `actor` | Who holds the fleet's slots (`fetch_actor_backlog.running`) |
+| `taskq_jobs_oldest_running_age_seconds` | gauge | `actor` | An attempt with no `start_to_close` |
+| `taskq_jobs_stranded{reason}` | gauge | `actor`, `reason` | Rows that can never dispatch, and why (`unservable_backlog`'s diagnosis) |
+| `taskq_jobs_running_lease_expired` | gauge | — | Zombie-running (claimed, lease past, still `running`) |
+| `taskq_worker_active_jobs`, `taskq_worker_max_concurrency` | gauges | — | Per-process in-flight and its ceiling; the ratio is per-process utilization (the pod is the scrape target's own labels) |
+| `taskq_jobs_queue_wait_seconds` | histogram | `actor`, `queue` | What every dispatched job actually waited — the live, per-job form of `fetch_wait_distribution`'s windowed percentiles |
+| `messaging_process_duration` | histogram | `actor`, `queue`, `outcome` | Execution duration, outcome-segmented |
+| `taskq_jobs_attempt_failures_total` | counter | `actor`, `error_type`, `retryable` | Failure rate, retried vs terminal |
+| `taskq_jobs_timeouts_total` | counter | `actor`, `kind` | Budget violations |
+| `taskq_cron_consecutive_failures` | up-down counter | `actor` | Failing schedules (reconciled against the database each tick) |
+| `taskq_cron_budget_deferrals_total` | counter | `actor` | Budget-deferred fires — invisible to the SQL ledger (§5) |
+| `taskq_maintenance_leader_sweep_last_success_seconds` | gauge | `sweep_name` | Is the leader's own sampling alive (staleness = `time() − value`) |
+
+### Not on the scrape — read it in SQL
+
+The honest absences an operator must not paper over:
+
+- **Cron lag is not merged** (#563): there is NO per-schedule
+  schedule-vs-fire lag gauge. The stand-ins are the two cron counters
+  above and `fetch_cron_ledger`'s `outstanding` / `runaway_trending`
+  (§5). Until a lag series exists, cron fan-out is a *feed-the-schedule*
+  decision, not a worker-count one.
+- **Drain ETA** (`eta_seconds`, §4) is a throughput extrapolation over
+  windowed terminalisations — SQL-side only. The scrape provides its
+  inputs (`taskq_queue_depth`, `rate(messaging_client_consumed_messages_total)`);
+  anything computed client-side must re-derive `has_traffic` honestly:
+  no traffic in the window means the estimate is UNDEFINED, never zero.
+- **Per-queue actor capacity** is folded into
+  `taskq_queue_utilization` by the sampler (the capacity table is the
+  leader's to read). The raw inputs are `fetch_queue_imbalance`'s
+  `actor_capacity` / `effective_capacity` columns.
+- **A missing utilization series has three meanings — read them
+  apart before acting.** `taskq_queue_utilization` OMITS a queue rather
+  than reporting a number that would lie: a frozen `0` reads "idle", the
+  opposite of the truth, and a ratio against unlimited capacity is not a
+  ratio. The absence is therefore ambiguous by design, and the alarm rule
+  `taskq_queue_depth > 0` with NO utilization series resolves it:
+  - **No due rows** — an idle queue (depth 0): nothing to starve, no
+    series, no action.
+  - **Zero effective capacity** — no live worker, or no routed
+    `actor_config` row (check `taskq_jobs_stranded{reason=
+    "unserved_queue"}` and `taskq_queue_live_workers`): the
+    starved-from-zero shape.
+  - **An uncapped routed actor** (`max_concurrent IS NULL` — the
+    convention means uncapped): such an actor contributes no capacity
+    term, so the queue's ratio is UNDEFINED, not zero and not starved —
+    it cannot be capacity-bound. A persistent depth there is a
+    dispatch/priority problem (`fetch_actor_backlog`); scaling workers
+    cannot make the series appear.
+  On the SQL side the same three shapes read as `utilization IS NULL`
+  beside `fetch_queue_imbalance`'s raw columns (`live_workers`,
+  `actor_capacity`, `effective_capacity`).
+
+### The decision table
+
+**Human-in-the-loop framing.** TaskQ ships diagnostics, not automation.
+Every rule below is a decision AID: the thresholds are starting points,
+written against the columns that define them, and a human validates each
+against their own SLOs before letting anything act on them. The eventual
+dynamic operator (a future wave, not this one) is expected to log and
+propose first and act only within operator-set bounds — the signal
+vocabulary below is what such a proposal would cite.
+
+| Signal | Threshold (source columns) | Action |
+|---|---|---|
+| Starved queue | `taskq_queue_utilization > 1` sustained (`fetch_queue_imbalance.utilization`, from `depth` ÷ `effective_capacity`) — a STRONG starvation signal; the converse is NOT clearance (see the denominator caveat below) | **Scale up**: add workers subscribed to the queue AND/OR raise the routed actors' `max_concurrent`, then re-read the ratio |
+| Starved from zero | `taskq_queue_depth > 0`, NO `taskq_queue_utilization` series (`utilization IS NULL` with `depth > 0`) — then split by `taskq_queue_live_workers` and the stranded gauge: `live_workers == 0` → nothing claims the queue; `live_workers > 0` with `taskq_jobs_stranded{reason="unserved_queue"}` → no routed actor; `live_workers > 0`, no stranded rows → every routed actor is uncapped or zero-capped (see the missing-series meanings above) | Workers at 0 or a missing routing → **scale up from zero / subscribe a worker** (or add the `actor_config` row). Uncapped routed actors → **do not scale**: the queue cannot be capacity-bound; treat the depth as a dispatch problem |
+| Fairness strand | `taskq_jobs_oldest_due_age_seconds` grows while utilization ≤ 1 — then split by `fetch_actor_backlog.saturation`. Utilization is a ONE-WAVE measure (due depth ÷ one wave of capacity): running work and job DURATION are invisible to it, so a fleet of long jobs at max concurrency pins the ratio at ≤ 1 while wait time climbs toward a full job duration | Saturation **< 1** (slots free, work waiting) → **investigate dispatch/priority**, not fleet size. Saturation **= 1 sustained** (all admitted slots held, claims immediate, age still growing) → the configured cap IS the constraint: **raise the routed actors' `max_concurrent`** (the admission damper reads it directly) or add workers — this is row 1's starvation in long-job clothing, and utilization never exceeds 1 to say so |
+| Overprovisioned | `overprovisioned == true` over three consecutive windows (`fetch_overprovisioning`: `live_workers`, `depth`, `terminalisations` — live workers, zero due depth, fewer terminalisations than workers). **Duration confound:** long jobs make the terminalisation rate low on a FULLY BUSY fleet (4 workers on 2-hour jobs finish < 4 jobs/hour fleet-wide) — cross-check `fetch_worker_busy_ratio.busy_ratio` before acting | `busy_ratio` low too → **consolidate: scale down.** One window is a hypothesis; three is a fleet to shrink. `busy_ratio` high → the workers are occupied, not idle — the fleet is small for the job DURATION (the Fairness strand row's saturation = 1 shape), not large for the work |
+| Idle workers | `busy_ratio ≈ 0` sustained on still-heartbeating workers (`fetch_worker_busy_ratio.busy_ratio`) | **Consolidate the pool** |
+| Saturated actor, growing backlog | `saturation` at 1 while `unservable_backlog > 0` sustained (`fetch_actor_backlog.saturation`, `.unservable_backlog`) | **Raise the actor's `max_concurrent`** — the one lever that lifts the admission damper under either enforcement model — **or move the actor to a queue with headroom** (re-route in `actor_config`); adding workers alone may not lift a pinned actor cap (see the denominator caveat below) |
+| Runaway cron schedule | `runaway_trending == true` (`fetch_cron_ledger`: fires > cleared in BOTH the current and prior window) | **Do not scale for this alone** — feed the schedule; read against `dst_strategy` (an `allof` overlap-hour double-fire is by design) |
+| Drain budget | `eta_seconds` against the intended change window (`fetch_drain_estimates.eta_seconds`; `has_traffic == false` ⇒ undefined — widen the window first) | **Size the scaling action** to finish inside the window, then re-read |
+
+**What the utilization denominator models — and why `≤ 1` never
+clears starvation on its own.** The denominator
+(`effective_capacity` = routed `sum(max_concurrent)` × live workers)
+is the dispatch admission damper's OVER-DISPATCH ceiling, not a hard
+cap: a claim round admits up to `max_concurrent − in_flight` where
+`in_flight` counts the actor's running rows FLEET-WIDE, so concurrent
+dispatchers each admit against a stale count and the realized ceiling
+saturates toward the documented over-dispatch bound
+(`(producers − 1) × max_concurrent` — see `capped_running` in
+`taskq.backend._dispatch_sql`). A queue served by many workers
+therefore reads the ratio LOW by up to the live-worker factor: 20 due
+rows against one actor capped at 2 report `0.5` with four workers,
+while the actor's configured cap holds the queue to roughly two
+concurrent jobs. Read utilization WITH its two sisters, never alone:
+`fetch_actor_backlog.saturation` at 1 means the configured cap is the
+binding constraint (only raising `max_concurrent` — or re-routing to
+actors with headroom — lifts it), and a growing
+`taskq_jobs_oldest_due_age_seconds` means the queue is not draining
+however small the ratio looks.
+
+### The label-cardinality bounds are part of the contract
+
+The operator scrapes at fleet scale, so the label vocabulary is a
+guarantee, not an implementation choice:
+
+- **`queue`** is the one open-ended label (caller-supplied per enqueue,
+  charset-validated only). It is capped at
+  `_MAX_QUEUE_LABEL_VALUES = 100` values **per process**. The job-side
+  emitters admit the first 100 distinct names and collapse later ones
+  onto the fixed `_other_` value. The leader-sampled per-queue gauges
+  (`taskq_queue_depth`, `taskq_queue_live_workers`,
+  `taskq_queue_utilization`) partition by VALUE instead: the 100 largest
+  queues (ties broken by name) keep their own series and the rest
+  collapse onto ONE `_other_` series carrying their summed value — the
+  reported total always equals the true total. Either way the series
+  count is hard-bounded at **cap + 1 per gauge, per process, forever**,
+  however many queue names a deployment mints.
+- **`actor`** is bounded by the registered actor set the user ships on
+  the job-side instruments; the cron paths' raw schedule-row actor
+  string is capped the same way (`_MAX_ACTOR_LABEL_VALUES = 100`,
+  overflow `_other_`), because schedule rows accept any string at
+  creation time.
+- **`bucket`** (rate-limit refund failures) is capped identically
+  (`_MAX_BUCKET_LABEL_VALUES = 100`): a keyed bucket's name embeds
+  caller-controlled payload.
+- **Identity values are never dimensions**: `worker_id`, `job_id`,
+  `schedule_id` ride spans and log lines (where cardinality is free),
+  never metric labels — the fleet-scale scrape stays bounded through
+  deploys, restarts and autoscale events.
+- Fleet-wide `sum by (queue)` note: processes admit different queue
+  sets, so their `_other_` series are not the same queue; the summed
+  overflow keeps the TOTAL honest, but per-queue attribution past the
+  cap lives on spans and log lines. For `taskq_queue_utilization`
+  specifically the `_other_` series is the SUM of the tail queues'
+  RATIOS — a boundedness bookkeeping value, not itself a utilization
+  (ratios do not add). Rank-driven admission still puts the most-starved
+  queues' own series first, so never alert on the utilization `_other_`
+  series; treat it as "more queues exist than the cap shows".
+
+These bounds are **pinned**: `tests/test_obs_scaling_operator_contract.py`
+asserts the cap constants, the capped-dimension overflow behaviour, and
+the per-queue leader gauges' ≤ cap + 1 series partition;
+`tests/test_obs_metric_cardinality.py` asserts identity values never mint
+series. A future label addition that breaks the cardinality bounds reds
+there before it reaches a scraper.
+
+### The SQL contract is versioned
+
+`taskq.insights.INSIGHTS_CONTRACT_VERSION` (currently **1**) versions the
+in-database surface the `fetch_*` functions expose: the function set,
+each function's keyword-only parameter names and defaults, and every
+statement's return-row column names and Postgres types.
+`tests/test_insights_contract.py` pins all three against a real migrated
+schema, so a refactor that breaks operator queries reds there. An
+additive change (a new function; a new column appended at the END of a
+row) ships without a breaking bump; a column removed, renamed, retyped or
+reordered is breaking and bumps the version. The both-modes guarantee
+from [the top of this guide](#what-every-consumer-must-know-first) —
+identical SQL on vanilla Postgres and hypertables — is part of the same
+contract.
+
 ## Window selector and the retention floor
 
 The named windows are `1h`, `6h`, `24h`, `7d`

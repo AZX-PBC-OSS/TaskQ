@@ -24,13 +24,18 @@ def _render_base(
     pool: _StubPool,
     realtime_mode: str = "polling",
     mode_label: str = "polling mode",
+    suppress_refresh: bool = False,
 ) -> str:
     """Render _base.html with the given realtime_mode/mode_label and return the HTML string."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     env = bundle.templates
     template = env.get_template("_base.html")
-    return template.render(realtime_mode=realtime_mode, mode_label=mode_label)
+    return template.render(
+        realtime_mode=realtime_mode,
+        mode_label=mode_label,
+        suppress_refresh=suppress_refresh,
+    )
 
 
 def _render_base_with_poll_interval(
@@ -59,12 +64,20 @@ def test_base_template_polling_mode_shows_badge_and_meta_refresh(
 def test_base_template_realtime_mode_shows_badge_no_meta_refresh(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """Real-time mode: badge reads 'real-time mode' and meta refresh is absent."""
+    """Real-time mode: badge reads 'real-time mode' and a page that owns its
+    own refresh transport (suppress_refresh) renders no meta refresh.
+
+    The suppression is per-page, not badge-keyed: the meta refresh is a
+    page with no JS machinery's ONLY liveness, so the badge mode alone
+    never removes it (the review pins in test_review_ui_pins.py hold the
+    matrix - the pages without a transport keep the meta refresh in every
+    mode)."""
     html = _render_base(
-        monkeypatch=monkeypatch,
-        pool=stub_pool,
+        monkeypatch,
+        stub_pool,
         realtime_mode="realtime",
         mode_label="real-time mode",
+        suppress_refresh=True,
     )
     assert "real-time mode" in html
     assert '<meta http-equiv="refresh"' not in html
@@ -83,7 +96,7 @@ def test_meta_refresh_delay_is_floored_at_one_second(
 ) -> None:
     """The refresh delay is evaluated against the BROWSER's clock and the
     browser honors ``content="0"`` as "reload immediately": a sub-second
-    admin_ui_polling_interval_seconds (the setting admits 0.1) used to
+    admin_ui_polling_interval_seconds (the setting admits 0.1) would
     floor to 0 and render a reload storm. The render clamps the delay to
     at least one whole second."""
     html = _render_base_with_poll_interval(monkeypatch, stub_pool, poll_interval_ms=500)

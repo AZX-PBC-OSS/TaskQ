@@ -86,6 +86,7 @@ __all__ = [
     "record_cancel_requested",
     "record_consumed_message",
     "record_cron_failure",
+    "record_cron_skipped_slots",
     "record_deadline_exceeded_swept",
     "record_dispatch_duration",
     "record_election_attempt",
@@ -114,12 +115,14 @@ __all__ = [
     "record_sweep_unexpected_error",
     "safe_start_span",
     "set_otel_enabled",
+    "update_cron_slots_behind",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
     "update_jobs_running_cache",
     "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
     "update_queue_live_workers_cache",
+    "update_queue_utilization_cache",
     "update_reservation_slots_cache",
 ]
 
@@ -1169,7 +1172,7 @@ def update_queue_depth_cache(data: dict[str, int]) -> None:
     _queue_depth_cache = dict(data)
 
 
-def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]:
+def _observe_capped_per_queue(cache: Mapping[str, float]) -> Iterable[Observation]:
     """Yield one observation per queue from *cache*, capped like the depth gauge.
 
     A gauge is observable, not additive, so the counter sites' per-item
@@ -1183,8 +1186,8 @@ def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]
     not name order and not first-seen admission -- keeps the largest
     queues, the ones an operator pages on, individually visible past the
     cap. Nothing shared is mutated: `_queue_label_values` stays owned by
-    the job-side instruments. Shared by the queue-depth and
-    live-workers gauges, which the same sampler tick feeds.
+    the job-side instruments. Shared by the queue-depth, live-workers and
+    utilization gauges, which the same sampler tick feeds.
     """
     ranked = sorted(cache.items(), key=lambda item: (-item[1], item[0]))
     admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
@@ -1250,6 +1253,50 @@ _queue_live_workers_gauge = get_meter().create_observable_gauge(
 )
 
 
+_queue_utilization_cache: dict[str, float] = {}
+
+
+def update_queue_utilization_cache(data: dict[str, float]) -> None:
+    """Replace the per-queue utilization cache with fresh data from the
+    leader's query, sampled in the same tick as the queue depth and the
+    live workers, so the three gauges join on ``queue`` without
+    describing different moments.
+
+    The ratio is :func:`taskq.insights.fetch_queue_imbalance`'s
+    ``utilization`` column — due depth ÷ effective capacity (routed actor
+    capacity x live workers) — exported as a first-class gauge so a
+    scaling operator reads it straight off the scrape instead of
+    recomputing it client-side (the computation needs ``actor_config``,
+    a table the scraper does not have). A queue whose effective capacity
+    is zero reports NO utilization series — the insights row's NULL, the
+    starvation shape the depth + live_workers pair (and
+    ``taskq.jobs.stranded``) already expose; a frozen zero there would
+    read as "idle", the opposite of the truth.
+    """
+    global _queue_utilization_cache
+    _queue_utilization_cache = dict(data)
+
+
+def _observe_queue_utilization(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_utilization_cache)
+
+
+_queue_utilization_gauge = get_meter().create_observable_gauge(
+    name="taskq.queue.utilization",
+    description=(
+        "Due depth divided by effective capacity (routed actor capacity x "
+        "live workers) per queue, sampled by the leader with "
+        "taskq.queue.depth and taskq.queue.live_workers (same cap: the "
+        f"largest _MAX_QUEUE_LABEL_VALUES queues keep their own series; the "
+        f"rest collapse onto one '{_QUEUE_LABEL_OVERFLOW}' series). > 1 is "
+        "a starved queue; depth > 0 with NO series here is the "
+        "zero-effective-capacity starvation shape."
+    ),
+    unit="1",
+    callbacks=[_observe_queue_utilization],
+)
+
+
 type StrandedReason = Literal["no_actor_config", "unserved_queue"]
 """Why a pending/scheduled row can never dispatch, the closed ``reason``
 label set of ``taskq.jobs.stranded``."""
@@ -1272,9 +1319,10 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     worker to the queue), and a per-actor total made an operator who
     found the actor_config row present conclude the detector lied.
 
-    This gauge exists because the detector previously emitted a log line and
-    nothing else, exactly once per actor per process lifetime -- so the
-    condition was invisible in metrics and its only trace was a single WARN at
+    This gauge exists because a log line alone is invisible in metrics: the
+    detector's WARN fires
+    exactly once per actor per process lifetime -- so the
+    condition is invisible in metrics and its only trace is a single WARN at
     onset, which is the moment nobody is looking. An empty mapping clears the
     gauge, so recovery is visible too.
     """
@@ -1966,6 +2014,76 @@ def record_cron_budget_deferral(actor: str) -> None:
     _cron_budget_deferrals.add(1, {"actor": label})
 
 
+#: Why the skipped-slots counter resolves lazily
+#: ---------------------------------------------
+#: The instrument follows the :func:`_lazy_counter` discipline (resolved on
+#: the CURRENT meter at call time, memoized per meter identity) rather than
+#: the import-time singletons its cron siblings use: the meter-isolating
+#: test harnesses and an application that configures its SDK after import
+#: both need the call-time resolution, and this counter is new enough to
+#: have no import-time consumer that would pin the older pattern.
+def record_cron_skipped_slots(actor: str, count: int) -> None:
+    """Count *count* cron slots a fire attempt dropped, labeled by actor.
+
+    The catch-up window's skip branch (``cron_loop._plan_fire``) is the
+    system ADMITTING it is losing the race: a schedule's ``next_fire_at``
+    fell behind ``server_now - cron_catch_up_window``, and every schedule
+    occurrence between the owed slot and the recomputed one is a fire the
+    system will not even attempt. Until this counter existed that
+    admission was log-only (the ``cron missed slots skipped`` warning),
+    so "jobs clearing slower than the cron period" -- the runaway
+    fan-out -- was invisible on the metrics plane.
+
+    *count* is in FIRE UNITS, not seconds: a ``*/5`` schedule reported as
+    3 is three dropped fires (about 15 minutes of schedule time), the
+    unit the runaway predicate compares against the cron period. The
+    count is emitted from the tick's commit-gated emission, so a rolled
+    back tick (whose owed slots are re-attempted, not dropped) reports
+    nothing; it covers both committed successes and committed
+    suppressions (a budget-deferred fire of an overdue schedule durably
+    advances ``next_fire_at`` past the owed slots, so its skips count
+    too). The clearance comparison itself -- fires vs. job completion
+    rate, the runaway PREDICATE -- lives in ``taskq.insights``; this
+    counter is one of the producer-side facts it reads.
+
+    Labeled by ``actor``, admitted through the same cap as
+    :func:`record_cron_failure` (schedule rows accept any string at
+    creation time, so the label is bounded). Per-schedule attribution
+    rides the ``cron missed slots skipped`` warning, the ``cron fired``
+    log line and the cron-fire span's ``taskq.cron.skipped_slots``
+    attribute, where cardinality is free. The depth companion (how far
+    behind, not just that a drop happened) is the
+    ``taskq.cron.slots_behind`` gauge.
+    Respects ``_otel_enabled``: no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    label = _bounded_cron_actor(actor)
+    _lazy_counter(
+        "taskq.cron.skipped_slots",
+        description=(
+            "Cron schedule occurrences a fire attempt DROPPED because the "
+            "schedule's next_fire_at fell behind the catch-up window "
+            "(server_now - TASKQ_CRON_CATCH_UP_WINDOW): fires the system "
+            "could not even attempt, counted in fire units (a */5 schedule "
+            "reported as 3 is three dropped fires). One increment per fire "
+            "attempt, carrying that attempt's full drop count; a non-zero "
+            "rate is the leader losing the race -- the cron period, the "
+            "tick cadence or the catch-up window no longer fits the "
+            "schedule's real delivery time. Delayed-not-lost does not "
+            "apply: skipped slots are never replayed (the recompute lands "
+            "next_fire_at in the future), the count IS the record of what "
+            "was dropped. Read beside taskq.cron.slots_behind (the "
+            "per-attempt depth) and taskq.cron.budget_deferrals (a "
+            "different, budget-shaped lag). The actor label is capped like "
+            "taskq.cron.consecutive_failures (first 100 distinct names, "
+            "overflow collapses to '_other_'); per-schedule attribution is "
+            "on the cron missed slots skipped / cron fired log lines and "
+            "the cron-fire span."
+        ),
+    ).add(count, {"actor": label})
+
+
 def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
@@ -2090,6 +2208,70 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
     description="Currently disabled schedules.",
     unit="1",
     callbacks=[_observe_disabled_schedules],
+)
+
+
+# ── cron slots-behind: the runaway fan-out's depth signal ───────────────
+#
+# ``taskq.cron.skipped_slots`` counts THAT a fire attempt dropped slots;
+# this gauge carries HOW FAR behind the schedule was when it did, per
+# actor, in the same fire units. The value is the leader's own
+# observation, not a database aggregate: the cron tick is the only place
+# the drop is computed (the catch-up skip branch), so the gauge is
+# published from the tick's commit-gated emission -- the leader-observable
+# pattern, the same shape as ``taskq.cron.disabled_schedules`` (a
+# leader-computed level re-stamped on every cron tick). A worker that is
+# not the leader runs no cron tick and publishes nothing; its Prometheus
+# series is simply absent, which is the honest reading for a
+# cron-plane signal.
+
+#: Per-actor, the most recent committed observation of the actor's skip
+#: depth: how many fire units the actor's worst schedule in that tick was
+#: behind when it skipped. Copy-on-write: the OTel reader thread iterates
+#: this dict from the gauge callback while the leader's tick thread
+#: rebinds it (see the publication-discipline note above the sweep caches).
+_cron_slots_behind_cache: dict[str, int] = {}
+
+
+def update_cron_slots_behind(data: Mapping[str, int]) -> None:
+    """Merge one cron tick's observed per-actor skip depths into the gauge.
+
+    Called from the tick's commit-gated emission with every actor that had
+    a committed fire or suppression that tick -- clean fires publish 0, so
+    an actor that caught up decays its series on its next observation.
+    MERGE, not replace: the tick observes only DUE schedules (a sample,
+    never the whole table), so unobserved actors keep their last known
+    depth rather than flapping in and out of the series set. The actor
+    key is admitted through the same bounded label as the skip counter
+    (schedule rows accept any string at creation time).
+    """
+    global _cron_slots_behind_cache
+    merged = {**_cron_slots_behind_cache}
+    for actor, depth in data.items():
+        merged[_bounded_cron_actor(actor)] = depth
+    _cron_slots_behind_cache = merged
+
+
+def _observe_cron_slots_behind(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, depth in _cron_slots_behind_cache.items():
+        yield Observation(depth, {"actor": actor})
+
+
+_cron_slots_behind_gauge = get_meter().create_observable_gauge(
+    name="taskq.cron.slots_behind",
+    description=(
+        "How far behind its schedule a cron actor's fire was when it "
+        "skipped, in FIRE UNITS (a */5 schedule reported as 3 was three "
+        "dropped fires deep): the depth companion of "
+        "taskq.cron.skipped_slots. Per actor, the most recent committed "
+        "cron tick's worst schedule depth; a clean fire re-observes the "
+        "actor at 0. Published by the leader's cron tick only, so a "
+        "non-leader process carries no series. The actor label is capped "
+        "like taskq.cron.consecutive_failures (first 100 distinct names, "
+        "overflow collapses to '_other_')."
+    ),
+    unit="1",
+    callbacks=[_observe_cron_slots_behind],
 )
 
 
