@@ -23,7 +23,8 @@ following ``tests/test_cli_actor_config_diff_exit_code.py``.
 """
 
 import os
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -33,6 +34,7 @@ from typer.testing import CliRunner
 from taskq.actor import ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.cli import app
+from taskq.timescale import StorageMode
 from taskq.worker.queue_ops import QueueRow
 
 runner = CliRunner()
@@ -86,6 +88,8 @@ def _patch_db(
     queue_rows: list[QueueRow],
     stranded_rows: list[dict[str, Any]] | None = None,
     worker_rows: list[dict[str, Any]] | None = None,
+    storage_mode: StorageMode | None = StorageMode.VANILLA,
+    downgraded_policies: Sequence[str] = (),
 ) -> list[str]:
     """Fake the doctor's reads at the ``taskq.cli`` boundary.
 
@@ -97,6 +101,19 @@ def _patch_db(
     the per-actor shape ``_list_stranded_pending_jobs`` returns.  The scan
     is identified by its ``.jobs`` table reference - it is the only
     jobs-table statement the command issues.
+
+    ``storage_mode`` fakes the detected storage mode
+    (``taskq.cli.detect_storage_mode``, patched here) - the rendering
+    pins below inject each mode; the mode's DETECTION against real
+    servers is pinned in ``test_storage_mode_detection.py`` and the
+    three-mode lifecycle module.
+
+    ``downgraded_policies`` fakes the license-downgrade probe
+    (``taskq.cli.probe_registered_policy_jobs``, patched here): the
+    ``"proc:table"`` strings of the TimescaleDB policy jobs still
+    registered on a server whose license was downgraded to apache after
+    an earlier timescale-license deployment - the downgrade-drift arm's
+    input. Empty (the default) on every healthy deployment.
     """
     executed: list[str] = []
     stranded = [] if stranded_rows is None else stranded_rows
@@ -128,6 +145,14 @@ def _patch_db(
     async def fake_connect(dsn: str) -> Any:
         return _FakeConn()
 
+    async def fake_detect_storage_mode(conn: Any) -> StorageMode | None:
+        executed.append("fake: detect_storage_mode")
+        return storage_mode
+
+    async def fake_probe_registered_policy_jobs(conn: Any, schema: str) -> tuple[str, ...]:
+        executed.append("fake: probe_registered_policy_jobs")
+        return tuple(downgraded_policies)
+
     async def fake_list_actor_configs(conn: Any, **kwargs: Any) -> list[ActorConfigRow]:
         return actor_rows
 
@@ -137,6 +162,8 @@ def _patch_db(
     monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
     monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
     monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
+    monkeypatch.setattr("taskq.cli.detect_storage_mode", fake_detect_storage_mode)
+    monkeypatch.setattr("taskq.cli.probe_registered_policy_jobs", fake_probe_registered_policy_jobs)
     return executed
 
 
@@ -674,3 +701,192 @@ def test_unknown_env_scan_ignores_non_taskq_names() -> None:
         )
         == []
     )
+
+
+# ── The storage-mode family: the detected mode, first in every report ──
+
+
+def test_doctor_leads_with_the_detected_storage_mode_vanilla(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The vanilla mode renders its one-glance consequences: plain tables,
+    no hypertables, no columnstore, retention owned by the row-level
+    sweeps. It is the FIRST finding in the report - the ground the rest
+    of the report's advice stands on."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.VANILLA,
+    )
+
+    result = _invoke()
+
+    assert (
+        "storage mode: vanilla - plain tables - no hypertables, no columnstore; "
+        "retention is the row-level sweeps (bounded batch deletes)" in result.output
+    )
+    # First finding-family, literally: the first bullet under the findings
+    # header is the storage-mode line, ahead of every other family.
+    findings_at = result.output.index("findings (")
+    tail = result.output[findings_at:]
+    assert re.match(r"findings \(\d+\):\n  - storage mode: ", tail), tail.splitlines()[:3]
+    # The vanilla mode with the flag off is the world's default deployment:
+    # no drift arm fired.
+    assert "storage mode drift" not in result.output
+
+
+def test_doctor_leads_with_the_detected_storage_mode_tsl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full TSL mode renders the whole consequence chain: hypertables,
+    the archive columnstore, policy-driven chunk-drop retention - and the
+    boundary the sweeps still own (expire_at exactness inside young
+    chunks)."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_TSL,
+    )
+
+    result = _invoke()
+
+    assert (
+        "storage mode: timescale-tsl - hypertables + columnstore on the archive "
+        "tables + policy-driven chunk-drop retention; the row-level sweeps still "
+        "expire inside young chunks and remain the only expire_at-exact mechanism" in result.output
+    )
+    assert "storage mode drift" not in result.output
+
+
+def test_doctor_leads_with_the_detected_storage_mode_apache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The apache mode renders the mode's truth in one glance: hypertables
+    yes, columnstore no, chunk-drop policies NO (they are Timescale-license
+    features the server refuses under its license), retention back with
+    the row-level sweeps."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_APACHE,
+    )
+
+    result = _invoke()
+
+    assert (
+        "storage mode: timescale-apache - hypertables, rowstore - the chunk-drop "
+        "policies AND the columnstore are Timescale-license features this "
+        "server's license disables, so retention is the row-level sweeps "
+        "(bounded batch deletes)" in result.output
+    )
+    assert "storage mode drift" not in result.output
+
+
+def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The family's second red arm, measured on real 2.30.1: a server
+    converted under the full TSL license and then downgraded to apache
+    keeps its five policy jobs registered - and they FAIL on every
+    background run under the downgraded license (measured
+    ``sqlerrcode 0A000``, retried forever), while the row-level sweeps
+    defer the aged end to them (the retention-policy floor). Rows older
+    than the dead policies' horizon strand: nothing deletes them. A
+    doctor that renders only the mode's healthy summary ("retention is
+    the row-level sweeps") LIES on this server - the drift arm must name
+    the stranded state, its mechanism, and the honest remedy (restore the
+    license; the policies cannot be removed under apache - every removal
+    API refuses too)."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_APACHE,
+        downgraded_policies=(
+            "policy_retention:job_events",
+            "policy_retention:jobs_archive",
+            "policy_retention:job_attempts_archive",
+            "policy_compression:jobs_archive",
+            "policy_compression:job_attempts_archive",
+        ),
+    )
+
+    result = _invoke()
+
+    assert (
+        "storage mode drift: this server's timescaledb.license is 'apache' but 5 "
+        "TimescaleDB policy job(s) from an earlier timescale-license deployment are "
+        "still registered" in result.output
+    ), result.output
+    # The mechanism, named so the operator believes it: the policies fail on
+    # every run AND the sweeps defer to them - the strand is real, not cosmetic.
+    assert "fail on every" in result.output
+    assert "strand" in result.output
+    # The honest remedy: the license cannot be worked around - the removal
+    # APIs refuse under apache too - so the way out is the license restore.
+    assert "ALTER SYSTEM SET timescaledb.license = 'timescale'" in result.output
+
+
+def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The family's one red arm: the environment's flag says hypertables,
+    the server detects vanilla. That contradiction is not workable - the
+    next ``taskq migrate up`` refuses - so the report names the refusal,
+    the setting, and both remedies."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.VANILLA,
+    )
+    monkeypatch.setenv("TASKQ_TIMESCALEDB_HYPERTABLES", "true")
+
+    result = _invoke()
+
+    assert (
+        "storage mode drift: TASKQ_TIMESCALEDB_HYPERTABLES=true but this server "
+        "detects vanilla" in result.output
+    )
+    assert "TimescaleDBUnavailableError" in result.output
+
+
+def test_doctor_flag_on_tsl_is_no_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The aligned case - flag on, server detects the full TSL mode - is
+    the family's green: the mode line, no drift arm."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_TSL,
+    )
+    monkeypatch.setenv("TASKQ_TIMESCALEDB_HYPERTABLES", "true")
+
+    result = _invoke()
+
+    assert "storage mode: timescale-tsl" in result.output
+    assert "storage mode drift" not in result.output
+
+
+def test_doctor_stays_read_only_with_the_storage_mode_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mode detection rides the report's existing read-only connection
+    and must not add a write to it: the recorded statement log carries no
+    write verb (the detection's probes are catalog reads)."""
+    executed = _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+        storage_mode=StorageMode.TIMESCALE_TSL,
+    )
+
+    result = _invoke()
+
+    assert result.exit_code == 0
+    for statement in executed:
+        lowered = statement.lower()
+        assert not lowered.startswith(_WRITE_VERBS), statement

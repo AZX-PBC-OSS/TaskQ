@@ -112,7 +112,7 @@ async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -
     """THE RED PROOF (red on the shape-only classifier): a loop saturated
     by ``call_soon`` churn is 100% busy scheduling callbacks, but its
     thread sits inside the ZERO-TIMEOUT select ``_run_once`` makes when
-    ready callbacks are queued. Measured on the pre-fix code: 657/658
+    ready callbacks are queued. Measured on the unguarded code: 657/658
     samples read parked (~100% reported idle for a maximally busy loop),
     which falsified the shipped "biases toward busy, never toward idle"
     claim and the docstring's "microseconds wide ... at most one sample"

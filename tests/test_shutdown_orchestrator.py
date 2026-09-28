@@ -1440,7 +1440,7 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
 
     shut_event = asyncio.Event()
 
-    # Why the outer timeout: pre-fix orchestrate_shutdown awaited
+    # Why the outer timeout: unguarded, orchestrate_shutdown awaited
     # leader_conn.close() unbounded, so the RED state would hang forever
     # instead of failing fast.
     async with asyncio.timeout(5):

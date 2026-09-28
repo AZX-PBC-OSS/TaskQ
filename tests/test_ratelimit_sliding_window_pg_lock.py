@@ -358,7 +358,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert any("INSERT INTO" in s and "WITH pruned AS" in s for s in conn.fetched_rows)
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
-        """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
+        """``lock_timeout_ms <= 0`` disables the bound (the unguarded
         behavior), matching the enqueue lock's ``lock_timeout`` GUC
         convention - pinned by contract, not by waiting forever: the
         fast-path try-lock never succeeds on this fake, so only an

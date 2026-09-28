@@ -1280,9 +1280,9 @@ async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
 # close_redis_bounded - the "every TaskQ-initiated close is bounded" claim
 # has no counterexamples. The shrink seam is the same module-global
 # monkeypatch convention as the other teardown tests. Why raising=False on
-# the setattr: pre-fix the module has no CLOSE_TIMEOUT_SECS seam, so the
+# the setattr: unguarded the module has no CLOSE_TIMEOUT_SECS seam, so the
 # RED state must demonstrate the cleanup wedge (outer timeout), not an
-# AttributeError from the shrink. Why the outer asyncio.timeout(5): pre-fix
+# AttributeError from the shrink. Why the outer asyncio.timeout(5): unguarded
 # each path awaited pubsub.aclose() unbounded, so the RED state wedges
 # instead of failing fast.
 

@@ -1788,7 +1788,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     single-job cancel), reclaimed by the production sweep between the
     drain's two arms, behind the pending arm's cursor.
 
-    Doubly lost on the pre-fix code: the budget-first sweep re-pended the
+    Doubly lost on the unguarded code: the budget-first sweep re-pended the
     row 'pending' with the operator's cancel columns WIPED, and
     the re-pended row sat at an id the pending arm had already passed so
     no later arm of the call could see it: the call returned
@@ -1869,7 +1869,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     assert row is not None
     assert row["status"] == "cancelled", (
         "the composition's doubly-lost cancel must land terminal 'cancelled': "
-        "on the pre-fix code this row sat 'pending' with cancel_phase=0 and a "
+        "on the unguarded code this row sat 'pending' with cancel_phase=0 and a "
         "NULL cancel_requested_at, the operator's request erased"
     )
     assert row["cancel_phase"] == 1, "the honored request's audit trail survives"

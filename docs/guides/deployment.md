@@ -14,7 +14,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 ## Production Checklist
 
 - [ ] **Postgres**: dedicated database or schema with `taskq migrate up` applied
-- [ ] **Storage engine**: plain Postgres (the default) or TimescaleDB hypertables, a deliberate per-environment opt-in via `TASKQ_TIMESCALEDB_HYPERTABLES`; if enabled, verify the conversion landed after the first deploy — three hypertables, three retention policies, one chunk (see [Storage engine](#storage-engine-plain-postgres-or-timescaledb))
+- [ ] **Storage engine**: plain Postgres (the default) or TimescaleDB hypertables, a deliberate per-environment opt-in via `TASKQ_TIMESCALEDB_HYPERTABLES`; if enabled, verify the conversion landed after the first deploy — three hypertables, and (on a `timescale-tsl` server only) three retention policies plus one chunk; a `timescale-apache` server converts the hypertables but registers nothing (see [Storage engine](#storage-engine-plain-postgres-or-timescaledb))
 - [ ] **Direct DSN**: `TASKQ_PG_DSN` (or `TASKQ_PG_DSN_DIRECT`) points at Postgres directly, **not** a transaction-mode PgBouncer
 - [ ] **Migrations**: `taskq migrate up` run before workers start (or `TASKQ_MIGRATE_ON_START=true` for the admin UI)
 - [ ] **Worker supervisor**: systemd unit, Docker container, or Kubernetes Deployment
@@ -206,10 +206,21 @@ TaskQ runs on plain Postgres by default, and that is the right default for most 
 
 **The flag** is `TASKQ_TIMESCALEDB_HYPERTABLES` (default `false`), and the `taskq migrate up` deploy step is the only thing that reads it: workers and clients never consult it, and no runtime code path branches on it. The deploy step loads the worker settings model, so the deploy environment and the workers' environment cannot disagree about the retention settings the chunk intervals and policies derive from (`TASKQ_ARCHIVE_RETENTION_PERIOD`, `TASKQ_EVENT_RETENTION_PERIOD`).
 
+**The mode is detected, not declared.** Which of the three first-class storage modes a database actually presents — `vanilla`, `timescale-apache`, or `timescale-tsl` — is detected from the server (the extension catalog, then the extension's `timescaledb.license` setting), never inferred from the flag, and `taskq doctor` leads every report with the detected mode and its capability consequences. The matrix, cited from the detection code (`taskq.timescale.detect_storage_mode` / the branches `enable_hypertables` takes on it):
+
+| Capability | `timescale-tsl` | `timescale-apache` | `vanilla` |
+|---|---|---|---|
+| Hypertables | yes | yes | no — plain tables |
+| Compression (columnstore) | yes, on the two archive tables | no — Timescale-license feature, refused under the license | no |
+| Policy-driven chunk-drop retention | yes — registered per deploy | no — also a Timescale-license feature, refused under the license | no |
+| What retention does instead | row-level sweeps still run inside young chunks; `expire_at` exact only there | row-level sweeps own all of retention (bounded batch deletes, `expire_at` exact everywhere) | row-level sweeps own all of retention (bounded batch deletes, `expire_at` exact everywhere) |
+
 What the deploy does with it:
 
 - **Flag off (the default):** zero new statements — no probe, no extension query, no DDL. Behavior is identical to plain Postgres.
-- **Flag on:** the conversion runs inside the migration advisory lock, after pending migrations apply, and refuses loudly with `TimescaleDBUnavailableError` when the server cannot honor the feature (no extension offered, no privilege to create it, or the extension installed but absent from `shared_preload_libraries`). It is idempotent converging DDL, re-run on every deploy, not a migration in the checksummed ledger — already-converted tables are skipped, changed retention settings are honored on the next deploy.
+- **Flag on:** the conversion runs inside the migration advisory lock, after pending migrations apply, and refuses loudly with `TimescaleDBUnavailableError` when the server cannot honor the feature (no extension offered, no privilege to create it, or the extension installed but absent from `shared_preload_libraries`). It is idempotent converging DDL, re-run on every deploy, not a migration in the checksummed ledger — already-converted tables are skipped, changed retention settings are honored on the next deploy. The detected mode decides what "honored" means: on a `timescale-tsl` server the deploy registers the retention and compression policies; on a `timescale-apache` server (the license set to `apache`, whether by build or by configuration) it converts the hypertables and registers **nothing** — the policies and the columnstore are Timescale-license features the server refuses — and reports the skip in `HypertableReport.policies_skipped` while logging `hypertable-policy-registration-skipped`.
+
+**Mid-life license flips** (both measured on 2.30.1). *Upgrading* `apache` → `timescale` needs nothing special: the schema converted under apache is a plain rowstore hypertable set, and the next `taskq migrate up` under the restored license adopts the full policy set — the schema is not stuck bare. *Downgrading* `timescale` → `apache` is the hazardous direction: the conversion-era policies SURVIVE the downgrade (the license cannot remove them — every policy removal API refuses under apache too) and then fail on every background run, while the row-level sweeps defer the aged end to them — so rows older than the dead policies' horizon strand, silently. The doctor names that state as storage-mode drift with the license-restore remedy, and `taskq migrate disable-hypertables` refuses it loudly rather than swapping tables under a live policy: restore the timescale license (`ALTER SYSTEM SET timescaledb.license = 'timescale'` and reload), re-run `taskq migrate up` to converge, then flip and disable properly.
 
 **Fresh vs mid-life.** A fresh or young schema converts in seconds. On a populated schema the same deploy rewrites what is already there, and the enabling deploy window has three parts to size (the full worksheet is [ops.md §13, "Planning the enabling deploy"](ops.md#planning-the-enabling-deploy)):
 
