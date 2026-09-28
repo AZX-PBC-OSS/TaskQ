@@ -435,6 +435,7 @@ class InMemoryBackend:
         error_message: str | None,
         error_traceback: str | None,
         worker_id: UUID | None,
+        due_at: datetime | None = None,
     ) -> None:
         rows = self._attempts.setdefault(job_id, [])
         # Mirrors the ON CONFLICT (job_id, attempt) DO NOTHING guard every
@@ -466,6 +467,12 @@ class InMemoryBackend:
                 duration_ms=duration_ms,
                 worker_id=worker_id,
                 metadata={},
+                # Mirror of PG's due_at stamp (01.00.20_04): the caller
+                # passes the PRE-write row's scheduled_at - the same
+                # claim-time due time PG's terminal write reads off the
+                # row (or, on a reschedule arm, off its same-snapshot
+                # pre-read).
+                due_at=due_at,
             )
         )
 

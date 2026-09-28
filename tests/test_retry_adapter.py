@@ -213,6 +213,9 @@ async def test_hook_hangs_longer_than_timeout() -> None:
     )
     elapsed = time.monotonic() - start
 
+    # Derived bound: the hook's own timeout is 0.5s; 1.0 s = 2x the budget —
+    # the return lands at the timeout plus loop-turn epsilon, never at the
+    # hook's 999s sleep.
     assert elapsed < 1.0
 
 

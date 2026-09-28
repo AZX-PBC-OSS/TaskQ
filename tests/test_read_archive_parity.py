@@ -115,7 +115,12 @@ def _archived_record(job_id: JobId) -> _Record:
     )
 
 
-def _attempt_records(job_id: JobId) -> list[_Record]:
+def _attempt_records(job_id: JobId, *, due_at: datetime | None = None) -> list[_Record]:
+    """Attempt-history-shaped records covering every column
+    ``_get_attempts`` reads. ``due_at`` defaults to None: a legacy
+    (pre-migration) attempt, whose due time no backfill recovered
+    (01.00.20_04_pre_attempt_due_at.sql); pass the claim-time stamp for a
+    post-migration attempt."""
     started = datetime(2025, 5, 31, tzinfo=UTC)
     return [
         _Record(
@@ -131,6 +136,7 @@ def _attempt_records(job_id: JobId) -> list[_Record]:
                 "duration_ms": 1000,
                 "worker_id": new_uuid(),
                 "metadata": {},
+                "due_at": due_at,
             }
         )
     ]
@@ -161,6 +167,7 @@ async def _seed_archived_job(
     backend: InMemoryBackend,
     *,
     with_attempts: bool = False,
+    due_at: datetime | None = None,
 ) -> JobId:
     """One terminal succeeded job past any retention, moved to the
     archive by the prune simulation, production's route to the archive
@@ -194,7 +201,10 @@ async def _seed_archived_job(
     if with_attempts:
         # The consumer writes the attempt row through the real seam
         # (mark_succeeded writes none), then the pin backdates it with
-        # the job's own finished_at.
+        # the job's own finished_at. due_at rides the write the way
+        # production's writers stamp it: the claim-time scheduled_at
+        # (the job was scheduled at _START and claimed on a clock
+        # parked there).
         await backend.write_attempt(
             AttemptRow(
                 job_id=enqueued.id,
@@ -208,6 +218,7 @@ async def _seed_archived_job(
                 duration_ms=1000,
                 worker_id=worker_id,
                 metadata={},
+                due_at=due_at,
             )
         )
         attempts = await backend.get_attempts(enqueued.id)
@@ -326,16 +337,28 @@ class TestGetAttemptsArchiveFallbackParity:
         job_id = new_job_id()
         pg_conn = _FakeReadConn(
             fetchrow_map={'FROM "taskq".job_attempts WHERE': None},
-            fetch_map={'FROM "taskq".job_attempts_archive': _attempt_records(job_id)},
+            fetch_map={
+                # The archive-tier record is a post-migration attempt: it
+                # carries the claim-time due_at stamp.
+                'FROM "taskq".job_attempts_archive': _attempt_records(job_id, due_at=_START),
+            },
         )
 
         pg_attempts = await _pg_get_attempts(_FakeReadPool(pg_conn), _SQL, job_id)
         mem_backend = _memory_backend()
-        mem_id = await _seed_archived_job(mem_backend, with_attempts=True)
+        mem_id = await _seed_archived_job(mem_backend, with_attempts=True, due_at=_START)
         mem_attempts = await mem_backend.get_attempts(mem_id)
 
         assert [(a.attempt, a.outcome) for a in pg_attempts] == [(1, "succeeded")]
         assert [(a.attempt, a.outcome) for a in mem_attempts] == [(1, "succeeded")]
+        # due_at parity through the archive fallback: the stamp written
+        # on each tier round-trips out of that tier's archived history
+        # unchanged - the twin's prune simulation carries the row's
+        # due_at into _archive_attempts exactly as PG's archive-move CTE
+        # carries the column into job_attempts_archive, and neither read
+        # drops nor fabricates the value.
+        assert [a.due_at for a in pg_attempts] == [_START]
+        assert [a.due_at for a in mem_attempts] == [_START]
 
     async def test_hot_history_answers_without_touching_the_archive_on_both(self) -> None:
         """A live job's history answers from the hot tier on both
@@ -369,6 +392,12 @@ class TestGetAttemptsArchiveFallbackParity:
         ]
         mem_attempts = await mem_backend.get_attempts(enqueued.id)
         assert [(a.attempt, a.outcome) for a in mem_attempts] == [(1, "succeeded")]
+        # Legacy due_at parity: the fixture rows are pre-migration
+        # attempts (no backfill exists), so both tiers answer None -
+        # neither the PG read mapping nor the twin's storage fabricates
+        # a due time for an attempt that never carried one.
+        assert [a.due_at for a in pg_attempts] == [None]
+        assert [a.due_at for a in mem_attempts] == [None]
 
 
 # ── the prune's event cascade ──────────────────────────────────────────

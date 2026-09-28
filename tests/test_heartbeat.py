@@ -2352,3 +2352,109 @@ async def test_heartbeat_tick_reconcile_excludes_held_queued_disowned() -> None:
     assert queued_id not in deps.disowned_jobs
     assert lost_id in deps.disowned_jobs
     _ = deps
+
+
+# ── The windowed stall tally + idle fraction ride the liveness write ──
+
+
+async def test_tick_publishes_windowed_stall_tally_and_idle_fraction() -> None:
+    """One tick publishes BOTH stall views and the drained idle window in
+    the ONE liveness write the tick already issues:
+
+    - ``loop_stalls``: the cumulative counts, unchanged shape - no
+      consumer breaks;
+    - ``loop_stalls_window``: the delta since the previous publish - the
+      per-window stall rate a healed worker shows as an empty map;
+    - ``loop_idle``: the drained idle-fraction window, recorded onto the
+      ``taskq.worker.loop_idle_fraction`` histogram (one sample per
+      window, bounded buckets).
+
+    An empty window (no watchdog samples) publishes no ``loop_idle`` key
+    and records no histogram point."""
+    import json as _json
+
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricReader
+
+    import taskq.worker.heartbeat as hb_mod
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = provider.get_meter("test", "0")
+    idle_hist = meter.create_histogram(
+        "taskq.worker.loop_idle_fraction",
+        explicit_bucket_boundaries_advisory=(0.0, 0.5, 1.0),
+    )
+    saved_hist = hb_mod._loop_idle_fraction
+    hb_mod._loop_idle_fraction = idle_hist
+    try:
+
+        def _seed(deps: WorkerDeps) -> None:
+            # Yesterday's stall, cumulative; then a fresh idle window
+            # with 3 of 4 samples parked (the sampled loop state the
+            # watchdog thread observed).
+            deps.stall_tally.record("send_email", kind="gil_held")
+            deps.stall_tally.metadata_value()  # anchor: first publish
+            for parked in (True, True, True, False):
+                deps.loop_idle.record_sample(parked=parked)
+
+        def _idle_samples() -> list[tuple[int, object]]:
+            """The idle-fraction histogram's bucket totals so far."""
+            md = reader.get_metrics_data()
+            assert md is not None
+            samples: list[tuple[int, object]] = []
+            for rm in md.resource_metrics:
+                for sm in rm.scope_metrics:
+                    for m in sm.metrics:
+                        if m.name != "taskq.worker.loop_idle_fraction":
+                            continue
+                        data = m.data
+                        for p in data.data_points:
+                            if isinstance(p, HistogramDataPoint):
+                                samples.append((sum(p.bucket_counts), p.attributes))
+            return samples
+
+        deps, _shutdown = await _run_tick(deps_hook=_seed)
+
+        liveness_calls = [
+            (sql, args)
+            for sql, args in deps.heartbeat_pool.execute_calls  # type: ignore[union-attr]  # Why: FakePool always has a conn after one tick.
+            if "workers" in sql and "last_seen_at" in sql
+        ]
+        assert liveness_calls, "the tick must write worker liveness"
+        _sql, args = liveness_calls[0]
+        payload = _json.loads(str(args[1]))  # jsonb_param binds the JSON string
+
+        # Cumulative, unchanged shape.
+        assert payload["loop_stalls"] == {"send_email": {"gil_held": 1}}
+        # The windowed view: the delta since the anchor publish is empty
+        # (no new stall), the healed-worker signature.
+        assert payload["loop_stalls_window"]["stalls"] == {}
+        assert payload["loop_stalls_window"]["window_seconds"] >= 0.0
+        # The idle window drained beside the tally.
+        assert payload["loop_idle"]["samples"] == 4
+        assert payload["loop_idle"]["idle_fraction"] == 0.75
+
+        # The histogram: exactly one sample per window, the drained
+        # fraction, no attributes (cardinality discipline).
+        samples = _idle_samples()
+        assert len(samples) == 1
+        count, attrs = samples[0]
+        assert count == 1
+        assert not (attrs or {})
+
+        # The window drained: the NEXT tick (an empty window - no
+        # watchdog ran) publishes no idle key and records no histogram
+        # point.
+        _deps2, _ = await _run_tick()
+        assert _idle_samples() == samples
+        liveness_calls_2 = [
+            (sql, args)
+            for sql, args in _deps2.heartbeat_pool.execute_calls  # type: ignore[union-attr]
+            if "workers" in sql and "last_seen_at" in sql
+        ]
+        _sql2, args2 = liveness_calls_2[0]
+        payload2 = _json.loads(str(args2[1]))
+        assert "loop_idle" not in payload2
+    finally:
+        hb_mod._loop_idle_fraction = saved_hist

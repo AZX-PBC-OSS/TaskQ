@@ -1129,6 +1129,10 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
         # Comfortably under poll_timeout (30s) - proves NOTIFY plus its
         # bounded catch-up poll delivered this, not the poll-timeout
         # fallback alone (which would have taken ~30s).
+        # Derived bound: NOTIFY delivery is sub-second; 6.0 s = 5x that,
+        # while the poll-timeout fallback this must NOT be would cost ~30s
+        # (poll_timeout). The enclosing wait_for(8.0) guard keeps the pin
+        # strictly inside the collection window.
         assert elapsed < 6.0
     finally:
         await tq.close()

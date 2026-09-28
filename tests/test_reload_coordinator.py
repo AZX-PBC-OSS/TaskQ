@@ -23,7 +23,7 @@ from taskq._di.scopes import LoopScope, ProcessScope
 from taskq.auth import PgCredential
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
-from taskq.testing.assertions import wait_for
+from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker._bootstrap import _reload_coordinator_loop
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.shutdown import ShutdownPhase
@@ -272,7 +272,17 @@ async def test_coordinator_skips_reload_during_shutdown_orchestration(
         deps.shutdown_phase = ShutdownPhase.DRAINING
         task = await _run_coordinator(deps, shutdown)
         deps.reload_event.set()
-        await asyncio.sleep(0.1)
+        # Poll-asserted, not a bare sleep: the contract is the DRAINING phase
+        # CONSUMES the reload event (clears it) without awaiting the reload.
+        # 2.0 s = generous loop-turn slack for the coordinator to reach the
+        # consume; the regression this pins (reload awaited during draining,
+        # or the event retried forever) leaves it set, so the poll still
+        # times out red.
+        await wait_for_condition(
+            lambda: not deps.reload_event.is_set(),
+            description="the DRAINING coordinator to consume (clear) the reload event",
+            timeout=2.0,
+        )
 
         mock_reload.assert_not_awaited()
         assert not deps.reload_event.is_set()  # consumed, not retried forever

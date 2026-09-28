@@ -1156,6 +1156,11 @@ async def testresolve_payload_async_factory_resolves_off_the_shared_thread_pool(
         elapsed = time.monotonic() - t0
 
         assert result == {"ok": True}
+        # Derived bound: the factory call must be made directly on the event
+        # loop — a loop turn, microseconds. The enclosing wait_for budget is
+        # 2.0 s; this 1.0 s pin is half of that: if the call were submitted to
+        # the SATURATED thread pool instead, the executor queue wait alone
+        # would consume the full budget and trip this first.
         assert elapsed < 1.0, (
             f"resolving a coroutine-function factory took {elapsed:.2f}s with the "
             "default thread pool saturated -- the factory call is being submitted "
