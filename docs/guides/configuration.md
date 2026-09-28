@@ -469,7 +469,7 @@ These control how long a terminal job stays in the `jobs` table before being mov
 | `TASKQ_PRUNE_RETENTION_CANCELLED` | `timedelta` | `30d` | Retention for `cancelled` jobs. |
 | `TASKQ_PRUNE_RETENTION_ABANDONED` | `timedelta` | `90d` | Retention for `abandoned` and `crashed` jobs. |
 
-Per-actor retention overrides can be set in `actor_config.metadata` as `retention_days` (an integer). When set, an actor's jobs are pruned at `min(retention_days, global_per_status_retention)`. This allows short-lived high-volume actors (e.g. ping jobs) to be pruned faster without affecting the global defaults.
+Per-actor retention overrides can be set in `actor_config.metadata` as `retention_days`. It accepts an integer or ASCII digit string from `0` through `999999999` days, the range supported by Python's `timedelta`; `0` archives terminal jobs on the next prune sweep. Invalid declarations raise immediately. Invalid legacy or manually edited database values are ignored with a warning, so the actor falls back to global retention without stopping the fleet-wide prune. When valid, an actor's jobs are pruned at `min(retention_days, global_per_status_retention)`. This allows short-lived high-volume actors (e.g. ping jobs) to be pruned faster without affecting the global defaults.
 
 #### Archive retention and expiry schedule
 
