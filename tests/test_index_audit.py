@@ -1404,7 +1404,7 @@ async def test_archive_candidate_prepared_statement_stays_index_bounded(
     same-statement executions (the plancache's generic-plan threshold -
     a pooled connection running the daily prune), the plan the next
     execution uses must still seek jobs_finished_at_idx with the range
-    as an Index Cond. Measured pre-fix: the prepared statement keeps a
+    as an Index Cond. Measured unguarded: the prepared statement keeps a
     custom plan whose VOLATILE bound is a Filter over the partial-index
     population, so the defect survives on long-lived connections."""
     schema = prune_audit_schema
@@ -1560,7 +1560,7 @@ async def test_archive_expiry_cte_backlog_is_index_bounded(
     expired, stats refreshed in-transaction, so the pin faces the
     selectivity the production statement plans against. The mutation
     runs inside a transaction the test rolls back, so the shared corpus
-    stays pristine regardless of test order. Measured pre-fix with fresh
+    stays pristine regardless of test order. Measured unguarded with fresh
     backlog stats: the VOLATILE bound seq-scans the whole archive table
     under a Filter; the STABLE bound is a Bitmap Index Scan whose Index
     Cond carries the range (the bitmap pays only a top-N sort of the

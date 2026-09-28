@@ -29,6 +29,13 @@ else in the worker grows a health responsibility:
 - Detector 3 lives in the sibling spawner
   (:func:`_make_sibling_spawner`): a sibling returning cleanly while
   ``shutdown_event`` is clear is a contract violation and is re-raised.
+- The stall-attribution sidecar (:mod:`taskq.worker._stall_tally`'s
+  :class:`~taskq.worker._stall_tally.StallAttributionTally` and
+  :class:`~taskq.worker._stall_tally.LoopIdleWindow`, wired through
+  :class:`LoopLiveness`): the loop thread records what it was doing
+  when a beat ran long (a blocking call, the GIL held), and the
+  watchdog's stale-tick report reads the tally so the alert names a
+  remedy, not just a delay.
 
 Trip semantics (:func:`trip`): critical log + metric, dump, flush, then
 ``os._exit(EXIT_WATCHDOG)`` with no further awaits, a wedged process

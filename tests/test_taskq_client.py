@@ -330,7 +330,7 @@ class TestCloseBounded:
         # Owned pool: dsn mode → _owns_pool is True, so close() must close it.
         tq._pool = cast(asyncpg.Pool, fake_pool)
 
-        # Why the outer timeout: pre-fix close() awaits pool.close()
+        # Why the outer timeout: unguarded, close() awaits pool.close()
         # unbounded, so the RED state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):

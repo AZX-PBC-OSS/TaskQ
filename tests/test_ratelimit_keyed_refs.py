@@ -612,7 +612,7 @@ async def test_eviction_reclaims_the_denial_retry_release_wake_event(
     calls after a ``ReservationUnavailable``), and every distinct keyed name
     that ever denied creates one. The event must ride the keyed lifecycle:
     eviction pops it with the same idle criterion, so N deny-evict cycles
-    leave the dict at its baseline - pre-fix every cycle left an
+    leave the dict at its baseline - unguarded every cycle leaves an
     asyncio.Event behind forever, unbounded in the caller-controlled key
     space (the same class the registry-entry and slot-row reclamation
     closed). A waiter holding a popped object is never stranded: the

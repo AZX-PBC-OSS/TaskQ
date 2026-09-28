@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,18 @@ PROMTOOL_IMAGE = "prom/prometheus:v3.7.2"
 #: TASKQ_* variable would change which exporter wiring branch runs (the
 #: documented quick-start sets neither; the probe sets its own TASKQ_*).
 _SCRUBBED_ENV_PREFIXES = ("OTEL_", "TASKQ_")
+
+
+def _free_tcp_port() -> int:
+    """Reserve an ephemeral port by binding once and closing; the probe
+    subprocess re-binds it moments later. The old hard-coded 19464/19465
+    collided whenever pytest-xdist split the review module across two
+    workers - both workers' probes raced the same fixed port and the
+    loser died in OTEL exporter init (EADDRINUSE) - so every probe now
+    allocates its own port."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def probe_env(**extra: str) -> dict[str, str]:
@@ -352,8 +365,9 @@ async def _scrape_port() -> str:
 async def _dump(tag: str) -> None:
     if tag == "FOLLOWER":
         # The follower mounts no bridge router: its exposition is its
-        # own TASKQ_METRICS_PORT pull listener (port 19465).
-        text = await _fetch_port(19465)
+        # own TASKQ_METRICS_PORT pull listener (the port the parent
+        # probe allocated for it).
+        text = await _fetch_port(int(os.environ["PROBE_FOLLOWER_METRICS_PORT"]))
         with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
             fh.write(text)
         print(f"SCRAPED:{tag}:port={len(text)}", flush=True)
@@ -449,7 +463,7 @@ async def _run() -> None:
         await asyncio.sleep(window - 15)
         follower_env = dict(os.environ)
         follower_env["PROBE_FOLLOWER"] = "1"
-        follower_env["TASKQ_METRICS_PORT"] = "19465"
+        follower_env["TASKQ_METRICS_PORT"] = os.environ["PROBE_FOLLOWER_METRICS_PORT"]
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             str(PROBE_DIR + "/probe_worker.py"),
@@ -754,11 +768,14 @@ def run_worker_probe(
     ``LIVE``/``FINAL``, each the bridge router's served text."""
     _write_probe_scripts(workdir)
     _migrate_schema(pg_dsn, schema)
+    metrics_port = _free_tcp_port()
+    follower_port = _free_tcp_port()
     env = probe_env(
         PROBE_PG_DSN=pg_dsn,
         PROBE_SCHEMA=schema,
         PROBE_DIR=str(workdir),
-        PROBE_METRICS_PORT="19464",
+        PROBE_METRICS_PORT=str(metrics_port),
+        PROBE_FOLLOWER_METRICS_PORT=str(follower_port),
         PROBE_SCRAPE_PATH=str(workdir / "scrape.txt"),
         PROBE_WORKER_SECS=str(worker_secs),
         TASKQ_PG_DSN=pg_dsn,
@@ -777,7 +794,12 @@ def run_worker_probe(
         # them - the fourth defers.
         TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT="2",
         TASKQ_REDIS_URL="redis://127.0.0.1:15999/0",
-        TASKQ_METRICS_PORT="19464",
+        TASKQ_METRICS_PORT=str(metrics_port),
+        # The OTEL pull reader binds settings.metrics_port; pin the SDK's
+        # own variable to the same allocated port so no code path can
+        # fall back to the well-known default 9464 and race another
+        # process for it.
+        OTEL_EXPORTER_PROMETHEUS_PORT=str(metrics_port),
         TASKQ_LOG_LEVEL="WARNING",
     )
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
@@ -822,11 +844,12 @@ def run_hostile_probe(
     (mid_chaos_scrape, post_recovery_scrape)."""
     _write_probe_scripts(workdir)
     _migrate_schema(pg_dsn, schema)
+    hostile_port = _free_tcp_port()
     env = probe_env(
         PROBE_PG_DSN=pg_dsn,
         PROBE_SCHEMA=schema,
         PROBE_DIR=str(workdir),
-        PROBE_METRICS_PORT="19465",
+        PROBE_METRICS_PORT=str(hostile_port),
         PROBE_SCRAPE_PATH=str(workdir / "hostile_scrape.txt"),
         PROBE_WORKER_SECS=str(worker_secs),
         TASKQ_PG_DSN=pg_dsn,
@@ -838,7 +861,8 @@ def run_hostile_probe(
         # the docstring's own "if misses continue, the worker will
         # self-isolate" contract. The assertion is that the miss counter
         # (the alert's operand) moved and OUTLIVED the isolate.
-        TASKQ_METRICS_PORT="19465",
+        TASKQ_METRICS_PORT=str(hostile_port),
+        OTEL_EXPORTER_PROMETHEUS_PORT=str(hostile_port),
         TASKQ_LOG_LEVEL="WARNING",
     )
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.

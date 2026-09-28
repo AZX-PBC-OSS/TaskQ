@@ -45,7 +45,7 @@ the identical gap - and whose raw NULL stamp would additionally violate
 ``job_attempts.started_at NOT NULL`` on the refunded shape, aborting the
 whole isolation transaction.
 
-THE FENCE'S GAP, precisely (worker/heartbeat.py, pre-fix): the terminal
+THE FENCE'S GAP, precisely (worker/heartbeat.py, unguarded): the terminal
 writes are airtight - their JOB_FENCE carries ``attempt = $k`` AND
 ``claim_epoch = $m`` and every dispatch claim bumps the epoch
 (backend/_dispatch_sql.py's ``claim_epoch = j.claim_epoch + 1``), so a
@@ -251,7 +251,7 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
     #    attempt row: the refunded epoch carries no standing claim (the
     #    un-stamped started_at is the durable void marker), and a crashed
     #    row at that number would permanentise an epoch the counter no
-    #    longer carries. Pre-fix, the reclaim's batched INSERT writes the
+    #    longer carries. Unguarded, the reclaim's batched INSERT writes the
     #    phantom row (job_id, 0, 'crashed') with a fabricated clock stamp.
     await _age_lock_expiry(clean_pg_conn, schema, job_id)
     count = await PostgresBackend.sweep_expired_locks(
@@ -402,13 +402,14 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
 ) -> None:
     """The isolate leg, end to end through the REAL ``isolate_self``: the
     refund has ALREADY de-charged the row when the isolate's SELECT runs
-    (attempt 0, started_at NULL). Pre-fix the arbiter still won the
-    transition (its WHERE: id + running + holder, all left true by the
-    refund) and the attempt INSERT bound the refunded state raw -
+    (attempt 0, started_at NULL). An arbiter judging only
+    its WHERE (id + running + holder, all left true by the
+    refund) still wins the
+    transition and the attempt INSERT binds the refunded state raw -
     a phantom row at the refunded number, or the NotNullViolation the
     NULL stamp raises on job_attempts.started_at, either way the
-    isolation transaction aborts. Post-fix the arbiter's RETURNING (the
-    standing-claim fence's source of truth) shows the un-stamped row and
+    isolation transaction aborts. The standing-claim fence's arbiter RETURNING (the
+    source of truth) shows the un-stamped row and
     the INSERT is skipped: the ledger stays empty, the re-pend stands
     (sweep parity - the sweep's fenced reclaim re-pends the same shape),
     and the lineage closes at the soak's invariant after the re-claim."""
@@ -508,7 +509,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
     isolate's SELECT and its arbiter UPDATE. The SELECT takes no row
     lock, so the reconcile's refund (the same worker's heartbeat pool,
     the shutdown drain's refund arm) serialises right there; the
-    pre-fix arbiter - fenced on (id, running, holder), every conjunct of
+    unguarded arbiter - fenced on (id, running, holder), every conjunct of
     which the refund leaves TRUE - then won the transition on the
     de-charged row and the INSERT minted the SNAPSHOT's epoch (attempt 1,
     stamped) AFTER the refund rolled the counter to 0. The next claim
@@ -518,7 +519,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
     Frozen with a held row lock: the holder's uncommitted FOR UPDATE
     parks the arbiter AFTER the snapshot is taken; the refund commits
     inside that window; the COMMIT releases the arbiter onto the REFUNDED
-    row version. Post-fix the arbiter's RETURNING exposes the un-stamped
+    row version. The arbiter's RETURNING exposes the un-stamped
     row and no attempt row is recorded; a fence that read the SNAPSHOT
     (whose stamp is non-NULL here) could not see the refund and would
     still mint the phantom."""
@@ -541,7 +542,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
 
             # 2. The snapshot, taken exactly as _inner takes it (the real
             #    rendered SELECT): attempt 1, stamp PRESENT - the stale view
-            #    the pre-fix INSERT bound.
+            #    the unguarded INSERT bound.
             snapshot = await conn.fetch(
                 _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema),
                 worker_id,
@@ -584,7 +585,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
 
             # 6. THE FENCE: the arbiter won (the re-pend stands - sweep
             #    parity), but the attempt INSERT read the RETURNING - the
-            #    refunded, un-stamped row - and recorded NOTHING. Pre-fix
+            #    refunded, un-stamped row - and recorded NOTHING. Unguarded
             #    the phantom (job, 1, 'crashed') stands here: the snapshot's
             #    epoch, minted after the refund.
             row = await _job_row(conn, schema, job_id)

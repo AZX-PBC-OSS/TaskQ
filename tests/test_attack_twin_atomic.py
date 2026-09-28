@@ -86,7 +86,7 @@ async def assert_dedup_contract(backend: InMemoryBackend, context: str) -> None:
     Every live keyed row is the UNIQUE dedup target of its pair: a
     same-actor re-enqueue of the pair returns THAT row's id, the
     returned handle still resolves, and the probe stores nothing new.
-    A dangling index entry (the pre-fix defect) makes the probe resolve
+    A dangling index entry (the unguarded defect) makes the probe resolve
     to a phantom or write a second row for the pair - both caught here.
     """
     before = await stored_ids(backend)
