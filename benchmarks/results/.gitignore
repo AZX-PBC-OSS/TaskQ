@@ -12,3 +12,6 @@
 !backlog-rss-soak.json
 !loglevel-cpu-delta.json
 !loglevel-cpu-delta.md
+!batch-hotspot.md
+!batch-hotspot-main-2000j-8c.json
+!batch-hotspot-fix-2000j-8c.json

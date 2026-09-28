@@ -1431,12 +1431,35 @@ class PostgresBackend:
         batch_id: UUID,
         *,
         connection: ConnLike | None = None,
-    ) -> None:
+    ) -> bool:
+        """Arbitrate the batch's completion; return whether the caller owes
+        the batch one post-commit completion re-arbitration.
+
+        The reissue is owed ONLY on the transactional-caller shape: the
+        attempt gated out at the tail-shape probe while riding
+        *connection*'s still-open transaction, so the caller's own
+        terminal write is uncommitted and no attempt inside that
+        transaction can ever be ordered after its commit. Without the
+        reissue a burst-shaped drain (every member's gate probe sees more
+        open members than the tail bound -- a 17+-member batch whose
+        terminal writes overlap) or a writer whose commit outlives every
+        peer's completion statement leaves the all-terminal batch
+        'active' with no attempt left to land -- the lost-wakeup hole the
+        counter reset's old unconditional row write papered over. The
+        caller honors it by calling ``complete_batch(batch_id)`` again
+        (no ``connection=``) after its transaction has ended: that
+        attempt's snapshot postdates every commit, its probe sees zero
+        open members, and it lands. Autonomous callers (no open
+        transaction -- the consumer's hook runs after
+        ``consume_one_job``'s transaction has committed) are never
+        ordered behind their own commit, so they are never owed one.
+        """
         if connection is not None:
-            await _complete_batch(connection, self._batch_sql, batch_id)
-        else:
-            async with _bounded_checkout(self._worker_pool, "complete_batch") as conn:
-                await _complete_batch(conn, self._batch_sql, batch_id)
+            arbitrated = await _complete_batch(connection, self._batch_sql, batch_id)
+            return not arbitrated and connection.is_in_transaction()
+        async with _bounded_checkout(self._worker_pool, "complete_batch") as conn:
+            await _complete_batch(conn, self._batch_sql, batch_id)
+            return False
 
     async def get_batch(self, batch_id: UUID) -> BatchRow | None:
         async with _bounded_checkout(self._worker_pool, "get_batch") as conn:

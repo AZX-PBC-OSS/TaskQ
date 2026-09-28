@@ -372,9 +372,21 @@ async def apply_batch_terminal_outcome(
     outcome: AttemptOutcome | Literal["noop"],
     *,
     transaction_conn: "ConnLike | None" = None,
-) -> None:
+) -> bool:
     """Apply batch policy after a job reaches a terminal write.
 
+    Returns whether the CALLER owes the batch one post-commit completion
+    re-arbitration (``backend.complete_batch(batch_id)`` with no
+    ``connection=``): ``True`` only when the completion attempt gated out
+    at its tail-shape probe while riding *transaction_conn*'s still-open
+    transaction -- a gated attempt is not ordered against the caller's
+    own commit, so without the reissue an all-terminal batch can be left
+    'active' with no attempt left to land. The reissue is one awaited
+    call after the transaction ends, best-effort (M7): dropping it
+    delays the batch's completion to the leader's stale-batch sweep.
+    Autonomous callers (no open transaction -- the consumer's hook runs
+    after ``consume_one_job``'s transaction has committed) always get
+    ``False`` and owe nothing.
     Called after every terminal write by the consumer and the in-memory
     runner.  For non-batched jobs (no ``metadata.batch_id``) this returns
     immediately, zero overhead.  *outcome* is the dispatch outcome the
@@ -383,7 +395,12 @@ async def apply_batch_terminal_outcome(
     dispatch's to move, so no batch counter may budge).
 
     - ``"succeeded"``: resets the consecutive-failure counter and
-      attempts completion.
+      attempts completion. The reset carries a ``consecutive_failures
+      <> 0`` guard: a batch whose counter is already 0 - the healthy
+      steady state every successful job of the batch pays - is not
+      written, so the batches row is not locked and the member probe
+      does not run; the failure-counter contract is unchanged, a
+      non-zero counter resets exactly as before.
     - ``"failed"``: increments the consecutive-failure counter.  If the
       threshold is reached, aborts the batch and logs ``batch-aborted``
      , abort wins, so no completion attempt runs on that path.  The
@@ -427,11 +444,11 @@ async def apply_batch_terminal_outcome(
     """
     raw_bid = job.metadata.get("batch_id")
     if raw_bid is None:
-        return
+        return False
     batch_id = UUID(str(raw_bid))
 
     if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled", "noop"):
-        return
+        return False
 
     if outcome == "succeeded":
         await backend.reset_batch_failures(batch_id, connection=transaction_conn)
@@ -439,9 +456,10 @@ async def apply_batch_terminal_outcome(
         # the completion decision, see the docstring's self-arbitrating
         # paragraph. complete_batch re-checks membership in its own
         # statement, so the optimistic attempt can delay but never
-        # complete prematurely.
-        await backend.complete_batch(batch_id, connection=transaction_conn)
-        return
+        # complete prematurely. (When the counter was already 0 the
+        # guarded reset writes nothing and returns 0; the completion
+        # attempt below is unaffected either way.)
+        return await backend.complete_batch(batch_id, connection=transaction_conn)
 
     if outcome == "failed":
         count, threshold, _remaining = await backend.increment_batch_failures(
@@ -459,15 +477,13 @@ async def apply_batch_terminal_outcome(
             # Abort wins over complete: the completion attempt is the
             # fall-through below this return, so an aborted batch is
             # never also completed from this hook call.
-            return
-        await backend.complete_batch(batch_id, connection=transaction_conn)
-        return
+            return False
+        return await backend.complete_batch(batch_id, connection=transaction_conn)
 
     # outcome is "cancelled" or "crashed", the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
     if outcome in ("cancelled", "crashed"):
-        await backend.complete_batch(batch_id, connection=transaction_conn)
-        return
+        return await backend.complete_batch(batch_id, connection=transaction_conn)
 
     assert_never(outcome)
 
