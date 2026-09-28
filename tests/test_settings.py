@@ -573,6 +573,24 @@ def test_rate_limit_pg_fallback_enabled_default() -> None:
     assert s.rate_limit_pg_fallback_enabled is True
 
 
+def test_watchdog_enabled_default_is_the_production_shape() -> None:
+    """watchdog_enabled defaults to True - the shipped production shape.
+
+    This default is LOAD-BEARING across a deliberate split: the system-e2e
+    partition harness runs its workers with the watchdog DISABLED
+    (``_BASE_ENV``'s ``TASKQ_WATCHDOG_ENABLED: "false"``, so routine
+    lifecycle scenarios never trip a detector), and the partition
+    campaign's isolate-exit cell re-arms it explicitly to pin the
+    force-exit contract on the real wire. Neither side depends on this
+    field default - which is exactly why it can drift silently: flip it
+    to False and every test stays green while production workers lose
+    the force-exit that bounds a wedged teardown (the never-exits
+    finding). This pin is the tripwire.
+    """
+    s = _load()
+    assert s.watchdog_enabled is True
+
+
 def test_rate_limit_pg_fallback_enabled_false_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED=false produces False."""
     monkeypatch.setenv("TASKQ_PG_DSN", _DSN)

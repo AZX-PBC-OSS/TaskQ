@@ -205,7 +205,28 @@ extension module, which links only against base glibc (`libc`, `libm`,
 `libpthread`, `librt`), nothing `libxmlsec1`/`libxml2`/`libssl`-related.
 **No system package installation is required** to install or run
 `taskq[saml]` on any of these platforms: a plain `uv add "taskq[saml]"`
-(or `pip install`) is sufficient, no Dockerfile changes needed.
+(or `pip install`) into your application environment is sufficient, no
+system packages and no base-image rebuild needed.
+
+> **Container installs**: the production image ships **no pip and no uv**
+> (both are removed at build time — see the Dockerfile's runtime stage), so
+> `pip install taskq[saml]` inside a `taskq-worker`-based container fails
+> with `pip: not found`. Extras must be added by your extending Dockerfile.
+> Note the build inherits the image's non-root `USER`, so the install step
+> needs `USER root` and an out-of-`$HOME` uv cache (`/app` is root-owned):
+>
+> ```dockerfile
+> FROM taskq-worker        # this repo's Dockerfile, as built by CI
+> USER root
+> COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /usr/local/bin/uv
+> RUN UV_CACHE_DIR=/tmp/uv-cache uv pip install --python /app/.venv/bin/python "taskq-py[saml]"
+> USER taskq
+> COPY myapp/ myapp/
+> CMD ["taskq", "worker", "--actors", "myapp.actors:registry"]
+> ```
+>
+> (The published distribution is `taskq-py`; `taskq[saml]` on PyPI resolves
+> to an unrelated package with no `saml` extra.)
 
 The one case that still needs system build dependencies is an **unsupported
 platform/architecture with no matching prebuilt wheel** (e.g. a niche or very

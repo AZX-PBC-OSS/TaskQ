@@ -11,6 +11,14 @@ bucket whose ts/TAT/score was written by the OTHER store's clock, so the
 recovering store's window math folds the skew in - behind, a phantom
 refill (the double-spend window); ahead, a wedge (the permanent denial).
 
+Broker tenancy: every Redis-side pin here takes ``private_redis_url`` - a
+per-test disposable Dragonfly, never the shared pair. The skew proxy is a
+test-local TCP front whose upstream is THE test's own broker; fronting the
+shared pair would chain every co-tenant's stall band through hand-rolled
+proxy plumbing and expose the pins' default redis-py 8 socket budgets
+(5s) to latency they do not assert on. A private broker ends the class by
+construction - see ``taskq.testing.fixtures.redis_url``'s tenancy contract.
+
 Harness: :class:`tests._redis_time_skew_proxy.RedisTimeSkewProxy` shifts
 the client-visible ``TIME`` reply by +/-2 min against the real PG; the
 Lua-side ``TIME`` is server-internal and a proxy cannot reach it, so
@@ -99,9 +107,9 @@ def _pg_settings(schema: ModulePgSchema) -> WorkerSettings:
     )
 
 
-def _redis_settings(redis_url: str, schema_name: str) -> WorkerSettings:
+def _redis_settings(broker_url: str, schema_name: str) -> WorkerSettings:
     return WorkerSettings.load_from_dict(
-        {"pg_dsn": "postgresql://u:p@h/d", "redis_url": redis_url, "schema_name": schema_name},
+        {"pg_dsn": "postgresql://u:p@h/d", "redis_url": broker_url, "schema_name": schema_name},
     )
 
 
@@ -117,13 +125,13 @@ async def _redis_epoch_s(client: redis_async.Redis) -> float:
 # ── Harness validity: the proxy skews TIME and nothing else ──────────
 
 
-async def test_skew_proxy_shifts_time_and_forwards_everything_else(redis_url: str) -> None:
+async def test_skew_proxy_shifts_time_and_forwards_everything_else(private_redis_url: str) -> None:
     """The harness pin: through the proxy, ``TIME`` is shifted by exactly
     the offset, while an HMGET reply that is structurally identical to a
     TIME reply (two numeric bulk strings) and an EVAL return pass through
     untouched. A proxy that rewrote either would fake the peek pins below."""
-    direct = redis_async.from_url(redis_url, decode_responses=False)
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
     proxy = RedisTimeSkewProxy(
         upstream_host, upstream_port, skew_seconds=_SKEW_S, upstream_db=upstream_db
     )
@@ -150,19 +158,21 @@ async def test_skew_proxy_shifts_time_and_forwards_everything_else(redis_url: st
 # ── Wire-level acquire pins: client-visible TIME skew cannot flip an admission ──
 
 
-async def test_token_bucket_acquire_ignores_client_visible_time_skew(redis_url: str) -> None:
+async def test_token_bucket_acquire_ignores_client_visible_time_skew(
+    private_redis_url: str,
+) -> None:
     """capacity=2, refill=0.01/s. Drain the bucket, then acquire 1.1 tokens
     through a client whose TIME is +2 min. The script measures elapsed with
     the SERVER's own TIME (a proxy cannot reach it): ~0 s have passed, the
     1.1-token acquire is DENIED. A client-supplied-now acquire (the shape
     the C8 doctrine removed, whose now reads TIME client-side and passes
     ARGV) would see 120 s of elapsed = 1.2 phantom tokens and ADMIT."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"tb_wire_{new_base62()}"
     bucket = TokenBucket(name=name, capacity=2.0, refill_per_second=0.01, backend="redis")
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
     proxy = RedisTimeSkewProxy(
         upstream_host, upstream_port, skew_seconds=_SKEW_S, upstream_db=upstream_db
     )
@@ -187,21 +197,21 @@ async def test_token_bucket_acquire_ignores_client_visible_time_skew(redis_url: 
 
 
 async def test_sliding_window_log_acquire_ignores_client_visible_time_skew(
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """limit=1/60s. The first admission is logged, then a second acquire
     rides a +2 min TIME-skewed client: the script's ZREMRANGEBYSCORE runs
     on the server's clock, the logged entry survives, DENIED. A
     client-supplied now would put the cutoff 60 s past the entry and
     evict it outright (admitted)."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"swlog_wire_{new_base62()}"
     window = SlidingWindow(
         name=name, limit=1, window=timedelta(seconds=60), backend="redis", style="log"
     )
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
     proxy = RedisTimeSkewProxy(
         upstream_host, upstream_port, skew_seconds=_SKEW_S, upstream_db=upstream_db
     )
@@ -223,21 +233,21 @@ async def test_sliding_window_log_acquire_ignores_client_visible_time_skew(
 
 
 async def test_sliding_window_gcra_acquire_ignores_client_visible_time_skew(
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """limit=2/60s (emission 30 s). Two admissions burn the burst; a third
     through a +2 min TIME-skewed client must be DENIED - the script clamps
     the TAT with the server's clock. A client-supplied now would shove the
     TAT (and allow_at with it) 120 s into the future of the skewed clock
     and admit the third cell immediately."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"swgcra_wire_{new_base62()}"
     window = SlidingWindow(
         name=name, limit=2, window=timedelta(seconds=60), backend="redis", style="gcra"
     )
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
     proxy = RedisTimeSkewProxy(
         upstream_host, upstream_port, skew_seconds=_SKEW_S, upstream_db=upstream_db
     )
@@ -262,7 +272,7 @@ async def test_sliding_window_gcra_acquire_ignores_client_visible_time_skew(
 
 
 async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """The log peek's AHEAD direction measures the store clock the CLIENT
     sees (the only clock it can read): one admission is logged, then the
@@ -282,18 +292,18 @@ async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
     fails closed. A Python-clock peek in the same scenario sees the entry
     in-window (exhausted, ~60 s hint, no raise), so the raise itself
     discriminates the store-clock read."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"swlog_peek_{new_base62()}"
     window = SlidingWindow(
         name=name, limit=1, window=timedelta(seconds=60), backend="redis", style="log"
     )
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     first = await window.acquire(redis_client=direct, clock=SystemClock(), settings=settings)
     assert first.allowed
     await direct.aclose()
 
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
 
     async def peek_through(skew: int) -> RateLimitState:
         proxy = RedisTimeSkewProxy(
@@ -321,7 +331,7 @@ async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
 
 
 async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """The GCRA peek's TAT/now arithmetic runs on the store clock the
     CLIENT sees. One admission advances the TAT half a window, then the
@@ -330,18 +340,18 @@ async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
     TAT ahead of now (exhausted, hint ~2 min). An unskewed peek is NOT
     exhausted (1 cell of headroom), so a peek reading a Python clock fails
     the +2 min direction."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"swgcra_peek_{new_base62()}"
     window = SlidingWindow(
         name=name, limit=2, window=timedelta(seconds=60), backend="redis", style="gcra"
     )
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     first = await window.acquire(redis_client=direct, clock=SystemClock(), settings=settings)
     assert first.allowed
     await direct.aclose()
 
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
 
     async def peek_through(skew: int) -> RateLimitState:
         proxy = RedisTimeSkewProxy(
@@ -376,7 +386,7 @@ async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
 
 
 async def test_token_bucket_peek_measures_the_client_visible_store_clock(
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """The peek's elapsed runs on the store clock the CLIENT sees (the only
     clock it can read). Drain the bucket, then peek through +/-2 min TIME
@@ -384,18 +394,18 @@ async def test_token_bucket_peek_measures_the_client_visible_store_clock(
     safely under capacity), -2 min clamps to zero elapsed (the max(0,
     elapsed) guard: a stamp in the peek's future must not produce negative
     tokens, the double-spend direction of a backward clock)."""
-    settings = _redis_settings(redis_url, "taskq_fallback_clock")
+    settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"tb_peek_{new_base62()}"
     bucket = TokenBucket(name=name, capacity=2.0, refill_per_second=0.005, backend="redis")
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     drained = await bucket.acquire(
         count=2.0, redis_client=direct, clock=SystemClock(), settings=settings
     )
     assert drained.allowed
     await direct.aclose()
 
-    upstream_host, upstream_port, upstream_db = _upstream_of(redis_url)
+    upstream_host, upstream_port, upstream_db = _upstream_of(private_redis_url)
 
     async def peek_through(skew: int) -> float:
         proxy = RedisTimeSkewProxy(
@@ -420,10 +430,10 @@ async def test_token_bucket_peek_measures_the_client_visible_store_clock(
     )
 
 
-def _upstream_of(redis_url: str) -> tuple[str, int, int]:
+def _upstream_of(broker_url: str) -> tuple[str, int, int]:
     from urllib.parse import urlparse
 
-    parsed = urlparse(redis_url)
+    parsed = urlparse(broker_url)
     db = int(parsed.path.strip("/") or 0)
     return parsed.hostname or "127.0.0.1", parsed.port or 6379, db
 
@@ -435,7 +445,7 @@ def _upstream_of(redis_url: str) -> tuple[str, int, int]:
 async def test_pg_fallback_token_bucket_stamps_fresh_in_pg_domain(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
     poison_s: int,
 ) -> None:
     """A fixed-quota bucket spends its token in Redis; the outage lands the
@@ -448,7 +458,7 @@ async def test_pg_fallback_token_bucket_stamps_fresh_in_pg_domain(
     schema = module_pg_schema.schema_name
     name = f"tb_fb_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         healthy = TokenBucket(name=name, capacity=1.0, refill_per_second=0.0, backend="redis")
         spent = await healthy.acquire(
@@ -497,7 +507,7 @@ async def test_pg_fallback_token_bucket_stamps_fresh_in_pg_domain(
 async def test_pg_fallback_gcra_stamps_fresh_in_pg_domain(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
     poison_s: int,
 ) -> None:
     """GCRA twin: the Redis TAT is poisoned +/-2 min before the fallback;
@@ -508,7 +518,7 @@ async def test_pg_fallback_gcra_stamps_fresh_in_pg_domain(
     schema = module_pg_schema.schema_name
     name = f"gcra_fb_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         healthy = SlidingWindow(
             name=name, limit=1, window=timedelta(seconds=60), backend="redis", style="gcra"
@@ -555,7 +565,7 @@ async def test_pg_fallback_gcra_stamps_fresh_in_pg_domain(
 async def test_pg_fallback_log_window_stamps_fresh_in_pg_domain(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """Log-style twin: the Redis zset holds an entry stamped +2 min AHEAD
     (the would-be wedge direction) when the outage lands. The PG recovery
@@ -566,7 +576,7 @@ async def test_pg_fallback_log_window_stamps_fresh_in_pg_domain(
     schema = module_pg_schema.schema_name
     name = f"swlog_fb_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         healthy = SlidingWindow(
             name=name, limit=1, window=timedelta(seconds=60), backend="redis", style="log"
@@ -613,7 +623,7 @@ async def test_pg_fallback_log_window_stamps_fresh_in_pg_domain(
 async def test_failover_back_token_bucket_ignores_the_pg_row(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """The outage wrote PG-domain state; the row is then POISONED with a
     ts +2 min ahead of the PG clock (the residue a skewed failover leaves).
@@ -624,7 +634,7 @@ async def test_failover_back_token_bucket_ignores_the_pg_row(
     schema = module_pg_schema.schema_name
     name = f"tb_back_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         # 1. The outage fallback writes the PG row.
         outaged = TokenBucket(name=name, capacity=2.0, refill_per_second=0.0, backend="redis")
@@ -684,7 +694,7 @@ async def test_failover_back_token_bucket_ignores_the_pg_row(
 async def test_failover_back_gcra_ignores_the_pg_row(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
     poison_s: int,
 ) -> None:
     """GCRA twin, both directions: a PG-row TAT +2 min ahead (the wedge
@@ -695,7 +705,7 @@ async def test_failover_back_gcra_ignores_the_pg_row(
     schema = module_pg_schema.schema_name
     name = f"gcra_back_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         outaged = SlidingWindow(
             name=name, limit=2, window=timedelta(seconds=60), backend="redis", style="gcra"
@@ -748,7 +758,7 @@ async def test_failover_back_gcra_ignores_the_pg_row(
 async def test_failover_back_log_window_ignores_the_pg_entries(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """Log-style twin: the outage's PG window entry is stamped +2 min AHEAD
     (the wedge direction). The Redis recovery admits from its own zset and
@@ -757,7 +767,7 @@ async def test_failover_back_log_window_ignores_the_pg_entries(
     schema = module_pg_schema.schema_name
     name = f"swlog_back_{new_base62()}"
 
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         outaged = SlidingWindow(
             name=name, limit=2, window=timedelta(seconds=60), backend="redis", style="log"
@@ -808,7 +818,7 @@ async def test_failover_back_log_window_ignores_the_pg_entries(
 async def test_persisted_stamps_are_epoch_scale_never_monotonic(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """``time.monotonic()``/``loop.time()`` values are meaningless to the
     other backend and to a restarted process (uptime-scale, not epoch).
@@ -840,7 +850,7 @@ async def test_persisted_stamps_are_epoch_scale_never_monotonic(
     tb_r = TokenBucket(
         name=f"tb_ep_r_{new_base62()}", capacity=2.0, refill_per_second=0.01, backend="redis"
     )
-    direct = redis_async.from_url(redis_url, decode_responses=False)
+    direct = redis_async.from_url(private_redis_url, decode_responses=False)
     try:
         assert (
             await tb_r.acquire(count=1.0, redis_client=direct, clock=clock, settings=settings)

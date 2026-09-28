@@ -267,6 +267,7 @@ def reset_otel_gauge_caches() -> None:
     otel_mod._running_lease_expired_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._heartbeat_consecutive_failures_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._disabled_schedules_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._cron_slots_behind_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above - the slots-behind gauge's per-actor depth cache is process state a cron-driving test must not leave behind.
     otel_mod._slot_pool_occupancy_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._worker_capacity_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._jobs_running_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.

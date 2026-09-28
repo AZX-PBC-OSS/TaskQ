@@ -5,6 +5,14 @@ The scripts derive now from redis TIME (the store's clock), so every
 wait/elapsed scenario below uses REAL time - a FakeClock advance is
 invisible to the store.
 
+Broker tenancy (see ``taskq.testing.fixtures.redis_url``'s contract): every
+test here is a SHARED-PAIR tenant - each gets its own unique logical DB, its
+assertions are logical admission/TTL/state math (never broker latency, never
+a broker-global command, no pub/sub fanout), so a co-tenant's stall band can
+stretch a round trip but cannot flip any assertion. The pins that measure
+broker timing (pings, fanout windows, wall-clock boundaries, ``CLIENT
+PAUSE``) live on ``private_redis_url`` instead.
+
 Burst fills window - all allowed, then denied, then retry_after wait → allowed.
 EVALSHA caching - register_script called exactly once across acquires.
 Sub-ms collision - 10 rapid acquires; unique request_id members; ZCARD == 10.

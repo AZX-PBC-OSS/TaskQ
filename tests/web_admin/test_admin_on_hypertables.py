@@ -125,7 +125,7 @@ from taskq.testing._shared_containers import (
     creator_labels,
     skip_test_without_docker,
 )
-from taskq.timescale import enable_hypertables
+from taskq.timescale import TimescaleDBUnavailableError, enable_hypertables
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth import IdentityClaims
 from taskq.web.admin.ops import (  # pyright: ignore[reportPrivateUsage]  # Why: the run-now differential must wait out the real cooldown constant, not a drifting copy.
@@ -137,10 +137,10 @@ pytestmark = pytest.mark.integration
 _TIMESCALE_IMAGE = (
     os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or "timescale/timescaledb:2.30.1-pg18"
 )
-# The progress SSE bridge needs a real broker. redis:7 is locally
-# available; the pubsub contract it serves is the same one Dragonfly
-# (the suite's shared broker) implements.
-_REDIS_IMAGE = "redis:7"
+# The progress SSE bridge needs a real broker. redis:8.10.2 is the same
+# current pin the compose stacks use; the pubsub contract it serves is the
+# same one Dragonfly (the suite's shared broker) implements.
+_REDIS_IMAGE = "redis:8.10.2"
 
 # Every seeded timestamp derives from this FIXED instant (not now()): the
 # differential requires both engines to seed byte-identical rows, and the
@@ -1239,8 +1239,12 @@ async def test_null_partition_key_is_the_documented_divergence(
     * the SAME insert vanilla PG accepts is rejected on the converted
       schema with ``NotNullViolationError`` — the DML-time half;
     * ``enable_hypertables`` over an archive that ALREADY holds such a
-      row fails LOUDLY at migrate time with the same violation — never
-      silently dropping or silently converting.
+      row refuses LOUDLY at migrate time with the pre-flight census
+      refusal — the row count and the remediation, BEFORE any DDL
+      (never silently dropping or silently converting, and never the
+      pre-fix shape: a NotNullViolationError mid-``migrate_data`` that
+      stranded a half-converted schema with the archive's primary key
+      already dropped).
 
     No production write can produce the row (every terminal transition
     stamps ``finished_at = clock_timestamp()`` — backend/_sql_templates.py,
@@ -1299,16 +1303,23 @@ async def test_null_partition_key_is_the_documented_divergence(
                 "TASKQ_TIMESCALEDB_HYPERTABLES": "true",
             }
         )
-        with pytest.raises(asyncpg.NotNullViolationError, match="finished_at"):
+        with pytest.raises(TimescaleDBUnavailableError, match="finished_at"):
             await enable_hypertables(setup, schema=schema, settings=settings)
-        # The refusal is loud but clean: the schema stays vanilla and the
-        # row stays put (the conversion did not half-apply on this table).
+        # The refusal is loud but clean: the census fires BEFORE any DDL,
+        # so the schema stays vanilla and the row stays put (nothing
+        # half-applied anywhere — the pre-fix failure left the archive's
+        # primary key dropped and job_events already converted).
         tables = await setup.fetch(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = $1 AND table_name = 'jobs_archive'",
             schema,
         )
         assert len(tables) == 1
+        ht = await setup.fetch(
+            "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            schema,
+        )
+        assert ht == []
         n = await setup.fetchval(f"SELECT count(*) FROM {schema}.jobs_archive")
         assert n == 1
     finally:

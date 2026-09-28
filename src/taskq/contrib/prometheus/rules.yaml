@@ -358,6 +358,35 @@ groups:
             without ever being funded. Runbook:
             docs/guides/runbooks.md#taskqcronbudgetdeferrals.
 
+      - alert: TaskQCronSkippedSlots
+        expr: rate(taskq_cron_skipped_slots_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ cron schedules are skipping fire slots -- the leader is losing the race"
+          description: >-
+            Cron fire attempts are DROPPING schedule occurrences: a
+            schedule's next_fire_at fell behind server_now minus
+            TASKQ_CRON_CATCH_UP_WINDOW, and every occurrence between the
+            owed slot and the recomputed one is a fire the system could not
+            even attempt, counted in fire units (a */5 schedule reported as
+            3 is three dropped fires) and never replayed. A brief burst is
+            a leader failover or a paused fleet catching past the window
+            once; a rate sustained for 5 minutes means the system is losing
+            the race EVERY period -- the runaway fan-out: one schedule's
+            jobs clear slower than the cron period fires them, so each
+            period lands further behind until slots start dropping. Read
+            the depth on taskq_cron_slots_behind{actor} (how many fire
+            units behind the actor's worst schedule was), and run the
+            fires-vs-clearance comparison in taskq.insights (the runaway
+            predicate: jobs cleared per schedule period vs. the cron
+            period) to name the schedule. Skipped slots are counted, not
+            lost silently; the operator knob is the schedule's period, the
+            actor's capacity, or a wider TASKQ_CRON_CATCH_UP_WINDOW if the
+            drops themselves are acceptable. Runbook:
+            docs/guides/runbooks.md#taskqcronskippedslots.
+
       - alert: TaskQQueueUnserved
         expr: taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0
         for: 2m
