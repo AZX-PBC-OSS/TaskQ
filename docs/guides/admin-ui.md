@@ -324,6 +324,8 @@ Returns `400` if `status` is not an allowed value, if only one of `cursor_at` / 
 
 The operational-insights page. Renders the `taskq.insights` read layer's surfaces — the same statements `docs/guides/insights.md` documents — over a single pool checkout. The route writes **no SQL of its own**: every number comes from the module's parameterized statements (`fetch_wait_distribution`, `fetch_queue_imbalance`, `fetch_actor_backlog`, `fetch_overprovisioning`, `fetch_drain_estimates`, `fetch_cron_ledger`), so a shape change in the SQL layer cannot drift from the page.
 
+The page refreshes with exactly one transport per mode — the queues page's split, insights edition: in real-time mode the page's body polls itself (`hx-get` of the page's own URL, so the `window` and `per_actor` selections survive every tick), and a tick re-renders the body fragment alone, never the whole document — the body's six reads are archive-UNION aggregates, and the meta refresh would re-run all six every interval; in polling mode the meta refresh is the page's only refresh and it keeps working without JavaScript. The two transports never run together (that was the double-fetch).
+
 **Query parameters:**
 
 | Parameter | Required | Description |
