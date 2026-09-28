@@ -206,9 +206,13 @@ async def test_gcra_peek_non_finite_tat_raises_the_sentinel() -> None:
 
 def test_retry_after_non_finite_collapses_to_max_ttl() -> None:
     """inf/NaN seconds (a lying denial hint) clamp to the max TTL instead
-    of raising out of the primitive."""
-    assert _retry_after(float("inf")) == _retry_after(10**9)
-    assert _retry_after(float("nan")) == _retry_after(10**9)
+    of raising out of the primitive. The clamp's VALUE is pinned against
+    the shipped bound as a literal, not against a symbol read from the
+    module under test: ``_retry_after(inf) == _retry_after(1e9)`` would
+    survive a drift of ``_MAX_TTL`` (both sides scale together), and an
+    imported ``_MAX_TTL`` scales with the very mutant it must catch."""
+    assert _retry_after(float("inf")) == timedelta(days=365)
+    assert _retry_after(float("nan")) == timedelta(days=365)
 
 
 def test_retry_after_non_positive_is_zero() -> None:

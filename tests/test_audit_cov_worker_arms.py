@@ -569,7 +569,9 @@ def test_transactional_keyboard_interrupt_arm_is_defensive_unreachable() -> None
 # ── the transactional success path's state-change publish ───────────────
 
 
-async def test_transactional_success_publishes_the_state_change_event() -> None:
+async def test_transactional_success_publishes_the_state_change_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A redis-wired transactional success publishes the running→succeeded
     event with the buffer's final seq — the SSE stream's terminal marker,
     stamped from the flushed buffer, never a bare default seq."""
@@ -596,7 +598,10 @@ async def test_transactional_success_publishes_the_state_change_event() -> None:
     async def spy_publish(*args: Any, **kwargs: Any) -> None:
         published.append({"job_id": args[2], "status": kwargs.get("status")})
 
-    consumer_mod._publish_state_change_event = spy_publish  # type: ignore[assignment]
+    # Why monkeypatch, not a raw rebind: a raw module-attribute write would
+    # outlive this test and silently replace the publish for every later
+    # test in the process (the randomizer reorders, so the victims vary).
+    monkeypatch.setattr(consumer_mod, "_publish_state_change_event", spy_publish)
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"ok": True}
