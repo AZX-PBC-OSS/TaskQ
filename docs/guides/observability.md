@@ -522,24 +522,67 @@ One counter outside this table's worker/producer population: `taskq.admin.audit.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `messaging.process.duration` | `s` | `actor`, `queue`, `outcome` | Job execution duration from dispatch to the attempt's end, labelled with the same `outcome` as `messaging.client.consumed.messages` (`succeeded` / `failed` / `cancelled` / `scheduled`), so a `start_to_close` timeout, which lands at exactly the budget, or a failure does not drag the success percentiles. |
-| `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
-| `taskq.dispatch.pool_acquire_duration` | `s` | `queue` | Seconds a dispatch round spent waiting for a dispatcher connection (pool wait, no SQL), kept out of `taskq.dispatch.duration` so a pool-exhausted pod cannot inflate the query-latency percentiles. |
-| `taskq.jobs.queue_wait_seconds` | `s` | `actor`, `queue` | Seconds a job waited between becoming eligible (`scheduled_at`) and being claimed (`started_at`), both server-clock stamps on the dispatched row. Recorded once per dispatch, retries and re-pends included: the per-job companion of the sampled `taskq.jobs.oldest_pending_age_seconds`, which only shows the head of the line. |
+| `messaging.process.duration` | `s` | `actor`, `queue`, `outcome` | Job execution duration from dispatch to the attempt's end, labelled with the same `outcome` as `messaging.client.consumed.messages` (`succeeded` / `failed` / `cancelled` / `scheduled`), so a `start_to_close` timeout, which lands at exactly the budget, or a failure does not drag the success percentiles. Buckets: 5 ms – 600 s, seconds-scaled (the percentile reads the ops playbook prescribes need unit-scaled boundaries, not the SDK's unit-agnostic defaults). |
+| `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). Buckets: 1 ms – 5 s, seconds-scaled so `TaskQDispatchLatencyHigh`'s 50 ms threshold quantiles against real sub-50 ms data. |
+| `taskq.dispatch.pool_acquire_duration` | `s` | `queue` | Seconds a dispatch round spent waiting for a dispatcher connection (pool wait, no SQL), kept out of `taskq.dispatch.duration` so a pool-exhausted pod cannot inflate the query-latency percentiles. Buckets: 1 ms – 30 s, seconds-scaled. |
+| `taskq.jobs.queue_wait_seconds` | `s` | `actor`, `queue` | Seconds a job waited between becoming eligible (`scheduled_at`) and being claimed (`started_at`), both server-clock stamps on the dispatched row. Recorded once per dispatch, retries and re-pends included: the per-job companion of the sampled `taskq.jobs.oldest_pending_age_seconds`, which only shows the head of the line. Buckets: 1 ms – 1 h, seconds-scaled (the p99 read the playbook prescribes needs sub-second buckets for healthy fleets). |
 | `taskq.lock.expires_in_seconds` | `s` | n/a | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
-| `taskq.heartbeat.tick_duration_seconds` | `s` | n/a | Wall-clock seconds per heartbeat tick. |
-| `taskq.worker.event_loop_lag_seconds` | `s` | n/a | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it: one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. See [The watchdog family](#the-watchdog-family). |
+| `taskq.heartbeat.tick_duration_seconds` | `s` | n/a | Wall-clock seconds per heartbeat tick. Buckets: 0.5 ms – 10 s, seconds-scaled. |
+| `taskq.worker.event_loop_lag_seconds` | `s` | n/a | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it: one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. Buckets: 5 µs – 30 s, microsecond-to-seconds scaled so healthy microsecond beats and a multi-second stall are distinct series. See [The watchdog family](#the-watchdog-family). |
 | `taskq.worker.loop_idle_fraction` | `1` | n/a | Sampled idle fraction of this worker's event loop, one sample per heartbeat window: the share of the watchdog's polls whose loop thread was parked in its idle selector wait. A sampled proportion, not a utilisation integral (sub-poll busy bursts invisible; unreadable frame samples count as not parked). Read beside the windowed stall tally: stalls attributed + low idle = a loop with no spare scheduling capacity; a healed worker's idle fraction recovers while its cumulative stall counts stand still. See [The watchdog family](#the-watchdog-family) and [the limits](#windowed-stall-tally-and-loop-idle-fraction). |
 | `taskq.worker.shutdown_duration_seconds` | `s` | n/a | Wall-clock seconds from the first shutdown signal to clean worker teardown; recorded only on a clean exit (a watchdog trip force-exits without recording). |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | n/a | Per-sweep-tick wall-clock duration. |
 | `taskq.ratelimit.reclaim_drain_duration` | `s` | n/a | Wall-clock duration of one keyed-reservation reclaim drain statement. Recorded on success and failure alike (the caller passes it from a `finally`), so a timeout that aborted the drain still leaves a duration sample. |
 
+### Reading percentiles off the served buckets
+
+The seconds-scaled boundaries above are an approximation contract, and the
+approximation is bounded, not magic: `histogram_quantile` interpolates
+linearly inside the bucket whose cumulative count contains the rank, so the
+served quantile's error against the true quantile is bounded by the WIDTH of
+that containing bucket - never zero, and largest when the distribution's mass
+piles up against a boundary. The review suite
+(`tests/test_prometheus_quantile_honesty.py`) pins the bound per histogram
+against synthetic distributions with known order statistics, served through
+the real bridge; the measured shape of the error:
+
+| Read | True p99 | Served p99 | Error | Bounded by |
+|---|---|---|---|---|
+| `taskq.dispatch.duration` (healthy ~12 ms fleet, 1% tail to 900 ms) | ~37 ms | ~49.8 ms | ~13 ms | the (25, 50 ms] bucket's 25 ms width |
+| `taskq.jobs.queue_wait_seconds` (healthy sub-second, 2% stragglers ~45 s) | ~45.0 s | ~45.0 s | ~0.03 s | the (30, 60 s] bucket's 30 s width |
+| `taskq.lock.expires_in_seconds` (healthy lease 60 s − 10 s cadence) | ~50.0 s | ~59.9 s | ~9.9 s | the (45, 60 s] bucket's 15 s width |
+| `taskq.worker.event_loop_lag_seconds` (healthy ~20 µs beats, one 2 s stall) | ~77 µs | ~94 µs | ~17 µs | the (50, 100 µs] bucket's 50 µs width |
+
+Three consequences operators should know:
+
+- **The sub-millisecond event-loop range has real resolution, but the read is
+  the TREND.** Healthy ~20 µs beats spread across five boundaries below 1 ms;
+  a p50 reads within tens of microseconds of truth. The relative error at that
+  scale is large (tens of percent) and the histogram is not a stopwatch - the
+  documented read ("a rising p99 is a loop being blocked") and the clean
+  separation of a multi-second stall from the healthy mass are what it
+  guarantees.
+- **Alert thresholds on quantiles sit at bucket boundaries by design.**
+  `TaskQDispatchLatencyHigh`'s 50 ms threshold IS the `le="0.05"` boundary:
+  dispatch mass strictly below it cannot quantile to 50 ms or above (the
+  healthy worst case quantiles to ~49.75 ms), so the rule fires exactly when
+  dispatches cross the 50 ms bucket - and never on a healthy fleet, however
+  large. The review suite proves both directions on marginal shapes in
+  promtool.
+- **A threshold that coincides with a HEALTHY cadence's steady-state bucket
+  false-pages.** `TaskQLockExpiringSoon`'s 30 s line is the `le="30"` bucket
+  edge: a healthy configuration whose `lock_lease − heartbeat_interval` lands
+  in (20, 30] s (e.g. heartbeat 5 s with the 33 s cascade-floor lease)
+  quantiles to ~29.9 s and pages forever. See the
+  [TaskQLockExpiringSoon runbook](runbooks.md#taskqlockexpiringsoon) for the
+  arithmetic and the override.
+
 ### Observable gauges (polled)
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.queue.depth` | `1` | `queue` | Pending and scheduled jobs per queue. Sampled by the leader every 15 s; the 100 deepest queues keep their series, the rest collapse onto `_other_`. |
-| `taskq.queue.live_workers` | `1` | `queue` | Workers whose `last_seen_at` is inside the liveness window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`), per queue they subscribe to, sampled in the same leader tick as `taskq.queue.depth`, same cap, so the two join on `queue`. A queue with depth and no live worker is unserved (`TaskQQueueUnserved`); a dead-but-unswept worker row does not count. |
+| `taskq.queue.depth` | `1` | `queue` | Pending and scheduled jobs per queue. Sampled by the leader every 15 s; the 100 deepest queues keep their series, the rest collapse onto one `_other_` series carrying their SUMMED depth (a bookkeeping total: the unserved join excludes it, see [Dimension cardinality](#dimension-cardinality)). |
+| `taskq.queue.live_workers` | `1` | `queue` | Workers whose `last_seen_at` is inside the liveness window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`), per queue they subscribe to, sampled in the same leader tick as `taskq.queue.depth`, same cap (the overflow collapses onto one `_other_` series carrying the SUMMED worker count — bookkeeping, not alertable: the two gauges' `_other_` sets differ, see [Dimension cardinality](#dimension-cardinality)). A queue with depth and no live worker is unserved (`TaskQQueueUnserved`); a dead-but-unswept worker row does not count. |
 | `taskq.reservation.slots_used` | `1` | `bucket` | In-use reservation slots per rate-limit bucket. Sampled by the leader every 15 s. |
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | n/a | Count of currently disabled cron schedules. |
@@ -570,7 +613,7 @@ The in-worker watchdog (`taskq.worker._watchdog`; [workers.md: In-worker watchdo
 
 | Metric name | Kind | Unit | Attributes | Description |
 |---|---|---|---|---|
-| `taskq.worker.event_loop_lag_seconds` | histogram | `s` | n/a | Per-beat event-loop scheduling latency (above). Healthy: microseconds; a blocked loop yields one sample the length of the block once it recovers. |
+| `taskq.worker.event_loop_lag_seconds` | histogram | `s` | n/a | Per-beat event-loop scheduling latency (above). Healthy: microseconds; a blocked loop yields one sample the length of the block once it recovers. Buckets: 5 µs – 30 s. |
 | `taskq.worker.watchdog_loop_lag_warns_total` | counter | `1` | `detector` (`event-loop-lag-warn`) | Tier-1 lag warnings: the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET`: once per stall (the latch clears on the next beat), with a thread dump and a deferred task-stack dump. Non-terminal. |
 | `taskq.worker.watchdog_trips_total` | counter | `1` | `detector` (`event-loop-lag`, `stale-loop-tick`, `shutdown-deadline`) | Terminal trips: the worker force-exited with `EXIT_WATCHDOG` because the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, an interval-driven loop stopped ticking, or shutdown outlived `TASKQ_TERMINATION_GRACE_PERIOD`. In-flight jobs are reclaimed by the leader on lock-lease expiry. |
 | `taskq.worker.loop_tick_age_seconds` | gauge | `s` | `loop` | Seconds since each interval-driven sibling loop (heartbeat, producer, the leader loops, ...) last ticked: the `/ready` body's `loop_tick_ages`, exported. A loop whose age grows past its period × grace factor is the stale-loop-tick trip in the making. |
@@ -643,6 +686,21 @@ in the cardinality benchmark. Per-queue attribution is not lost: the queue
 name still rides on the enqueue/dispatch/consume span attributes and log
 lines, where cardinality is free. `actor` remains user-defined and unbounded
 on those emitters: keep actor names a bounded enum.
+
+The leader-sampled gauges (`taskq.queue.depth`, `taskq.queue.live_workers`)
+rank by VALUE, not by first-seen admission: the 100 deepest (or
+most-workered) queues keep their own series and the rest collapse onto ONE
+`_other_` series carrying their SUMMED value, so the fleet-wide total stays
+exact through the cap (the fleet suite proves 150 real queues serve exactly
+101 series with the exact partition and exact total). That sum is
+bookkeeping, not an alertable shape: the two gauges admit DIFFERENT sets of
+100 queues (depth ranks by pending jobs, live workers by subscribers), so
+their `_other_` series cover different queues and a join between them - depth
+in `_other_` with no live workers in `_other_` - compares unrelated sets.
+`TaskQQueueUnserved` therefore excludes `_other_` on both sides; a queue that
+falls off the top-100 on both gauges at once has no per-queue signal by
+design, and per-queue attribution for it lives on the span attributes and
+log lines.
 
 The cron counter's `actor` label is the exception, and it is capped the same
 way `queue` is: `create_schedule` accepts any string actor at creation time
