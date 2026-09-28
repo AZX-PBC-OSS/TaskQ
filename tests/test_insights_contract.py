@@ -191,24 +191,11 @@ def _render_statements(schema: str) -> dict[str, str]:
     return {
         "fetch_wait_distribution(per_queue)": _build_wait_sql(schema, per_actor=False),
         "fetch_wait_distribution(per_actor)": _build_wait_sql(schema, per_actor=True),
-        "fetch_queue_imbalance": m._QUEUE_IMBALANCE_SQL.format(  # pyright: ignore[reportPrivateUsage]
-            schema=schema,
-            _DUE_NOW=m._DUE_NOW,  # pyright: ignore[reportPrivateUsage]
-        ),
+        "fetch_queue_imbalance": m._build_queue_imbalance_sql(schema),  # pyright: ignore[reportPrivateUsage]
         "fetch_actor_backlog": m._ACTOR_BACKLOG_SQL.format(schema=schema),  # pyright: ignore[reportPrivateUsage]
-        "fetch_overprovisioning": m._QUEUE_OVERPROVISIONING_SQL.format(  # pyright: ignore[reportPrivateUsage]
-            schema=schema,
-            _TERMINAL_IN=m._TERMINAL_IN,  # pyright: ignore[reportPrivateUsage]
-            _FINISHED_BOUND=m._FINISHED_BOUND,  # pyright: ignore[reportPrivateUsage]
-            _DUE_NOW=m._DUE_NOW,  # pyright: ignore[reportPrivateUsage]
-        ),
+        "fetch_overprovisioning": m._build_overprovisioning_sql(schema),  # pyright: ignore[reportPrivateUsage]
         "fetch_worker_busy_ratio": m._WORKER_BUSY_SQL.format(schema=schema),  # pyright: ignore[reportPrivateUsage]
-        "fetch_drain_estimates": m._QUEUE_DRAIN_SQL.format(  # pyright: ignore[reportPrivateUsage]
-            schema=schema,
-            _TERMINAL_IN=m._TERMINAL_IN,  # pyright: ignore[reportPrivateUsage]
-            _FINISHED_BOUND=m._FINISHED_BOUND,  # pyright: ignore[reportPrivateUsage]
-            _DUE_NOW=m._DUE_NOW,  # pyright: ignore[reportPrivateUsage]
-        ),
+        "fetch_drain_estimates": m._build_drain_sql(schema),  # pyright: ignore[reportPrivateUsage]
         "fetch_cron_ledger": _build_cron_ledger_sql(schema),
     }
 

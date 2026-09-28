@@ -28,11 +28,10 @@ from uuid import UUID
 
 import pytest
 
-from taskq._ids import new_job_id, new_uuid
+from taskq._ids import new_job_id
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import ErrorInfo, IdentityKey, JobId
-from taskq.backend.postgres import PostgresBackend
-from taskq.testing.in_memory import InMemoryBackend
+from tests._worker_of import worker_of
 
 pytestmark = pytest.mark.integration
 
@@ -46,25 +45,6 @@ _ERROR = ErrorInfo(
     error_message="boom",
     error_traceback=None,
 )
-
-
-async def _worker_of(backend: Backend) -> UUID:
-    """A worker id that exists in the backend's ``workers`` table."""
-    if isinstance(backend, InMemoryBackend):
-        return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_reclaim_retry_budget_parity.py
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_reclaim_retry_budget_parity.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
-    worker_id = new_uuid()
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
-        await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
-            worker_id,
-            "test-host",
-            12345,
-            ["default"],
-        )
-    return worker_id
 
 
 def _args(identity: str) -> EnqueueArgs:
@@ -114,7 +94,7 @@ async def test_second_enqueue_inside_the_window_dedups_onto_a_succeeded_job(
     first = _args("daily-report:2025-01-01")
     first_row = await backend_pair.enqueue(first)
 
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     attempt = await _claim(backend_pair, first.id, worker_id)
     await backend_pair.mark_succeeded(
         first.id, worker_id, {"sent": True}, attempt=attempt, claim_epoch=attempt
@@ -161,7 +141,7 @@ async def test_a_failed_job_does_not_block_the_identity_for_the_window(
     first = _args("webhook:evt-1")
     first_row = await backend_pair.enqueue(first)
 
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     attempt = await _claim(backend_pair, first.id, worker_id)
     await backend_pair.mark_failed_or_retry(
         first.id, worker_id, _ERROR, None, attempt=attempt, claim_epoch=attempt
@@ -201,7 +181,7 @@ async def test_second_enqueue_dedups_onto_a_still_running_job(
     first = _args("webhook:evt-2")
     first_row = await backend_pair.enqueue(first)
 
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     await _claim(backend_pair, first.id, worker_id)
 
     running = await backend_pair.get(first.id)

@@ -27,11 +27,12 @@ from uuid import UUID
 
 import pytest
 
-from taskq._ids import new_job_id, new_uuid
+from taskq._ids import new_job_id
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.in_memory import InMemoryBackend
+from tests._worker_of import worker_of
 
 pytestmark = pytest.mark.integration
 
@@ -43,25 +44,6 @@ _ERROR = ErrorInfo(
     error_message="boom",
     error_traceback=None,
 )
-
-
-async def _worker_of(backend: Backend) -> UUID:
-    """A worker id that exists in the backend's ``workers`` table."""
-    if isinstance(backend, InMemoryBackend):
-        return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_cancel_state_reset_on_retry.py
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_cancel_state_reset_on_retry.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
-    worker_id = new_uuid()
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
-        await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
-            worker_id,
-            "test-host",
-            12345,
-            ["default"],
-        )
-    return worker_id
 
 
 async def _enqueue(
@@ -123,7 +105,7 @@ async def _expire_lease(backend: Backend, job_id: JobId) -> None:
 async def _run_attempts_to(backend: Backend, job_id: JobId, target_attempt: int) -> None:
     """Drive the job through real claim/fail cycles until its counter
     reaches *target_attempt*, leaving it running at that attempt."""
-    worker_id = await _worker_of(backend)
+    worker_id = await worker_of(backend)
     while True:
         await _dispatch(backend, job_id, worker_id)
         row = await backend.get(job_id)
@@ -257,7 +239,7 @@ async def test_reclaim_leaves_the_attempt_counter_for_dispatch_to_advance(
     )
 
     await _make_due(backend_pair, job_id)
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     await _dispatch(backend_pair, job_id, worker_id)
 
     next_row = await backend_pair.get(job_id)
