@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import difflib
 import importlib
+import json
 import os
 import re
 import signal
@@ -1624,6 +1625,15 @@ async def _list_worker_stall_tallies(
     tallies: list[tuple[str, dict[str, object]]] = []
     for row in rows:
         metadata: object = row["metadata"]
+        if isinstance(metadata, str):
+            # A plain asyncpg.connect returns jsonb as text: the doctor's
+            # reporting connection registers no codec, so the heartbeat's
+            # tally arrives as a JSON string here (measured: the dict
+            # check alone silently dropped EVERY live tally).
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                continue
         if not isinstance(metadata, dict):
             continue
         metadata_map = cast("dict[str, object]", metadata)
@@ -1736,11 +1746,25 @@ _IMBALANCE_UTILIZATION_HIGH: Final[float] = 2.0
 #: row's age, which no reading of the same window calls healthy.
 _IMBALANCE_STRAND_FACTOR: Final[float] = 4.0
 
-#: STARVED (strand arm): the absolute age floor under which the factor
-#: arm never fires.  Derivation: 2x the 30s worker-liveness window the
-#: imbalance statement itself uses — a due row younger than that may be
-#: claimed before the operator finishes reading the report, and the
-#: claim already in flight would make the finding a lie.
+#: STARVED (strand arm) and the family-wide persistence floor: the oldest
+#: due job's age must exceed the queue's own p95 wait by this factor.  Derivation: the p95 wait is
+#: computed over the SAME window the pathological depth would inflate —
+#: a burst raises the p95 with the depth, so a factor arm is what
+#: survives that confound.  4x the tail means the row has outlived the
+#: entire observed distribution INCLUDING its tail by a full factor: 95%
+#: of the queue's recent deliveries waited less than a quarter of this
+#: row's age, which no reading of the same window calls healthy.
+#: The floor ALSO gates the utilization arm and the drain family's
+#: depth claim (measured against the imbalance read's own
+#: ``oldest_due_age_s``): a depth snapshot younger than the floor is a
+#: burst the dispatcher may absorb before the report is read — the same
+#: in-flight-claim logic the strand arm's derivation states — so no
+#: depth-derived verdict may rest on a snapshot younger than the
+#: claim-in-flight window.  (Measured: a healthy queue's 9-job burst
+#: against capacity 4 read as a 2.2x utilization and a healthy idle-
+#: capacity fleet's 51-job burst read as a 1.0-day drain eta without
+#: this floor; both bursts were younger than the floor and gone before
+#: it elapsed.)
 _IMBALANCE_STRAND_FLOOR_S: Final[float] = 60.0
 
 
@@ -1793,7 +1817,13 @@ def _imbalance_findings(
     Two arms, each with its derivation at the threshold constants:
 
     * utilization (depth / effective capacity) above
-      ``_IMBALANCE_UTILIZATION_HIGH`` — the starved queue.
+      ``_IMBALANCE_UTILIZATION_HIGH``, HELD past the persistence floor
+      (``_IMBALANCE_STRAND_FLOOR_S`` — the oldest due row must have
+      outlived the claim-in-flight window): the starved queue.  The
+      persistence gate is what separates a fleet too small for its
+      arrival rate from a burst the dispatcher is absorbing at sampling
+      time — a depth snapshot younger than the floor cannot support an
+      arrival-rate claim.
     * oldest-due age above ``max(_IMBALANCE_STRAND_FACTOR x p95,
       _IMBALANCE_STRAND_FLOOR_S)`` — the strand.  The p95 is the CLEAN
       segment's (first-delivery rows only): the deferred segment's wait
@@ -1801,9 +1831,13 @@ def _imbalance_findings(
       queue-latency baseline.  A queue with no clean wait history has no
       honest baseline and the arm stays silent.
 
-    ``utilization IS NULL`` (due work, nothing can serve it) is the
-    unserved-queue starvation shape the stranded-jobs families above
-    already report; this family does not report it twice.
+    ``utilization IS NULL`` (due work, nothing can serve it) has two
+    shapes, reported by different lines: no LIVE worker on the queue is
+    the unserved-queue starvation shape the stranded-jobs families above
+    report; a live worker behind a stored ``max_concurrent = 0`` is the
+    deliberately-stopped drain mode, which the stored-capacity section's
+    own line names (``max_concurrent=0, DRAIN MODE``) — neither is
+    reported twice.
     """
     label = _insights_window_label(window)
     p95_by_queue = {
@@ -1815,14 +1849,19 @@ def _imbalance_findings(
     for row in imbalance_rows:
         queue = str(row["queue"])
         utilization = row.get("utilization")
-        if utilization is not None and float(utilization) > _IMBALANCE_UTILIZATION_HIGH:
+        age = row.get("oldest_due_age_s")
+        if (
+            utilization is not None
+            and float(utilization) > _IMBALANCE_UTILIZATION_HIGH
+            and age is not None
+            and float(age) > _IMBALANCE_STRAND_FLOOR_S
+        ):
             findings.append(
                 f"queue {queue!r}: STARVED, {row['depth']} due job(s) against effective "
                 f"capacity {row['effective_capacity']} (utilization {float(utilization):.1f}x, "
                 f"threshold {_IMBALANCE_UTILIZATION_HIGH:.0f}x — a full second claim-wave of "
                 f"due work survives after the first drains). {_capacity_remedy(queue, stored_by_actor)}"
             )
-        age = row.get("oldest_due_age_s")
         p95 = p95_by_queue.get(queue)
         if (
             age is not None
@@ -1866,6 +1905,7 @@ def _overprovisioning_findings(
 
 def _drain_findings(
     drain_rows: Sequence[Mapping[str, Any]],
+    imbalance_rows: Sequence[Mapping[str, Any]],
     window: timedelta,
 ) -> list[str]:
     """The DRAIN family, read from ``fetch_drain_estimates``.
@@ -1881,6 +1921,15 @@ def _drain_findings(
     recognizes.  Below the window the extrapolation still has support;
     above it the finding fires.
 
+    The finding also requires the depth to have PERSISTED past the
+    persistence floor (``_IMBALANCE_STRAND_FLOOR_S``, read from the
+    imbalance rows' ``oldest_due_age_s`` — the same read the imbalance
+    family runs): the observed rate of an idle-capacity fleet is
+    demand-limited, so a depth snapshot younger than the claim-in-flight
+    window says nothing about the fleet's drain rate.  A healthy fleet's
+    burst is gone before the floor elapses; a depth that outlives it is
+    a rate the extrapolation can honestly claim.
+
     ``has_traffic = false`` (no terminalisations in the window) means the
     estimate is honestly NULL — "already drained" would be a lie — so a
     no-traffic window renders NO drain finding; the widening-the-window
@@ -1889,6 +1938,11 @@ def _drain_findings(
     """
     label = _insights_window_label(window)
     window_s = window.total_seconds()
+    age_by_queue = {
+        str(r["queue"]): r.get("oldest_due_age_s")
+        for r in imbalance_rows
+        if r.get("oldest_due_age_s") is not None
+    }
     findings: list[str] = []
     for row in drain_rows:
         if not row.get("has_traffic"):
@@ -1896,6 +1950,9 @@ def _drain_findings(
         eta = row.get("eta_seconds")
         if eta is None or float(eta) <= window_s:
             continue
+        age = age_by_queue.get(str(row["queue"]))
+        if age is None or float(age) <= _IMBALANCE_STRAND_FLOOR_S:
+            continue  # a depth younger than the claim-in-flight window: no rate claim
         queue = str(row["queue"])
         armed = (
             f" The armed wave ({row['scheduled_depth']} scheduled job(s)) is not included "
@@ -1934,9 +1991,13 @@ def _cron_lag_findings(
       catch-up window is the same insights window, and its slot capacity
       is the schedule's OWN demonstrated clearance — the better of the
       current and the prior equal window (``max(cleared_window,
-      cleared_prior)``): what the fleet actually cleared in one window
-      at its best, not a theoretical ceiling it has never been observed
-      to reach.  The best-of-two guards the ledger's documented
+      cleared_prior)``), REQUIRED POSITIVE: what the fleet actually
+      cleared in one window at its best, not a theoretical ceiling it has
+      never been observed to reach, and never zero — a schedule with no
+      demonstrated clearance has nothing to compare against, and its
+      in-flight fires are honest work in flight, not a lag (a capacity
+      of zero would read every first in-flight fire as an uncatchable
+      backlog).  The best-of-two guards the ledger's documented
       right-edge confound (clearance lags fires at the window's edge, so
       a burst of fresh fires must not read as an uncatchable backlog).
       The arm also requires the schedule to have actually fired within
@@ -1954,7 +2015,7 @@ def _cron_lag_findings(
         outstanding = int(row["outstanding"])
         capacity = max(int(row["cleared_window"]), int(row["cleared_prior"]))
         fired_in_horizon = int(row["fires_window"]) > 0 or int(row["fires_prior"]) > 0
-        backlog = fired_in_horizon and outstanding > capacity
+        backlog = fired_in_horizon and capacity > 0 and outstanding > capacity
         if not runaway and not backlog:
             continue
         triggers: list[str] = []
@@ -2215,7 +2276,7 @@ def _doctor_findings(
         _imbalance_findings(imbalance_rows or [], wait_rows or [], stored_by_actor, insights_window)
     )
     findings.extend(_overprovisioning_findings(overprovisioning_rows or [], insights_window))
-    findings.extend(_drain_findings(drain_rows or [], insights_window))
+    findings.extend(_drain_findings(drain_rows or [], imbalance_rows or [], insights_window))
     findings.extend(_cron_lag_findings(cron_rows or [], insights_window))
     return findings
 

@@ -567,14 +567,21 @@ families, each naming its data and its remedy:
   wave of due work survives after the first drains entirely — one wave is
   a burst the dispatcher absorbs by design, two sustained waves is a
   fleet too small for its arrival rate, and the remedy's own granularity
-  is one wave (one worker, or one `max_concurrent` step). The 4x p95
+  is one wave (one worker, or one `max_concurrent` step). "Sustained" is
+  load-bearing: the utilization arm only fires when the oldest due job
+  has outlived the 60s floor, because a depth snapshot younger than that
+  is a burst in the act of being absorbed — an arrival-rate claim needs a
+  depth that persisted past the claim-in-flight window. The 4x p95
   factor survives the burst confound because the p95 is computed over the
   *same* window the burst inflates; the 60s floor is 2x the 30s
   worker-liveness window, so a claim already in flight is never reported.
   The remedy names the only two levers that add dispatch capacity: start
   another worker serving the queue, or raise the serving actor's
-  `max_concurrent`. `utilization IS NULL` (due work nothing can serve) is
-  the stranded-jobs family's shape and is not reported twice.
+  `max_concurrent`. `utilization IS NULL` (due work nothing can serve)
+  has two shapes, reported by different lines: no live worker on the
+  queue is the stranded-jobs family's shape; a live worker behind a
+  stored `max_concurrent = 0` is the deliberately-stopped drain mode,
+  named by the stored-capacity line itself — neither is reported twice.
 - **OVERPROVISIONED** (queue): live workers on a queue with zero due
   depth and fewer terminalisations across the whole window than workers —
   fewer than one completion per worker (the verdict
@@ -583,12 +590,19 @@ families, each naming its data and its remedy:
   destructive; the finding says explicitly that nothing is deleted.
 - **SLOW DRAIN** (queue): the drain estimate (`fetch_drain_estimates`'s
   `eta_seconds` — due depth ÷ the window's completions per second)
-  exceeds the **24h observation window itself**. Derivation: the eta is a
-  throughput extrapolation whose only honest input is the traffic the
-  window actually carried, so the window is the longest horizon the rate
-  has evidence for — and it is the operator's own "will this be done by
+  exceeds the **24h observation window itself**, with the due depth
+  having persisted past the **60s persistence floor** (the imbalance
+  read's oldest-due age). Derivation: the eta is a throughput
+  extrapolation whose only honest input is the traffic the window
+  actually carried, so the window is the longest horizon the rate has
+  evidence for — and it is the operator's own "will this be done by
   tomorrow?" period; an eta beyond it means the depth exceeds everything
-  the entire window completed. The finding states the eta and the
+  the entire window completed. The persistence floor is what keeps the
+  claim honest for an idle-capacity fleet, whose observed rate is
+  demand-limited, not capacity-limited: a depth younger than the
+  claim-in-flight window is a burst the idle workers are absorbing, and
+  its "eta" is fiction (a 51-job burst against an idle 32-slot worker
+  read as ~1.0 days without it). The finding states the eta and the
   confidence caveat: the estimate rests on the window's realised traffic
   (`has_traffic`), assumes the next window looks like the last one, and
   does not include the armed wave. A window with **no** traffic renders
@@ -600,8 +614,12 @@ families, each naming its data and its remedy:
   burst, two consecutive is the runaway shape) or an outstanding backlog
   above **one catch-up window's slot capacity**, defined as the
   schedule's own demonstrated clearance in its best window
-  (`max(cleared_window, cleared_prior)`): what the fleet actually
-  cleared, not a theoretical ceiling. The best-of-two guards the ledger's
+  (`max(cleared_window, cleared_prior)`, required positive): what the
+  fleet actually cleared, not a theoretical ceiling — and never zero,
+  because a schedule with no demonstrated clearance has nothing to
+  compare against and its in-flight fires are honest work in flight, not
+  a lag (a capacity of zero would read every first in-flight fire as an
+  uncatchable backlog). The best-of-two guards the ledger's
   right-edge confound (clearance lags fires at the window's edge, so a
   burst of fresh fires does not read as uncatchable), and the backlog arm
   requires the schedule to have fired within the two-window horizon — a

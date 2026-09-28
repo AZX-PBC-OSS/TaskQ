@@ -1018,16 +1018,23 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A queue whose utilization (depth / effective capacity) blows past the
-    2x threshold holds a full second claim-wave of due work after the first
-    drains - a fleet too small for its arrival rate, not a transient burst.
-    The remedy must name the levers the product actually has: another
-    worker on the queue, or a raised max_concurrent."""
+    2x threshold AND whose oldest due job has outlived the persistence
+    floor holds a full second claim-wave of due work after the first
+    drains - a fleet too small for its arrival rate, not a transient
+    burst. The remedy must name the levers the product actually has:
+    another worker on the queue, or a raised max_concurrent."""
     _patch_db(
         monkeypatch,
         actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
         queue_rows=[],
         imbalance_rows=[
-            _imbalance_row(depth=12, live_workers=3, actor_capacity=4, utilization=6.0)
+            _imbalance_row(
+                depth=12,
+                live_workers=3,
+                actor_capacity=4,
+                utilization=6.0,
+                oldest_due_age_s=600.0,
+            )
         ],
     )
 
@@ -1040,6 +1047,33 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
     assert "worker" in result.output
     assert "max_concurrent" in result.output
     assert "doctor_beta" in result.output
+
+
+def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): a 12-deep queue at 6x
+    utilization whose oldest due job is 10s old is a burst the dispatcher
+    may absorb before the report is read - an arrival-rate claim cannot
+    rest on a depth snapshot younger than the claim-in-flight window."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
+        queue_rows=[],
+        imbalance_rows=[
+            _imbalance_row(
+                depth=12,
+                live_workers=3,
+                actor_capacity=4,
+                utilization=6.0,
+                oldest_due_age_s=10.0,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "STARVED" not in result.output
 
 
 def test_doctor_is_silent_on_a_balanced_queue(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1154,8 +1188,9 @@ def test_doctor_is_silent_when_the_queue_earns_its_workers(
 def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A drain eta beyond the observation window itself means the due depth
-    exceeds everything the entire window completed: the operator would not
+    """A drain eta beyond the observation window itself, on a depth that
+    has persisted past the persistence floor, means the due depth exceeds
+    everything the entire window completed: the operator would not
     recognize the queue as draining by the time the extrapolation says it
     lands. The finding states the eta AND the has_traffic confidence
     caveat."""
@@ -1163,6 +1198,7 @@ def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
         monkeypatch,
         actor_rows=[_row("doctor_beta", queue="bulk_q")],
         queue_rows=[],
+        imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=600.0)],
         drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
     )
 
@@ -1173,6 +1209,26 @@ def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
     assert "4.0 days" in result.output
     assert "extrapolation" in result.output.lower()
     assert "50 completion(s)" in result.output
+
+
+def test_doctor_is_silent_when_a_young_burst_reads_a_fictional_eta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): an idle-capacity fleet's
+    51-job burst reads a ~1.0-day eta off a demand-limited rate, but the
+    depth is 2s old - the idle workers absorb it before the report is
+    read. No persistence, no rate claim."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="bulk_q")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=2.0)],
+        drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
+    )
+
+    result = _invoke()
+
+    assert "SLOW DRAIN" not in result.output
 
 
 def test_doctor_is_silent_when_drain_fits_inside_the_window(
@@ -1257,6 +1313,35 @@ def test_doctor_cron_lag_requires_demonstrated_clearance_history(
         cron_rows=[
             _cron_row(
                 fires_window=0,
+                cleared_window=0,
+                fires_prior=0,
+                cleared_prior=0,
+                outstanding=1,
+                runaway_trending=False,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "CRON LAG" not in result.output
+
+
+def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): a brand-new schedule's FIRST
+    fire is running right now - fires_window=1, no clearance in either
+    window, outstanding=1. With a zero demonstrated capacity the backlog
+    arm would read every in-flight fire as an uncatchable backlog; the
+    arm requires a POSITIVE demonstrated clearance to compare against."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("send_email", queue="batch")],
+        queue_rows=[],
+        cron_rows=[
+            _cron_row(
+                fires_window=1,
                 cleared_window=0,
                 fires_prior=0,
                 cleared_prior=0,

@@ -244,6 +244,33 @@ async def _seed_terminal(
         )
 
 
+async def _seed_running(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    queue: str,
+    actor: str,
+    created_age_s: float,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """A RUNNING row (the in-flight fire the first-fire pin needs)."""
+    now = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO {schema}.jobs (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                created_at, scheduled_at, started_at, metadata
+            ) VALUES ($1, $2, $3, '{{"v": 1}}'::jsonb, 3, 'transient',
+                      'running'::{schema}.job_status, $4, $5, $6, $7::jsonb)""",
+        new_job_id(),
+        actor,
+        queue,
+        now - timedelta(seconds=created_age_s),
+        now - timedelta(seconds=created_age_s),
+        now - timedelta(seconds=created_age_s / 2),
+        json.dumps(metadata or {}),
+    )
+
+
 async def _seed_schedule(conn: asyncpg.Connection, schema: str, *, actor: str) -> uuid.UUID:
     sid = new_uuid()
     await conn.execute(
@@ -264,13 +291,18 @@ async def _seed_pathological(conn: asyncpg.Connection, schema: str) -> uuid.UUID
     the findings are independent:
 
     * ``q_starved`` — 12 due jobs, effective capacity 1 (cap 1 x 1
-      worker): utilization 12x, past the 2x threshold.
+      worker): utilization 12x, past the 2x threshold. The due rows'
+      age sits past the 60s persistence floor (a depth younger than the
+      claim-in-flight window is a burst, not an arrival-rate claim).
     * ``q_strand`` — one due job ~600s old against a p95 wait of 5s
       (the strand test's threshold: max(4 x p95, 60s) = 60s).
     * ``q_over`` — a live worker, zero due depth, zero terminalisations
       in the window: fewer than one completion per worker.
     * ``q_drain`` — 200 due jobs against 50 completions in the window:
-      eta 4 days, beyond the 24h window the rate was measured over.
+      eta 4 days, beyond the 24h window the rate was measured over. The
+      depth's age sits past the persistence floor (an idle-capacity
+      fleet's young burst reads a fictional eta off its demand-limited
+      rate).
     * a cron schedule — fires outran clearances in BOTH windows with a
       16-fire outstanding backlog (runaway trending AND above the
       catch-up window's demonstrated capacity).
@@ -283,18 +315,19 @@ async def _seed_pathological(conn: asyncpg.Connection, schema: str) -> uuid.UUID
     for q in ("q_starved", "q_strand", "q_over", "q_drain", "q_cron"):
         await _seed_worker(conn, schema, queue=q)
 
-    # Starved: 12 due rows against capacity 1.
+    # Starved: 12 due rows against capacity 1, oldest row past the floor.
     await _seed_pending(
-        conn, schema, queue="q_starved", actor="pg_doctor_starved", scheduled_age_s=30, count=12
+        conn, schema, queue="q_starved", actor="pg_doctor_starved", scheduled_age_s=90, count=12
     )
     # Strand: one 600s-old due row; the queue's p95 wait is 5s.
     await _seed_pending(
         conn, schema, queue="q_strand", actor="pg_doctor_strand", scheduled_age_s=600
     )
     await _seed_terminal(conn, schema, queue="q_strand", actor="pg_doctor_strand", count=20)
-    # Drain: 200 due rows against 50 completions in the window.
+    # Drain: 200 due rows against 50 completions in the window, the depth
+    # persisted past the persistence floor (a young burst's eta is fiction).
     await _seed_pending(
-        conn, schema, queue="q_drain", actor="pg_doctor_drain", scheduled_age_s=5, count=200
+        conn, schema, queue="q_drain", actor="pg_doctor_drain", scheduled_age_s=90, count=200
     )
     await _seed_terminal(conn, schema, queue="q_drain", actor="pg_doctor_drain", count=50)
 
@@ -438,6 +471,85 @@ async def test_doctor_renders_nothing_for_the_healthy_fleet(
     assert "storage mode: " in output
     for phrase in ("STARVED", "STRANDED WORK", "OVERPROVISIONED", "SLOW DRAIN", "CRON LAG"):
         assert phrase not in output
+
+
+async def test_doctor_is_silent_on_bursts_younger_than_the_persistence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+    doctor_env: tuple[asyncpg.Connection, str, str],
+) -> None:
+    """The boundary's healthy side for the two DEPTH-derived arms: a
+    healthy queue's 9-job burst (utilization 2.25x against capacity 4,
+    sub-second service history) and an idle-capacity fleet's 51-job burst
+    (a demand-limited rate reading a ~1.0-day eta) are both YOUNGER than
+    the 60s persistence floor - the dispatcher absorbs them before the
+    report is read, so neither may fire.  Measured before the floor
+    existed: both fired on exactly this fleet."""
+    conn, schema, dsn = doctor_env
+    await _seed_config(conn, schema, actor="pg_doctor_starved", queue="q_starved", max_concurrent=4)
+    await _seed_config(conn, schema, actor="pg_doctor_drain", queue="q_drain", max_concurrent=32)
+    await _seed_worker(conn, schema, queue="q_starved")
+    await _seed_worker(conn, schema, queue="q_drain")
+    # healthy service histories
+    await _seed_terminal(
+        conn,
+        schema,
+        queue="q_starved",
+        actor="pg_doctor_starved",
+        count=40,
+        wait_s=0.3,
+        finished_age_s=1200,
+    )
+    await _seed_terminal(
+        conn,
+        schema,
+        queue="q_drain",
+        actor="pg_doctor_drain",
+        count=50,
+        wait_s=0.2,
+        finished_age_s=3600,
+    )
+    # the bursts, seconds old
+    await _seed_pending(
+        conn, schema, queue="q_starved", actor="pg_doctor_starved", scheduled_age_s=2, count=9
+    )
+    await _seed_pending(
+        conn, schema, queue="q_drain", actor="pg_doctor_drain", scheduled_age_s=2, count=51
+    )
+
+    exit_code, output = await _run_doctor(monkeypatch, dsn, schema)
+
+    assert exit_code == 0, output
+    assert "STARVED" not in output, output
+    assert "SLOW DRAIN" not in output, output
+
+
+async def test_doctor_is_silent_on_a_first_in_flight_cron_fire(
+    monkeypatch: pytest.MonkeyPatch,
+    doctor_env: tuple[asyncpg.Connection, str, str],
+) -> None:
+    """The right-edge guard's own case: a brand-new schedule whose FIRST
+    fire is running right now.  cleared_window = cleared_prior = 0, so
+    the demonstrated clearance is zero - a zero capacity would read every
+    in-flight fire as an uncatchable backlog.  The arm requires a
+    POSITIVE demonstrated clearance; the in-flight fire is work in
+    flight, not a lag."""
+    conn, schema, dsn = doctor_env
+    await _seed_config(conn, schema, actor="pg_doctor_cron", queue="q_cron", max_concurrent=4)
+    await _seed_worker(conn, schema, queue="q_cron")
+    sid = await _seed_schedule(conn, schema, actor="pg_doctor_cron")
+    await _seed_running(
+        conn,
+        schema,
+        queue="q_cron",
+        actor="pg_doctor_cron",
+        created_age_s=120,
+        metadata={"cron_schedule_id": str(sid)},
+    )
+
+    exit_code, output = await _run_doctor(monkeypatch, dsn, schema)
+
+    assert exit_code == 0, output
+    assert "CRON LAG" not in output, output
 
 
 class _RecordingConn:
