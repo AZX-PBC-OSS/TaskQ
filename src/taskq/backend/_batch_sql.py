@@ -1000,8 +1000,8 @@ async def enqueue_batch_atomic(
                     refuse_whole_batch_on_cap=True,
                     # The finalizer's caller-global coordinate: one past
                     # the last stream item (it is the (N+1)th enqueue this
-                    # call performs). index 0, the pre-fix annotation ,
-                    # falsely accused an innocent stream item.
+                    # call performs). An index of 0 would
+                    # falsely accuse an innocent stream item.
                     index_base=item_count,
                 )
                 all_rows.extend(fin_rows)

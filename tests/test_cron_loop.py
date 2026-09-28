@@ -1214,8 +1214,8 @@ async def test_operator_index_violation_is_not_attributed() -> None:
 
 # ── attribution failure modes: every unattributable shape falls back ──
 #
-# The pre-fix bug class was the WRONG-SCHEDULE strike: an error the parser
-# could not safely map to a plan was either attributed anyway (operator
+# The unguarded bug class is the WRONG-SCHEDULE strike: an error the parser
+# cannot safely map to a plan is either attributed anyway (operator
 # index, above) or never exercised with the shapes that actually reach
 # the parser.  These close the remaining traps: an actor-named detail
 # whose only pending plan is NOT singleton-stamped, and the three
@@ -2095,7 +2095,7 @@ async def test_the_march_arc_defers_the_peer_quietly_until_the_operator_knob_fre
             "that is exactly what makes it never drain"
         )
         assert _failure_updates(conn) == [], (
-            f"tick {tick_no + 1}: nobody may strike - the pre-fix march put "
+            f"tick {tick_no + 1}: nobody may strike - the unguarded march put "
             "the peer in this UPDATE with a manufactured micro-grant timeout "
             "and auto-disabled it on tick 3"
         )

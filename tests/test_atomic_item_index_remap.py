@@ -51,7 +51,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # The scenario every atomic-arm case shares: 25 items, chunk_size=10,
 # the NUL at stream position 23 - chunk 3 (items 20-24), chunk-local
-# position 3. Pre-fix, both backends named an index in the WRONG
+# position 3. Unguarded, both backends name an index in the WRONG
 # coordinate space ("item 3" on PG, a bare ValueError in memory).
 _COUNT = 25
 _CHUNK = 10
@@ -174,8 +174,8 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index_on_
     backend cannot reach: PG's ``enqueue_batch_atomic`` re-chunks the
     stream inside the backend and each chunk crosses the bulk build
     loop, whose per-item NUL guard now annotates at ``index_base`` +
-    the chunk position. Pre-fix, this arm named CHUNK-LOCAL position 3
-    while confidently pointing the caller's retry at a stream position
+    the chunk position. A CHUNK-LOCAL position 3 here
+    points the caller's retry at a stream position
     that was never attempted.
 
     Parity with the in-memory case above is the point: same scenario,

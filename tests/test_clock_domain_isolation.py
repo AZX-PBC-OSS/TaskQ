@@ -112,7 +112,7 @@ async def _skew_actor(_payload: _SkewPayload) -> None:
 async def test_schedule_to_close_interval_anchored_to_server_clock(pg_dsn: str) -> None:
     """An interval-form schedule_to_close must be anchored to the SERVER
     clock on every arm.  The caller's stamp simulates a client clock 120 s
-    ahead of PG; pre-fix, the batch arm computes ``args.scheduled_at +
+    ahead of PG; unguarded, the batch arm computes ``args.scheduled_at +
     interval`` in Python and stores a server_now+720 s absolute (drift
     +120 s).  The single arm already computes server-side - it is the
     regression guard; the batch arm is the failing case.  The COPY arm is
@@ -160,7 +160,7 @@ async def test_copy_path_created_at_server_stamped_dedup_window_holds(pg_dsn: st
     """Rows written by ``enqueue_batch_fast`` must carry a SERVER ``created_at``
     so the ``unique_for`` preflight (``created_at > now() - interval``,
     server-side) measures the true age.  The Python clock is skewed -120 s:
-    pre-fix the COPY stamps ``created_at`` in the Python domain, the first
+    unguarded the COPY stamps ``created_at`` in the Python domain, the first
     row looks 120 s older than it is, and the duplicate arriving inside the
     30 s window escapes dedup - a duplicate side effect."""
     from dataclasses import replace
@@ -183,7 +183,8 @@ async def test_copy_path_created_at_server_stamped_dedup_window_holds(pg_dsn: st
         second = replace(first, id=new_job_id())
         dup = await backend.enqueue(second)
 
-        assert dup.id == first.id  # deduplicated onto the first row; pre-fix: a NEW row is inserted
+        # Deduplicated onto the first row; unguarded: a NEW row is inserted.
+        assert dup.id == first.id
     finally:
         await stack.aclose()
 
@@ -227,7 +228,7 @@ async def test_immediate_enqueue_dispatchable_under_positive_skew(pg_dsn: str) -
     """With the *producer host's* clock skewed +5 s ahead of the backend
     host (and the PG server), an immediate enqueue must still land
     ``status='pending'`` and be dispatchable NOW - the server is the only
-    arbiter.  Pre-fix: the client stamped ``scheduled_at`` from its own
+    arbiter.  A client that stamps ``scheduled_at`` from its own
     skewed Python clock (``client/_args.py``), the backend's Python
     pre-decision kept it (it reads as future to the unskewed backend
     clock), and the server CASE (``COALESCE($14, clock_timestamp()) >
@@ -295,8 +296,8 @@ async def test_future_enqueue_still_deferred_under_skew(pg_dsn: str) -> None:
 async def test_copy_path_immediate_status_pending_under_positive_skew(pg_dsn: str) -> None:
     """The COPY path's immediate row is decided by the fixup UPDATE's server
     CASE: ``scheduled_at=None`` lands ``'pending'`` with a server-stamped
-    ``scheduled_at`` even with the Python clock +5 s ahead.  Pre-fix the
-    Python pre-decision (``args.scheduled_at > batch_now``) failed loudly
+    ``scheduled_at`` even with the Python clock +5 s ahead.  A
+    Python pre-decision (``args.scheduled_at > batch_now``) fails loudly
     on None (TypeError)."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=5))
     try:
@@ -368,11 +369,11 @@ async def test_in_memory_parity_immediate_and_future() -> None:
 @_integration
 async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
     """C1 pin: fail a running job with ``retry_delay=30s`` while the worker's
-    Python clock is 120s BEHIND the server.  Pre-fix: the caller computed
-    ``next_scheduled_at = python_now + 30s`` and the SQL stored/compared that
+    Python clock is 120s BEHIND the server.  A caller that computes
+    ``next_scheduled_at = python_now + 30s`` and SQL that stores/compares that
     Python-domain stamp - it lands 90s in the server's past, the
     ``$3 > clock_timestamp()`` CASE yields ``'pending'`` and the job is
-    immediately re-dispatchable: exponential backoff voided.  Post-fix the
+    immediately re-dispatchable: exponential backoff voided.  The server instead
     server computes ``now() + 30s`` → ``'scheduled'``, not due, not
     dispatchable."""
     from taskq.backend._protocol import ErrorInfo
@@ -641,8 +642,8 @@ async def test_batch_immediate_stamp_is_statement_time_not_txn_start(pg_dsn: str
     """``enqueue_batch`` on a caller-owned transaction that has been open
     for 0.6 s must stamp an immediate (``scheduled_at=None``) row with the
     STATEMENT-time server clock (``clock_timestamp()``) - matching the
-    single-enqueue template and the COPY fixup.  Pre-fix the batch template
-    used the transaction-start ``now()``, pinning every immediate batch
+    single-enqueue template and the COPY fixup.  A batch template
+    using the transaction-start ``now()`` pins every immediate batch
     item to when the caller's transaction began (0.6 s in the past here)."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=0))
     try:
@@ -678,7 +679,7 @@ async def test_batch_immediate_stamp_is_statement_time_not_txn_start(pg_dsn: str
     drift = (rec["scheduled_at"] - rec["stmt_now"]).total_seconds()
     assert abs(drift) < 0.3, (
         f"immediate batch scheduled_at drifted {drift:+.2f}s off statement time "
-        f"(pre-fix: pinned to the 0.6s-old transaction start)"
+        f"(unguarded: pinned to the 0.6s-old transaction start)"
     )
 
 
@@ -754,9 +755,9 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
 @_integration
 async def test_result_ttl_anchored_to_server_clock(pg_dsn: str) -> None:
     """Enqueue with ``result_ttl=60 s`` while the Python clock is +300 s
-    ahead.  Pre-fix: ``result_expires_at = python_now + 60 s`` → results
+    ahead.  A caller-domain ``result_expires_at = python_now + 60 s`` lets results
     live 300 s longer than configured (and the server-side TTL sweep
-    honours that wrong stamp).  Post-fix: ``clock_timestamp() + 60 s`` on
+    honours that wrong stamp).  The statement uses ``clock_timestamp() + 60 s`` on
     the single and batch arms; the COPY arm is already server-stamped by
     the fixup UPDATE (pinned here too)."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=300))

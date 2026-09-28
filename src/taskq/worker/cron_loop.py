@@ -793,7 +793,7 @@ def _mark_failure_span(
     # exception (see _BufferedFailureTelemetry), not always an Exception.
     exc: BaseException,
 ) -> None:
-    """The telemetry half of the old per-failure except-branch: mark the
+    """The telemetry half of the per-failure handling: mark the
     (already-open) failure span ERROR and attach ``cron.auto_disabled``.
 
     The span status description and the event carry
@@ -1165,8 +1165,8 @@ async def _enqueue_planned_fires(
       failed batch rolls back to the savepoint, leaving the caller's
       transaction alive and the tick's remaining bookkeeping, the
       survivors' advance, the suppression UPDATE, the strikes, committable.
-      Without it, the failure UPDATE below the old inline except-branch
-      raised ``InFailedSQLTransactionError`` itself: no strike ever
+      Without it, the failure UPDATE below would raise
+      ``InFailedSQLTransactionError`` itself: no strike ever
       persisted, while the span/metric telemetry still claimed every
       schedule failed (and the leader's backstop guard counted the
       non-transient abort toward killing the worker).
@@ -1867,9 +1867,9 @@ async def _skip_already_delivered_overlap_twins(
         # (pending/scheduled), in progress (running), delivered
         # (succeeded), or deliberately suppressed by operator intent
         # (cancelled/abandoned - the cancel paths terminalise exactly the
-        # rows the old pending/scheduled filter matched, so an
-        # operator-refused twin dropped out of the covered prefix and the
-        # schedule re-fired it; GH issue #462).  Counting a claimed twin
+        # rows a bare pending/scheduled filter matches, so an
+        # operator-refused twin drops out of the covered prefix and the
+        # schedule re-fires it; GH issue #462).  Counting a claimed twin
         # is safe against over-coverage: a holder that dies WITH retry
         # budget is re-pended by the reclaim sweep with its delivery
         # obligation intact, and one that dies without it terminalises to

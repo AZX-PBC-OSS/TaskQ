@@ -1238,7 +1238,7 @@ async def test_soak_stage2_names_a_survivor_within_its_bound() -> None:
 async def test_soak_stage2_surfaces_a_reaped_task_crash() -> None:
     """A residue task that dies with a REAL exception instead of the
     delivered cancellation is a bootstrap finding, not silence: stage 2
-    must name the task and its exception.  The pre-fix shape retrieved
+    must name the task and its exception.  The unguarded shape retrieved
     the exception and suppressed it - a crashing cleanup scored green."""
     baseline = frozenset(asyncio.all_tasks())
     worker_task = asyncio.create_task(_hygiene_noop(), name="soak-reap-done-worker")

@@ -686,9 +686,9 @@ async def test_cron_tick_timeout_records_duration_and_timeout_without_rows(
     """The cron tick cut by its iteration deadline must record a duration
     sample and a ``sweep_timeouts`` increment for ``cron`` - and NO row
     sample (``fired`` stayed unbound, so a 0-row sample would be
-    indistinguishable from a healthy tick with nothing due).  Pre-fix the
-    cron loop emitted no sweep metric at all; this is the pin that the
-    deadline path now reports like every other leader loop."""
+    indistinguishable from a healthy tick with nothing due).  This is
+    the pin that the deadline path reports like every other leader loop
+    - an unreported deadline cut is exactly the silent healthy tick."""
 
     async def _timeout_tick(*a: object, **k: object) -> None:
         raise TimeoutError("iteration deadline")

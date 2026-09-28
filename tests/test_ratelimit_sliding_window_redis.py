@@ -929,7 +929,7 @@ async def test_peek_log_after_window_expiry_not_exhausted(redis_url: str) -> Non
     acquire the sorted set still holds the aged-out entries - the peek
     must count only in-window entries (ZCOUNT against the store's TIME)
     and report NOT exhausted, because the very next acquire IS allowed.
-    Pre-fix the peek used ZCARD (the whole key) and overstated exhaustion.
+    A ZCARD-based peek (the whole key) overstates exhaustion.
     """
     name = _unique_name()
     sw = SlidingWindow(

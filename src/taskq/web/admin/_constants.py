@@ -6,14 +6,18 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, Request
 
 from taskq._json import check_no_nul_str
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.client._args import (
     _MAX_TAG_LENGTH,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the enqueue-side tag length contract rather than redefining a drifting copy of it.
 )
 
-_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
-)
-_ACTIVE_STATUSES: frozenset[str] = frozenset({"pending", "scheduled", "running"})
+# The status closed sets are the STATE MACHINE's own (statemachine.py is
+# their single home and the prune sweep's archive encoding): deriving them
+# here, never hand-copying the string sets, means a status added to the
+# machine follows without this module's copy drifting out from under the
+# admin pages' filters.
+_TERMINAL_STATUSES: frozenset[str] = TERMINAL_STATUSES
+_ACTIVE_STATUSES: frozenset[str] = ACTIVE_STATUSES
 _ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _ACTIVE_STATUSES
 _PAGE_SIZE: int = 50
 _FETCH_SIZE: int = _PAGE_SIZE + 1
@@ -137,9 +141,10 @@ def reject_unknown_query_params(request: Request, allowed: Collection[str]) -> N
     """Refuse query parameters the page does not declare with a clean 400.
 
     FastAPI drops undeclared query parameters, so a mistyped filter
-    (``actr`` typed for ``actor``) used to render the page 200-UNFILTERED:
-    the operator's ask was silently ignored, and the unfiltered render
-    read as the answer to it. The admin pages refuse instead -- the same
+    (``actr`` typed for ``actor``) would otherwise render the page
+    200-UNFILTERED: the operator's ask silently ignored, and the
+    unfiltered render read as the answer to it. The admin pages refuse
+    instead -- the same
     clean-400 contract the declared filters' own parsers serve -- naming
     the offending keys and what the page accepts.
     """

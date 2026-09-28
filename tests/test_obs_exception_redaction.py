@@ -1598,7 +1598,7 @@ def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
     literal ``\\n`` two-char sequence, and any markers the message carries
     ride right after it.
 
-    Red for the pre-fix escaped anchor (``[ \\t]*``): every shape below
+    Red for the unguarded escaped anchor (``[ \\t]*``): every shape below
     shipped its row value verbatim, including the group shape where repr
     renders the member inline -- and the embedded-traceback shape the
     escaped pattern's MULTILINE leg exists for.
@@ -1891,7 +1891,7 @@ _B64_CREDS_463 = "ZGVwbG95LWJvdDpWc21aN2Yza1Exd1A5eFIy"  # deploy-bot:<secret>
 )
 def test_bare_scheme_and_non_bearer_scheme_credentials_are_masked(raw: str) -> None:
     """(#463 round 2, red-proven against a real ``admin_audit`` row) The
-    pre-fix chain required the ``Authorization:`` header name and the
+    unguarded chain required the ``Authorization:`` header name and the
     ``bearer`` scheme word, so the raw header VALUE (``Bearer <opaque>``
     -- the header name is the dict key, not the value) and the
     ``Token``/``Basic`` scheme words shipped credential material
