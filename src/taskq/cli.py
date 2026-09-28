@@ -2211,8 +2211,14 @@ def _ui_serve(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import APIRouter, Depends, FastAPI, Response
-    from fastapi.responses import RedirectResponse
+    try:
+        from fastapi import APIRouter, Depends, FastAPI, Response
+        from fastapi.responses import RedirectResponse
+    except ImportError as exc:
+        raise ImportError(
+            "the admin UI requires the [fastapi] extra. "
+            "Install it with: pip install 'taskq-py[fastapi]'"
+        ) from exc
 
     from taskq.web.admin import create_router, setup_admin_state
 

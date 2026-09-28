@@ -125,6 +125,15 @@ uv run taskq migrate status
 uv run taskq migrate up
 ```
 
+If you installed TaskQ with pip (`pip install taskq-py`) instead of working from
+a clone, run the same commands through the installed console script — no `uv`
+or repo checkout needed:
+
+```bash
+taskq migrate status
+taskq migrate up
+```
+
 `migrate up` is idempotent: re-running is a no-op until new migrations land. It
 takes a Postgres advisory lock, so concurrent invocations (two replicas, a retried
 deploy job) serialize instead of racing; a caller that cannot get the lock within

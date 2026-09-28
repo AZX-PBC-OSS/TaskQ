@@ -257,6 +257,16 @@ result = await handle.wait(timeout=30.0)
 print(result.message_id)  # SendEmailResult.message_id
 ```
 
+`wait()` returns only once a **consumer** has run the job. Nothing executes it until then: in production the worker from the previous section is the consumer; in an in-process demo, register a stub and drain the backend before waiting:
+
+```python
+backend.register_stub(send_email, lambda payload, ctx: SendEmailResult(message_id="msg-123"))
+await backend.run_until_drained()
+result = await handle.wait(timeout=30.0)  # now resolves
+```
+
+Without a consumer, `wait()` simply times out after `timeout` seconds — a bare `TimeoutError` with no other signal.
+
 `wait()` raises:
 
 - `JobFailed`: the job reached a non-success terminal state (`failed`, `cancelled`, `crashed`, or `abandoned`); the raw job row is attached as `exc.row`.

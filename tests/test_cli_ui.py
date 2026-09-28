@@ -741,6 +741,41 @@ def test_ui_serve_lifespan_creates_redis_client_when_redis_url_set(
     assert redis_client.aclose_calls == 1
 
 
+def test_ui_serve_missing_fastapi_extra_wrapped_with_install_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the [fastapi] extra, `taskq ui serve` raises an ImportError with the install command.
+
+    installation.md promises "a clear ImportError with install instructions"
+    when the admin UI is run without its extra; a raw ModuleNotFoundError
+    traceback names no remedy. Simulated the same way as the redis variant
+    below/above: sys.modules poisoning makes the import fail even though the
+    dev environment has fastapi installed.
+    """
+    import sys
+
+    import taskq.cli as cli_mod
+
+    pool_cm = _FakeAsyncCM(_FakePool())
+    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool_cm)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+
+    from taskq.cli import _ui_serve
+
+    settings = _dev_settings(monkeypatch)
+
+    with pytest.raises(ImportError, match=r"taskq-py\[fastapi\]"):
+        _ui_serve(
+            pg_dsn="postgresql://u:p@h:5432/db",
+            schema="taskq",
+            redis_url=None,
+            host="127.0.0.1",
+            port=9999,
+            run_migrate=False,
+            settings=settings,
+        )
+
+
 def test_ui_serve_lifespan_redis_import_error_wrapped_with_install_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

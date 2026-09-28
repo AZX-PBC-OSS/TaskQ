@@ -36,6 +36,10 @@ uv add "taskq-py[redis,fastapi]"          # full
 
 **Extras:**
 
+> **Name check:** the package is `taskq-py`. There is an unrelated `taskq`
+> distribution on PyPI — `pip install "taskq[redis]"` installs that package,
+> not TaskQ. Always use the `taskq-py` name.
+
 | Extra | Installs | Features enabled |
 |-------|----------|-----------------|
 | `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters (`TokenBucket`, `SlidingWindow`) |
