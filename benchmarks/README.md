@@ -9,12 +9,32 @@ regression testing; see the harness docstrings for how individual benches work.
 |---|---|
 | `bench_hotspots.py` | The A/B harness itself (19 benches + stall probes + cProfile mode) |
 | `latency_ladder.py` | The ops-promised latency ladder: claim-to-start / SSE first frame / e2e completion at a concurrency ladder, notify vs poll arms, interleaved batches with correctness asserted |
+| `backlog_throughput.py` | The backlog campaign at REAL queue depth (1k/10k/100k/1M pending rows): claim latency p50/p95/p99 vs depth, poll-vs-NOTIFY wakeup latency on a real worker at depth, and the dequeue-throughput ceiling across a 1/4/16-worker ladder. SERIAL. Artifact: `results/backlog-throughput.json` (tracked) |
+| `archive_scale.py` | The archive at 10M rows, plain vs hypertable+columnstore: the admin's (finished_at DESC, id DESC) keyset walk at real depth (10k-page walk + red/green per-page-vs-depth legs), count queries, the retention drain, and the columnstore's storage win. SERIAL. Artifact: `results/archive-scale.json` (tracked) |
+| `backlog_rss_soak.py` | The memory soak, compressed time: the real worker (`worker_main_async`) drains 50k jobs while VmRSS is sampled; least-squares slope pinned in `results/backlog-rss-soak.json` (tracked) |
 | `stress_dispatch.py` | ~20s per-job CPU-path stress (no Postgres), prints jobs/sec |
 | `gil_sample.py` | In-process GIL sampler + flamegraph (py-spy fallback for macOS) |
 | `run_bench.py` | CLI runner: structured JSON, baselines, regression gate |
 | `profile_hotspot.py` | Profile one named bench under cProfile / pyinstrument / gil-sampler |
 | `run_matrix.sh` | Run the suite across Python 3.12/3.13/3.14 via uv |
 | `results/` | Run history + baselines + profile artifacts (mostly gitignored; the `timescale-*.json` A/B runs are tracked — the docs' numbers cite them) |
+
+The scale campaign's artifacts are tracked and are what the pins in
+`tests/test_scan_budget.py` and the migration rationales cite:
+`results/backlog-throughput.json`, `results/archive-scale.json`,
+`results/backlog-rss-soak.json` (plus the earlier
+`results/timescale-tradeoffs*.json`).
+
+## Scan-regression pins
+
+`tests/test_scan_budget.py` pins the plan shapes at depth (marked
+`load_sensitive`: the serial lane, never under `-n`): the dispatch CTE
+and the claimable probe at a 100k due backlog (row-touches bound), and
+the admin archive tab's keyset pages at a 100k archive (index seeks on
+`jobs_archive_page_idx`, the row-wise Index Cond the UNION page shape
+provides, and row-exactness of the walked pages against a reference
+ORDER BY). A future regression to a scan — or to the OR-wrapped cursor
+predicate that defeats the seek — goes red in CI.
 
 ## Quick spot-check
 

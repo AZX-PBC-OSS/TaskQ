@@ -51,6 +51,16 @@ from taskq.worker.deps import WorkerDeps, open_worker_deps
 pytestmark = pytest.mark.integration
 
 
+# Why every redis-marked test here rides ``private_redis_url`` (a per-test
+# disposable Dragonfly), never the shared pair: these pins assert SUBSCRIBER
+# TIMING - pub/sub wake and delivery inside bounded windows. The shared
+# broker's co-tenancy stall band lands on exactly that surface (the historical
+# weather: this module's reconnect pin reded first and moved to
+# ``killable_redis_container``; the band then found the wake pins). A private
+# broker has no co-tenants and ends the class by construction. See
+# ``taskq.testing.fixtures.redis_url``'s tenancy contract.
+
+
 # ── Payload models ──────────────────────────────────────────────────────────
 
 
@@ -327,7 +337,7 @@ async def _pg_shows_the_full_stream(pool: asyncpg.Pool, schema: str, job_id: UUI
 @pytest.mark.redis
 async def test_redis_subscriber_receives_progress_events(
     module_pg_schema: ModulePgSchema,
-    clean_redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """Raw Redis pubsub subscriber receives all progress events
     emitted by an actor (5 progress calls). Events arrive with correct
@@ -339,7 +349,7 @@ async def test_redis_subscriber_receives_progress_events(
     schema: str = module_pg_schema.schema_name
 
     await _truncate_dynamic_tables(pg_dsn, schema)
-    stack, deps, backend = await _setup_worker(pg_dsn, clean_redis_url, schema=schema)
+    stack, deps, backend = await _setup_worker(pg_dsn, private_redis_url, schema=schema)
 
     try:
         wid = new_uuid()
@@ -350,7 +360,7 @@ async def test_redis_subscriber_receives_progress_events(
 
         # Subscribe via raw Redis pubsub - proven pattern from test_progress_redis.py
         redis_client = redis_async.from_url(
-            clean_redis_url, decode_responses=False, socket_timeout=None
+            private_redis_url, decode_responses=False, socket_timeout=None
         )
         received: list[dict[str, object]] = []
         try:
@@ -450,7 +460,7 @@ async def test_redis_subscriber_receives_progress_events(
 @pytest.mark.redis
 async def test_multiple_subscribers_receive_same_events(
     module_pg_schema: ModulePgSchema,
-    clean_redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """Two concurrent TaskQ.stream() calls both receive terminal
     events (Redis pub/sub fans out to all subscribers on the same channel).
@@ -463,9 +473,9 @@ async def test_multiple_subscribers_receive_same_events(
 
     await _truncate_dynamic_tables(pg_dsn, schema)
 
-    tq1 = await _open_taskq(pg_dsn, schema=schema, redis_url=clean_redis_url, poll_timeout=0.3)
-    tq2 = await _open_taskq(pg_dsn, schema=schema, redis_url=clean_redis_url, poll_timeout=0.3)
-    stack, deps, backend = await _setup_worker(pg_dsn, clean_redis_url, schema=schema)
+    tq1 = await _open_taskq(pg_dsn, schema=schema, redis_url=private_redis_url, poll_timeout=0.3)
+    tq2 = await _open_taskq(pg_dsn, schema=schema, redis_url=private_redis_url, poll_timeout=0.3)
+    stack, deps, backend = await _setup_worker(pg_dsn, private_redis_url, schema=schema)
 
     try:
         wid = new_uuid()
@@ -513,7 +523,7 @@ async def test_multiple_subscribers_receive_same_events(
 @pytest.mark.redis
 async def test_subscriber_filters_per_job_channel_no_cross_talk(
     module_pg_schema: ModulePgSchema,
-    clean_redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """Subscriber on job A's channel receives NO events from job B
     (Redis pub/sub per-job channel isolation).
@@ -528,7 +538,7 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
     schema: str = module_pg_schema.schema_name
 
     await _truncate_dynamic_tables(pg_dsn, schema)
-    stack, deps, backend = await _setup_worker(pg_dsn, clean_redis_url, schema=schema)
+    stack, deps, backend = await _setup_worker(pg_dsn, private_redis_url, schema=schema)
 
     try:
         # Enqueue both jobs; dispatch_batch returns the oldest pending
@@ -545,7 +555,7 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
         channel_a = progress_channel(schema, job_id_a)
 
         redis_client = redis_async.from_url(
-            clean_redis_url, decode_responses=False, socket_timeout=None
+            private_redis_url, decode_responses=False, socket_timeout=None
         )
         received_a: list[dict[str, object]] = []
         try:

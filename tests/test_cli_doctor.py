@@ -171,6 +171,36 @@ def _invoke(*extra: str) -> Any:
     return runner.invoke(app, ["doctor", "--actors", _REGISTRY_PATH, *extra])
 
 
+def test_doctor_stranded_scan_applies_the_worker_liveness_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doctor's stranded-jobs scan must filter worker rows by the admin
+    liveness window, the same arm the leader sweep applies (a worker row
+    whose heartbeat went stale is not serving the queue until the
+    stale-worker sweep removes it). Without the filter, a ghost worker row
+    hides an unserved queue from the operator mid-incident - the false-green
+    the sweep's own comment forbids. Pinned on the issued SQL and its bound
+    parameter so the arm cannot silently drop out again; the end-to-end
+    walkthrough (tests/test_ops_flow_walkthroughs.py) proves the behavior
+    against a real stale row."""
+    executed = _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+    )
+
+    result = _invoke()
+
+    assert result.exit_code == 0
+    stranded_sql = [q for q in executed if ".jobs " in q]
+    assert len(stranded_sql) == 1, f"expected exactly one stranded scan, saw {len(stranded_sql)}"
+    assert "last_seen_at > statement_timestamp()" in stranded_sql[0], (
+        "the stranded scan lost the worker-liveness arm - a stale worker row "
+        "will again hide an unserved queue from doctor"
+    )
+    assert "make_interval" in stranded_sql[0]
+
+
 def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
