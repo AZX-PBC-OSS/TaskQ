@@ -10,3 +10,4 @@
 !backlog-throughput.json
 !archive-scale*.json
 !backlog-rss-soak.json
+!hotpath-fix-sweep-render.json
