@@ -822,7 +822,7 @@ def test_ui_serve_lifespan_redis_import_error_wrapped_with_install_hint(
     app = captured["app"]
     assert isinstance(app, FastAPI)
 
-    with pytest.raises(ImportError, match="taskq\\[redis\\]"), TestClient(app):
+    with pytest.raises(ImportError, match="taskq-py\\[redis\\]"), TestClient(app):
         pass
 
 
