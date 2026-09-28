@@ -388,6 +388,11 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
             "an unbounded force_flush turns the watchdog's exit into a second hang"
         )
         assert codes == [mod.EXIT_WATCHDOG]
+        # Derived bound: the exporter's flush deadline (1s) bounds trip()'s
+        # wait; 5.0 s = the deadline plus 4x loop/thread scheduling epsilon,
+        # half the enclosing join(timeout=10.0) — the pin trips strictly
+        # inside the guard, and the unbounded shape hung on the exporter
+        # forever.
         assert time.monotonic() - started < 5.0, (
             f"trip() must not wait on the exporter beyond the flush deadline "
             f"(took {time.monotonic() - started:.1f}s)"
@@ -808,7 +813,14 @@ async def test_shutdown_watchdog_anchors_deadline_on_first_signal(
     t[0] += 8.0  # 8s of drain before shutdown_event is set
     shutdown.set()
     t[0] += 3.0  # 11s since the first signal - over the 10s deadline
-    await asyncio.sleep(0.05)
+    # Poll-asserted, not a bare sleep: the trip must land within a few
+    # dump intervals (0.01s each) of the deadline being crossed. 2.0 s =
+    # ~200 intervals — pure scheduling slack; a watchdog that never trips
+    # (the regression this pins) keeps the poll red.
+    for _ in range(200):
+        if exit_codes == [2]:
+            break
+        await asyncio.sleep(0.01)
 
     assert exit_codes == [2], (
         "Watchdog anchored on the first signal must trip at 11s > 10s "
@@ -907,7 +919,14 @@ async def test_shutdown_watchdog_straggler_dumps_wait_for_back_half(
         await asyncio.sleep(0.15)  # ~3 dump intervals, still elapsed 0
         assert dumps == [], f"no straggler dumps before half the deadline is consumed: {dumps}"
         t[0] = 0.45  # past the 0.5 gate (0.3s), short of the 0.6s deadline
-        await asyncio.sleep(0.15)
+        # Poll-asserted, not a bare sleep: the dump must land within a few
+        # dump intervals (0.05s) of the gate opening. Up to 1.0 s = 20
+        # intervals — scheduling slack only; a watchdog that never dumps
+        # (the regression this pins) keeps the poll red.
+        for _ in range(20):
+            if dumps:
+                break
+            await asyncio.sleep(0.05)
         assert dumps, "dumps must fire once shutdown is in the back half of its budget"
     finally:
         await watchdog.cancel()
@@ -998,8 +1017,15 @@ async def test_shutdown_watchdog_logs_once_when_countdown_starts() -> None:
                 f"no countdown, no record: {captured}"
             )
             started.set()
-            await asyncio.sleep(0.15)
-            armed = [e for e in captured if e.get("event") == "shutdown-watchdog-armed"]
+            # Poll-asserted, not a bare sleep: the countdown-start record
+            # must land within a few dump intervals (0.05s) of the phase-1
+            # signal. Up to 1.0 s = 20 intervals — scheduling slack only.
+            armed = []
+            for _ in range(20):
+                armed = [e for e in captured if e.get("event") == "shutdown-watchdog-armed"]
+                if len(armed) == 1:
+                    break
+                await asyncio.sleep(0.05)
             assert len(armed) == 1, f"exactly one countdown-start record: {captured}"
     finally:
         await watchdog.cancel()

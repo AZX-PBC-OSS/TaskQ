@@ -319,6 +319,10 @@ async def test_hostile_finally_cannot_defer_the_deadline(transactional: bool) ->
     assert outcome == "scheduled", outcome
     # The 3600s shielded cleanup did not hold the attempt: the deadline
     # ended it in bounded loop time.
+    # Derived bound: the clock is a FakeClock, so the attempt consumes loop
+    # turns, not wall time — 5.0 s of wall covers thousands of turns. It is
+    # a wedge tripwire (co-tenancy slack ~50x the observed sub-100ms path),
+    # not a measurement.
     assert elapsed < 5.0, elapsed
     # The unwinding zombie is accounted for: the shutdown watchdog can
     # see it and the exit-proof hold parked on it before the re-pend.
@@ -715,6 +719,10 @@ async def test_fleet_of_deadline_hits_keeps_capacity_and_slots() -> None:
         elapsed = asyncio.get_running_loop().time() - started
 
     assert all(o == "scheduled" for o in outcomes), outcomes
+    # Derived bound: FakeClock again — n_jobs deadline hits cost O(n) loop
+    # turns, microseconds each; 10.0 s of wall is the wedge tripwire
+    # (co-tenancy slack over the observed sub-second fleet drain), not a
+    # latency measurement.
     assert elapsed < 10.0, f"the fleet wedged: {elapsed}s for {n_jobs} deadline hits"
     assert len(backend.mark_failed_or_retry_calls) == n_jobs, "every attempt recorded"
     assert not backend.mark_succeeded_calls, "no zombie's return flipped a row"

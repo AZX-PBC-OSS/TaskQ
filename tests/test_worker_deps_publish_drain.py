@@ -167,6 +167,9 @@ async def test_drain_completes_fast_when_publish_resolves_quickly(
 
     elapsed = loop.time() - start
 
+    # Derived bound: a 10ms publish task drains in a couple of loop turns at
+    # close; 1.0 s = 100x the task's own cost — co-tenancy slack over an
+    # effectively zero-cost path.
     assert elapsed < 1.0
     assert task.done()
     assert fake_client.closed is True

@@ -128,6 +128,9 @@ async def test_hook_timeout_returns_within_time_budget() -> None:
     start = time.monotonic()
     await invoke_on_success(hanging_hook, job_row, None, 0.3)
     elapsed = time.monotonic() - start
+    # Derived bound: the hook's own timeout is 0.3s; 1.0 s ≈ 3x the budget —
+    # the return lands at the timeout plus loop-turn epsilon, never at the
+    # hook's 999s sleep.
     assert elapsed < 1.0
 
 
@@ -333,6 +336,11 @@ async def test_on_success_hook_timeout_does_not_crash_consumer() -> None:
     )
     elapsed = time.monotonic() - start
     assert result == "succeeded"
+    # Derived bound: the whole round runs on fakes with a FakeClock — the
+    # body and the hanging hook each cost their own timeout (0.3s) plus loop
+    # turns, so the round's real floor is well under 1 s. 2.0 s ≈ 3x the
+    # hook timeout's contribution plus co-tenancy slack: the unbounded shape
+    # waited the hook's 999s sleep.
     assert elapsed < 2.0
 
 
