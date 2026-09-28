@@ -15,7 +15,18 @@
             }
         })();
     </script>
-    {% if realtime_mode | default("polling") != "realtime" and not suppress_refresh | default(false) %}
+    {% if not suppress_refresh | default(false) %}
+    {# The page's ONLY refresh transport is this meta refresh, so it is
+       suppressed ONLY by a page declaring its own (suppress_refresh) -
+       never by the badge mode alone. Keying the suppression off
+       realtime_mode left every page without JS machinery (history,
+       workers, actors, batches, schedules, rate-limits, reservations,
+       leader, queue detail) frozen in real-time mode: a healthy Redis
+       suppressed the meta refresh while nothing replaced it. The pages
+       that own their machinery set the flag themselves: /jobs always
+       (admin.js; a paused table is frozen by contract), /queues in
+       real-time mode (the htmx poll is that mode's transport), the job
+       detail page always (realtime.js polls in every mode). #}
     {# The refresh delay is evaluated against the BROWSER's clock, and the
        browser floors the attribute at whole seconds: ``content="0"`` is
        honored as "reload immediately", so a sub-second
@@ -26,8 +37,19 @@
     {% endif %}
     <title>{% block title %}TaskQ Admin{% endblock %}</title>
     <link rel="stylesheet" href="{{ base_path }}/static/admin.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    {# Alpine loads from the SAME local /static dir as htmx: an air-gapped
+       ops deployment (the admin UI's natural habitat) must not lose every
+       Alpine-driven control - the dark toggle, the status combobox, the
+       jobs page's live machinery - to a CDN it cannot reach. The shipped
+       alpine.min.js IS the version the CDN tag used to pin (3.14.9). #}
+    <script defer src="{{ base_path }}/static/alpine.min.js"></script>
+    {# lucide ships from the SAME local /static dir as Alpine and htmx:
+       the air-gapped ops deployment argument that moved Alpine applies
+       verbatim - an unpkg tag renders every data-lucide icon as an EMPTY
+       <i> the moment the deployment cannot reach the CDN (the icon boot
+       is guarded, so the page survives; the decoration does not). The
+       shipped file IS unpkg's lucide v0.544.0 UMD build, pinned. #}
+    <script src="{{ base_path }}/static/lucide.min.js"></script>
     <script src="{{ base_path }}/static/htmx.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
@@ -113,5 +135,22 @@
     <footer class="border-t border-slate-200 dark:border-slate-800 py-4 text-center text-xs text-slate-500 dark:text-slate-400">
         <p>TaskQ Admin</p>
     </footer>
+    {# lucide never created its icons: nothing called createIcons() at
+       boot, so every data-lucide icon (the jobs tabs, the row's view
+       action, the empty-state inbox, the pagination chevrons) rendered as
+       an EMPTY <i> on first paint - the row action was a 28px invisible
+       click target until admin.js's first poll swap happened to re-create
+       the jobs table's. Create on first paint, and re-create after every
+       htmx swap: the swapped-in fragments carry icon nodes no other code
+       touches. (admin.js's own createIcons after its fetch swaps stays -
+       the double call is idempotent.) Guarded: the lucide CDN tag is the
+       one script this chrome loads remotely, and a deployment that cannot
+       reach it must lose the decoration, never the page. #}
+    <script>
+        if (window.lucide) lucide.createIcons();
+        document.body.addEventListener("htmx:afterSwap", function () {
+            if (window.lucide) lucide.createIcons();
+        });
+    </script>
 </body>
 </html>

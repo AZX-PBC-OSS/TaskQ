@@ -152,12 +152,17 @@ def _render_base_with_mode(
     pool: _StubPool,
     realtime_mode: str,
     mode_label: str,
+    suppress_refresh: bool = False,
 ) -> str:
     """Render _base.html with the given realtime_mode and mode_label."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     env = bundle.templates
-    return env.get_template("_base.html").render(realtime_mode=realtime_mode, mode_label=mode_label)
+    return env.get_template("_base.html").render(
+        realtime_mode=realtime_mode,
+        mode_label=mode_label,
+        suppress_refresh=suppress_refresh,
+    )
 
 
 def test_meta_refresh_present_in_polling_mode(
@@ -173,9 +178,16 @@ def test_meta_refresh_present_in_polling_mode(
 def test_meta_refresh_absent_in_realtime_mode(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """realtime_mode='realtime' → <meta http-equiv='refresh'> is absent."""
+    """A page that owns its own transport (suppress_refresh) renders no meta
+    refresh in real-time mode. The suppression is per-page, never
+    badge-keyed: a page with no JS machinery keeps the meta refresh in
+    every mode (test_review_ui_pins.py holds that matrix)."""
     html = _render_base_with_mode(
-        monkeypatch, stub_pool, realtime_mode="realtime", mode_label="real-time mode"
+        monkeypatch,
+        stub_pool,
+        realtime_mode="realtime",
+        mode_label="real-time mode",
+        suppress_refresh=True,
     )
     assert '<meta http-equiv="refresh"' not in html
 

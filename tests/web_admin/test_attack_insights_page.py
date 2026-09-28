@@ -555,7 +555,7 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
         setup_admin_state(app, bundle)
         app.include_router(bundle.router, prefix="/admin")
 
-        real = route_mod.fetch_wait_distribution
+        real = route_mod.fetch_wait_distribution  # pyright: ignore[reportPrivateImportUsage]  # Why: the route module re-imports the insights module's fetchers to bind them; the monkeypatch wraps the route's own binding, which is the point.
 
         async def slow_wait(conn: Any, **kwargs: Any) -> Any:
             await asyncio.sleep(0.5)
@@ -770,6 +770,156 @@ async def test_the_mode_badge_tells_the_same_truth_as_every_other_page(
         )
         assert "http-equiv" not in insights_html, (
             "a realtime deployment must not meta-refresh the insights page"
+        )
+    finally:
+        await pool.close()
+        _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]
+        _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_the_mode_decision_moves_the_transport_not_just_the_badge(
+    plain_dsn: str, lab: _Lab
+) -> None:
+    """The queues page's mode split, insights edition: POLLING mode
+    renders the meta refresh and no htmx poll — a page without JS
+    machinery stays live (the #570 contract); REALTIME mode renders the
+    htmx poll and NO meta refresh — the six archive-UNION aggregates
+    must not be re-fetched by both transports (#337's double-fetch,
+    #567's complaint); and an HX-Request poll tick returns the body
+    partial alone, never the whole document."""
+    from taskq.web.admin import _factory
+
+    _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]  # Why: the module-level 5s cache is the reset point the realtime-badge suite uses too.
+    _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    schema = lab.plain_twin.schema
+    pool = await asyncpg.create_pool(plain_dsn, min_size=1, max_size=2)
+    try:
+        polling_bundle = create_router(pool, schema=schema, base_path="/admin")
+        polling_app = FastAPI()
+        setup_admin_state(polling_app, polling_bundle)
+        polling_app.include_router(polling_bundle.router, prefix="/admin")
+        polling_mounted = _Mounted(schema=schema, app=polling_app, pool=pool)
+
+        polling_html = await _html(polling_mounted)
+        assert 'http-equiv="refresh"' in polling_html, (
+            "polling mode's no-JS liveness: the meta refresh is the transport"
+        )
+        assert "hx-get" not in polling_html, (
+            "polling mode runs ONE transport: the htmx poll must be off"
+        )
+
+        realtime_bundle = create_router(
+            pool, schema=schema, base_path="/admin", redis_client=_HealthyRedis()
+        )
+        realtime_app = FastAPI()
+        setup_admin_state(realtime_app, realtime_bundle)
+        realtime_app.include_router(realtime_bundle.router, prefix="/admin")
+        realtime_mounted = _Mounted(schema=schema, app=realtime_app, pool=pool)
+
+        realtime_html = await _html(realtime_mounted)
+        assert 'http-equiv="refresh"' not in realtime_html, (
+            "realtime mode's htmx poll is the page's only refresh: a meta "
+            "refresh alongside it re-fetches the six archive-UNION "
+            "aggregates every tick (the double-fetch)"
+        )
+        assert 'hx-trigger="every' in realtime_html, "the htmx poll is realtime's transport"
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=realtime_app), base_url="http://test"
+        ) as client:
+            tick = await client.get("/admin/insights", headers={"HX-Request": "true"})
+        assert tick.status_code == 200
+        assert "<html" not in tick.text, "the poll must return the partial, not the full page"
+        assert 'id="insights-body"' in tick.text, "the poll swaps the body partial"
+    finally:
+        await pool.close()
+        _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]
+        _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+
+# ── The poll tick's contract: the fragment IS the page's body ────────────
+
+
+async def test_a_parametrised_page_poll_keeps_its_selections_and_its_transport(
+    plain_dsn: str, lab: _Lab
+) -> None:
+    """The partial's contract on a page opened with SELECTIONS: the
+    hx-get re-requests the FULL URL, so a ``?window=1h&per_actor=true``
+    page's poll must carry both params on every tick — a poll that reset
+    to the defaults would render a lying page (an operator reading 1h
+    per-actor rows while the URL said 24h queue-grouped). The tick's
+    fragment must render the SAME data the full page would (the route's
+    fragment branch binds the identical context), and the fragment must
+    carry the poll attributes again — the outerHTML self-replacement
+    idiom: the transport survives its own swap, tick after tick."""
+    from taskq.web.admin import _factory
+
+    _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]  # Why: the module-level 5s cache is the reset point the realtime-badge suite uses too.
+    _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    schema = lab.plain_twin.schema
+    pool = await asyncpg.create_pool(plain_dsn, min_size=1, max_size=2)
+    try:
+        bundle = create_router(
+            pool, schema=schema, base_path="/admin", redis_client=_HealthyRedis()
+        )
+        app = FastAPI()
+        setup_admin_state(app, bundle)
+        app.include_router(bundle.router, prefix="/admin")
+        mounted = _Mounted(schema=schema, app=app, pool=pool)
+
+        polled_url = "/admin/insights?window=1h&per_actor=true"
+        page = await _html(mounted, polled_url)
+        assert 'id="insights-body"' in page
+        hx_gets = re.findall(r'hx-get="([^"]+)"', page)
+        assert hx_gets == ["/admin/insights?window=1h&amp;per_actor=true"], (
+            "the poll must re-request the full URL — window AND per_actor "
+            f"ride it (the &amp; is the attribute's escaped &), got {hx_gets!r}"
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            tick = await client.get(polled_url, headers={"HX-Request": "true"})
+        assert tick.status_code == 200
+        assert "<html" not in tick.text, "the poll must return the partial, not the full page"
+
+        # The fragment is the SAME data the full page would render: the
+        # polled window's label, the per-actor grouping's Actor column,
+        # and all six sections.
+        assert "trailing <strong>1h</strong>" in tick.text, (
+            "the tick must render the POLLED window, not the default"
+        )
+        assert ">Actor</th>" in tick.text, "the tick must keep the per-actor grouping"
+        for heading in _SECTIONS:
+            assert heading in tick.text, f"the tick must render every section: missing {heading}"
+
+        # The self-replacement idiom: the swapped-in fragment carries the
+        # poll again — identical hx-get (the selections survive the swap)
+        # and the same target/selector — so the next tick is the same URL.
+        assert re.findall(r'hx-get="([^"]+)"', tick.text) == [
+            "/admin/insights?window=1h&amp;per_actor=true"
+        ], "the swapped-in fragment must poll the SAME URL (selections survive every tick)"
+        for attr in (
+            'hx-select="#insights-body"',
+            'hx-target="#insights-body"',
+            'hx-swap="outerHTML"',
+        ):
+            assert attr in tick.text, f"the transport must survive the swap: missing {attr}"
+
+        # And the tick's fragment is byte-for-byte (minus the token
+        # normalization) the body the full page renders: the fragment
+        # branch binds the identical context, never a reduced one.
+        body_in_page = page.split('<main class="max-w-7xl mx-auto px-4 py-6">', 1)[1]
+        body_in_page = body_in_page.rsplit("</main>", 1)[0].strip()
+        page_lines = [
+            line.strip() for line in _normalize(body_in_page).splitlines() if line.strip()
+        ]
+        tick_lines = [line.strip() for line in _normalize(tick.text).splitlines() if line.strip()]
+        assert tick_lines == page_lines, (
+            "the poll tick must render the same body the full page would: "
+            "the fragment branch shares the route's whole context"
         )
     finally:
         await pool.close()
