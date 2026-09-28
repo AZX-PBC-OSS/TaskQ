@@ -44,6 +44,7 @@ from taskq._ids import new_base62
 from taskq.constants import _IDENT_RE  # pyright: ignore[reportPrivateUsage]
 from taskq.settings import WorkerSettings  # pyright: ignore[reportPrivateUsage]
 from taskq.timescale import (  # pyright: ignore[reportPrivateUsage]
+    TimescaleDBUnavailableError,
     disable_hypertables,
     enable_hypertables,
 )
@@ -290,23 +291,21 @@ async def _walk_and_reference(conn: asyncpg.Connection, schema: str) -> None:
 async def test_hypertable_conversion_refuses_the_archives_null_tail(
     timescale_dsn: str,
 ) -> None:
-    """FINDING (pre-existing, pinned for attribution): enable_hypertables
-    CANNOT convert an archive that carries NULL finished_at rows —
-    create_hypertable's partition column must be NOT NULL, and
-    migrate_data => TRUE dies on the NULL rows with NotNullViolationError.
+    """The conversion REFUSES an archive that carries NULL finished_at
+    rows — loudly, BEFORE any DDL (fix/hypertable-null-archive's
+    contract): TimescaleDBUnavailableError naming the row count and both
+    remediations, and the schema left byte-identical (the pre-refusal
+    failure was NOT atomic — it stranded a keyless archive mid-convert).
 
-    The archive's own data model produces exactly those rows (archived-
-    unfinished: the NULL tail the admin page's second UNION branch and
-    _cursor_field's empty-string rendering exist to serve, and the scan
-    campaign's own seed carries 2% of them). So ANY deployment with an
-    archived-unfinished row is locked out of the columnstore with a bare
-    driver error — the opt-in guide's flag does not mention it.
+    The debris rows are legacy (no archive write can produce them: every
+    terminal transition stamps finished_at and the prune's COPY requires
+    it non-NULL) — the operator completes or discards them explicitly.
 
-    Attribution leg: the failure is the NULL DATA, not this branch's
-    index — the identical conversion with jobs_archive_page_idx DROPPED
-    fails the same way. The index-removal question this module exists to
-    ask (does the conversion's index handling choke on the new index?)
-    is answered by the carry test below, on a NULL-free archive.
+    Attribution leg: the refusal is the NULL DATA, not this branch's
+    index — the identical refusal with jobs_archive_page_idx DROPPED.
+    The index-removal question this module exists to ask (does the
+    conversion's index handling choke on the new index?) is answered by
+    the carry test below, on a NULL-free archive.
     """
     schema = f"ts_nulltail_{new_base62()}".lower()
     assert _IDENT_RE.match(schema)
@@ -319,14 +318,28 @@ async def test_hypertable_conversion_refuses_the_archives_null_tail(
         fins += [None] * 5  # the archived-unfinished rows
         await _seed_archive_rows(conn, schema, fins)
 
-        with pytest.raises(asyncpg.NotNullViolationError):
+        with pytest.raises(TimescaleDBUnavailableError, match="5 row"):
             await enable_hypertables(
                 conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
             )
+        # The refusal is atomic: no partial conversion — the archive is
+        # still a plain table with its primary key intact.
+        still_plain = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.hypertables"
+            " WHERE hypertable_name = 'jobs_archive' AND hypertable_schema = $1",
+            schema,
+        )
+        assert still_plain == 0
+        pkey_intact = await conn.fetchval(
+            "SELECT count(*) FROM pg_catalog.pg_constraint"
+            " WHERE conrelid = $1::regclass AND contype = 'p'",
+            f'"{schema}".jobs_archive',
+        )
+        assert pkey_intact == 1
 
-        # Attribution: drop the new index, retry — same refusal.
+        # Attribution: drop the new index, retry — the same refusal.
         await conn.execute(f'DROP INDEX IF EXISTS "{schema}"."{_INDEX}"')
-        with pytest.raises(asyncpg.NotNullViolationError):
+        with pytest.raises(TimescaleDBUnavailableError, match="5 row"):
             await enable_hypertables(
                 conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
             )
