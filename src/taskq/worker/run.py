@@ -420,6 +420,20 @@ async def producer_loop(
             # neither a transient nor an unexpected failure reaches here.
             guard.ok()
 
+            # DEBUG_ONLY (TASKQ_LOG_EVENTS_LEVEL=debug; see
+            # taskq.obs._structlog's classification table): the poll
+            # cadence detail, one line per round. stdlib INFO deliberately
+            # - the events-level filter, not the root logger level, owns
+            # this line's visibility, and it is dropped at
+            # info/warning/off (the default stream stays byte-identical).
+            _producer_log.info(
+                "poll-cadence",
+                kind="debug",
+                worker_id=str(worker_id),
+                claimed=len(jobs),
+                available=available,
+            )
+
             if len(jobs) < available:
                 # A short round: the backlog is drained or a peer won it.
                 # A round on its heels would only re-run the claim CTE and

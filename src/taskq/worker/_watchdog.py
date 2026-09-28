@@ -1088,7 +1088,21 @@ class LoopLagWatchdog:
         """Record the latency of the outstanding beat request once it lands."""
         if self._beat_sampled or self._last_beat < self._beat_requested_at:
             return
-        _event_loop_lag.record(self._last_beat - self._beat_requested_at)
+        lag = self._last_beat - self._beat_requested_at
+        _event_loop_lag.record(lag)
+        # DEBUG_ONLY (TASKQ_LOG_EVENTS_LEVEL=debug; see
+        # taskq.obs._structlog's classification table): the loop-lag
+        # trace, one line per landed beat. stdlib INFO deliberately -
+        # the events-level filter, not the root logger level, owns this
+        # line's visibility; it is dropped at info/warning/off. The
+        # thread runs off-loop: the log call here is the same best-effort
+        # shape the histogram record above already accepts.
+        _log.info(
+            "loop-lag",
+            kind="debug",
+            lag_seconds=round(lag, 4),
+            detector="event-loop-lag",
+        )
         self._beat_sampled = True
 
     def _watch(self) -> None:

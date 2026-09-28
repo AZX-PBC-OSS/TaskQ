@@ -10,3 +10,5 @@
 !backlog-throughput.json
 !archive-scale*.json
 !backlog-rss-soak.json
+!loglevel-cpu-delta.json
+!loglevel-cpu-delta.md

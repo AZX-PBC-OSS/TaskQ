@@ -530,7 +530,11 @@ def worker(
     # are dropped, not replayed. Logging is configured first (the same
     # idempotent setup worker_main repeats) so the wiring's startup line
     # renders in the operator's configured format.
-    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    setup_logging(
+        level=settings.log_level,
+        log_format=settings.log_format,
+        events_level=settings.log_events_level,
+    )
     try:
         configure_exporters(settings)
     except OtelExporterConfigurationError as exc:

@@ -793,26 +793,68 @@ loss:
 |---|---|---|
 | `TASKQ_LOG_FORMAT` | `json` | `json` (production), `console` (development) |
 | `TASKQ_LOG_LEVEL` | `INFO` | Any stdlib level name: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `TASKQ_LOG_EVENTS_LEVEL` | `info` | `info` (default, byte-identical to the pre-knob stream), `warning` (the failure/anomaly stream only), `off` (WARNING-and-above only), `debug` (adds the per-tick internals) |
 
 `log_format` rejects any value outside `{"json", "console"}` at
-`WorkerSettings` load time.
+`WorkerSettings` load time. `log_events_level` rejects any value outside
+`{"info", "warning", "off", "debug"}` (case-insensitive) the same way.
+
+### The event-stream verbosity knob (`TASKQ_LOG_EVENTS_LEVEL`)
+
+Every state change is durably recorded in the `job_events` ledger in the same
+transaction as the state itself — the DB ledger **is** the audit trail. The
+per-job JSON log lines are a streaming duplicate of those rows, and the
+hot-path audit measured that duplicate at ~23% of the worker's on-CPU time.
+The knob suppresses the streaming duplicate only; `job_events` receives every
+event at every level (asserted end-to-end in the system tier), and the call
+sites stay unconditional — a structlog processor in the canonical chain (the
+cheapest point, before the serialization cost) applies the classification, so
+a call site cannot drift from the setting.
+
+| Level | `state-change` / `cancel_phase_change` / `dispatch` / lifecycle INFO | Anomaly stream (`job-failed`, `heartbeat-tick-failure`, `isolate-self-*`, reclaims, `worker-watchdog-trip`, backpressure refusals, sweep/cron failures) | `loop-lag` / `poll-cadence` internals |
+|---|---|---|---|
+| `info` (default) | emitted | emitted | suppressed |
+| `warning` | suppressed | emitted (even the anomaly lines logged at INFO) | suppressed |
+| `off` | suppressed | WARNING-and-above emitted; INFO-level anomaly lines suppressed | suppressed |
+| `debug` | emitted | emitted | emitted |
+
+Two contracts to know:
+
+- **`off` never blinds the operator to failures.** WARNING-and-above anomaly
+  lines emit at every level. `off` is for deployments that consume the events
+  elsewhere; a failing tick still leaves a line on stderr.
+- **Unclassified events fail open**: an event not in the classification table
+  passes at every level, so a future event can never be silently suppressed.
+
+### The knob and OTel together
+
+With OTel configured, the spans carry the same operational events (dispatch
+spans, consumer spans, attempt spans, the span events the worker records), so
+`warning`/`off` keeps the traces while cutting the duplicate log stream: an
+OTel-instrumented deployment can run `TASKQ_LOG_EVENTS_LEVEL=off` and lose
+nothing but the log lines whose content the spans and the `job_events` ledger
+already carry — while `job-failed` and the watchdog trips still hit stderr.
+The `trace_id`/`span_id` fields the processor chain injects (see the chain
+below) remain the correlation key from a surviving log line back to its span.
 
 ### Processor chain
 
 The structlog processor chain applied to every log call (in order):
 
-1. `merge_contextvars`: pulls in `worker_id` (and any other context vars bound by the worker)
-2. `add_log_level`
-3. `add_logger_name`
-4. `StackInfoRenderer`
-5. `TimeStamper(fmt="iso", utc=True)`: ISO 8601 UTC timestamp in `timestamp` field
-6. `_otel_span_processor`: injects `trace_id` and `span_id` from the active OTel span, if any
-7. `EventRenamer("event")`: ensures the event key is always `event`
-8. `JSONRenderer` (production) or `ConsoleRenderer` (development)
+1. `filter_by_level`: the stdlib-level gate — a call below the configured level costs nothing
+2. `_events_level_filter`: the `TASKQ_LOG_EVENTS_LEVEL` knob — drops the classified happy-path events at `warning`/`off`, the per-tick internals at every level but `debug`, passes everything else (including an unclassified event, which fails open). Placed here deliberately: it is the cheapest point BEFORE the serialization cost, and the call sites stay unconditional
+3. `merge_contextvars`: pulls in `worker_id` (and any other context vars bound by the worker)
+4. `add_log_level`
+5. `add_logger_name`
+6. `StackInfoRenderer`
+7. `TimeStamper(fmt="iso", utc=True)`: ISO 8601 UTC timestamp in `timestamp` field
+8. `_otel_span_processor`: injects `trace_id` and `span_id` from the active OTel span, if any
+9. `EventRenamer("event")`: ensures the event key is always `event`
+10. `JSONRenderer` (production) or `ConsoleRenderer` (development)
 
-Every processor is wrapped in a no-raise safety wrapper. A failing
-processor logs a warning and passes the event dict through unchanged; it never
-propagates to actor or user code.
+The two filters (1 and 2) are deliberately NOT wrapped in the no-raise
+safety wrapper: `DropEvent` is a `BaseException` the wrapper would let
+through anyway, and the filters' whole job is to be the cheapest gate.
 
 ### Job-context fields
 

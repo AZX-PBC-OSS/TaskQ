@@ -382,6 +382,7 @@ def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: igno
     _unpin_cached_loggers()
     structlog.reset_defaults()
     structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
+    structlog_mod._events_level = "info"  # type: ignore[reportPrivateUsage]  # Why: the events-level knob is process-global state a worker-configuring test must not leak forward; reset alongside the flag it is set with.
     for handler in list(logging.root.handlers):
         if isinstance(handler, logging.StreamHandler) and isinstance(
             handler.formatter, structlog.stdlib.ProcessorFormatter
@@ -394,6 +395,7 @@ def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: igno
         _unpin_cached_loggers()
         structlog.reset_defaults()
         structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
+        structlog_mod._events_level = "info"  # type: ignore[reportPrivateUsage]  # Why: teardown-side reset of the events-level knob, matching the setup-side backstop above.
         for handler in list(logging.root.handlers):
             if isinstance(handler, logging.StreamHandler) and isinstance(
                 handler.formatter, structlog.stdlib.ProcessorFormatter

@@ -937,6 +937,21 @@ def _log_level_validator(value: str, ctx: ValidatorContext) -> str:
     return normalized
 
 
+_VALID_LOG_EVENTS_LEVELS = frozenset({"info", "warning", "off", "debug"})
+
+
+def _log_events_level_validator(value: str, ctx: ValidatorContext) -> str:
+    # Case-insensitive like log_level, normalized LOWERCASE: the events
+    # level feeds the structlog filter's classification comparison
+    # directly, and the classification table's names are lowercase.
+    normalized = value.lower()
+    if normalized not in _VALID_LOG_EVENTS_LEVELS:
+        raise ValueError(
+            f"{ctx.field_name} must be one of {sorted(_VALID_LOG_EVENTS_LEVELS)}, got {value!r}"
+        )
+    return normalized
+
+
 _HH_MM_PATTERN = re.compile(r"^(\d{2}):(\d{2})$")
 
 
@@ -1886,6 +1901,30 @@ class WorkerSettings(TaskQSettings):
         default="INFO",
         validator=_log_level_validator,
         description="TASKQ_LOG_LEVEL. Root logger level.",
+    )
+    log_events_level: str = Field(
+        default="info",
+        validator=_log_events_level_validator,
+        description="TASKQ_LOG_EVENTS_LEVEL. The operational-event-stream "
+        "verbosity knob: info|warning|off|debug, case-insensitive. The "
+        "job_events ledger is the audit trail - every state change is "
+        "committed there in the same transaction as the state itself - so "
+        "this knob suppresses the STREAMING DUPLICATE (the per-job JSON log "
+        "lines) only, applied by a structlog processor before the "
+        "serialization cost, never at the call sites. info (the default) is "
+        "today's stream byte-identical. warning emits only the "
+        "failure/anomaly stream: the failed ticks, the isolates, the "
+        "reclaims, the watchdog trips, the backpressure refusals (anomaly "
+        "events survive even when logged at INFO - the classification is by "
+        "event name, not stdlib level), the happy path's per-job lines gone. "
+        "off is for deployments consuming OTel spans or tailing job_events: "
+        "the state-change lines gone entirely, the WARNING-and-above "
+        "anomalies STILL emitted - off never blinds the operator to "
+        "failures. debug ADDS the per-tick internals (the loop-lag traces, "
+        "the poll-cadence details). Unclassified events fail open: an event "
+        "not in the classification table passes at every level, so a future "
+        "event can never be silently suppressed. The full semantics table "
+        "is obs/_structlog.py's docstring and configuration.md.",
     )
 
     # -- Pruning schedule --------------------------------------------
