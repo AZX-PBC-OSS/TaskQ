@@ -30,8 +30,12 @@ render what comes back — including the confounds the module documents:
   per-queue verdict sections stay uncapped, because a cap there could
   hide the very badge the page exists to show;
 * the page resolves the deployment's realtime mode like every sibling
-  page — the header badge and the meta-refresh decision tell the same
-  story as the rest of the admin UI.
+  page — the header badge and the refresh-transport decision tell the
+  same story as the rest of the admin UI: real-time mode's transport is
+  the page's own htmx poll of its body partial (the queues page's
+  partial-poll pattern — the meta refresh would re-run the six
+  archive-UNION aggregates every tick), polling mode keeps the meta
+  refresh as the no-JS transport.
 """
 
 from datetime import timedelta
@@ -278,20 +282,35 @@ def register(router: APIRouter) -> None:
             backlog = backlog[:STATS_LIMIT]
 
         realtime_mode, mode_label = realtime_ctx
-        html = tmpl.get_template("insights.html").render(
-            window=window,
-            windows=list(INSIGHTS_WINDOWS),
-            per_actor=per_actor_on,
-            waits=waits,
-            waits_truncated=waits_truncated,
-            backlog=backlog,
-            backlog_truncated=backlog_truncated,
-            render_limit=STATS_LIMIT,
-            imbalance=imbalance,
-            overprovisioning=overprovisioning,
-            drains=drains,
-            ledger=ledger,
-            realtime_mode=realtime_mode,
-            mode_label=mode_label,
-        )
+        # The queues page's partial-poll pattern, split by mode so both
+        # refresh transports never fire at once (that double-fetch was
+        # #337's complaint, and this page's six archive-UNION aggregates
+        # re-rendered by the meta refresh every tick was #567's): POLLING
+        # mode renders the meta refresh - the page stays live without JS
+        # - and the htmx poll is off; REALTIME mode suppresses the meta
+        # refresh and the htmx poll (hx-get of the same URL, so the
+        # window and per-actor selections survive every tick) is the
+        # page's only refresh. A poll tick renders the body partial
+        # alone, never the whole document.
+        context = {
+            "window": window,
+            "windows": list(INSIGHTS_WINDOWS),
+            "per_actor": per_actor_on,
+            "waits": waits,
+            "waits_truncated": waits_truncated,
+            "backlog": backlog,
+            "backlog_truncated": backlog_truncated,
+            "render_limit": STATS_LIMIT,
+            "imbalance": imbalance,
+            "overprovisioning": overprovisioning,
+            "drains": drains,
+            "ledger": ledger,
+            "realtime_mode": realtime_mode,
+            "mode_label": mode_label,
+            "suppress_refresh": realtime_mode == "realtime",
+        }
+        if request.headers.get("HX-Request") == "true":
+            html = tmpl.get_template("_partials/insights_body.html").render(**context)
+        else:
+            html = tmpl.get_template("insights.html").render(**context)
         return HTMLResponse(content=html)
