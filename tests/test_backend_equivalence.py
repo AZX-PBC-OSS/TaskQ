@@ -2741,8 +2741,8 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
     aborts the ENTIRE batch - all-or-nothing, nothing written, and both
     backends surface the typed ``DuplicateIdempotencyKeyError`` (the
     classification fix; previously a raw ``asyncpg.UniqueViolationError``).
-    Pre-fix the InMemory mirror silently deduplicated item-by-item and
-    returned a count that included rows PG would never have written
+    An InMemory mirror that silently deduplicates item-by-item and
+    returns a count that includes rows PG would never have written
     (count=2 for a batch whose every row PG would have rejected)."""
     key = f"dup-intra-{new_uuid()}"
     args_list = [

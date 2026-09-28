@@ -93,7 +93,15 @@ from taskq.insights import (
 )
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
-from taskq.timescale import TimescaleDBUnavailableError, disable_hypertables, enable_hypertables
+from taskq.timescale import (
+    STORAGE_MODE_SUMMARY,
+    StorageMode,
+    TimescaleDBUnavailableError,
+    detect_storage_mode,
+    disable_hypertables,
+    enable_hypertables,
+    probe_registered_policy_jobs,
+)
 from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
@@ -338,10 +346,9 @@ def _load_redis_credential_provider(ref: str, *, option: str) -> RedisCredential
 def _resolved_ref(flag: str | None, configured: str | None) -> str | None:
     """Resolve a credential-provider ref: explicit CLI flag beats settings.
 
-    The refs used to be read by Typer's ``envvar=``, which sees
-    ``os.environ`` and nothing else. They are now ordinary settings, so
-    they take part in dotenvmodel's ``.env`` cascade like everything else;
-    the flag-wins precedence Typer gave them is preserved here.
+    The refs are ordinary settings, so they take part in dotenvmodel's
+    ``.env`` cascade like everything else; the explicit flag beats the
+    configured value.
     """
     return flag if flag is not None else configured
 
@@ -720,8 +727,8 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
     finally:
         # Why bounded: a dead PG can block close() indefinitely, wedging even
         # this one-shot command before process exit. The
-        # helper terminates on timeout and never raises, so a close error can
-        # no longer mask an in-flight exception from list_applied.
+        # helper terminates on timeout and never raises, so a close error cannot
+        # mask an in-flight exception from list_applied.
         await close_conn_bounded(conn, "migrate-status", CLOSE_TIMEOUT_SECS)
     typer.echo(f"schema: {settings.schema_name}")
     typer.echo(f"applied: {len(applied)}")
@@ -1687,6 +1694,57 @@ def _unknown_env_findings(unknown_env_vars: Sequence[str]) -> list[str]:
     return findings
 
 
+def _storage_mode_findings(
+    mode: StorageMode,
+    *,
+    flag_on: bool,
+    downgraded_policies: Sequence[str] = (),
+) -> list[str]:
+    """The report lines for the storage-mode family, the FIRST family in
+    every doctor report: the mode the connected server was DETECTED in
+    (``taskq.timescale.detect_storage_mode`` — the extension catalog, then
+    ``timescaledb.license``, never the settings) plus that mode's
+    capability consequences in one glance, from
+    ``taskq.timescale.STORAGE_MODE_SUMMARY``.
+
+    Green line: every mode is a supported configuration — the line is
+    information, not a defect. The two red arms: the flag on in an
+    environment whose server detects vanilla, because that contradiction
+    is not workable — the next ``taskq migrate up`` refuses; and the
+    license DOWNGRADE — a server converted under the full TSL license
+    whose license was later downgraded to apache: the conversion-era
+    policy jobs are still registered (measured on 2.30.1: they fail on
+    every background run under the downgraded license) and the row-level
+    sweeps defer the aged end to them, so rows older than their horizon
+    strand — a healthy apache summary alone would be a lie on that server.
+    """
+    findings = [
+        f"storage mode: {mode.value} - {STORAGE_MODE_SUMMARY[mode]} "
+        "(the mode x capability matrix: docs/guides/timescaledb.md)"
+    ]
+    if flag_on and mode is StorageMode.VANILLA:
+        findings.append(
+            "storage mode drift: TASKQ_TIMESCALEDB_HYPERTABLES=true but this "
+            "server detects vanilla (no timescaledb extension installed) - the "
+            "next `taskq migrate up` refuses with TimescaleDBUnavailableError. "
+            "Unset the flag in this environment, or enable the extension on the "
+            "server first (docs/guides/timescaledb.md)."
+        )
+    if mode is StorageMode.TIMESCALE_APACHE and downgraded_policies:
+        findings.append(
+            f"storage mode drift: this server's timescaledb.license is 'apache' but "
+            f"{len(downgraded_policies)} TimescaleDB policy job(s) from an earlier "
+            f"timescale-license deployment are still registered "
+            f"({', '.join(downgraded_policies)}): they fail on every background run "
+            "under this license, and the row-level sweeps defer the aged end to them, "
+            "so rows older than their horizon strand - nothing deletes them. Restore "
+            "the timescale license (ALTER SYSTEM SET timescaledb.license = 'timescale' "
+            "and reload), re-run `taskq migrate up` to converge, then flip and disable "
+            "properly (docs/guides/timescaledb.md)."
+        )
+    return findings
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
@@ -1694,6 +1752,9 @@ def _doctor_findings(
     stranded: list[_StrandedActorJobs],
     worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
     unknown_env_vars: Sequence[str] | None = None,
+    storage_mode: StorageMode | None = None,
+    timescaledb_flag: bool = False,
+    downgraded_policies: Sequence[str] = (),
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
@@ -1709,11 +1770,35 @@ def _doctor_findings(
     ``unknown_env_vars`` carries the ``TASKQ_``-prefixed environment names
     that match no settings field (``_unknown_taskq_env_vars``): each is a
     configuration typo applying its intended setting's default silently.
+
+    ``storage_mode`` is the server's detected storage mode
+    (:func:`taskq.timescale.detect_storage_mode`, read while the report's
+    connection is open) — the first finding family, the mode and its
+    capability consequences in one glance. ``timescaledb_flag`` is the
+    flag as this environment loaded it, for the family's red arms: the
+    flag on against a vanilla-detected server, and the license downgrade
+    (``downgraded_policies`` — :func:`taskq.timescale.probe_registered_policy_jobs`,
+    read on the same connection when the mode detected apache) naming the
+    conversion-era policies a downgraded license strands.
     """
     stored_by_actor = {row.actor: row for row in rows}
     findings: list[str] = []
 
-    # The environment family first: a typo'd TASKQ_ variable is upstream of
+    # The storage mode leads every report: it is the ground the rest of
+    # the report stands on (which retention mechanisms exist, what the
+    # sweeps own), it is detected from the server rather than read from
+    # settings, and its one contradiction (the flag on, the server
+    # vanilla) is upstream of the deploy step's own refusal.
+    if storage_mode is not None:
+        findings.extend(
+            _storage_mode_findings(
+                storage_mode,
+                flag_on=timescaledb_flag,
+                downgraded_policies=downgraded_policies,
+            )
+        )
+
+    # The environment family next: a typo'd TASKQ_ variable is upstream of
     # every stored-row condition below - the wrong value was in force before
     # any worker registered. Nothing errors at load (the loader reads only
     # the names it defines), so this report is the only surface that names it.
@@ -1854,6 +1939,11 @@ def doctor(
     nothing consumes waits forever. Each one's only symptom is work that
     does not happen. This is the one command that names them together.
 
+    The report leads with the DETECTED storage mode (vanilla,
+    timescale-apache, or timescale-tsl - detected from the server, not
+    read from settings) and that mode's capability consequences in one
+    glance.
+
     Read-only: it issues no writing statement, so it is safe to run
     against production mid-incident.
 
@@ -1882,6 +1972,17 @@ async def _doctor(
             worker_liveness_seconds=settings.admin_worker_liveness_seconds,
         )
         worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
+        # The detected storage mode, read on the report's own connection
+        # while it is open: the first finding family renders from it. On a
+        # server detected apache the same connection also probes for
+        # conversion-era policy jobs a license downgrade strands (the
+        # healthy apache mode registers none, so any answer is debris).
+        storage_mode = await detect_storage_mode(conn)
+        downgraded_policies = (
+            await probe_registered_policy_jobs(conn, schema=settings.schema_name)
+            if storage_mode is StorageMode.TIMESCALE_APACHE
+            else ()
+        )
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
 
@@ -1901,6 +2002,9 @@ async def _doctor(
         stranded,
         worker_stalls,
         unknown_env_vars=_unknown_taskq_env_vars(),
+        storage_mode=storage_mode,
+        timescaledb_flag=settings.timescaledb_hypertables,
+        downgraded_policies=downgraded_policies,
     )
 
     # The one finding that needs an operator-supplied number: the platform's

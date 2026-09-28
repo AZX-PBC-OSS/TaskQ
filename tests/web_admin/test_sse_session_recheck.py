@@ -258,7 +258,8 @@ async def test_admin_sse_stream_opened_before_revocation_ends_after_recheck(
 
         assert task.done(), (
             "CONTRACT: an admin /sse stream whose session is revoked must end "
-            "at the next re-check tick. PRE-FIX (#316): it kept delivering "
+            "at the next re-check tick. REGRESSION (#316): a stream that "
+            f"authenticates only at subscribe keeps delivering "
             f"frames after revocation; tail: {b''.join(received[tail_len:])!r}"
         )
         keepalives_after_flip = b"".join(received[tail_len:]).count(b": keepalive")
@@ -309,6 +310,10 @@ async def test_sse_generator_hung_verifier_is_bounded_and_fails_closed() -> None
     elapsed = time.monotonic() - started
 
     assert frames == [], "a hung verifier is revocation: no frame may be emitted"
+    # Derived bound: the enclosing asyncio.timeout(30) is the real guard — it
+    # fires at the session-recheck bound and ends the loop. This 60 s pin
+    # (2x the guard) is the belt to the guard's braces: it can only fail if
+    # the guard itself stopped working.
     assert elapsed < 60, f"the hung verifier must be bounded, took {elapsed:.1f}s"
     assert sem._value == 1  # pyright: ignore[reportPrivateUsage]  # Why: no public API to read the permit state; the release is the assertion.
     assert any(e.get("event") == "admin-sse-session-recheck-timeout" for e in logs), (

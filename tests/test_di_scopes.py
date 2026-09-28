@@ -672,6 +672,11 @@ async def test_sync_gen_hung_exit_bounds_scope_teardown() -> None:
         "proves teardown survives it"
     )
     assert elapsed < 5.0, (
+        # Derived bound: the hung __exit__ is abandoned, so teardown must cost
+        # loop turns only — not the parked thread's join. 5.0 s is half the
+        # enclosing wait_for(10.0) backstop: if teardown ever waits on the
+        # parked thread again, the backstop fires and this pin never runs,
+        # so the pin must trip strictly inside it.
         f"scope teardown took {elapsed:.1f}s against a hung __exit__ - the "
         "waits on the parked thread are unbounded"
     )

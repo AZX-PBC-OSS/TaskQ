@@ -83,6 +83,9 @@ async def test_invoke_error_reporter_timeout_returns_within_time_budget() -> Non
     start = time.monotonic()
     await invoke_error_reporter(cast(ErrorReporter, _HangingReporter()), job, exc, timeout=0.3)
     elapsed = time.monotonic() - start
+    # Derived bound: the reporter's own timeout is 0.3s; the await must return
+    # at the timeout plus loop-turn epsilon. 1.0 s ≈ 3x the budget — the
+    # unbounded shape this pins waited the reporter's 999s sleep.
     assert elapsed < 1.0
 
 

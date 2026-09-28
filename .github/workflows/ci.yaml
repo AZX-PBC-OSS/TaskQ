@@ -501,8 +501,23 @@ jobs:
       # flag injected a SECOND, separately resolved copy that shadowed the
       # locked one. The auditor that reports on the locked dependency set is
       # now itself part of it.
+      #
+      # The retries are for PyPI's own JSON API, not for findings: pip-audit
+      # queries pypi.org per distribution, and a 503 from that backend (a
+      # `ServiceError`, as on run 36419309756) fails the leg without ever
+      # reaching an audit verdict. Five attempts with a growing gap rides out
+      # the measured band; a real advisory still fails the leg on every
+      # attempt, because an advisory is a stable response, not an outage.
       - name: Run pip-audit
-        run: uv run --no-sync pip-audit
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if uv run --no-sync pip-audit; then
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          echo "pip-audit failed on 5 attempts - treating as a real finding"
+          exit 1
 
   build:
     runs-on: ubuntu-latest

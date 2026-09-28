@@ -193,6 +193,11 @@ async def test_publish_task_lifetime_bounded_under_hanging_redis(
         f"{elapsed:.2f}s. Verdict: FAIL-CLOSED never-park (bounded)."
     )
     assert elapsed < 1.0, (
+        # Derived bound: the publish task's own bound is the monkeypatched
+        # _PUBLISH_TIMEOUT_S=0.2 (see line ~156); the drain-wait above polls
+        # until it lands, so elapsed ≈ 0.2s + poll granularity. 1.0 s = 5x
+        # the bound — scheduling slack only; the unbounded shape never
+        # drained at all.
         "the publish task must complete within the bound plus scheduling slack, "
         "not anywhere near the unbounded hang it was given"
     )
