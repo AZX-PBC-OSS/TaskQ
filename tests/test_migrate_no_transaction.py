@@ -129,11 +129,8 @@ async def test_no_transaction_migration_runs_create_index_concurrently(
         assert await _index_validity(conn, schema, "nt_jobs_queue_idx") is True
         ledger = await _ledger_transactions(conn, schema)
         assert ledger[m.key] is False
-        # Every bundled migration's ledger row records the path it actually
-        # ran - transactional for all but the allowlisted no-transaction
-        # carrier (01.00.21_03), whose NOT VALID/VALIDATE sequencing demands
-        # the directive.
-        assert all(ledger[x.key] is x.use_transaction for x in real)
+        # Bundled migrations applied through the default path record True.
+        assert all(ledger[x.key] is True for x in real)
     finally:
         await _drop_schema(conn, schema)
         await close_conn_bounded(conn, "migrate-no-tx", 5.0)
