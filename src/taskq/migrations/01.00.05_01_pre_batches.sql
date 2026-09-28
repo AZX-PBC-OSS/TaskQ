@@ -7,9 +7,12 @@ CREATE TABLE "{schema}".batches (
     queue                   text NOT NULL,
     status                  text NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'complete', 'aborted')),
-    expected_size           int NOT NULL DEFAULT 0,
-    consecutive_failures    int NOT NULL DEFAULT 0,
-    failure_threshold       int,
+    expected_size           int NOT NULL DEFAULT 0
+        CHECK (expected_size >= 0),
+    consecutive_failures    int NOT NULL DEFAULT 0
+        CHECK (consecutive_failures >= 0),
+    failure_threshold       int
+        CHECK (failure_threshold IS NULL OR failure_threshold >= 1),
     finalizer_job_id        uuid,
     originating_actor       text,
     created_at              timestamptz NOT NULL DEFAULT now(),
