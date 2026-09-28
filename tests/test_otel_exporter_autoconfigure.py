@@ -40,6 +40,7 @@ from taskq.obs import (
     _exporter as exporter_mod,  # pyright: ignore[reportPrivateUsage]  # Why: the planner is the unit under test.
 )
 from taskq.obs import configure_exporters
+from taskq.testing.assertions import plain_cli_output
 
 pytestmark = [pytest.mark.otel]
 
@@ -566,4 +567,4 @@ def test_worker_cli_configures_exporters_before_worker_main(
     monkeypatch.setattr("taskq.cli.configure_exporters", failing_configure)
     result = CliRunner().invoke(app, ["worker", "--actors", "tests.test_cli_worker:_REGISTRY"])
     assert result.exit_code == 1
-    assert "no_such_exporter" in result.output
+    assert "no_such_exporter" in plain_cli_output(result.output)

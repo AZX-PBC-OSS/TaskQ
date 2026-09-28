@@ -62,14 +62,16 @@ def test_module_not_found_exit_code_and_message() -> None:
     """missing module produces exit code 1 and module error."""
     result = runner.invoke(app, ["worker", "--actors", "no.such.module:registry"])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "module not found" in result.stderr.lower()
+    assert "module not found" in plain_cli_output(result.stderr).lower()
 
 
 def test_bad_type_exit_code_and_message() -> None:
     """non-Mapping/non-Iterable attribute produces exit code 1 and type error."""
     result = runner.invoke(app, ["worker", "--actors", _BAD_TYPE_PATH])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "expected Mapping[str, ActorRef] or Iterable[ActorRef]" in result.stderr
+    assert "expected Mapping[str, ActorRef] or Iterable[ActorRef]" in plain_cli_output(
+        result.stderr
+    )
 
 
 def test_force_update_flag_true(monkeypatch: Any) -> None:
@@ -139,8 +141,8 @@ def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
     result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert str(drift_error) in result.stderr
-    assert "--force-update-actor-config" in result.stderr
+    assert str(drift_error) in plain_cli_output(result.stderr)
+    assert "--force-update-actor-config" in plain_cli_output(result.stderr)
 
 
 # ── dev_watch subcommand ─────────────────────────────────────────────────
@@ -150,15 +152,15 @@ def test_dev_watch_module_not_found_exit_code_and_message() -> None:
     """dev: missing module produces exit code 1 and 'module not found' message."""
     result = runner.invoke(app, ["dev", "no.such.module:registry"])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "cannot import" in result.stderr.lower()
-    assert "module not found" in result.stderr.lower()
+    assert "cannot import" in plain_cli_output(result.stderr).lower()
+    assert "module not found" in plain_cli_output(result.stderr).lower()
 
 
 def test_dev_watch_bad_actors_syntax_exit_code_and_message() -> None:
     """dev: missing 'module:attr' separator produces exit code 1."""
     result = runner.invoke(app, ["dev", "no_colon_here"])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "expected module:attr syntax" in result.stderr
+    assert "expected module:attr syntax" in plain_cli_output(result.stderr)
 
 
 def test_dev_watch_generic_import_error_exit_code_and_message(monkeypatch: Any) -> None:
@@ -172,14 +174,14 @@ def test_dev_watch_generic_import_error_exit_code_and_message(monkeypatch: Any) 
     monkeypatch.setattr("taskq.cli.importlib.import_module", fake_import_module)
     result = runner.invoke(app, ["dev", _REGISTRY_PATH])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "boom during import" in result.stderr
+    assert "boom during import" in plain_cli_output(result.stderr)
 
 
 def test_dev_watch_attribute_not_found_exit_code_and_message() -> None:
     """dev: attribute missing from an otherwise-importable module exits 1."""
     result = runner.invoke(app, ["dev", "tests.test_cli_worker:_DOES_NOT_EXIST"])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "not found in module" in result.stderr
+    assert "not found in module" in plain_cli_output(result.stderr)
 
 
 def test_dev_watch_happy_path_default_cwd(monkeypatch: Any) -> None:

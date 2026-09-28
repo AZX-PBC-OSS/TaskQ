@@ -25,6 +25,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -80,9 +81,9 @@ def test_list_on_a_fresh_deployment_reports_defaults_not_an_error(
     result = runner.invoke(app, ["queues", "list"])
 
     assert result.exit_code == 0
-    assert "no configured queues" in result.output
-    assert "strict_fifo" in result.output
-    assert "unlimited" in result.output
+    assert "no configured queues" in plain_cli_output(result.output)
+    assert "strict_fifo" in plain_cli_output(result.output)
+    assert "unlimited" in plain_cli_output(result.output)
 
 
 def test_list_renders_each_stored_row_with_its_cap(
@@ -96,11 +97,11 @@ def test_list_renders_each_stored_row_with_its_cap(
     result = runner.invoke(app, ["queues", "list"])
 
     assert result.exit_code == 0
-    assert "alpha" in result.output
-    assert "round_robin" in result.output
-    assert "max_concurrent=4" in result.output
-    assert "beta" in result.output
-    assert "max_concurrent=unlimited" in result.output, (
+    assert "alpha" in plain_cli_output(result.output)
+    assert "round_robin" in plain_cli_output(result.output)
+    assert "max_concurrent=4" in plain_cli_output(result.output)
+    assert "beta" in plain_cli_output(result.output)
+    assert "max_concurrent=unlimited" in plain_cli_output(result.output), (
         "a NULL cap is the uncapped state; the row must render 'unlimited', "
         "not 'None' (which reads like a misconfigured cap of zero)"
     )
@@ -119,9 +120,9 @@ def test_get_absent_row_says_the_queue_runs_on_defaults(
     result = runner.invoke(app, ["queues", "get", "never-configured"])
 
     assert result.exit_code == 0
-    assert "no stored row" in result.output
-    assert "strict_fifo" in result.output
-    assert "fairness_key has NO effect" in result.output
+    assert "no stored row" in plain_cli_output(result.output)
+    assert "strict_fifo" in plain_cli_output(result.output)
+    assert "fairness_key has NO effect" in plain_cli_output(result.output)
 
 
 def test_get_renders_the_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,9 +131,9 @@ def test_get_renders_the_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["queues", "get", "tenants"])
 
     assert result.exit_code == 0
-    assert "tenants" in result.output
-    assert "mode=round_robin" in result.output
-    assert "max_concurrent=9" in result.output
+    assert "tenants" in plain_cli_output(result.output)
+    assert "mode=round_robin" in plain_cli_output(result.output)
+    assert "max_concurrent=9" in plain_cli_output(result.output)
 
 
 # ── queues set-mode ──────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ def test_set_mode_upserts_and_renders_the_stored_row(
     result = runner.invoke(app, ["queues", "set-mode", "tenants", "round_robin"])
 
     assert result.exit_code == 0
-    assert "mode=round_robin" in result.output
+    assert "mode=round_robin" in plain_cli_output(result.output)
     assert any("INSERT INTO" in q for q in conn.executed), (
         "set-mode is an UPSERT (a plain UPDATE is a silent no-op on a fresh "
         "deployment): the statement must stay an INSERT ... ON CONFLICT"
@@ -163,7 +164,7 @@ def test_set_mode_invalid_mode_exits_nonzero_with_the_guard_message(
     result = runner.invoke(app, ["queues", "set-mode", "tenants", "lifo"])
 
     assert result.exit_code == 1
-    assert "invalid queue mode" in result.output
+    assert "invalid queue mode" in plain_cli_output(result.output)
     assert conn.executed == [], "the guard must fire before any statement is written"
 
 
@@ -178,14 +179,14 @@ def test_set_max_concurrent_refuses_to_guess_between_the_two_flags() -> None:
     )
 
     assert result.exit_code == 1
-    assert "not both" in result.output
+    assert "not both" in plain_cli_output(result.output)
 
 
 def test_set_max_concurrent_requires_one_of_the_two_flags() -> None:
     result = runner.invoke(app, ["queues", "set-max-concurrent", "q"])
 
     assert result.exit_code == 1
-    assert "--max-concurrent N or --clear" in result.output
+    assert "--max-concurrent N or --clear" in plain_cli_output(result.output)
 
 
 def test_set_max_concurrent_writes_and_renders_the_row(
@@ -197,7 +198,7 @@ def test_set_max_concurrent_writes_and_renders_the_row(
     result = runner.invoke(app, ["queues", "set-max-concurrent", "q", "--max-concurrent", "4"])
 
     assert result.exit_code == 0
-    assert "max_concurrent=4" in result.output
+    assert "max_concurrent=4" in plain_cli_output(result.output)
 
 
 def test_clear_max_concurrent_renders_the_uncapped_state(
@@ -211,7 +212,7 @@ def test_clear_max_concurrent_renders_the_uncapped_state(
     result = runner.invoke(app, ["queues", "set-max-concurrent", "q", "--clear"])
 
     assert result.exit_code == 0
-    assert "max_concurrent=unlimited" in result.output
+    assert "max_concurrent=unlimited" in plain_cli_output(result.output)
 
 
 def test_set_max_concurrent_invalid_name_exits_nonzero(

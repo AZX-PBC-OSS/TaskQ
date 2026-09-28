@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 
 from taskq._ids import new_uuid
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 from taskq.types import BulkCancelResult, CancelResult
 
 runner = CliRunner()
@@ -144,9 +145,9 @@ def test_cancel_pending_reports_the_terminal_transition(
     result = runner.invoke(app, ["job", "cancel", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "previous_status: pending" in result.output
-    assert "new_status: cancelled" in result.output
-    assert "cancelled directly" in result.output
+    assert "previous_status: pending" in plain_cli_output(result.output)
+    assert "new_status: cancelled" in plain_cli_output(result.output)
+    assert "cancelled directly" in plain_cli_output(result.output)
     assert fake.cancelled == [(_JOB_ID, None)]
 
 
@@ -169,9 +170,9 @@ def test_cancel_running_reports_the_cooperative_outcome(
     result = runner.invoke(app, ["job", "cancel", str(_JOB_ID), "--reason", "operator stop"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "previous_status: running" in result.output
-    assert "new_status: running" in result.output
-    assert "cooperative cancel requested" in result.output
+    assert "previous_status: running" in plain_cli_output(result.output)
+    assert "new_status: running" in plain_cli_output(result.output)
+    assert "cooperative cancel requested" in plain_cli_output(result.output)
     assert fake.cancelled == [(_JOB_ID, "operator stop")]
 
 
@@ -184,7 +185,7 @@ def test_cancel_terminal_job_is_refused(monkeypatch: pytest.MonkeyPatch) -> None
     result = runner.invoke(app, ["job", "cancel", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert "already in a terminal state" in result.stderr
+    assert "already in a terminal state" in plain_cli_output(result.stderr)
     assert fake.cancelled == [], "no cancel write may be issued for a terminal job"
     # The refusal happens after the read but before any write; the client
     # was opened (the pre-check reads through it), nothing was written.
@@ -199,7 +200,7 @@ def test_cancel_unknown_job_is_a_clean_not_found(monkeypatch: pytest.MonkeyPatch
     result = runner.invoke(app, ["job", "cancel", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert str(_JOB_ID) in result.stderr
+    assert str(_JOB_ID) in plain_cli_output(result.stderr)
     assert fake.cancelled == []
 
 
@@ -211,7 +212,7 @@ def test_cancel_rejects_a_malformed_job_id(monkeypatch: pytest.MonkeyPatch) -> N
     result = runner.invoke(app, ["job", "cancel", "not-a-uuid"])
 
     assert result.exit_code == 1
-    assert "expected a UUID" in result.stderr
+    assert "expected a UUID" in plain_cli_output(result.stderr)
     assert opened == [], "a malformed id must not cost a connection"
 
 
@@ -231,8 +232,8 @@ def test_retry_resting_job_re_pends_it(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["job", "retry", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "previous_status: failed" in result.output
-    assert "new_status: pending" in result.output
+    assert "previous_status: failed" in plain_cli_output(result.output)
+    assert "new_status: pending" in plain_cli_output(result.output)
     assert fake.retry_calls == [_JOB_ID]
 
 
@@ -248,7 +249,7 @@ def test_retry_running_job_is_refused_before_the_write(
     result = runner.invoke(app, ["job", "retry", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert "not in a retryable state" in result.stderr
+    assert "not in a retryable state" in plain_cli_output(result.stderr)
     assert fake.retry_calls == [], "the write guard is not the first line of defence here"
 
 
@@ -265,8 +266,8 @@ def test_retry_lost_race_reports_conflict(monkeypatch: pytest.MonkeyPatch) -> No
     result = runner.invoke(app, ["job", "retry", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert "not in a retryable state" in result.stderr
-    assert "no rows were changed" in result.stderr
+    assert "not in a retryable state" in plain_cli_output(result.stderr)
+    assert "no rows were changed" in plain_cli_output(result.stderr)
 
 
 def test_retry_unknown_job_is_a_clean_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,7 +277,7 @@ def test_retry_unknown_job_is_a_clean_not_found(monkeypatch: pytest.MonkeyPatch)
     result = runner.invoke(app, ["job", "retry", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert str(_JOB_ID) in result.stderr
+    assert str(_JOB_ID) in plain_cli_output(result.stderr)
     assert fake.retry_calls == []
 
 
@@ -295,8 +296,8 @@ def test_cancel_where_rejects_an_empty_filter_before_any_io(
     result = runner.invoke(app, ["job", "cancel-where"])
 
     assert result.exit_code == 1
-    assert "at least one filter predicate" in result.stderr
-    assert "would cancel the entire table" in result.stderr
+    assert "at least one filter predicate" in plain_cli_output(result.stderr)
+    assert "would cancel the entire table" in plain_cli_output(result.stderr)
     assert opened == [], "the empty-filter refusal must not cost a connection"
     assert fake.cancel_where_calls == []
 
@@ -319,10 +320,10 @@ def test_cancel_where_dry_run_counts_without_writing(
     )
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "dry run" in result.output.lower()
-    assert "3 matching job(s)" in result.output
+    assert "dry run" in plain_cli_output(result.output).lower()
+    assert "3 matching job(s)" in plain_cli_output(result.output)
     for job_id in sample:
-        assert str(job_id) in result.output
+        assert str(job_id) in plain_cli_output(result.output)
     assert fake.cancel_where_calls == [], "a dry run must not write"
     assert opened == [], "a dry run must not open the write client"
 
@@ -363,11 +364,11 @@ def test_cancel_where_bulk_cancels_and_prints_the_split(
     )
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "cancelled directly: 2" in result.output
-    assert "cooperative cancel requested: 1" in result.output
-    assert "total affected: 3" in result.output
+    assert "cancelled directly: 2" in plain_cli_output(result.output)
+    assert "cooperative cancel requested: 1" in plain_cli_output(result.output)
+    assert "total affected: 3" in plain_cli_output(result.output)
     for job_id in (*direct, *requested):
-        assert str(job_id) in result.output
+        assert str(job_id) in plain_cli_output(result.output)
     ((job_filter, reason),) = fake.cancel_where_calls
     assert reason == "bad deploy"
     assert job_filter.queue == "default"
@@ -408,7 +409,7 @@ def test_cancel_where_rejects_an_unknown_status(monkeypatch: pytest.MonkeyPatch)
     result = runner.invoke(app, ["job", "cancel-where", "--queue", "default", "--status", "nope"])
 
     assert result.exit_code == 1
-    assert "nope" in result.stderr
+    assert "nope" in plain_cli_output(result.stderr)
     assert fake.cancel_where_calls == []
 
 
@@ -423,7 +424,7 @@ def test_cancel_where_rejects_an_unparseable_duration(
     )
 
     assert result.exit_code == 1
-    assert "--older-than" in result.stderr
+    assert "--older-than" in plain_cli_output(result.stderr)
     assert fake.cancel_where_calls == []
 
 
@@ -448,8 +449,8 @@ def test_cancel_where_rejects_a_duration_that_outruns_timedelta(
     )
 
     assert result.exit_code == 1
-    assert "--older-than" in result.stderr
-    assert "999999999999999w" in result.stderr
+    assert "--older-than" in plain_cli_output(result.stderr)
+    assert "999999999999999w" in plain_cli_output(result.stderr)
     assert fake.cancel_where_calls == []
 
 
@@ -489,8 +490,8 @@ def test_show_default_output_stays_blob_free(monkeypatch: pytest.MonkeyPatch) ->
     result = runner.invoke(app, ["job", "show", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "error_traceback" not in result.output
-    assert "payload" not in result.output
+    assert "error_traceback" not in plain_cli_output(result.output)
+    assert "payload" not in plain_cli_output(result.output)
 
 
 def test_show_traceback_flag_prints_the_stored_traceback(
@@ -501,9 +502,9 @@ def test_show_traceback_flag_prints_the_stored_traceback(
     result = runner.invoke(app, ["job", "show", str(_JOB_ID), "--traceback"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "error_traceback:" in result.output
-    assert "Traceback (most recent call last):" in result.output
-    assert "payload" not in result.output
+    assert "error_traceback:" in plain_cli_output(result.output)
+    assert "Traceback (most recent call last):" in plain_cli_output(result.output)
+    assert "payload" not in plain_cli_output(result.output)
 
 
 def test_show_payload_flag_prints_the_stored_payload(
@@ -514,9 +515,9 @@ def test_show_payload_flag_prints_the_stored_payload(
     result = runner.invoke(app, ["job", "show", str(_JOB_ID), "--payload"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "payload:" in result.output
-    assert '{"to": "ops@example.com"}' in result.output
-    assert "error_traceback" not in result.output
+    assert "payload:" in plain_cli_output(result.output)
+    assert '{"to": "ops@example.com"}' in plain_cli_output(result.output)
+    assert "error_traceback" not in plain_cli_output(result.output)
 
 
 def test_show_flags_name_an_absent_blob(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -531,8 +532,8 @@ def test_show_flags_name_an_absent_blob(monkeypatch: pytest.MonkeyPatch) -> None
     result = runner.invoke(app, ["job", "show", str(_JOB_ID), "--traceback", "--payload"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "error_traceback: (none)" in result.output
-    assert "payload: (none)" in result.output
+    assert "error_traceback: (none)" in plain_cli_output(result.output)
+    assert "payload: (none)" in plain_cli_output(result.output)
 
 
 # ── job events ─────────────────────────────────────────────────────────
@@ -560,9 +561,9 @@ def test_job_events_lists_the_timeline(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["job", "events", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "state_change" in result.output
-    assert "cancel_request" in result.output
-    assert "operator stop" in result.output
+    assert "state_change" in plain_cli_output(result.output)
+    assert "cancel_request" in plain_cli_output(result.output)
+    assert "operator stop" in plain_cli_output(result.output)
 
 
 def test_job_events_truncates_a_long_detail_to_one_line(
@@ -582,7 +583,7 @@ def test_job_events_truncates_a_long_detail_to_one_line(
     result = runner.invoke(app, ["job", "events", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "+380 characters" in result.output
+    assert "+380 characters" in plain_cli_output(result.output)
 
 
 def test_job_events_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -593,7 +594,7 @@ def test_job_events_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -
     result = runner.invoke(app, ["job", "events", str(_JOB_ID)])
 
     assert result.exit_code == 1
-    assert str(_JOB_ID) in result.stderr
+    assert str(_JOB_ID) in plain_cli_output(result.stderr)
 
 
 def test_job_events_job_with_no_events_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -606,7 +607,7 @@ def test_job_events_job_with_no_events_says_so(monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["job", "events", str(_JOB_ID)])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "no job_events rows" in result.output
+    assert "no job_events rows" in plain_cli_output(result.output)
 
 
 # ── queues depth ───────────────────────────────────────────────────────
@@ -638,12 +639,12 @@ def test_queues_depth_prints_counts_and_oldest_pending_age(
     result = runner.invoke(app, ["queues", "depth"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "default" in result.output
-    assert "12" in result.output
-    assert "reports" in result.output
+    assert "default" in plain_cli_output(result.output)
+    assert "12" in plain_cli_output(result.output)
+    assert "reports" in plain_cli_output(result.output)
     # A queue with no pending rows has no oldest-pending age: it renders
     # as '-', not as a zero age or a crash.
-    assert "-" in result.output
+    assert "-" in plain_cli_output(result.output)
 
 
 def test_queues_depth_empty_table_says_nothing_to_report(
@@ -654,4 +655,4 @@ def test_queues_depth_empty_table_says_nothing_to_report(
     result = runner.invoke(app, ["queues", "depth"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "nothing to report" in result.output
+    assert "nothing to report" in plain_cli_output(result.output)

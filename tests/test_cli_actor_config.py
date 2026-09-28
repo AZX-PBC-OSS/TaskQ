@@ -109,7 +109,7 @@ def test_set_max_pending_and_clear_are_mutually_exclusive(
         app, ["actor-config", "set", "diff_actor", "--max-pending", "7", "--clear-max-pending"]
     )
     assert result.exit_code == 1
-    assert "mutually exclusive" in result.stderr
+    assert "mutually exclusive" in plain_cli_output(result.stderr)
 
 
 def test_set_negative_max_pending_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,14 +124,14 @@ def test_set_without_flags_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "set", "diff_actor"])
     assert result.exit_code == 1
-    assert "nothing to change" in result.stderr
+    assert "nothing to change" in plain_cli_output(result.stderr)
 
 
 def test_set_unknown_actor_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_db(monkeypatch, set_result=None)
     result = runner.invoke(app, ["actor-config", "set", "ghost", "--max-concurrent", "5"])
     assert result.exit_code == 1
-    assert "no stored actor_config row" in result.stderr
+    assert "no stored actor_config row" in plain_cli_output(result.stderr)
 
 
 def _patch_connect_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,16 +162,16 @@ def test_set_result_ttl_nan_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) ->
     _patch_connect_only(monkeypatch)
     result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--result-ttl", "nan"])
     assert result.exit_code == 1
-    assert "finite" in result.stderr
-    assert "Traceback" not in result.output
+    assert "finite" in plain_cli_output(result.stderr)
+    assert "Traceback" not in plain_cli_output(result.output)
 
 
 def test_set_result_ttl_inf_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_connect_only(monkeypatch)
     result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--result-ttl", "inf"])
     assert result.exit_code == 1
-    assert "finite" in result.stderr
-    assert "Traceback" not in result.output
+    assert "finite" in plain_cli_output(result.stderr)
+    assert "Traceback" not in plain_cli_output(result.output)
 
 
 def test_set_help_lists_all_capacity_fields() -> None:
@@ -196,15 +196,15 @@ def test_get_unknown_actor_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_db(monkeypatch, get_result=None)
     result = runner.invoke(app, ["actor-config", "get", "ghost"])
     assert result.exit_code == 1
-    assert "no stored actor_config row" in result.stderr
+    assert "no stored actor_config row" in plain_cli_output(result.stderr)
 
 
 def test_list_prints_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "list"])
     assert result.exit_code == 0
-    assert "diff_actor" in result.output
-    assert "max_pending=10" in result.output
+    assert "diff_actor" in plain_cli_output(result.output)
+    assert "max_pending=10" in plain_cli_output(result.output)
 
 
 # ── diff ─────────────────────────────────────────────────────────────────
@@ -233,10 +233,10 @@ def test_diff_shows_literal_stored_and_effective(monkeypatch: pytest.MonkeyPatch
     _patch_db(monkeypatch, list_result=[_CAPACITY_DRIFT_ROW])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "diff_actor" in result.output
-    assert "literal=100" in result.output
-    assert "stored=10" in result.output
-    assert "effective=10" in result.output
+    assert "diff_actor" in plain_cli_output(result.output)
+    assert "literal=100" in plain_cli_output(result.output)
+    assert "stored=10" in plain_cli_output(result.output)
+    assert "effective=10" in plain_cli_output(result.output)
 
 
 def test_diff_flags_queue_mismatch_as_assignment_drift(
@@ -252,9 +252,9 @@ def test_diff_flags_queue_mismatch_as_assignment_drift(
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code != 0
-    assert "queue" in result.output
-    assert "MISMATCH" in result.output
-    assert "move-queue" in result.output
+    assert "queue" in plain_cli_output(result.output)
+    assert "MISMATCH" in plain_cli_output(result.output)
+    assert "move-queue" in plain_cli_output(result.output)
 
 
 def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -270,10 +270,10 @@ def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) ->
     _patch_db(monkeypatch, list_result=[])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code != 0
-    assert "no stored row" in result.output
-    assert "DOES NOT DISPATCH" in result.output
-    assert "max_concurrent  literal=4  effective=0 (no stored row" in result.output
-    assert "max_pending     literal=100  effective=100 (literal)" in result.output
+    assert "no stored row" in plain_cli_output(result.output)
+    assert "DOES NOT DISPATCH" in plain_cli_output(result.output)
+    assert "max_concurrent literal=4 effective=0 (no stored row" in plain_cli_output(result.output)
+    assert "max_pending literal=100 effective=100 (literal)" in plain_cli_output(result.output)
 
 
 def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,8 +295,8 @@ def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch
     _patch_db(monkeypatch, list_result=[ghost, _CAPACITY_DRIFT_ROW])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "ghost" in result.output
-    assert "not in the registry" in result.output
+    assert "ghost" in plain_cli_output(result.output)
+    assert "not in the registry" in plain_cli_output(result.output)
 
 
 # ── move-queue ───────────────────────────────────────────────────────────
@@ -373,12 +373,14 @@ def test_move_queue_reports_the_move_and_closes_the_conn(
         "schema": "taskq",
     }
     assert captured["move"]["schema"] and "taskq" in captured["move"]["schema"]
-    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in result.stdout
-    assert "jobs_moved=3" in result.stdout
-    assert "running_jobs_left=1" in result.stdout
-    assert "queues_row_carried=True" in result.stdout
+    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in plain_cli_output(result.stdout)
+    assert "jobs_moved=3" in plain_cli_output(result.stdout)
+    assert "running_jobs_left=1" in plain_cli_output(result.stdout)
+    assert "queues_row_carried=True" in plain_cli_output(result.stdout)
     # The residual is an operator action driver: stderr, not stdout.
-    assert "2 pending/scheduled job(s) still carry queue 'critical'" in result.stderr
+    assert "2 pending/scheduled job(s) still carry queue 'critical'" in plain_cli_output(
+        result.stderr
+    )
     assert captured["conn"].closed, "the move connection must be closed"
 
 
@@ -397,8 +399,8 @@ def test_move_queue_ghost_actor_exits_three_with_a_clean_message(
     result = runner.invoke(app, ["actor-config", "move-queue", "ghost", "q2"])
 
     assert result.exit_code == 3
-    assert "no actor_config row for actor 'ghost'" in result.stderr
-    assert "Traceback" not in result.stderr
+    assert "no actor_config row for actor 'ghost'" in plain_cli_output(result.stderr)
+    assert "Traceback" not in plain_cli_output(result.stderr)
 
 
 def test_move_queue_transposed_arguments_are_a_usage_error(
@@ -441,4 +443,4 @@ def test_queue_migrate_is_the_same_move_named_by_to(
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured["move"]["actor"] == "diff_actor"
     assert captured["move"]["new_queue"] == "q2"
-    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in result.stdout
+    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in plain_cli_output(result.stdout)

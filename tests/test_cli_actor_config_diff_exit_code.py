@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from taskq.actor import ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -72,7 +73,7 @@ def test_diff_exits_nonzero_on_queue_assignment_drift(
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    assert "MISMATCH" in result.output
+    assert "MISMATCH" in plain_cli_output(result.output)
     assert result.exit_code != 0
 
 
@@ -91,7 +92,7 @@ def test_diff_exits_zero_when_stored_rows_match_code(monkeypatch: pytest.MonkeyP
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    assert "MISMATCH" not in result.output
+    assert "MISMATCH" not in plain_cli_output(result.output)
     assert result.exit_code == 0
 
 
@@ -106,7 +107,7 @@ def test_diff_exits_nonzero_when_registry_actor_has_no_stored_row(
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    assert "DOES NOT DISPATCH" in result.output
+    assert "DOES NOT DISPATCH" in plain_cli_output(result.output)
     assert result.exit_code != 0
 
 
@@ -130,7 +131,7 @@ def test_diff_exits_nonzero_on_metadata_only_drift(
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    assert "MISMATCH" in result.output
+    assert "MISMATCH" in plain_cli_output(result.output)
     assert result.exit_code != 0
 
 
@@ -157,9 +158,9 @@ def test_diff_exits_zero_on_capacity_only_drift(
     # The drift must be visibly reported - exit 0 is only meaningful if
     # the command actually compared the stored row (otherwise the pass
     # is vacuous).
-    assert "max_concurrent" in result.output
-    assert "stored=1" in result.output
-    assert "MISMATCH" not in result.output
+    assert "max_concurrent" in plain_cli_output(result.output)
+    assert "stored=1" in plain_cli_output(result.output)
+    assert "MISMATCH" not in plain_cli_output(result.output)
     assert result.exit_code == 0
 
 
@@ -191,5 +192,5 @@ def test_diff_exits_zero_for_leftover_stored_row(
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    assert "leftover row" in result.output
+    assert "leftover row" in plain_cli_output(result.output)
     assert result.exit_code == 0

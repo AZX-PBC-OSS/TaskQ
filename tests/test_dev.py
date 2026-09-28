@@ -542,7 +542,7 @@ def test_bad_module_exits_nonzero() -> None:
     result = cli_runner.invoke(app, ["dev", "nonexistent_module_xyz:registry"])
     assert result.exit_code != 0
     assert "nonexistent_module_xyz" in plain_cli_output(result.output)
-    assert "Traceback" not in result.stderr
+    assert "Traceback" not in plain_cli_output(result.stderr)
 
 
 # ── Good module, bad attr exits nonzero ───────────────────────────
@@ -571,7 +571,7 @@ def test_dev_no_colon_exits_nonzero() -> None:
     """Missing colon in module:attr exits 1 with syntax error."""
     result = cli_runner.invoke(app, ["dev", "just_a_module"])
     assert result.exit_code != 0
-    assert "module:attr" in result.stderr
+    assert "module:attr" in plain_cli_output(result.stderr)
 
 
 def test_dev_valid_import_prints_banner_to_stderr(
@@ -587,8 +587,8 @@ def test_dev_valid_import_prints_banner_to_stderr(
     monkeypatch.setattr("taskq.cli.dev_watch_loop", _fake_watch_loop)
     result = cli_runner.invoke(app, ["dev", _VALID_MODULE_ATTR])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "TaskQ dev mode, watching" in result.stderr
-    assert "Press Ctrl-C to stop" in result.stderr
+    assert "TaskQ dev mode, watching" in plain_cli_output(result.stderr)
+    assert "Press Ctrl-C to stop" in plain_cli_output(result.stderr)
 
 
 def test_dev_grace_period_zero_passed_as_float(

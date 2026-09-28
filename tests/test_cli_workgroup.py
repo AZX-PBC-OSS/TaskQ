@@ -67,8 +67,8 @@ def test_workgroup_start_config_not_found(tmp_path: Path) -> None:
     missing = tmp_path / "does-not-exist.toml"
     result = runner.invoke(app, ["workgroup", "start", str(missing)])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "config file not found" in result.stderr
-    assert str(missing) in result.stderr
+    assert "config file not found" in plain_cli_output(result.stderr)
+    assert str(missing) in plain_cli_output(result.stderr)
 
 
 def test_workgroup_validate_config_not_found(tmp_path: Path) -> None:
@@ -76,8 +76,8 @@ def test_workgroup_validate_config_not_found(tmp_path: Path) -> None:
     missing = tmp_path / "does-not-exist.toml"
     result = runner.invoke(app, ["workgroup", "validate", str(missing)])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "config file not found" in result.stderr
-    assert str(missing) in result.stderr
+    assert "config file not found" in plain_cli_output(result.stderr)
+    assert str(missing) in plain_cli_output(result.stderr)
 
 
 # ── workgroup start ────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ def test_workgroup_validate_invalid_toml_syntax(tmp_path: Path) -> None:
 
     result = runner.invoke(app, ["workgroup", "validate", str(config_path)])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "invalid config" in result.stderr
+    assert "invalid config" in plain_cli_output(result.stderr)
 
 
 def test_workgroup_validate_schema_violation_raises_value_error(tmp_path: Path) -> None:
@@ -139,8 +139,8 @@ def test_workgroup_validate_schema_violation_raises_value_error(tmp_path: Path) 
 
     result = runner.invoke(app, ["workgroup", "validate", str(config_path)])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "invalid config" in result.stderr
-    assert "at least one" in result.stderr
+    assert "invalid config" in plain_cli_output(result.stderr)
+    assert "at least one" in plain_cli_output(result.stderr)
 
 
 def test_workgroup_validate_os_error(monkeypatch: Any, tmp_path: Path) -> None:
@@ -155,8 +155,8 @@ def test_workgroup_validate_os_error(monkeypatch: Any, tmp_path: Path) -> None:
 
     result = runner.invoke(app, ["workgroup", "validate", str(config_path)])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "failed to read config" in result.stderr
-    assert "perm denied" in result.stderr
+    assert "failed to read config" in plain_cli_output(result.stderr)
+    assert "perm denied" in plain_cli_output(result.stderr)
 
 
 # ── python -m taskq entry point ───────────────────────────────────────────
@@ -179,4 +179,4 @@ def test_python_dash_m_taskq_entrypoint() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "workgroup" in proc.stdout
+    assert "workgroup" in plain_cli_output(proc.stdout)

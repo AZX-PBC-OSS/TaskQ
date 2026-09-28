@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from taskq.actor_config_ops import DeregisterResult
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -80,8 +81,8 @@ def test_deregister_not_found_exit_three(monkeypatch: pytest.MonkeyPatch) -> Non
     _patch_deregister(monkeypatch, raises=ActorNotFoundError("ghost"))
     result = runner.invoke(app, ["actor-config", "deregister", "ghost"])
     assert result.exit_code == 3
-    assert "no stored actor_config row" in result.stderr
-    assert "Cannot deregister actor" in result.stderr
+    assert "no stored actor_config row" in plain_cli_output(result.stderr)
+    assert "Cannot deregister actor" in plain_cli_output(result.stderr)
 
 
 def test_deregister_active_jobs_error_exit_two(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,9 +96,9 @@ def test_deregister_active_jobs_error_exit_two(monkeypatch: pytest.MonkeyPatch) 
     )
     result = runner.invoke(app, ["actor-config", "deregister", "busy"])
     assert result.exit_code == 2
-    assert "non-terminal" in result.stderr
-    assert "force=True" in result.stderr
-    assert "Cannot deregister actor" in result.stderr
+    assert "non-terminal" in plain_cli_output(result.stderr)
+    assert "force=True" in plain_cli_output(result.stderr)
+    assert "Cannot deregister actor" in plain_cli_output(result.stderr)
 
 
 def test_deregister_schedules_error_exit_two(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,7 +110,7 @@ def test_deregister_schedules_error_exit_two(monkeypatch: pytest.MonkeyPatch) ->
     )
     result = runner.invoke(app, ["actor-config", "deregister", "sched-actor"])
     assert result.exit_code == 2
-    assert "enabled cron schedule" in result.stderr
+    assert "enabled cron schedule" in plain_cli_output(result.stderr)
 
 
 def test_deregister_output_shows_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,7 +146,7 @@ def test_deregister_double_deregister_exit_three(monkeypatch: pytest.MonkeyPatch
     _patch_deregister(monkeypatch, raises=ActorNotFoundError("already-gone"))
     result = runner.invoke(app, ["actor-config", "deregister", "already-gone"])
     assert result.exit_code == 3
-    assert "no stored actor_config row" in result.stderr
+    assert "no stored actor_config row" in plain_cli_output(result.stderr)
 
 
 def test_deregister_forwards_configured_schema(monkeypatch: pytest.MonkeyPatch) -> None:

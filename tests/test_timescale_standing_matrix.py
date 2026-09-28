@@ -48,6 +48,7 @@ from taskq._ids import new_uuid
 from taskq.migrate import discover
 from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.pg import create_running_job
 from taskq.timescale import _convert_job_events
 from tests.system_e2e.actors import SysPayload, sys_fast
@@ -389,7 +390,7 @@ async def test_cell_remigrate_idempotence_converges_without_duplicates(
             result = _migrate_up(matrix_dsn, schema, flag=True)
             assert result.returncode == 0, f"run {run + 1} stderr: {result.stderr}"
             if run > 0:
-                assert "no pending migrations" in result.stdout, (
+                assert "no pending migrations" in plain_cli_output(result.stdout), (
                     f"run {run + 1} must report nothing left to apply"
                 )
             snapshots.append(
