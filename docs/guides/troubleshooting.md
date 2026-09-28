@@ -243,7 +243,7 @@ Check container/OS logs for OOM kills or SIGKILL on the worker host.
 ### Fix
 
 - **OOM kills:** increase the container memory limit or reduce `TASKQ_MAX_CONCURRENCY`.
-- **Retry crashed jobs:** use the admin UI Retry button (`TASKQ_ADMIN_ACTIONS_ENABLED=true`) or `backend.retry_job()`.
+- **Retry crashed jobs:** use `taskq job retry`, the embedded admin UI's Retry button (`TASKQ_ADMIN_ACTIONS_ENABLED=true`; the standalone `taskq ui serve`'s button answers 503 — no Backend there), or `backend.retry_job()`.
 - **Prevent recurrence:** set `retry_kind="transient"` with appropriate `max_attempts` so the sweep re-pends instead of crashing. The reclaim sweep is **leader-only** (it runs in the leader's sweep loop, every `TASKQ_SWEEP_INTERVAL`); its SQL keeps `FOR UPDATE SKIP LOCKED` so it stays row-safe if a sweep is ever run concurrently, e.g. two leaders of the same schema during a rolling deploy across the advisory-lock rename.
 
 ---

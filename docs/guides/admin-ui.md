@@ -2,6 +2,18 @@
 
 The TaskQ admin UI is a read-only-by-default observability dashboard built with FastAPI and Jinja2. It shows live job, queue, worker, schedule, rate-limit, and reservation state drawn from Postgres. CSRF-protected write operations are available for job cancellation, job retry, and cron schedule management (enable, disable, skip, run-now), but are gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false`; set to `true` to enable them). The rate-limit reset endpoint is additionally gated by `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true`.
 
+!!! warning "Standalone `taskq ui serve` cannot cancel, retry, or run-now"
+    The three backend-mediated mutation routes — `POST /admin/jobs/{job_id}/cancel`,
+    `POST /admin/jobs/{job_id}/retry`, and `POST /admin/schedules/{schedule_id}/run` —
+    answer **503 `Backend not configured for admin operations`** from the standalone
+    `taskq ui serve` process, even with `TASKQ_ADMIN_ACTIONS_ENABLED=true`: `_ui_serve`
+    never configures a Backend, and `create_router(backend=None)` keeps `None` on
+    `app.state.backend` (see the `backend` parameter row below). The pool-mediated
+    mutations (schedule enable/disable/skip, actor deregister, rate-limit reset) work
+    standalone. Drive cancel/retry/run-now through the CLI (`taskq job cancel`,
+    `taskq job retry`) or mount the router into a host app with an explicit
+    `backend=` (the embedding contract below).
+
 The frontend uses [Alpine.js](https://alpinejs.dev/) for reactive components, [HTMX](https://htmx.org/) for partial-page updates, and Jinja2 partial templates for composable UI pieces. SSE (Server-Sent Events) provides real-time updates when Redis is available; a polling fallback keeps the UI functional when it is not.
 
 ---
@@ -30,7 +42,7 @@ The server reads configuration from the standard `TASKQ_` environment variables 
 | `TASKQ_SCHEMA_NAME` | `taskq` | Postgres schema containing TaskQ tables. |
 | `TASKQ_ENVIRONMENT` | _(none)_ | Set to `dev` or `development` to bypass the fail-closed auth check (local development only). |
 | `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `true` | When `true` (the default), `create_router()` raises `RuntimeError` in non-dev environments if no `auth_dependency` is configured. Set to `false` to suppress the error and allow an unauthenticated admin UI behind a reverse proxy (not recommended unless you have an external auth layer). |
-| `TASKQ_ADMIN_ACTIONS_ENABLED` | `false` | When `true`, enables destructive admin actions: job cancel, job retry, and schedule run-now. When `false` (the default), these endpoints return `403`. Separate from `auth_dependency`, which controls read access to all admin routes. |
+| `TASKQ_ADMIN_ACTIONS_ENABLED` | `false` | When `true`, enables destructive admin actions: job cancel, job retry, and schedule run-now. When `false` (the default), these endpoints return `403`. Separate from `auth_dependency`, which controls read access to all admin routes. Note: from the standalone `taskq ui serve`, these three routes answer `503` even when this is `true` (no Backend is configured there) — see the warning at the top of this page. |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `50` | Per-topic cap on concurrent SSE connections. |
 | `TASKQ_ADMIN_ACQUIRE_TIMEOUT` | `5.0` | Seconds a request waits for a Postgres pool checkout or a Redis read before answering `503` (`Retry-After: 2`). A wedged pool or a black-holed broker fails the request visibly instead of hanging it and every request behind it. |
 | `TASKQ_HEALTH_TOKEN` | _(none)_ | Bearer token for machine-to-machine access to `/jobs/health/*` endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access. |
@@ -194,7 +206,11 @@ When `admin_actions_enabled` is `false`, both endpoints return `403`. Set
 `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them. Both are CSRF-protected.
 Cancel writes a cancel request to Postgres; retry resets a terminal job to
 `pending` via `backend.retry_job`. Ensure the authentication layer covers
-these endpoints in production: they can modify job state.
+these endpoints in production: they can modify job state. From the standalone
+`taskq ui serve` both answer `503` (no Backend is configured there); the
+buttons work when the router is embedded with an explicit `backend=`, and the
+CLI (`taskq job cancel` / `taskq job retry`) is the standalone deployment's
+path to the same operations.
 
 ### Audit trail
 
@@ -397,11 +413,11 @@ The job detail page includes a **Cancel** button (for non-terminal jobs) and a *
 
 ### `POST /admin/jobs/{job_id}/cancel`
 
-Cancels a non-terminal job by writing a cancel request via `backend.write_cancel_request`. The heartbeat loop will observe the cancel flag and drive the three-phase cancellation protocol. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is already in a terminal state. Redirects to the job detail page on success.
+Cancels a non-terminal job by writing a cancel request via `backend.write_cancel_request`. The heartbeat loop will observe the cancel flag and drive the three-phase cancellation protocol. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is already in a terminal state, and `503` when no Backend is configured on `app.state.backend` — which is always the case under the standalone `taskq ui serve`. Redirects to the job detail page on success.
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source (`failed`, `crashed`, `cancelled`, `abandoned` and `succeeded`), so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed**; dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source (`failed`, `crashed`, `cancelled`, `abandoned` and `succeeded`), so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`, and `503` when no Backend is configured on `app.state.backend` — always the case under the standalone `taskq ui serve` (the CLI's `taskq job retry` is the standalone path). Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed**; dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
 
 ### `GET /admin/jobs/count`
 
@@ -475,7 +491,7 @@ Advances `next_fire_at` to the next computed fire time after the current one. Re
 
 ### `POST /admin/schedules/{schedule_id}/run`
 
-Enqueues a job for the schedule's actor immediately, using the schedule's `payload_factory` and the actor's stored `actor_config` row for queue, `max_attempts`, and `retry_kind`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the schedule does not exist, `303` redirect with an error query parameter if the payload factory fails or the actor is not configured. A per-process 10-second cooldown prevents rapid re-triggering of the same schedule.
+Enqueues a job for the schedule's actor immediately, using the schedule's `payload_factory` and the actor's stored `actor_config` row for queue, `max_attempts`, and `retry_kind`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the schedule does not exist, `303` redirect with an error query parameter if the payload factory fails or the actor is not configured, and `503` when no Backend is configured on `app.state.backend` — always the case under the standalone `taskq ui serve`. A per-process 10-second cooldown prevents rapid re-triggering of the same schedule.
 
 !!! warning "Singleton parity needs the actor registry in the admin process"
     The stored `actor_config` row cannot carry code-declared actor flags, so
@@ -857,7 +873,7 @@ router = create_router(
 | `redis_client` | `redis.asyncio.Redis \| None` | `None` | Optional Redis client. Enables live Redis state on the rate-limits page. |
 | `auth_dependency` | `Callable \| None` | `None` | FastAPI dependency applied to all routes. If `None` and `TASKQ_ENVIRONMENT` is not `dev`/`development`, `create_router()` raises `RuntimeError` (default fail-closed). Set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` to suppress the error and allow unauthenticated access behind a reverse proxy. |
 | `base_path` | `str` | `""` | Must match the prefix passed to `include_router`. Injected as a Jinja2 global so templates build correct URLs. |
-| `backend` | `Backend \| None` | `None` | Optional pre-built `Backend` to reuse (e.g. one already created by your `JobsClient`). When `None`, the router builds its own `PostgresBackend` from `pg_pool`/`schema`. |
+| `backend` | `Backend \| None` | `None` | Optional pre-built `Backend` to reuse (e.g. one already created by your `JobsClient`). When `None`, **no Backend is built**: `app.state.backend` stays `None` and the backend-mediated mutation routes (`jobs/{id}/cancel`, `jobs/{id}/retry`, `schedules/{id}/run`) answer `503`. Pass an explicit Backend to enable them — `create_router` never constructs one from `pg_pool`/`schema`. |
 
 `create_router()` returns an `AdminBundle` containing the router and all values needed for `app.state`. Call it inside your lifespan so the pool is already open, then populate `app.state` via `setup_admin_state()` and mount the router:
 

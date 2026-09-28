@@ -40,6 +40,10 @@ import pytest
 
 from taskq.backend._protocol import JobFilter
 from tests.system_e2e._harness import (
+    DEPLOYMENT_CANCELLATION_GRACE_S,
+    DEPLOYMENT_CLEANUP_GRACE_S,
+    DEPLOYMENT_LOCK_LEASE_S,
+    DEPLOYMENT_TERMINATION_GRACE_S,
     WorkerProc,
     graceful_stop,
     reap,
@@ -194,11 +198,40 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
 
     worker_a: WorkerProc | None = None
     try:
-        worker_a = spawn_worker(pg_dsn, schema, tag="req-c")
+        # The deployment-shaped margins (the harness's DEPLOYMENT_* pair,
+        # the operational-loop family's own fleet settings): the
+        # scenario's pin is "the cancel ladder owns the exit" - every
+        # racing row terminalises cancelled. At the harness's chaos-tier
+        # 1s+1s graces, a drain whose holder stalls a few seconds under
+        # co-tenant load escalates the row to 'abandoned' (the graces'
+        # documented expiry), the pin's designed shape LOST to the host's
+        # weather. The deployment margins keep the ladder's poll in front
+        # of the graces on a loaded runner, and the drain still honours
+        # the cooperative phases (the bodies are 8s sleeps, cancellable
+        # in one tick - the margin never delays the exit).
+        worker_a = spawn_worker(
+            pg_dsn,
+            schema,
+            tag="req-c",
+            extra_env={
+                "TASKQ_CANCELLATION_GRACE_PERIOD": str(DEPLOYMENT_CANCELLATION_GRACE_S),
+                "TASKQ_CLEANUP_GRACE_PERIOD": str(DEPLOYMENT_CLEANUP_GRACE_S),
+                "TASKQ_LOCK_LEASE": str(DEPLOYMENT_LOCK_LEASE_S),
+                "TASKQ_TERMINATION_GRACE_PERIOD": str(DEPLOYMENT_TERMINATION_GRACE_S),
+            },
+        )
         wait_worker_ready(worker_a)
 
+        # Bodies that OUTLIVE the cancel graces (60s sleeps against the
+        # 10s deployment grace): the ladder's cooperative window can
+        # never let the body finish first, so the forced escalation
+        # OWNS the terminal state deterministically - on any host
+        # speed. (The 8s bodies of scenario 1 race the grace: a body
+        # that finishes inside the cooperative window lands 'succeeded'
+        # and the pin's premise is lost to the host's weather.)
         handles = [
-            await sys_client.enqueue(sys_slow, SysPayload(sleep=8.0), tags=[_TAG]) for _ in range(2)
+            await sys_client.enqueue(sys_slow, SysPayload(sleep=60.0), tags=[_TAG])
+            for _ in range(2)
         ]
         in_flight = await _wait_running(conn, schema, _TAG, want=2, cap_secs=30.0)
 

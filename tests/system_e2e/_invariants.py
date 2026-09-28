@@ -54,6 +54,7 @@ from datetime import UTC, datetime
 import asyncpg
 
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from tests.system_e2e._harness import TIER_LOAD_STRETCH
 
 _TERMINAL = tuple(TERMINAL_STATUSES)
 
@@ -218,9 +219,35 @@ async def settle_terminal(
             )
             return {r["status"]: r["n"] for r in counts}
         await asyncio.sleep(0.25)
+    stuck = await conn.fetch(
+        f"""
+        SELECT id::text, actor, queue, status::text AS status, attempt, cancel_phase,
+               locked_by_worker::text AS locked_by, lock_expires_at, scheduled_at,
+               EXTRACT(EPOCH FROM (statement_timestamp() - scheduled_at))::int
+                 AS due_age_s,
+               EXTRACT(EPOCH FROM (clock_timestamp() - last_heartbeat_at))::int
+                 AS heartbeat_age_s
+        FROM "{schema}".jobs
+        WHERE tags @> ARRAY[$1::text] AND status::text != ALL($2::text[])
+        ORDER BY actor, id
+        LIMIT 50
+        """,
+        tag,
+        list(_TERMINAL),
+    )
+    workers_left = await conn.fetch(f'SELECT pid, last_seen_at FROM "{schema}".workers')
+    leader_left = await conn.fetch(f'SELECT * FROM "{schema}".maintenance_leader')
+    slots = await conn.fetch(
+        f"SELECT bucket_name, slot_index, job_id::text AS job_id, "
+        f"held_by_worker_id::text AS holder, lease_expires_at "
+        f'FROM "{schema}".reservation_slots WHERE job_id IS NOT NULL'
+    )
     raise AssertionError(
         f"NOT SETTLED within {cap_secs}s: tagged jobs never reached terminal - "
-        "a dropped or livelocked population"
+        f"a dropped or livelocked population. stuck rows: {[dict(r) for r in stuck]} "
+        f"workers still registered: {[dict(r) for r in workers_left]} "
+        f"leader rows: {[dict(r) for r in leader_left]} "
+        f"held slots: {[dict(r) for r in slots]}"
     )
 
 
@@ -351,7 +378,7 @@ async def assert_balanced(conn: asyncpg.Connection, schema: str, tag: str) -> di
     """Run the shared invariants over the tagged population and return the
     live status counts. Every scenario ends here; a violation names its
     own defect in the failure message."""
-    counts = await settle_terminal(conn, schema, tag, cap_secs=120.0)
+    counts = await settle_terminal(conn, schema, tag, cap_secs=120.0 * TIER_LOAD_STRETCH)
     violations = await conservation_violations(conn, schema, tag)
     violations += await audit_violations(conn, schema, tag)
     assert not violations, "the system invariants do not balance after settle:\n" + "\n".join(
