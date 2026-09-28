@@ -10,3 +10,6 @@
 !backlog-throughput.json
 !archive-scale*.json
 !backlog-rss-soak.json
+!batch-hotspot.md
+!batch-hotspot-main-2000j-8c.json
+!batch-hotspot-fix-2000j-8c.json

@@ -132,6 +132,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single batch row",
     ),
+    "_LOCK_BATCH_ROW_SQL": (
+        "WHERE id = $1",
+        "keyed single batch row lock seat-take (complete_batch's handshake, "
+        "see _LOCK_BATCH_ROW_SQL's comment): a SELECT ... FOR UPDATE, no write "
+        "at all - it matches the UPDATE/DELETE walk only through the FOR UPDATE "
+        "lock clause's own keyword",
+    ),
     "_SCHEDULE_DELETE_SQL": (
         "WHERE id = $1",
         "keyed single cron_schedules row",

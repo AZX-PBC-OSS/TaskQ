@@ -2631,7 +2631,20 @@ class Backend(Protocol):
         batch_id: UUID,
         *,
         connection: "ConnLike | None" = None,
-    ) -> None: ...
+    ) -> bool:
+        """Arbitrate the batch's completion.
+
+        Returns whether the caller owes the batch one post-commit
+        completion re-arbitration: ``True`` only on the
+        transactional-caller shape whose attempt gated out at the
+        tail-shape probe while *connection* was still inside its open
+        transaction (a gated attempt is not ordered against the caller's
+        own commit, so an all-terminal batch would otherwise be left
+        'active' with no attempt left to land). The caller honors it by
+        calling this method again with no ``connection=`` once its
+        transaction has ended; autonomous callers are never owed one.
+        """
+        ...
 
     async def get_batch(
         self,
