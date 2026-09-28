@@ -2565,3 +2565,33 @@ the registered and the stored pair). That warning means the stored retry
 contract changed at this boot; it is informational, never an error, and no
 `force` flag is involved. To make a hand edit durable, change the
 `@actor(...)` literal in code to match instead.
+
+## Shipped migration files are immutable
+
+A migration file's bytes are part of its contract. The runner records a
+SHA-256 of the file's rendered SQL — every byte, comments included — in
+each database's `schema_migrations` ledger at apply time, and the drift
+guard refuses every future upgrade the moment a bundled file no longer
+renders to what a database's ledger recorded. The refusal is deliberate:
+a changed file means the schema was built from different SQL than the
+tree carries, and the runner will not build on unverified provenance.
+
+Consequence for contributors: never edit, rename, or delete a migration
+file that has shipped. Ship the change as a NEW migration instead. This
+is not bureaucratic — editing `01.00.19_01` post-ship blocked every
+existing database from upgrading (the guard refused the customer's deploy
+at the migration step); the files are restored byte-exact and the
+improvements they carried ship as `01.00.21_02`
+(the fence-probe index's pg_index-keyed rebuild) and `01.00.21_03`
+(the batches CHECK constraints, `NOT VALID` + `VALIDATE`).
+
+Operator consequence, one class only: a database that applied the
+REWRITTEN files (created from main between Sep 27 and this fix — e.g.
+built at pin `bea355f7`) holds the rewrites' checksums and will refuse
+against the restored files. The schema is correct — the carriers converge
+it — but the bookkeeping cannot be made true (the rewritten files no
+longer exist). For such a database: rebuild from a fresh database if
+practical; otherwise run `taskq migrate up --allow-checksum-drift` on it
+and keep that flag in its deploy pipeline — every run logs the drift as a
+warning, which is the honest state: that database's ledger refers to SQL
+that no longer exists anywhere.
