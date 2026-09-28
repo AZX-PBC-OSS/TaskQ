@@ -142,7 +142,7 @@ async def test_a_specd_deps_double_that_forgot_the_registry_fails_loud() -> None
     ``active_jobs`` is a default_factory dataclass field, so it is not in
     ``dir(WorkerDeps)``: a ``MagicMock(spec=WorkerDeps)`` that forgot to
     configure it raises ``AttributeError`` on the read, and stamping over
-    that hole (the pre-fix ``getattr(..., None)`` no-op) would pass in
+    that hole (the unguarded ``getattr(..., None)`` no-op) would pass in
     silence - the exact regression that turns the next real crash into a
     phantom cancel with zero signal. The stamp raises ``TypeError``
     instead, so a mis-shaped double is a red test, not a green one with a

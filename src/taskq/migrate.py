@@ -819,8 +819,8 @@ async def apply_pending(
     # unknown one falls through and silently applies EVERY pending
     # migration: the exact inversion of what a caller passing a target
     # expects, and reachable the moment any release deletes or renumbers
-    # files (a release deleted 01.00.11_01 and 01.00.12_05:post, both
-    # previously valid targets). Refuse before anything is applied.
+    # files (a deleted 01.00.11_01 or renumbered 01.00.12_05:post is a
+    # target no longer bundled). Refuse before anything is applied.
     if target is not None and target not in {m.version for m in all_migrations}:
         range_hint = (
             f"discovered versions run {all_migrations[0].version} through "

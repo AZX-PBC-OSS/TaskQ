@@ -207,9 +207,9 @@ class TestAutoDisableRecovery:
         pg_dsn: str,
     ) -> None:
         """The red pin, written without touching ``disabled_by`` so it runs on
-        the pre-fix code too: three real strikes auto-disable the schedule, a
+        the unguarded code too: three real strikes auto-disable the schedule, a
         worker restart re-declares it, and the row MUST come back enabled.
-        On the pre-fix main this is exactly the bug: the row stays disabled
+        On the unguarded main this is exactly the bug: the row stays disabled
         forever."""
         schema = f"tcron_{new_base62()}".lower()
         await _prepare_schema_for(pg_dsn, schema)
@@ -218,7 +218,7 @@ class TestAutoDisableRecovery:
         try:
             schedule_id = new_uuid()
             # Seeded without the disabled_by column so the pin runs (and
-            # fails behaviorally) on the pre-fix code too: no ownership
+            # fails behaviorally) on the unguarded code too: no ownership
             # marker exists yet, exactly the state issue #342 triaged.
             await conn.execute(
                 f'INSERT INTO "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
@@ -573,7 +573,7 @@ class TestMixedVersionRollingDeploy:
         leaves ``enabled=false, disabled_by=NULL``; the new release's boot
         re-declares the schedule and MUST return it to service.
 
-        On the pre-fix code the recovery predicate requires
+        On the unguarded code the recovery predicate requires
         ``disabled_by='auto'``, the row carries NULL, and the schedule stays
         disabled until a human re-enables it -- the unrecoverable cell."""
         schema = f"tcron_{new_base62()}".lower()
@@ -591,7 +591,7 @@ class TestMixedVersionRollingDeploy:
             )
             await self._old_pod_strikes(conn, schema, schedule_id, _LOOKUP_ERROR)
 
-            # The exact state the deploy produces, and the cell the pre-fix
+            # The exact state the deploy produces, and the cell the unguarded
             # recovery cannot match: disabled, unmarked, evidence present.
             row = await schedule_row(conn, schema, schedule_id)
             assert row["enabled"] is False, "the old pod's third strike must disable"

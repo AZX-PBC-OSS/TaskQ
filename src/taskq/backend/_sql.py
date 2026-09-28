@@ -66,7 +66,7 @@ ON CONFLICT (job_id, attempt) DO NOTHING"""
 # The explicit-finished_at variant is _sql_templates.insert_attempt_explicit,
 # bound by _terminal.py's _write_attempt (the write_attempt path): it takes
 # $4 for finished_at from the caller instead of stamping clock_timestamp().
-# The mark_* terminal writes no longer consume this template: they fuse the
+# The mark_* terminal writes do not consume this template: they fuse the
 # jobs UPDATE with their attempt/event INSERTs into one statement (see
 # _terminal.py's module docstring), carrying the same holder-CTE idiom
 # inline.

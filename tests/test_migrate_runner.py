@@ -583,7 +583,7 @@ async def test_apply_pending_locked_bounds_hung_conn_close(monkeypatch: Any) -> 
     # RED hang fail fast.
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
-    # Why the outer timeout: pre-fix apply_pending_locked awaited c.close()
+    # Why the outer timeout: unguarded, apply_pending_locked awaited c.close()
     # unbounded in its finally, so the RED state hangs forever instead of
     # failing fast. Mirrors the CLI bounded-close tests.
     async with asyncio.timeout(5):
@@ -606,7 +606,7 @@ async def test_apply_pending_locked_bounds_hung_unlock_execute(monkeypatch: Any)
     # See the sibling test for the shrink-seam rationale.
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
-    # Why the outer timeout: pre-fix the unlock execute was awaited
+    # Why the outer timeout: unguarded, the unlock execute was awaited
     # unbounded in the finally, so the RED state hangs forever instead of
     # failing fast.
     async with asyncio.timeout(5):

@@ -78,10 +78,11 @@ _SELECT_COLS_LIVE = (
 # union is wrapped and the sort applied to the wrapper, the same shape the
 # jobs list's reversed prev pages use.
 #
-# The wrapper sort is also where the walk's cost used to live: a sort
+# The wrapper sort is also where the naive walk's cost lives: a sort
 # over a set operation cannot be served by index order (the planner does
 # not propagate pathkeys through computed set-operation output columns),
-# so EVERY page turn read and top-N sorted every matching row of the
+# so sorting the union directly makes EVERY page turn read and top-N
+# sort every matching row of the
 # archive, 18 ms at a 100k-row archive and growing linearly with
 # retention. The walk therefore sorts and limits EACH BRANCH (the
 # per-branch ORDER BY is the same tuple over a bare table, which the

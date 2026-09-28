@@ -327,7 +327,7 @@ def get_session_verifier(request: Request) -> Callable[[Request], Awaitable[bool
     ``getattr`` with a ``None`` default rather than an attribute read: a host
     that mounted the router without calling ``setup_admin_state`` -- the state
     the other page dependencies already require -- gets an unrechecked stream
-    (the pre-#316 behavior) rather than a 500 on every ``/sse`` route.
+    (authenticate-once) rather than a 500 on every ``/sse`` route.
     """
     verifier: Any = getattr(request.app.state, "taskq_session_verifier", None)
     return verifier
@@ -581,10 +581,10 @@ def _capture_principal_dependency(
 ) -> Callable[..., Any]:
     """Build the router-level dependency that resolves the request's principal.
 
-    The auth dependency's return value used to be discarded here: it ran
-    as a bare router-level ``Depends`` purely for its side effect (raise
-    or pass), so no handler could see WHOSE fingers were on the keyboard
-    and the admin UI's mutations had no audit trail. This wrapper keeps
+    A bare router-level ``Depends`` discards the dependency's return value:
+    it runs purely for its side effect (raise
+    or pass), so no handler can see WHOSE fingers are on the keyboard
+    and the admin UI's mutations would have no audit trail. This wrapper keeps
     the same router-level placement (auth still runs before every page)
     but stores the returned principal on ``request.state.principal``;
     handlers read it through :func:`get_principal`.
@@ -673,7 +673,7 @@ def create_router(
     callable they return. A host supplying its own ``auth_dependency``
     without that attribute MUST pass ``session_verifier`` explicitly to keep
     the re-check; otherwise the admin ``/sse/{topic}`` streams authenticate
-    once at subscribe, the pre-#316 behavior, and a one-per-router
+    once at subscribe with no mid-stream re-check, and a one-per-router
     ``admin-sse-no-session-verifier`` warning fires at startup.
     """
     if not _IDENT_RE.match(schema):

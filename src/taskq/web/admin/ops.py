@@ -610,9 +610,8 @@ def register(router: APIRouter) -> None:
                     ac_row["max_pending"],
                     getattr(policy, "max_pending", None) if policy is not None else None,
                 ),
-                # The stamped metadata replaces the bare dict the handler
-                # used to build: singleton parity (above) rides the same
-                # provenance key.
+                # The stamped metadata, not a bare dict, so singleton
+                # parity (above) rides the same provenance key.
                 metadata=metadata,
             )
 
@@ -1034,8 +1033,7 @@ def register(router: APIRouter) -> None:
         # This is an admin-UI operator mutation (it reopens a throttled
         # bucket, which is a state change a throttle-dependent system
         # feels immediately), so it gets an audit row like every other
-        # mutation route -- previously it was the one mutation the trail
-        # did not see. The reset's store write has its own committed
+        # mutation route. The reset's store write has its own committed
         # transaction inside the registry (backend-mediated shape): the
         # row rides a separate checkout and degrades loudly
         # (record_admin_action_safe) rather than failing a reset that

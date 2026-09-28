@@ -715,7 +715,7 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
             await _make_running_row(backend)
             events = await asyncio.wait_for(task, timeout=5.0)
         finally:
-            # Unwedge the RED state: pre-fix the generator is parked in the
+            # Unwedge the RED state: unguarded, the generator is parked in the
             # unbounded close; releasing the gates lets cancellation unwind.
             for conn in conns:
                 conn.close_wait.set()
@@ -777,7 +777,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
             conns[0].kill()
             await asyncio.sleep(0.3)  # detection + reconnect + bounded old-conn close
             await _make_running_row(backend)
-            # Why shield: pre-fix the generator wedges in the swap close, and
+            # Why shield: unguarded, the generator wedges in the swap close, and
             # cancelling the collect task would re-wedge it in the generator's
             # own finally (same hung conn) - the outer timeout would never
             # return. Shield keeps the RED fail-fast (TimeoutError); the
@@ -822,7 +822,7 @@ async def test_watch_reclaims_finally_bounds_hung_owned_conn_close(
         0.02,
         pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
     )
-    # Why the outer timeout: pre-fix the finally awaits conn.close()
+    # Why the outer timeout: unguarded, the finally awaits conn.close()
     # unbounded, so the RED state would hang forever instead of failing fast.
     events = await asyncio.wait_for(_collect(gen, n=1), timeout=5.0)
 

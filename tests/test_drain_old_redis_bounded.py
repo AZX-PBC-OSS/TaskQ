@@ -49,7 +49,7 @@ class _SlowThenFineRedis:
 async def test_wedged_client_does_not_hang_the_drain_task() -> None:
     """The drain task must complete even when aclose() never returns.
 
-    Pre-fix the task hung forever on the unbounded retry, so this assertion
+    Unguarded the task hangs forever on the unbounded retry, so this assertion
     would time out rather than fail.
     """
     client = _WedgedRedis()

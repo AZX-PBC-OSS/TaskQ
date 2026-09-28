@@ -2295,11 +2295,12 @@ class WorkerSettings(TaskQSettings):
         # the safety floor taskq.worker.heartbeat._lease_renewal_threshold
         # sizes its renewal gate against, so keeping lock_lease above it
         # guarantees that gate's floor can never exceed the lease it
-        # guards. The bare (F+1) * (interval + 2 * command_timeout) rule
-        # this check replaced both ignored the command-timeout term's
-        # sharing (the pre-fix teardown's bounded close burned a SECOND
-        # full budget, and the observed cascade ran past the floor) and
-        # dropped the last good beat's tail. Tightening note: this
+        # guards. A bare (F+1) * (interval + 2 * command_timeout) rule
+        # both ignores the command-timeout term's
+        # sharing (a teardown close that burns a SECOND
+        # full budget after the rollback consumed the remainder runs the
+        # observed cascade past the floor) and
+        # drops the last good beat's tail. Tightening note: this
         # refuses configs that loaded before, a lease between an old
         # edge and the cascade floor must come up (or the command
         # timeouts come down); see docs/guides/upgrading.md.

@@ -162,7 +162,7 @@ type RetryDecision = Retry | Fail
 class JobRetryState(NamedTuple):
     """Projection of JobRow columns consumed by the retry classifier.
 
-    ``schedule_to_close`` is no longer an input to classification, the
+    ``schedule_to_close`` is not an input to classification, the
     SQL deadline guard in ``mark_failed_or_retry`` is the single deadline
     arbiter (one arbiter per predicate; see docs/architecture.md §Clock
     Domains).  The field is retained on the projection for observability

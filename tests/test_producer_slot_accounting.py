@@ -142,7 +142,7 @@ WorkerDepsLike = Any
 
 async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() -> None:
     """Every consumer slot busy (active = max_concurrency), queue empty:
-    the producer must run NO claim round at all - the pre-fix producer
+    the producer must run NO claim round at all - the unguarded producer
     saw ``maxsize - qsize`` free slots here and locked a full extra
     batch. No round also means no short-round cooldown is armed, so the
     claim that follows a freed slot is immediate, not floored."""

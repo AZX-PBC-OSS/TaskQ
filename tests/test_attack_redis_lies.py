@@ -375,7 +375,7 @@ async def test_token_bucket_peek_container_lies_raise_the_sentinel(reply: object
 
     The capacity is 1000, not 5, deliberately: the bare string/bytes lies
     index to small numbers the [0, capacity] range check accepts, so the
-    pre-fix code builds the garbage state SILENTLY - the pin must die on
+    unguarded code builds the garbage state SILENTLY - the pin must die on
     the missing CONTAINER check, not on the range check's coattails.
     """
     tb = TokenBucket(name="lie", capacity=1000, refill_per_second=1.0, backend="redis")

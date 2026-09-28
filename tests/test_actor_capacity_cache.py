@@ -82,7 +82,7 @@ async def test_stored_max_pending_wins_over_literal() -> None:
     """Stored value (operator-tuned) beats the @actor literal.
 
     Literal is 100 but the stored row says 2: the third enqueue must
-    raise. Pre-fix this used the literal and sailed through.
+    raise. Using the literal sails through.
     """
     backend = _make_backend()
     backend.register_actor_config(actor="cap_stored_wins", max_pending=2)

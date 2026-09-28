@@ -1407,9 +1407,9 @@ class TaskQ:
         stream with :class:`~taskq.exceptions.EventRetentionGapError`
         before anything is delivered.  The signal is conservative (the
         watermark is a union bound across event kinds: it proves the feed
-        is incomplete, not which slice lost a row), and it is what
-        replaced the old silence -- a consumer lagging past the horizon
-        used to skip to live with no error on either side, free to
+        is incomplete, not which slice lost a row), and it closes the
+        silent-loss hole -- a consumer lagging past the horizon
+        would otherwise skip to live with no error on either side, free to
         believe it saw everything.  A fresh watcher (``after_id=0``) is a
         new tail and never raises; a cursor at or above the watermark
         never raises, every deleted id was at or below a position the

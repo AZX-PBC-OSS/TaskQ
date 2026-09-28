@@ -683,7 +683,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
 
     The per-slot pool already carries TaskQ's own transactional writes (the
     terminal write, transactional sub-enqueues - pinned above); this pin
-    closes the actor-visible half. Pre-fix, every concurrent slot's actor
+    closes the actor-visible half. Unguarded, every concurrent slot's actor
     resolved the same registered LOOP-scope connection by DI injection, so:
 
     - two sibling actors with operations in flight on it raised
@@ -817,7 +817,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             task_a = asyncio.create_task(_dispatch(row_a))
             await asyncio.wait_for(a_in_flight.wait(), timeout=10)
             # Slot B's entire attempt runs while slot A's statement is in
-            # flight on the (pre-fix) shared connection - the natural
+            # flight on the (unguarded) shared connection - the natural
             # max_concurrency > 1 interleaving, event-driven on both ends.
             outcome_b = await _dispatch(row_b)
             outcome_a = await task_a

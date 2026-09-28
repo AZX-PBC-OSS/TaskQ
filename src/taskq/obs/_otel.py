@@ -1319,9 +1319,10 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     worker to the queue), and a per-actor total made an operator who
     found the actor_config row present conclude the detector lied.
 
-    This gauge exists because the detector previously emitted a log line and
-    nothing else, exactly once per actor per process lifetime -- so the
-    condition was invisible in metrics and its only trace was a single WARN at
+    This gauge exists because a log line alone is invisible in metrics: the
+    detector's WARN fires
+    exactly once per actor per process lifetime -- so the
+    condition is invisible in metrics and its only trace is a single WARN at
     onset, which is the moment nobody is looking. An empty mapping clears the
     gauge, so recovery is visible too.
     """

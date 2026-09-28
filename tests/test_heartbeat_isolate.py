@@ -653,7 +653,7 @@ async def test_isolate_self_terminates_hung_conn_close(
     monkeypatch.setattr(apg, "connect", fake_connect)  # type: ignore[method-assign]
     deps = _make_deps()
     shutdown = asyncio.Event()
-    # Why the outer timeout: pre-fix the finally awaited conn.close()
+    # Why the outer timeout: unguarded, the finally awaited conn.close()
     # unbounded, so the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await isolate_self(deps, new_uuid(), shutdown)
@@ -667,7 +667,7 @@ async def test_isolate_self_fast_close_not_terminated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Healthy close(): the isolate-self conn is closed once and never
-    terminated. Pins the no-regression behaviour (passes pre/post-fix)."""
+    terminated. A no-regression pin."""
     conn = FakeConn()
 
     async def fake_connect(

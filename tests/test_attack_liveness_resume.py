@@ -205,7 +205,7 @@ async def test_progress_flush_loop_survives_an_unexpected_tick_exception(
         except BaseException as exc:
             error = exc
 
-    assert error is None, f"the loop died on the unexpected shape (pre-fix behavior: {error!r})"
+    assert error is None, f"the loop died on the unexpected shape (unguarded behavior: {error!r})"
     by_loop = _unexpected_by_loop(reader)
     assert by_loop.get("progress_flush", 0) == 1, (
         "the tolerated unexpected tick must surface exactly once on the "

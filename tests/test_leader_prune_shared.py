@@ -373,7 +373,7 @@ async def test_a_non_deadline_batch_failure_counts_against_the_sizer_and_raises(
     aborts on a UniqueViolation (or any other transient error the
     deadline family does not name) aborts exactly as hard as a cancelled
     one: the drain stops making progress either way, so the same
-    failure-threshold contract must count it. Pre-fix the sizer never
+    failure-threshold contract must count it. Unguarded the sizer never
     heard about these, the tier never armed, and the caller retried the
     same full-size batch forever.
     """

@@ -134,7 +134,7 @@ async def test_empty_round_wakes_on_slot_release_before_the_poll_interval() -> N
     completion sets the slot-release event, and that event is in the
     empty-round wait set, so the next claim starts the moment capacity
     frees. With a 30s poll, a producer that sleeps the poll cannot pass
-    the 2s bound; under the pre-fix wait set this pin is red.
+    the 2s bound; under the unguarded wait set this pin is red.
     """
     from taskq.testing.assertions import wait_for_condition
     from taskq.testing.jobs import make_job_row
@@ -361,7 +361,7 @@ _BURST_N_JOBS = 30
 _BURST_BODY_S = 0.15
 _BURST_MAX_CONCURRENCY = 6
 # Healthy arithmetic: 30 bodies x 0.15s through a 2-slot cap is ~2.3s of
-# work. The pre-fix mechanism parks the over-admitted claims at the lease
+# work. The unguarded mechanism parks the over-admitted claims at the lease
 # hint (minutes away here), which cannot pass even a heavily rounded
 # ceiling.
 _BURST_DRAIN_CEILING_S = 20.0
@@ -376,7 +376,7 @@ async def test_burst_fan_out_does_not_stall_on_a_queue_cap(pg_dsn: str) -> None:
     """A burst deeper than a queue's cap drains at execution pace: no job
     parks in ``scheduled`` at the lease hint, and no outcome snoozes.
 
-    Under the pre-fix mechanism this shape stalls for a full lease per
+    Under the unguarded mechanism this shape stalls for a full lease per
     over-admitted claim (measured: 145s where ~13s is healthy), the
     reported 30-60x drain collapse.
     """

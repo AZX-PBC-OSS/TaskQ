@@ -88,7 +88,7 @@ print("HAS_READERS:" + str(bool(provider._all_metric_readers)))
 def test_wired_scrape_serves_recorded_series() -> None:
     """End to end at the helper level: after ``wired``, a series recorded
     through the real obs emitter lands in the default registry's scrape -
-    the pre-fix state served only Python process defaults here."""
+    the unguarded state served only Python process defaults here."""
     out = _run_scenario(
         """
 from prometheus_client import REGISTRY, generate_latest

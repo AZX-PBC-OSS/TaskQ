@@ -134,8 +134,9 @@ _UUID_MIN = UUID(int=0)
 #: LOCKED`` predicate window whose callers re-invoke until the
 #: predicate stops matching: keep fetching batches, break when one
 #: comes back under the limit. The rounds adopt that
-#: re-scan-until-satisfied instinct in place of the single forward-only
-#: pass the pre-fix drain made. Two deliberate divergences: every arm
+#: re-scan-until-satisfied instinct in place of a single forward-only
+#: pass, which loses rows a concurrent re-pend moves behind the cursor.
+#: Two deliberate divergences: every arm
 #: pages on a keyset cursor inside its drain (no batch re-walks rows an
 #: earlier batch of the same arm already handled, where a bare
 #: predicate window re-evaluates them), and the loop is hard-capped:
@@ -545,9 +546,7 @@ async def _cancel_where(
     # was 'running' (or phase!=0) when the pending arm windowed past
     # its id, so no window ever held it, and the running arm, strictly
     # after the pending arm, matching only running+phase-0, cannot
-    # see the re-pended row either. The call used to return normally
-    # with such a row uncancelled, contradicting the "cancels EVERY
-    # matching job" contract. Each subsequent round re-walks from the
+    # see the re-pended row either. Each subsequent round re-walks from the
     # bottom of the key space (`_UUID_MIN`), so a re-pended straggler
     # is matched by round N+1's pending arm whatever id it carries.
     #

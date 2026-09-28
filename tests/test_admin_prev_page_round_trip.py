@@ -332,7 +332,7 @@ def _assert_row_exact(walked: list[UUID], reference: list[UUID], label: str) -> 
 async def test_backward_walk_row_exact_within_one_page(
     walk_conn: asyncpg.Connection, walk_schema: str
 ) -> None:
-    """CONTROL (green pre-fix): the prev-direction walk is row-exact when
+    """CONTROL (green unguarded): the prev-direction walk is row-exact when
     no page truncates — from a VALUE cursor with fewer than a fetch of
     rows before it, and from a NULL-seam cursor (cursor_at empty)."""
     base = datetime.now(UTC) - timedelta(days=10)

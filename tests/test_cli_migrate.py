@@ -101,7 +101,7 @@ def test_migrate_status_closes_connection(monkeypatch: Any) -> None:
     """migrate status closes the asyncpg connection even when the command succeeds.
 
     No-regression pin for the bounded close: a healthy conn
-    is closed exactly once and never terminated (passes pre- and post-fix).
+    is closed exactly once and never terminated (a no-regression pin).
     """
     fake_conn = _patch_connect(monkeypatch)
     monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
@@ -123,7 +123,7 @@ async def test_migrate_status_terminates_hung_conn_close(monkeypatch: Any) -> No
     monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [])
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
-    # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
+    # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
     # can bound the RED state.
@@ -146,7 +146,7 @@ async def test_migrate_status_hung_close_does_not_mask_body_error(monkeypatch: A
     )
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
-    # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
+    # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
     # so the RED state would hang forever (masking "boom") instead of
     # failing fast.
     async with asyncio.timeout(5):
@@ -352,7 +352,7 @@ def test_migrate_up_closes_connection(monkeypatch: Any) -> None:
     """migrate up closes the asyncpg connection even when no migrations are pending.
 
     No-regression pin for the bounded close: a healthy conn
-    is closed exactly once and never terminated (passes pre- and post-fix).
+    is closed exactly once and never terminated (a no-regression pin).
     """
     fake_conn = _patch_connect(monkeypatch)
     monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
@@ -595,7 +595,7 @@ async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
-    # Why the outer timeout: pre-fix _up awaited conn.close() unbounded,
+    # Why the outer timeout: unguarded, _up awaits conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
     # can bound the RED state.

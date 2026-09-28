@@ -572,7 +572,7 @@ class RateLimitRegistry:
         ``_KEYED_KEY_RE``.  *ref_repr* is included in error messages to
         identify which ref type produced the invalid key.  *empty_key_msg*
         controls the wording of the empty/non-string error (the two
-        call-sites historically used slightly different phrasing).
+        call-sites use slightly different phrasing).
 
         The error deliberately does NOT embed the payload (or its
         ``model_dump()``): this ``ValueError`` propagates into the

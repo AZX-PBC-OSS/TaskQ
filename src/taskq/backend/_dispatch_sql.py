@@ -876,8 +876,8 @@ ranked AS MATERIALIZED (
 -- The cap membership test reads the max_concurrent the capacity CTEs
 -- already carried out of actor_config this same statement (one snapshot,
 -- so the carried value IS the registry's), instead of re-probing the
--- registry per ranked row: ranked is bounded, but a join here is what
--- the planner used to serve as a Seq Scan + hash over the whole
+-- registry per ranked row: ranked is bounded, but a join here serves
+-- the planner a Seq Scan + hash over the whole
 -- registry per round (the registry-proportional work the registry-scope
 -- oracle, tests/test_dispatch_actor_registry_scope_bound.py, forbids).
 capped_ranked AS (
@@ -988,13 +988,13 @@ eligible_candidates AS (
     WHERE ac.actor = l.actor
     LIMIT 1
   ) ac
-  -- The claimed row's actor running count, the third read that used to
-  -- come from the fleet-wide running_per_actor CTE, then from a
-  -- correlated per-claimed-row recount (#282) whose per-round work was
-  -- O(oversample x cap^2): the count ran once per CLAIMED row, each
-  -- scanning that actor's running-row index entries, so a capped fleet
-  -- measured 28/648/2550/10100 running-index rows at caps 5/25/50/100.
-  -- Now a lookup of the precomputed capped_running value (see
+  -- The claimed row's actor running count: NOT a fleet-wide
+  -- running_per_actor read, and NOT a correlated per-claimed-row recount
+  -- (#282) whose per-round work is O(oversample x cap^2) -- the count
+  -- runs once per CLAIMED row, each scanning that actor's running-row
+  -- index entries, so a capped fleet measures 28/648/2550/10100
+  -- running-index rows at caps 5/25/50/100. It is a lookup of the
+  -- precomputed capped_running value (see
   -- capped_running): one in-CTE row per actor, materialized once per
   -- round, same statement snapshot as the capacity CTEs' residuals, so
   -- the post-lock re-limit below re-checks the identical in_flight the
@@ -1642,8 +1642,8 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 #
 # Depth contract: actor_config is read in one pass per EMPTY round
 # (bounded by the registered-actor count, and only ever paid by a round
-# that already admitted nothing, the claim statement proper no longer
-# scans the registry at all; see per_actor_capacity) and every inner
+# that already admitted nothing, the claim statement proper does not
+# scan the registry at all; see per_actor_capacity) and every inner
 # probe is a LIMIT-1 index read that stops at the first matching entry,
 # so the probe's work is bounded by registered actors x round queues,
 # never by backlog depth. The inner probes carry no ORDER BY: any

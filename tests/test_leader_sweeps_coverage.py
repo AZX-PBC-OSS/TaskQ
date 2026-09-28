@@ -299,7 +299,7 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     ridden out loudly for a few consecutive iterations, then the loop dies
     deliberately: never an instant silent leader teardown (which leaves
     the cluster with no sweeper and orphans 'running' forever), never an
-    infinite silent retry. Pre-fix, the first error escaped straight into
+    infinite silent retry. Unguarded, the first error escapes straight into
     MaintenanceLeader.run's TaskGroup and tore down the worker."""
     import structlog.testing
 
@@ -336,7 +336,7 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     unexpected = [e for e in captured if e.get("event") == "loop-unexpected-error"]
     assert [e.get("consecutive") for e in unexpected] == [1, 2, 3]
     # The guard tolerated (cap - 1) failing iterations before re-raising:
-    # pre-fix the loop died on the first, with calls == 1 and no logs.
+    # unguarded the loop dies on the first, with calls == 1 and no logs.
     assert calls == 3
 
 
@@ -1058,7 +1058,7 @@ async def test_loop_interval_sleep_is_shutdown_interruptible(
     task = asyncio.create_task(loop_fn(ctx, shutdown))
     await asyncio.sleep(0.05)  # Let the loop reach its interval sleep.
     shutdown.set()
-    # Must return promptly - pre-fix this sleeps the full 3600s.
+    # Must return promptly - unguarded this sleeps the full 3600s.
     await asyncio.wait_for(task, timeout=2.0)
 
 
@@ -1226,7 +1226,7 @@ async def test_stranded_jobs_rewarns_when_the_backlog_grows() -> None:
     )
     counts = [w["pending_count"] for w in warnings]
     assert 5 in counts, "onset must warn"
-    assert 50 in counts, "growth must re-warn -- pre-fix this was silent forever"
+    assert 50 in counts, "growth must re-warn -- unguarded this is silent forever"
     # The unchanged middle tick must NOT re-warn (that would be per-tick noise).
     assert counts.count(5) == 1
 
@@ -1244,7 +1244,7 @@ async def test_stranded_jobs_clears_and_rewarns_on_recurrence() -> None:
     assert {} in gauges, "recovery must clear the gauge"
     first_seen_flags = [w["first_seen"] for w in warnings if w["actor"] == "orphan"]
     assert first_seen_flags.count(True) >= 2, (
-        "a recurrence must warn again; pre-fix the actor stayed in `warned` forever"
+        "a recurrence must warn again; unguarded the actor stayed in `warned` forever"
     )
 
 

@@ -368,8 +368,8 @@ async def test_acquire_and_peek_without_clock_on_postgres_backend(
 # ~1.5 ms - enough to push the losing transaction's decisive statement past
 # the winner's commit and silently SERIALISE the very race these pins
 # assert (observed: cold-second-connection gathers never overlap, warm
-# ones overlap 40/40). Pre-warming both connections makes the pre-fix
-# failure deterministic; the post-fix serialization (advisory lock / row
+# ones overlap 40/40). Pre-warming both connections makes the unguarded
+# failure deterministic; the guarded serialization (advisory lock / row
 # preseed) is structural and timing-independent.
 
 
@@ -412,8 +412,8 @@ async def test_gcra_pg_concurrent_first_use_admits_exactly_one(
     exactly one is admitted.
 
     ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet,
-    so pre-fix both transactions read ``row is None``, both admit, and the
-    two upserts race last-writer-wins on the TAT. Post-fix a preseed
+    so unguarded both transactions read ``row is None``, both admit, and the
+    two upserts race last-writer-wins on the TAT. A preseed
     ``INSERT ... ON CONFLICT DO NOTHING`` serialises first-use on the
     unique index (mirrors the token-bucket PG path).
     """
@@ -448,9 +448,9 @@ async def test_log_pg_concurrent_acquires_respect_limit(
     """limit=3 with 2 pre-filled entries, 2 concurrent acquires: exactly
     one is allowed and the window count never exceeds the limit.
 
-    Pre-fix the DELETE+INSERT ... WHERE count < N pair is unserialised
+    Unguarded, the DELETE+INSERT ... WHERE count < N pair is unserialised
     under READ COMMITTED - both acquires count 2 in-window entries, both
-    insert, and the window reaches 4 > limit. Post-fix a per-bucket
+    insert, and the window reaches 4 > limit. A per-bucket
     ``pg_advisory_xact_lock`` at the top of the acquire transaction
     serialises them (the cron loop's idiom).
     """

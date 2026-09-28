@@ -419,9 +419,9 @@ class TestWorkerRowDeletedBeforeTerminalWrite:
     threshold (watchdog off, or a lag budget above it) and still write its
     terminal state afterwards. The attempt INSERT must then record a NULL
     worker_id (mirroring the column's ON DELETE SET NULL) instead of
-    FK-violating: a constraint violation is non-transient, so on the
-    pre-fix code the true outcome was rolled back and the job re-executed
-    or stranding-reclaimed as 'crashed'."""
+    FK-violating: a constraint violation is non-transient, so in the
+    unguarded shape the true outcome is rolled back and the job re-executes
+    or is stranding-reclaimed as 'crashed'."""
 
     async def test_mark_succeeded_after_worker_row_cleanup(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps

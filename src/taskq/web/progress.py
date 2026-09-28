@@ -570,8 +570,7 @@ def create_router(
         its own ``auth_dependency`` MUST pass ``session_verifier`` explicitly
         to keep the re-check: without the attribute the router logs a
         one-per-router ``progress-stream-no-session-verifier`` warning and
-        the streams authenticate once, exactly as the router-level ``Depends``
-        did before #316.
+        the streams authenticate once, with no per-frame re-check.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")

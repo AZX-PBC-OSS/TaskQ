@@ -621,10 +621,10 @@ class _CancelController:
                 # owes. CancelledError is caught for the
                 # SAME re-queue reason and re-raised unchanged: at real
                 # task teardown the queue dies with the controller
-                # (nothing drains later, exactly as the old pop-and-lose
-                # behaved), while at a budget cut the next tick drains
-                # the re-queued entry, the old pop-and-lose would have
-                # stranded the job between phases forever. The detached
+                # (nothing drains later - the pop-and-lose behavior),
+                # while at a budget cut the next tick drains
+                # the re-queued entry, which the pop-and-lose would
+                # have stranded between phases forever. The detached
                 # inner write's outcome is retrieved by the shield's
                 # callback, and a late-landing duplicate write is
                 # absorbed by the not-applied guard below.

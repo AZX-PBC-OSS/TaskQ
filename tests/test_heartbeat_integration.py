@@ -459,7 +459,7 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
             assert row is not None
             assert row["status"] == "cancelled", (
                 "a cancel in flight must outrank the retry budget at "
-                "isolation: the pre-fix template re-pended the row 'pending' "
+                "isolation: the unguarded template re-pended the row 'pending' "
                 "and wiped the operator's cancel"
             )
             assert row["cancel_phase"] == 1
@@ -661,7 +661,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
     For a non_retryable job with attempt < max_attempts: status='crashed',
     finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written,
     and the crashed arm self-describes on the JOB row too: the
-    pre-fix template left error_class/error_message NULL there while the
+    unguarded template leaves error_class/error_message NULL there while the
     sweep stamped its own, despite the branch-for-branch mirror claim."""
     stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:

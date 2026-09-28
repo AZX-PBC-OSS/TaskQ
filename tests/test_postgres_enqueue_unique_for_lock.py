@@ -303,7 +303,7 @@ class TestUniqueForLockBoundedWaitUnit:
     async def test_lock_timeout_budget_zero_waits_indefinitely(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``timeout_ms <= 0`` disables the bound (the pre-fix behavior),
+        """``timeout_ms <= 0`` disables the bound (the unguarded behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
         plain blocking acquire with NO savepoint and NO GUC statements -
         only an unbounded server-side wait reaches the dedup answer."""
@@ -382,7 +382,7 @@ class TestUniqueForLockBoundedWait:
     ) -> None:
         """A racer facing a long-held lock fails with the typed error
         inside its budget instead of blocking until the holder finishes
-        (the pre-fix behavior: an unbounded queue behind the holder)."""
+        (the unguarded behavior: an unbounded queue behind the holder)."""
         pg_schema: ModulePgSchema = module_pg_schema  # type: ignore[assignment]  # Why: fixture is typed ModulePgSchema; object keeps the test signature loose like test_postgres_enqueue_max_pending_lock
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name

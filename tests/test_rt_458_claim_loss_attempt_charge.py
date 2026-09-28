@@ -623,7 +623,7 @@ async def test_reconcile_disown_does_not_survive_a_failed_tick(
     deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
     await _one_tick(deps, worker_id, cancel_controller=_FailingInTxHook())
 
-    # THE PIN: the disown did not survive the rollback. (On the pre-fix
+    # THE PIN: the disown did not survive the rollback. (On the unguarded
     # code this assertion fails - the disown was applied before the
     # commit - and the row below is then unreachable by every later
     # reconcile: the refund is lost permanently.)

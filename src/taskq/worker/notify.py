@@ -162,9 +162,9 @@ def _make_callback(
 
     Payload filtering: the insert trigger carries the row's queue as the
     NOTIFY payload, and each subscriber records the queue set it claims,
-    so a worker no longer wakes on inserts to queues it would never
-    claim (a 50-worker fleet stopped answering every insert with a full
-    claim round). An EMPTY payload means "wake everything": it comes from
+    so a worker wakes only on inserts to queues it would
+    claim (without the filter, a 50-worker fleet answers every insert
+    with a full claim round per worker). An EMPTY payload means "wake everything": it comes from
     an older trigger still live in a rolling deploy, or from the COPY
     fixup's bulk wake, and neither can be filtered safely. A subscriber
     registered with ``queues=None`` (the default) keeps the
@@ -571,7 +571,7 @@ async def _recover_notify_conn(
         # can block close() indefinitely, which would stall the
         # health-check loop before reconnect even starts. The
         # helper bounds the wait, terminates on timeout, and never
-        # raises, subsuming the old suppress(Exception).
+        # raises, subsuming a bare suppress(Exception).
         await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
 
     delay = float(deps.settings.notify_reconnect_backoff_initial)

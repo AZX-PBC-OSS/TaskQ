@@ -284,7 +284,7 @@ class JobContext[P: BaseModel]:
         ``data`` must have ``str`` dict keys (nested too): the size check
         and the PG flush serialize it directly, and a non-``str`` key
         raises ``TypeError`` (JSON and ``jsonb`` cannot carry non-string
-        keys) where it previously would have been silently coerced.
+        keys; silent coercion would corrupt the round-trip).
 
         When no progress buffers are wired into this context (direct
         actor testing, a miswired context), the call, the Redis publish

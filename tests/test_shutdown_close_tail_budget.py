@@ -85,7 +85,7 @@ def test_sufficient_budget_is_recognised() -> None:
         TASKQ_CANCELLATION_GRACE_PERIOD="30",
         TASKQ_CLEANUP_GRACE_PERIOD="10",
     )
-    # The pre-fix default: valid, and short of the 82s modelled worst case.
+    # The unguarded default: valid, and short of the 82s modelled worst case.
     assert s.shutdown_budget_is_sufficient is False
 
     lowered = _settings(TASKQ_CANCELLATION_GRACE_PERIOD="20", TASKQ_CLEANUP_GRACE_PERIOD="5")
@@ -123,7 +123,7 @@ def test_startup_warning_names_the_numbers_and_the_remedy() -> None:
     orchestrator's pod spec, not in TaskQ, so it must carry the number."""
     from taskq.worker._bootstrap import _startup_log
 
-    # The pre-fix default shape (60s grace, 30/10 phases): valid, and
+    # The unguarded default shape (60s grace, 30/10 phases): valid, and
     # short of the modelled worst case - the exact configuration the
     # warning exists for.
     s = _settings(
@@ -313,8 +313,8 @@ def test_disown_floor_warning_fires_without_the_watchdog() -> None:
     most: there is no deadline trip to bound an outlived actor at all,
     so the leader's reclaim sweep is the only exit and the floor is the
     only thing keeping the reclaim behind the process's true exit.
-    Pre-fix the warning only fired under ``watchdog_enabled``, so this
-    config booted silent.
+    Gating the warning on ``watchdog_enabled`` alone boots this
+    config silent.
     """
     from taskq.worker._bootstrap import _emit_startup_warnings
 

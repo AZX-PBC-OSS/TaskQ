@@ -82,7 +82,7 @@ def _starved_pool() -> ChaosPool:
 #: a bounded acquire firing inside the test's window passes. The twin's
 #: own outer bound is 0.5 s, so the margin sits under it: a production
 #: bound that fires before the margin satisfies the contract, and the
-#: unbounded pre-fix acquire (ended only by the test's own 0.5 s
+#: unbounded unguarded acquire (ended only by the test's own 0.5 s
 #: wait_for) fails.
 _UNBOUNDED_MARGIN_S = 0.4
 

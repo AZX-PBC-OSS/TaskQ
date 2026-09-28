@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 async def test_lock_contention_raises_instead_of_blocking_forever(pg_dsn: str) -> None:
     """A second migrator must fail fast and say why.
 
-    Pre-fix this call blocked until the holder released -- forever, in the
+    Unguarded, this call blocks until the holder releases -- forever, in the
     wedged-holder case this bound exists for.
     """
     holder = await asyncpg.connect(pg_dsn)

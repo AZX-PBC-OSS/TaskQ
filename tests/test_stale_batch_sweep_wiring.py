@@ -226,8 +226,8 @@ async def test_stale_batch_sweep_runs_for_leader_without_keyed_rate_limits() -> 
     """A leader with a registry holding NO keyed refs (the default deployment
     shape) still runs the stale-batch completion sweep.
 
-    Pre-fix the sweep was nested inside ``if rl.has_keyed_rate_limits:`` and
-    never fired for this deployment shape at all.
+    A sweep nested inside ``if rl.has_keyed_rate_limits:`` never
+    fires for this deployment shape at all.
     """
     registry = RateLimitRegistry()  # no keyed refs, no keyed rate limits
     ctx = _ctx(is_leader=True, registry=registry)
@@ -277,11 +277,11 @@ async def test_stale_batch_sweep_drains_within_one_tick() -> None:
 
 async def test_stale_batch_sweep_skipped_when_not_leader() -> None:
     """A NON-leader must not run the stale-batch sweep, even when its registry
-    holds keyed rate-limit refs (the configuration that made the pre-fix
+    holds keyed rate-limit refs (the configuration that made the unguarded
     un-gated block fire on every worker).
 
-    Pre-fix the block had no leader gating: any worker with keyed refs ran
-    the leader's sweep.
+    Unguarded, the block had no leader gating: any worker with keyed refs
+    runs the leader's sweep.
     """
     registry = RateLimitRegistry()
     # Fresh stamp: the entry is NOT idle, so eviction keeps it and

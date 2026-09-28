@@ -271,9 +271,9 @@ async def _enqueue_batch_atomic(
         # chunk_size) and preflights each stamped chunk through the same
         # shared guards at the same base, so a NUL-bearing item surfaces
         # as the SAME annotated PayloadValidationError naming the SAME
-        # caller-global index on both backends, previously this arm
-        # surfaced a BARE ValueError(NUL_JSONB_ERROR) with no item
-        # attribution at all (the per-item single-enqueue path has no
+        # caller-global index on both backends; a BARE
+        # ValueError(NUL_JSONB_ERROR) with no item attribution at all
+        # would break that parity (the per-item single-enqueue path has no
         # index to name). Check ORDER also matches PG within a chunk
         # (NUL guard precedes the cap/insert decisions), so a
         # multi-defect batch raises the same typed error on both sides.

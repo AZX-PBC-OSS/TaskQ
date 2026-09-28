@@ -1,9 +1,9 @@
 """Unit tests for the BOUNDED final teardown in open_worker_deps.
 
-Pre-fix, final teardown performed UNBOUNDED graceful closes: pools were
-entered on the AsyncExitStack (``pool.__aexit__`` → ``pool.close()``) and
-dedicated connections were closed with a bare ``await conn.close()``. A
-dead PG (e.g. a chaos-killed container) can block ``Pool.close()``
+Final teardown must bound its graceful closes: unbounded ones (pools
+entered on the AsyncExitStack (``pool.__aexit__`` → ``pool.close()``),
+dedicated connections closed with a bare ``await conn.close()``) let a
+dead PG (e.g. a chaos-killed container) block ``Pool.close()``
 indefinitely - a CI chaos run hung >300s that way. The reload path
 already bounds its closes (``_drain_old_pool``/``_drain_old_conn`` with
 ``drain_timeout`` + ``terminate()``); these tests pin the same bound for
@@ -105,7 +105,7 @@ class _FakePool:
         return self
 
     async def __aexit__(self, *_: object) -> None:
-        # Why no close() here: pre-fix teardown entered pools via
+        # Why no close() here: unguarded, teardown enters pools via
         # ``stack.enter_async_context`` and relied on this dunder to close
         # them; the fix pushes an explicit bounded-close callback instead.
         # If this fake closed itself on __aexit__, the fast-close and LIFO
@@ -216,7 +216,7 @@ async def test_teardown_terminates_pool_when_close_hangs(
         notify_conn_factory=_make_conn_factory([notify]),
         leader_conn_factory=_make_conn_factory([leader]),
     )
-    # Why the outer timeout: pre-fix teardown closes pools unbounded, so the
+    # Why the outer timeout: unguarded, teardown closes pools unbounded, so the
     # RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns):
@@ -376,7 +376,7 @@ async def test_teardown_terminates_notify_conn_when_close_hangs(
         notify_conn_factory=_make_conn_factory([notify]),
         leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
     )
-    # Why the outer timeout: pre-fix teardown awaited conn.close() unbounded,
+    # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
@@ -403,7 +403,7 @@ async def test_teardown_terminates_leader_conn_when_close_hangs(
         notify_conn=_FakeConn("notify"),  # type: ignore[arg-type]
         leader_conn_factory=_make_conn_factory([leader]),
     )
-    # Why the outer timeout: pre-fix teardown awaited conn.close() unbounded,
+    # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
@@ -436,7 +436,7 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
         notify_conn=_FakeConn("notify"),  # type: ignore[arg-type]
         leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
     )
-    # Why the outer timeout: pre-fix reload registered new pools via
+    # Why the outer timeout: unguarded, reload registered new pools via
     # enter_async_context (unbounded __aexit__ close), so a hanging close in
     # the RED state would wedge teardown forever instead of failing fast.
     async with asyncio.timeout(5):
@@ -484,7 +484,7 @@ async def test_teardown_bounds_redis_close(
         leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
         redis_client_factory=redis_factory,
     )
-    # Why the outer timeout: pre-fix teardown awaited redis_client.aclose()
+    # Why the outer timeout: unguarded, teardown awaits redis_client.aclose()
     # unbounded, so the RED state would hang forever instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
