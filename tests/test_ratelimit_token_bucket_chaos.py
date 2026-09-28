@@ -19,6 +19,7 @@ from taskq._ids import new_base62
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit import TokenBucket
 from taskq.settings import WorkerSettings
+from taskq.testing._shared_containers import next_redis_logical_db
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 from taskq.testing.fixtures import (  # pyright: ignore[reportPrivateUsage]  # Why: asserting the concrete shim type below is the pin; private prefix scopes it to the testing package (same pattern as _create_worker).
     ModulePgSchema,
@@ -392,8 +393,14 @@ async def test_a_backward_step_of_the_store_clock_neither_refills_nor_indebts(
         assert isinstance(redis_container, _RedisContainerShim)
         host = redis_container.get_container_host_ip()
         port = redis_container.get_exposed_port(6379)
+        # A UNIQUE logical DB, never the reserved DB 0: this test WRITES keys
+        # (the acquire script's bucket + the skewed ts stamp), and the shared
+        # broker's DB 0 is ad-hoc space, not a tenant. next_redis_logical_db
+        # draws from the invocation's counter under the pair's lock, so no
+        # other test - on this or any xdist worker - can share the keyspace.
+        db = next_redis_logical_db(redis_container.state_dir)
         client = redis_async.from_url(
-            f"redis://{host}:{port}/0", decode_responses=False, socket_timeout=None
+            f"redis://{host}:{port}/{db}", decode_responses=False, socket_timeout=None
         )
         try:
             r1 = await tb.acquire(redis_client=client, pg_pool=module_pg_pool, settings=settings)

@@ -648,12 +648,14 @@ async def test_ti5_pg_poll_timeout_path_yields_terminal(pg_dsn: str) -> None:
 
 @pytest.mark.integration
 @pytest.mark.redis
-async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_url: str) -> None:
+async def test_ti6_redis_stream_terminates_on_job_completion(
+    pg_dsn: str, private_redis_url: str
+) -> None:
     """Redis transport - stream yields terminal event and exits when
     the job reaches succeeded status. Confirms the Redis transport was used.
     """
     tq, worker_id = await _open_taskq_pg(
-        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=redis_url, poll_timeout=0.5
+        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=private_redis_url, poll_timeout=0.5
     )
     try:
         assert tq._client is not None
@@ -695,12 +697,12 @@ async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_
 
 @pytest.mark.integration
 @pytest.mark.redis
-async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: str) -> None:
+async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, private_redis_url: str) -> None:
     """Redis transport - progress updates produce events with
     monotonically increasing progress_seq values and correct progress_state.
     """
     tq, worker_id = await _open_taskq_pg(
-        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=redis_url, poll_timeout=0.5
+        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=private_redis_url, poll_timeout=0.5
     )
     try:
         assert tq._client is not None
@@ -725,7 +727,7 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
         from taskq.progress._events import ProgressEvent
 
         async with redis_async.from_url(
-            redis_url, decode_responses=False, socket_timeout=None
+            private_redis_url, decode_responses=False, socket_timeout=None
         ) as raw_redis:
             channel_name = f"taskq:{tq._schema}:progress:{job_id}"
 
@@ -798,13 +800,13 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
 
 @pytest.mark.integration
 @pytest.mark.redis
-async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) -> None:
+async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, private_redis_url: str) -> None:
     """Redis transport - a malformed message on the progress channel
     is skipped and the stream continues, eventually receiving the terminal
     event.
     """
     tq, worker_id = await _open_taskq_pg(
-        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=redis_url, poll_timeout=0.5
+        pg_dsn, schema=f"tst_{new_base62()}".lower(), redis_url=private_redis_url, poll_timeout=0.5
     )
     try:
         assert tq._client is not None
@@ -817,7 +819,7 @@ async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) 
         import redis.asyncio as redis_async
 
         async with redis_async.from_url(
-            redis_url, decode_responses=False, socket_timeout=None
+            private_redis_url, decode_responses=False, socket_timeout=None
         ) as raw_redis:
             channel_name = f"taskq:{tq._schema}:progress:{job_id}"
             await raw_redis.publish(channel_name, b"this is not valid json {{{")

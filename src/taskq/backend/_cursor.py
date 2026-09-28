@@ -234,6 +234,7 @@ class JobOrdering:
         first_param: int,
         *,
         forward: bool = True,
+        null_tail: bool = True,
     ) -> tuple[str, list[object]]:
         """Render the keyset predicate for rows strictly past *values*.
 
@@ -241,6 +242,21 @@ class JobOrdering:
         onwards.  A ``None`` in *values* binds no parameter, it is a
         NULL seam, expressed as ``IS NULL`` rather than a comparison,
         because ``col < NULL`` is NULL and would drop the whole range.
+
+        ``null_tail=False`` drops the leading nullable column's NULL
+        range from a FORWARD row-wise predicate (the
+        ``lead IS NULL OR tuple-compare`` union), leaving the bare tuple
+        compare: the one form the planner extracts as an index condition
+        (the OR defeats the extraction -- measured, the wrapped shape
+        filter-scans from the index start, 58k rows removed per page at a
+        100k archive, where the bare compare seeks;
+        benchmarks/results/archive-scale-red-probe.json carries the full
+        A/B series). The caller then
+        renders the NULL range as its own ordered branch and appends the
+        two (the admin page builder's UNION ALL shape); the flag exists
+        so the predicate and the branch stay one decision. Only the
+        row-wise forward path honors it; a None-seam cursor or the
+        lexicographic rendering keep their (already correct) shapes.
         """
         slots: list[int | None] = []
         params: list[object] = []
@@ -253,11 +269,16 @@ class JobOrdering:
 
         descending = [col.descending == forward for col in self.columns]
         if len(set(descending)) == 1 and not any(c.nullable for c in self.columns[1:]):
-            return self._row_wise_sql(values, slots, forward=forward), params
+            return self._row_wise_sql(values, slots, forward=forward, null_tail=null_tail), params
         return self._lexicographic_sql(values, slots, descending, forward=forward), params
 
     def _row_wise_sql(
-        self, values: tuple[CursorValue, ...], slots: list[int | None], *, forward: bool
+        self,
+        values: tuple[CursorValue, ...],
+        slots: list[int | None],
+        *,
+        forward: bool,
+        null_tail: bool = True,
     ) -> str:
         """One row-wise tuple comparison, the ``list_batches`` shape.
 
@@ -266,7 +287,9 @@ class JobOrdering:
         nullable column splits the scan into its NULL and non-NULL
         ranges: under NULLS LAST the NULL range is wholly after the
         values, so it is a union with the tuple compare rather than a
-        term inside it.
+        term inside it.  ``null_tail=False`` (see :meth:`sql_after`)
+        returns the bare tuple compare alone -- the planner-extractable
+        form -- and the caller owns the NULL range as a separate branch.
         """
         op = "<" if self.columns[0].descending == forward else ">"
         lead = self.columns[0]
@@ -278,7 +301,7 @@ class JobOrdering:
             return inside if forward else f"({inside} OR {lead.name} IS NOT NULL)"
         whole = _tuple_cmp(self.columns, slots, op)
         if lead.nullable and forward:
-            return f"({lead.name} IS NULL OR {whole})"
+            return f"({lead.name} IS NULL OR {whole})" if null_tail else whole
         return whole
 
     def _lexicographic_sql(
