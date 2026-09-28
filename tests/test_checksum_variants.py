@@ -99,12 +99,11 @@ async def _point_ledger_at_a_published_version(
     """Record, in this database's ledger, the checksum of a NON-current
     published version — the prod shape: the database applied the bytes of
     an older vintage. Returns the version digest written."""
-    match = migrate_mod._NAME_RE.match(filename)
-    assert match is not None
-    key = f"{match.group('ver')}_{match.group('seq')}:{match.group('phase')}"
-    current = {m.filename: m for m in migrate_mod.discover()}[filename].checksum(
-        settings.schema_name
-    )
+    discovered = {m.filename: m for m in migrate_mod.discover()}
+    assert filename in discovered, f"{filename} is not a bundled migration"
+    migration = discovered[filename]
+    key = migration.key
+    current = migration.checksum(settings.schema_name)
     historical = _ledger_checksums(filename, settings.schema_name) - {current}
     assert historical, f"{filename} has no published history to point at"
     digest = sorted(historical)[0]
@@ -116,6 +115,14 @@ async def _point_ledger_at_a_published_version(
     assert updated == "UPDATE 1", (
         f"the tamper must hit exactly the ledger row {key!r} — a zero-row update proves nothing"
     )
+    # Read-back canary: UPDATE 1 proves a row matched the WHERE, not that the
+    # stored value is now the digest (a row already holding it updates as a
+    # no-op). Query the ledger back — the tamper's contact with reality.
+    stored = await pg_conn.fetchval(
+        f'SELECT checksum FROM "{settings.schema_name}".schema_migrations WHERE version = $1',  # noqa: S608  # Why: schema is a fixture-provided identifier.
+        key,
+    )
+    assert stored == digest, f"the ledger row {key!r} must hold the tampered digest"
     return digest
 
 
@@ -142,6 +149,12 @@ class TestPublishedHistoryIsAccepted:
         # database holding a published version's checksum.
         result = _migrate_status(settings)
         assert result.returncode == 0, result.stdout + result.stderr
+        # The verdict must be about THIS database's ledger: the schema line
+        # names it, and a checked row proves a POPULATED ledger was read (a
+        # subprocess pointed elsewhere would also print no drift — over an
+        # empty ledger, vacuously).
+        assert f"schema: {settings.schema_name}" in result.stdout, result.stdout
+        assert "[✔]" in result.stdout, result.stdout
         assert "drift" not in result.stdout.lower(), (
             f"migrate status must not report drift for a published vintage: {result.stdout}"
         )
@@ -200,6 +213,12 @@ class TestTheGuardKeepsItsTeeth:
         assert "drift" in result.stdout.lower(), (
             f"migrate status must surface the unknown checksum as drift: {result.stdout}"
         )
+        # The subprocess saw THIS database's ledger, not some other schema's:
+        # the tampered row's key and the distinctive d-digest must both be
+        # named in the drift section (nothing published produces d*12).
+        assert f"schema: {settings.schema_name}" in result.stdout, result.stdout
+        assert UNKNOWN_CHECKSUM[:12] in result.stdout, result.stdout
+        assert "01.00.13_03:pre" in result.stdout, result.stdout
 
     async def test_a_migration_without_published_history_behaves_as_before(
         self,
