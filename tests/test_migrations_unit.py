@@ -295,14 +295,21 @@ def test_migration_use_transaction_defaults_to_true() -> None:
     assert m.use_transaction is True
 
 
-def test_bundled_migrations_are_all_transactional() -> None:
-    """No bundled migration uses the no-transaction directive yet.
+def test_bundled_migrations_no_transaction_directive_is_allowlisted() -> None:
+    """Exactly one bundled migration uses the no-transaction directive.
 
-    Guards against accidentally retrofitting the mechanism onto existing
-    migrations, which the framework requires to stay transactional.
+    The mechanism exists for CONCURRENTLY-grade DDL that cannot share a
+    transaction; 01.00.21_03_pre_batches_check_constraints.sql is its first
+    legitimate user (NOT VALID must commit its ACCESS EXCLUSIVE lock before
+    VALIDATE scans). This still guards against accidentally retrofitting
+    the directive onto any other existing migration.
     """
     assert migrate.discover(), "expected bundled migrations"
-    assert all(m.use_transaction for m in migrate.discover())
+    exempt = {"01.00.21_03_pre_batches_check_constraints.sql"}
+    offenders = [
+        m.filename for m in migrate.discover() if not m.use_transaction and m.filename not in exempt
+    ]
+    assert offenders == []
 
 
 def test_discover_marks_directive_in_leading_comment_block(
