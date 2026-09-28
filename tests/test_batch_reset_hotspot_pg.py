@@ -44,7 +44,10 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_job_id, new_uuid
-from taskq.backend._batch_sql import render_batch_sql
+from taskq.backend._batch_sql import (
+    _COMPLETE_TAIL_RECHECK_MAX_OPEN,  # pyright: ignore[reportPrivateUsage]  # Why: the pins reproduce the gate's exact cliff, a local constant copy would drift from the bound they test.
+    render_batch_sql,
+)
 from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.batch import apply_batch_terminal_outcome
 from taskq.testing.fixtures import _open_pg_backend
@@ -419,7 +422,14 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
                     "finished_at = clock_timestamp() WHERE id = $1",
                     row.id,
                 )
-                await apply_batch_terminal_outcome(backend, row, "succeeded", transaction_conn=conn)
+                owed = await apply_batch_terminal_outcome(
+                    backend, row, "succeeded", transaction_conn=conn
+                )
+            # The transactional-caller reissue: a mid-drain attempt gated
+            # out unordered against this writer's own commit, so the
+            # caller owes the batch one post-commit re-arbitration.
+            if owed:
+                await backend.complete_batch(bid)
 
         await asyncio.wait_for(asyncio.gather(*(_succeed(row) for row in rows)), timeout=30.0)
 
@@ -433,6 +443,176 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
         assert batch.completed_at is not None
         assert await backend.count_batch_non_terminal(bid) == 0
     finally:
+        await stack.aclose()
+        cleanup = await asyncpg.connect(pg_dsn)
+        try:
+            await cleanup.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await cleanup.close()
+
+
+# ── the red-team regression pins: the transactional-caller stuck-batch class ──
+#
+# The tail gate's early return is UNORDERED with its caller's own commit: a
+# writer whose gate probe saw more open members than the tail bound never
+# touched the batches row, so its commit is sequenced against no attempt at
+# all. Two deterministic shapes left an all-terminal batch 'active' with no
+# attempt left to land (measured 5/5 and 3/3 on the pre-fix branch; origin/main
+# completes both, its unconditional reset queues every writer on the row):
+#
+# - the burst: a batch whose members' terminal writes overlap enough that
+#   EVERY gate probe sees > _COMPLETE_TAIL_RECHECK_MAX_OPEN open (an 18-member
+#   batch behind one barrier - each probe counts 17 open);
+# - the late committer: one writer's gate probe runs while its peers are all
+#   open, then its COMMIT outlives every peer's completion statement.
+#
+# The reissue (PostgresBackend.complete_batch schedules one detached
+# re-arbitration when a gated attempt rides an open transaction) closes the
+# hole: the reissue tracks the batch's own open-member count, so its snapshot
+# postdates every writer's commit, and the last committer's reissue lands.
+# These pins are the deterministic versions of the free-running tail pin above
+# (which passes on timing spread alone) and fail WITHOUT the reissue.
+
+# The reissue polls the open-member count on an adaptive step; the settle
+# window gives it room without ever invoking the leader sweep.
+_RT_SETTLE_S = 10.0
+
+
+async def _settle_batch_complete(
+    backend: Any,
+    schema: str,
+    bid: UUID,
+) -> Any:
+    """Poll the batch row until it leaves 'active' (or the window expires)."""
+    deadline = time.monotonic() + _RT_SETTLE_S
+    batch = await backend.get_batch(bid)
+    while batch is not None and batch.status == "active" and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+        batch = await backend.get_batch(bid)
+    return batch
+
+
+async def _assert_completes_without_sweep(backend: Any, schema: str, bid: UUID) -> None:
+    """The batch must reach 'complete' after the drain, reissue included,
+    with no leader sweep in sight - exactly once (one completed_at)."""
+    batch = await _settle_batch_complete(backend, schema, bid)
+    assert batch is not None
+    assert batch.status == "complete", (
+        f"an all-terminal batch stayed {batch.status!r} after the drain and the "
+        "reissue window - the transactional-caller stuck-batch class is back"
+    )
+    assert batch.completed_at is not None
+    assert await backend.count_batch_non_terminal(bid) == 0
+
+
+async def test_burst_drain_wider_than_the_tail_bound_still_completes(pg_dsn: str) -> None:
+    """The burst shape: every member's gate probe sees N-1 open (> the tail
+    bound), so EVERY attempt gates out and no attempt is ordered after the
+    last commit. The reissue must land the all-terminal batch."""
+    schema = f"reset_hotspot_burst_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    try:
+        members = _COMPLETE_TAIL_RECHECK_MAX_OPEN + 2
+        bid, rows = await _seed_running_batch(deps, backend, schema, members)
+        # A dedicated pool: the barrier parks every writer INSIDE its
+        # connection, so the shape needs one conn per member up front - the
+        # worker pool's integration-test size would deadlock the barrier.
+        writer_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=members)
+
+        async def _succeed(row: JobRow, barrier: asyncio.Barrier) -> None:
+            owed = False
+            async with writer_pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
+                    "finished_at = clock_timestamp() WHERE id = $1",
+                    row.id,
+                )
+                # The barrier parks every writer's hook until all members'
+                # terminal writes are in flight, so each gate probe counts
+                # members - 1 open members - the deterministic gate-out.
+                await barrier.wait()
+                owed = await apply_batch_terminal_outcome(
+                    backend, row, "succeeded", transaction_conn=conn
+                )
+            # Post-commit re-arbitration: this writer's gated attempt was
+            # never ordered against its own commit.
+            if owed:
+                await backend.complete_batch(bid)
+
+        barrier = asyncio.Barrier(members)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(_succeed(row, barrier) for row in rows)), timeout=30.0
+            )
+        finally:
+            await writer_pool.close()
+        await _assert_completes_without_sweep(backend, schema, bid)
+    finally:
+        await stack.aclose()
+        cleanup = await asyncpg.connect(pg_dsn)
+        try:
+            await cleanup.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await cleanup.close()
+
+
+async def test_late_committer_gates_out_then_completes_after_its_commit(pg_dsn: str) -> None:
+    """The late-committer shape: one writer's gate probe runs while all its
+    peers are open (it gates out), then its COMMIT outlives every peer's
+    completion statement - the peers' tail attempts all veto on its
+    uncommitted member and no in-transaction attempt postdates its commit.
+    The writer's own reissue must land the batch after its commit."""
+    schema = f"reset_hotspot_late_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    writer_pool: asyncpg.Pool | None = None
+    try:
+        members = _COMPLETE_TAIL_RECHECK_MAX_OPEN + 8
+        bid, rows = await _seed_running_batch(deps, backend, schema, members)
+        writer_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=members + 1)
+
+        late_started = asyncio.Event()
+
+        async def _late(row: JobRow) -> None:
+            owed = False
+            async with writer_pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
+                    "finished_at = clock_timestamp() WHERE id = $1",
+                    row.id,
+                )
+                owed = await apply_batch_terminal_outcome(
+                    backend, row, "succeeded", transaction_conn=conn
+                )
+                # The hook gated out (every peer open); hold the COMMIT past
+                # every peer's completion statement.
+                late_started.set()
+                await asyncio.sleep(1.0)
+            if owed:
+                await backend.complete_batch(bid)
+
+        async def _peer(row: JobRow) -> None:
+            owed = False
+            await late_started.wait()
+            async with writer_pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
+                    "finished_at = clock_timestamp() WHERE id = $1",
+                    row.id,
+                )
+                owed = await apply_batch_terminal_outcome(
+                    backend, row, "succeeded", transaction_conn=conn
+                )
+            if owed:
+                await backend.complete_batch(bid)
+
+        await asyncio.wait_for(
+            asyncio.gather(_late(rows[0]), *(_peer(row) for row in rows[1:])),
+            timeout=30.0,
+        )
+        await _assert_completes_without_sweep(backend, schema, bid)
+    finally:
+        if writer_pool is not None:
+            await writer_pool.close()
         await stack.aclose()
         cleanup = await asyncpg.connect(pg_dsn)
         try:

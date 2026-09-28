@@ -177,3 +177,65 @@ re-run pair above, taken minutes apart under identical flags.)
 - Fast lane `pytest -m "not integration" -n 4` — **8,521 passed, 3 skipped**
   (the sweep-audit registry gained `_LOCK_BATCH_ROW_SQL`, a SELECT FOR
   UPDATE — no write — matching the walk only through its own keyword).
+
+## Red-team addendum (the transactional-caller stuck-batch class, found and fixed)
+
+The red-team pass over the tail gate found a hole the free-running pins
+cannot see: the gate's early return (`open_members > 16`) is UNORDERED with
+its caller's own commit. On the transactional-caller shape
+(`apply_batch_terminal_outcome(..., transaction_conn=conn)` inside the
+terminal write's transaction — the shape this benchmark and the pins use,
+and the hook's documented `connection=` arm), a writer that gated out never
+touched the batches row, so its commit is sequenced against no attempt at
+all. Two deterministic shapes left an all-terminal batch `'active'` with no
+attempt left to land (origin/main completes both — its unconditional reset
+queues every writer on the row; measured on PG 18.6, same-run pairs):
+
+- **The burst**: N-member batch, all terminal writes overlapping behind one
+  barrier — every gate probe counts N-1 open (17 for N=18 > the 16 bound),
+  so EVERY attempt gates out. Stuck 5/5 for N=18, 20, 24, 32; 0/5 for N=17
+  (the cliff is exactly the bound + 1).
+- **The late committer**: one writer gates out while its 23 peers are open,
+  then its COMMIT outlives every peer's completion statement (the peers'
+  tail attempts all veto on its uncommitted member). Stuck 5/5.
+
+The fix: the gate-out is surfaced to the caller — `_batch_sql.complete_batch`
+returns arbitrated/gated-out, `PostgresBackend.complete_batch` returns
+"reissue owed" (`True` only when the attempt gated out on a connection still
+inside its transaction), and `apply_batch_terminal_outcome` propagates it.
+The caller honors it with ONE awaited post-commit
+`backend.complete_batch(batch_id)` (no `connection=`): that attempt's
+snapshot postdates every commit, so the last committer's reissue lands —
+the autonomous shape (the consumer's hook runs after `consume_one_job`'s
+commit) is never owed one and pays nothing. A detached-task reissue was
+tried first and rejected on evidence: it leaves tasks pending at test
+teardown (the suite's no-orphan-task discipline) and polling the caller's
+connection races its pool release.
+
+Reruns after the fix (same harness, callers honoring the reissue):
+burst N∈{17,18,20,24,32} ×10 and late-committer ×10 — 0 stuck, all
+`'complete'`, no sweep; the fail-last shape (final member fails: completion
+below threshold, abort at threshold) ×10 — abort fires exactly once, never
+missed; a 3s unbounded batches-row holder (the streaming-append class) —
+increments skip (the disclosed M7 loss: counter frozen at 0), terminal
+writes survive, completion delays without raising, the leader sweep
+recovers the batch 10/10 (identical to main's behavior under the same
+holder; main's completion skips instantly where the tail gate parks the
+full 2s budget — the delay class is disclosed, now measured).
+
+Benchmark honesty rerun (this box is faster than the original run's, so the
+absolute walls differ; the mechanism evidence reproduces exactly):
+
+| run | drain s | per-job ms | reset mean ms | reset/terminal ratio |
+| --- | --- | --- | --- | --- |
+| main (rerun) | 5.176 | 2.588 | 16.981 | 129x |
+| fix (rerun, reissue included) | 4.099 | 2.049 | 0.006 | 0.04x |
+
+The ≤5x same-run ratio budget holds (0.04x); `active_batches_after` 0/10 on
+both. The PR's original absolute numbers (9.02 → 1.35 ms/job) do not
+reproduce on this hardware — the before/after direction and the reset
+statement's collapse (16.98 → 0.006 ms mean) do.
+
+Gates after the red-team fix: ruff/format clean; pyright 0 errors on the
+touched files; batch families + concurrency pins **169 passed ×3**; fast
+lane **8,522 passed**.

@@ -152,15 +152,22 @@ async def main() -> None:
     async def _one_terminal_job() -> None:
         jid, bid = await pending.get()
         try:
+            owed = False
             async with deps.worker_pool.acquire() as conn, conn.transaction():
                 await conn.execute(
                     f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
                     "finished_at = clock_timestamp() WHERE id = $1",
                     jid,
                 )
-                await apply_batch_terminal_outcome(
+                owed = await apply_batch_terminal_outcome(
                     backend, _hook_job(jid, bid), "succeeded", transaction_conn=conn
                 )
+            if owed:
+                # The transactional-caller reissue (one post-commit
+                # re-arbitration per gated-out attempt): measured, not
+                # hidden - the drain wall and the complete statement's
+                # pg_stat_statements calls include it.
+                await backend.complete_batch(bid)
         finally:
             pending.task_done()
 

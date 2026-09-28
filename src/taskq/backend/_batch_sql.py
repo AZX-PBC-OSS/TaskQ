@@ -794,9 +794,15 @@ async def complete_batch(
     conn: ConnLike,
     sql: BatchSql,
     batch_id: UUID,
-) -> None:
+) -> bool:
     """Mark a batch as complete.  No-op if the batch is already terminal
     or any member job is still non-terminal.
+
+    Returns ``True`` when the attempt arbitrated (it sought the batches
+    row and ran -- or was granted/delayed on -- the completion write) and
+    ``False`` when it gated out at the tail-shape probe without touching
+    the row; see the closing docstring paragraph for why the distinction
+    matters on the transactional-caller shape.
 
     Completion is arbitrated against the batches row, in this statement's
     own snapshot: a caller acting on a stale count (two members
@@ -808,10 +814,23 @@ async def complete_batch(
 
     The attempt is TAIL-GATED first: one cheap open-member count, and a
     mid-drain snapshot (more than ``_COMPLETE_TAIL_RECHECK_MAX_OPEN``
-    members open) returns immediately -- the attempt would veto anyway,
-    and seeking the batches row there would re-create the per-job
-    row-lock queue the guarded counter reset removed. The members still
-    open will arbitrate through their own hooks.
+    members open) returns immediately WITHOUT touching the row -- the
+    attempt would veto anyway, and seeking the batches row there would
+    re-create the per-job row-lock queue the guarded counter reset
+    removed. A gated-out attempt is UNORDERED with its caller's own
+    commit (the transactional-caller shape, ``connection=`` inside an
+    open transaction): the caller's terminal write is not yet committed,
+    so no later attempt's snapshot is ordered after it either, and the
+    transactional caller owes the batch a post-commit re-arbitration --
+    the backend surfaces the gate-out to its caller, and the caller
+    honors it by calling ``complete_batch(batch_id)`` again (no
+    ``connection=``) once its transaction has ended: that attempt's
+    snapshot postdates every commit, so the last committer's reissue
+    lands. On the autonomous shape (no open transaction -- the
+    consumer's hook runs after ``consume_one_job``'s transaction has
+    committed) no reissue is owed: the last hook to execute postdates
+    every writer's commit, its probe sees zero open members, and it
+    lands.
 
     A tail-shaped attempt takes the batches row lock with a BOUNDED
     BLOCKING wait (a savepoint scopes a transaction-local
@@ -834,10 +853,26 @@ async def complete_batch(
     back the terminal write beside it. The lock is held to the caller's
     commit, so an appender arriving after the grant serializes behind
     the completion instead of racing it.
+
+    Returns ``True`` when the attempt ARBITRATED -- it sought the row and
+    ran (or was granted/delayed on) the completion write -- and ``False``
+    when it gated out at the tail-shape probe (mid-drain, more than
+    ``_COMPLETE_TAIL_RECHECK_MAX_OPEN`` members open) without touching
+    the row. The distinction matters for the transactional-caller shape
+    (``connection=`` inside an open transaction): a gated-out attempt is
+    not ordered against the caller's own still-uncommitted terminal
+    write, so the caller's commit escapes every attempt's snapshot and
+    the transactional caller owes the batch one post-commit
+    re-arbitration (see ``PostgresBackend.complete_batch``, which
+    surfaces the gate-out as its ``True`` reissue-owed return). An
+    attempt that arbitrated is ordered by the row lock (its grant
+    postdates every earlier holder's commit) or was a veto/delay the
+    guard's own snapshot produced, which the remaining members' hooks
+    re-arbitrate.
     """
     open_members: int | None = await conn.fetchval(sql.count_batch_non_terminal, str(batch_id))
     if open_members is None or open_members > _COMPLETE_TAIL_RECHECK_MAX_OPEN:
-        return
+        return False
     try:
         locked = await _bounded_batches_row_wait(
             conn,
@@ -855,12 +890,13 @@ async def complete_batch(
             kind="batch",
             batch_id=str(batch_id),
         )
-        return
+        return True
     if locked is None:
         # The row vanished between the probe and the grant (pruned); the
         # completion write would no-op anyway.
-        return
+        return True
     await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
+    return True
 
 
 async def count_batch_non_terminal(
