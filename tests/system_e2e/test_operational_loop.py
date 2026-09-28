@@ -1305,22 +1305,41 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 raise
 
             # The reclaim is visible in the ledger: at least one recovery
-            # job re-ran at a NEW attempt.
-            attempts = await conn.fetch(
-                f"""
-                SELECT j.id, count(a.attempt)::int AS attempts
-                FROM "{schema}".jobs j
-                LEFT JOIN "{schema}".job_attempts a ON a.job_id = j.id
-                WHERE j.tags @> ARRAY[$1::text] AND j.actor = 'sys_slow'
-                  AND j.id = ANY($2::uuid[])
-                GROUP BY j.id
-                """,
-                _TAG,
-                recovery_ids,
-            )
-            assert any(int(r["attempts"]) >= 2 for r in attempts), (
-                f"no recovery job shows the reclaim's second attempt: {[dict(r) for r in attempts]}"
-            )
+            # job re-ran at a NEW attempt. POLLED, not single-shot: the
+            # reclaim's crashed-attempt row is the batched insert the sweep
+            # commits after the lease transfer, and the re-run's own row
+            # lands at its terminal write - both eventual, and neither
+            # synchronises with the limbo poll above returning. The poll
+            # fails only if the ledger NEVER shows the second attempt.
+            attempts: list[Any] = []
+
+            async def _reclaim_visible_in_ledger() -> bool:
+                nonlocal attempts
+                attempts = await conn.fetch(
+                    f"""
+                    SELECT j.id, count(a.attempt)::int AS attempts
+                    FROM "{schema}".jobs j
+                    LEFT JOIN "{schema}".job_attempts a ON a.job_id = j.id
+                    WHERE j.tags @> ARRAY[$1::text] AND j.actor = 'sys_slow'
+                      AND j.id = ANY($2::uuid[])
+                    GROUP BY j.id
+                    """,
+                    _TAG,
+                    recovery_ids,
+                )
+                return any(int(r["attempts"]) >= 2 for r in attempts)
+
+            try:
+                await _poll(
+                    _reclaim_visible_in_ledger,
+                    120.0,
+                    "the reclaim's second attempt to land in the ledger",
+                )
+            except AssertionError:
+                assert any(int(r["attempts"]) >= 2 for r in attempts), (
+                    f"no recovery job shows the reclaim's second attempt: {[dict(r) for r in attempts]}"
+                )
+                raise
 
             # Liveness: the stale worker row is cleaned and the pages stop
             # showing the dead replica.
