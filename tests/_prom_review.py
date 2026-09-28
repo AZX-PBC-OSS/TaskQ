@@ -846,12 +846,71 @@ def run_hostile_probe(
 
 # ── promtool rule evaluation (the honest alert harness) ────────────
 
-
-# ── promtool rule evaluation (the honest alert harness) ────────────
-
 #: The docker CLI's absolute path: the harness's container runs are fixed
 #: argv, and an absolute executable satisfies the partial-path lint.
 _DOCKER = shutil.which("docker")
+
+_EMITTER_PROBE = '''
+"""Emitter probe: drives the real sweep-abort counter emitters - the two
+families a live worker probe cannot stage (Postgres aborting a bounded
+prune batch collides with the worker's own retry ladder) but whose
+emission paths are real public API - and dumps the exposition their
+series actually serve."""
+
+import asyncio
+import os
+import sys
+
+PROBE_DIR = os.environ["PROBE_DIR"]
+sys.path.insert(0, PROBE_DIR)
+
+from opentelemetry import metrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.sdk.metrics import MeterProvider
+from prometheus_client import CollectorRegistry, generate_latest
+
+REGISTRY = CollectorRegistry()
+READER = PrometheusMetricReader(registry=REGISTRY)
+metrics.set_meter_provider(MeterProvider(metric_readers=[READER]))
+
+from taskq.obs import record_sweep_timeout, record_sweep_unexpected_error  # noqa: E402
+from taskq.obs import _otel as otel_mod  # noqa: E402
+
+otel_mod.set_otel_enabled(True)
+
+record_sweep_timeout("scheduled_to_pending")
+record_sweep_unexpected_error("scheduled_to_pending")
+
+with open(os.environ["PROBE_SCRAPE_PATH"], "w") as fh:
+    fh.write(generate_latest(REGISTRY).decode())
+print("EMITTER_PROBE_OK", flush=True)
+'''
+
+
+def run_emitter_probe(workdir: Path) -> str:
+    """Drive the real sweep-abort emitters through the real bridge; return
+    the exposition their series serve.
+
+    The promtool harness's sweep-abort cases (and the rules' operand
+    gate) bind to THIS scrape: the families a live worker probe cannot
+    stage are still bound to the names the real emitters serve, so the
+    harness's hand-typed series cannot drift from them.
+    """
+    _write_probe_scripts(workdir)
+    script = workdir / "probe_emitter.py"
+    script.write_text(_EMITTER_PROBE)
+    scrape_path = workdir / "emitter_scrape.txt"
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=probe_env(PROBE_DIR=str(workdir), PROBE_SCRAPE_PATH=str(scrape_path)),
+    )
+    assert result.returncode == 0, (
+        f"emitter probe failed:\nstdout={result.stdout[-2000:]}\nstderr={result.stderr[-2000:]}"
+    )
+    return scrape_path.read_text()
 
 
 def docker_available() -> bool:

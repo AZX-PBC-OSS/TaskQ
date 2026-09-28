@@ -644,6 +644,7 @@ Do not raise `TASKQ_MAX_HEARTBEAT_FAILURES` to quiet this alert: the budget is t
 **How to confirm.**
 
 - Metric: the p99 of `taskq_lock_expires_in_seconds` against your configured `TASKQ_LOCK_LEASE` (default 60 s): a p99 of 30 s means half the lease is gone to lateness. Read `taskq_heartbeat_misses_total` (failed ticks) and `taskq_worker_event_loop_lag_seconds` (a blocked loop) beside it; those two say WHICH kind of lateness this is.
+- **First check your cadence before debugging lateness.** The threshold (30 s) sits exactly on the histogram's `le="30"` bucket edge, and a sample is quantized into that bucket: a HEALTHY configuration whose steady-state remaining lease — `lock_lease − heartbeat_interval` — lands in **(20, 30] seconds** serves a p99 of ~29.9 s and this alert pages forever on a fleet with nothing wrong. Example: `TASKQ_HEARTBEAT_INTERVAL=5` with `TASKQ_LOCK_LEASE=33` (the cascade floor for that cadence) reads ~28 s at every beat. If your cadence's lease-minus-interval falls in that window, override the threshold in your own rule configuration to below your cadence's steady-state value (a `p99 < lock_lease − heartbeat_interval − margin` shape); the shipped default is tuned for the default cadence (60 s lease − 10 s interval = ~50 s, which quantiles to ~59.9 s — safely above the line).
 - The sample is stamped on every successful beat whether or not the renewal threshold renewed any rows, so the histogram measures the beat cadence itself: a late beat lowers it exactly as a failed one does.
 - SQL: what the fleet's running locks have left:
 

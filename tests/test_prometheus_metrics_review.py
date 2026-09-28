@@ -46,6 +46,7 @@ from tests._prom_review import (
     Exposition,
     docker_available,
     parse_exposition,
+    run_emitter_probe,
     run_hostile_probe,
     run_promtool_rule_tests,
     run_worker_probe,
@@ -130,6 +131,13 @@ def hostile(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[s
 @pytest.fixture(scope="module")
 def hostile_mid(hostile: dict[str, str]) -> Exposition:
     return parse_exposition(hostile["MID"])
+
+
+@pytest.fixture(scope="module")
+def emitter(tmp_path_factory: Any) -> Exposition:
+    """The real sweep-abort emitters' own exposition: the two families the
+    live worker probes cannot stage, bound to their real served names."""
+    return parse_exposition(run_emitter_probe(tmp_path_factory.mktemp("prom_emitter_probe")))
 
 
 @pytest.fixture(scope="module")
@@ -1083,12 +1091,296 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
     return cases
 
 
+def _feed_single_bucket(
+    live: Exposition,
+    base: str,
+    target_le: float,
+    *,
+    extra_labels: dict[str, str] | None = None,
+    count: str = "0+100x30",
+) -> list[tuple[str, dict[str, str], str]]:
+    """Feed a histogram's REAL bucket label set with ALL sample mass inside
+    the single bucket whose upper bound is *target_le* (rendered exactly as
+    the live scrape renders it): the marginal-threshold shapes - mass in
+    the bucket just below or just above an alert's quantile line."""
+    rendered: list[tuple[float, str]] = sorted(
+        (float(s.labels["le"]), s.labels["le"])
+        for s in live.series(f"{base}_bucket")
+        if "le" in s.labels
+    )
+    assert rendered, f"no {base}_bucket series in the live scrape"
+    assert any(le == target_le for le, _ in rendered), (
+        f"{base}: the live scrape renders no le={target_le} boundary "
+        f"(served: {[le for le, _ in rendered]})"
+    )
+    feeds: list[tuple[str, dict[str, str], str]] = []
+    for le, rendered_le in rendered:
+        labels = dict(extra_labels or {})
+        labels["le"] = rendered_le
+        feeds.append((f"{base}_bucket", labels, count if le >= target_le else "0+0x30"))
+    return feeds
+
+
+def _marginal_case(
+    alert: str,
+    inputs: list[tuple[str, dict[str, str], str]],
+    eval_time: str,
+    *,
+    fires: bool,
+    value: float = 0.0,
+) -> dict[str, Any]:
+    """One promtool test entry for a MARGINAL shape (just under or just
+    over a rule's threshold line): asserts the rule crosses the documented
+    line exactly - no firing below it, no silence above it."""
+    rules_data = yaml.safe_load(RULES_PATH.read_text())
+    shipped = next(r for r in rules_data["groups"][0]["rules"] if r.get("alert") == alert)
+    result_labels, _ = _ALERT_RESULT[alert]
+    exp_labels = {**result_labels, **shipped.get("labels", {})}
+    entry: dict[str, Any] = {"eval_time": eval_time, "alertname": alert}
+    if fires:
+        exp_annotations = {
+            key: _expand_templates(text, exp_labels, value)
+            for key, text in shipped.get("annotations", {}).items()
+        }
+        entry["exp_alerts"] = [{"exp_labels": exp_labels, "exp_annotations": exp_annotations}]
+    else:
+        entry["exp_alerts"] = []
+    return {
+        "interval": "1m",
+        "input_series": [
+            {"series": f"{name}{_render_labels(labels)}", "values": values}
+            for name, labels, values in inputs
+        ],
+        "alert_rule_test": [entry],
+    }
+
+
+@pytest.mark.skipif(
+    not docker_available(),
+    reason="promtool runs in the prom/prometheus container; Docker unreachable",
+)
+def test_threshold_margins_fire_exactly_at_the_documented_line(
+    live: Exposition, tmp_path: Any
+) -> None:
+    """Marginal shapes, just under and just over three rules' threshold
+    lines - the DispatchLatencyHigh lesson applied to the thresholds
+    themselves: a threshold that moves when a healthy shape approaches it
+    (or sits still when a violating shape crosses it) is a false page or a
+    missed page waiting for scale.
+
+    - TaskQDispatchLatencyHigh (> 50 ms): every dispatch in the le=0.05
+      bucket - the healthy worst case just UNDER the line - must stay
+      SILENT (the served p99 interpolates to 0.04975, not 50 ms); every
+      dispatch in the le=0.1 bucket - the first shape OVER the line - must
+      FIRE. The bucket scale puts the decision exactly at the 50 ms edge.
+    - TaskQLockExpiringSoon (p99 < 30 s): mass in the le=45 bucket (a
+      healthy default fleet, remaining ~ lease 60 - interval 10) stays
+      silent. AND the found cliff: mass in the le="30" bucket - a HEALTHY
+      minimal-valid lease configuration (heartbeat_interval 5s, lock_lease
+      33s, the cascade floor for that cadence: remaining ~28s) - FIRES,
+      because the served p99 quantiles to 20 + 10 * 0.99 = 29.9 < 30. This
+      case PINS the false-page rather than blessing it: the threshold sits
+      exactly on a bucket edge, so any healthy cadence whose lease-minus-
+      interval lands in (20, 30] pages forever. Operators running such a
+      cadence must override the threshold (the runbook documents the math);
+      a threshold fix belongs with its own red proof.
+    - TaskQFailedJobRateHigh (> 1%): a fleet at EXACTLY 1% (1 failed per
+      100 consumed per interval) must stay silent - the comparison is
+      strict - and 2 failed per 199 must FIRE.
+    - TaskQQueueDepthHigh (> 900 s): 900 stays silent, 901 fires - the
+      documented line is the line.
+    """
+    cases: list[dict[str, Any]] = []
+
+    # DispatchLatencyHigh: the line is the 50ms bucket edge.
+    cases.append(
+        _marginal_case(
+            "TaskQDispatchLatencyHigh",
+            _feed_single_bucket(
+                live, "taskq_dispatch_duration_seconds", 0.05, extra_labels={"queue": "probe_queue"}
+            ),
+            "8m",
+            fires=False,
+        )
+    )
+    cases.append(
+        _marginal_case(
+            "TaskQDispatchLatencyHigh",
+            _feed_single_bucket(
+                live, "taskq_dispatch_duration_seconds", 0.1, extra_labels={"queue": "probe_queue"}
+            ),
+            "8m",
+            fires=True,
+            value=0.0995,
+        )
+    )
+
+    # LockExpiringSoon: healthy default fleet silent; the (20, 30] cadence
+    # cliff fires (documented hazard, see above).
+    cases.append(
+        _marginal_case(
+            "TaskQLockExpiringSoon",
+            _feed_single_bucket(live, "taskq_lock_expires_in_seconds", 45),
+            "8m",
+            fires=False,
+        )
+    )
+    cases.append(
+        _marginal_case(
+            "TaskQLockExpiringSoon",
+            _feed_single_bucket(live, "taskq_lock_expires_in_seconds", 30),
+            "8m",
+            fires=True,
+        )
+    )
+
+    # FailedJobRateHigh: exactly-1% silent, just-over fires.
+    cases.append(
+        _marginal_case(
+            "TaskQFailedJobRateHigh",
+            [
+                (
+                    "messaging_client_consumed_messages_total",
+                    {"actor": "probe_fail_actor", "queue": "probe_queue", "outcome": "failed"},
+                    "0+1x30",
+                ),
+                (
+                    "messaging_client_consumed_messages_total",
+                    {"actor": "probe_ok_actor", "queue": "probe_queue", "outcome": "succeeded"},
+                    "0+99x30",
+                ),
+            ],
+            "8m",
+            fires=False,
+        )
+    )
+    cases.append(
+        _marginal_case(
+            "TaskQFailedJobRateHigh",
+            [
+                (
+                    "messaging_client_consumed_messages_total",
+                    {"actor": "probe_fail_actor", "queue": "probe_queue", "outcome": "failed"},
+                    "0+2x30",
+                ),
+                (
+                    "messaging_client_consumed_messages_total",
+                    {"actor": "probe_ok_actor", "queue": "probe_queue", "outcome": "succeeded"},
+                    "0+197x30",
+                ),
+            ],
+            "8m",
+            fires=True,
+            value=2.0 / 199.0,
+        )
+    )
+
+    # QueueDepthHigh: the documented 900s line is the line.
+    cases.append(
+        _marginal_case(
+            "TaskQQueueDepthHigh",
+            [
+                (
+                    "taskq_jobs_oldest_pending_age_seconds",
+                    {"actor": "probe_ok_actor", "queue": "probe_queue"},
+                    "900+0x30",
+                )
+            ],
+            "8m",
+            fires=False,
+        )
+    )
+    cases.append(
+        _marginal_case(
+            "TaskQQueueDepthHigh",
+            [
+                (
+                    "taskq_jobs_oldest_pending_age_seconds",
+                    {"actor": "probe_ok_actor", "queue": "probe_queue"},
+                    "901+0x30",
+                )
+            ],
+            "8m",
+            fires=True,
+            value=901.0,
+        )
+    )
+
+    test_doc = {
+        "rule_files": ["/work/rules.yaml"],
+        "evaluation_interval": "1m",
+        "tests": cases,
+    }
+    out = run_promtool_rule_tests(RULES_PATH, yaml.safe_dump(test_doc), tmp_path)
+    assert "SUCCESS" in out, out
+
+
+@pytest.mark.skipif(
+    not docker_available(),
+    reason="promtool runs in the prom/prometheus container; Docker unreachable",
+)
+def test_harness_series_are_bound_to_the_served_exposition(
+    live: Exposition, follower: Exposition, hostile_mid: Exposition, emitter: Exposition
+) -> None:
+    """A rule-test harness that hand-types series can drift from the
+    emitted truth while every case still passes (a wrong-but-consistent
+    name evaluates an empty vector and the SILENT guards still pass). The
+    binding pin: every input series name the 32 cases feed must be a name
+    a real scrape actually served - the worker probes for everything a
+    live worker carries, the emitter probe for the two sweep-abort
+    families whose pathology cannot be staged live - and the case counts
+    must be the honest 22 firing + 10 healthy guards covering every
+    shipped rule."""
+    emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
+    cases = _build_promtool_cases(live)
+    firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
+    guards = [c for c in cases if not c["alert_rule_test"][0]["exp_alerts"]]
+    assert (len(firing), len(guards)) == (22, 10), (
+        f"the harness must stay 22 firing + 10 guards, got {len(firing)} + {len(guards)}"
+    )
+    for case in cases:
+        for input_entry in case["input_series"]:
+            name = input_entry["series"].split("{")[0]
+            assert name in emitted, (
+                f"promtool input series {name!r} is not a series the real "
+                "scrapes served - the harness has drifted from the emitted truth"
+            )
+    # The two emitter-bound families: the fed LABEL VALUES must match what
+    # the real emitters serve, not just the names.
+    for family in (
+        "taskq_maintenance_leader_sweep_timeouts_total",
+        "taskq_maintenance_leader_sweep_unexpected_errors_total",
+    ):
+        served_sweep_names = emitter.label_values(family, "sweep_name")
+        for case in cases:
+            for input_entry in case["input_series"]:
+                if input_entry["series"].split("{")[0] != family:
+                    continue
+                fed = dict(re.findall(r'(\w+)="([^"]*)"', input_entry["series"]))
+                assert fed.get("sweep_name") in served_sweep_names, (
+                    f"{family}: fed sweep_name {fed.get('sweep_name')!r} is not "
+                    f"one the real emitters served: {sorted(served_sweep_names)}"
+                )
+    # And the firing set covers every shipped alert exactly once.
+    rules = yaml.safe_load(RULES_PATH.read_text())["groups"][0]["rules"]
+    shipped_names = {r["alert"] for r in rules if "alert" in r}
+    fired_names = {c["alert_rule_test"][0]["alertname"] for c in firing}
+    assert fired_names == shipped_names, (
+        f"unfired shipped rules {sorted(shipped_names - fired_names)}, "
+        f"unknown alert names {sorted(fired_names - shipped_names)}"
+    )
+
+
 @pytest.mark.skipif(
     not docker_available(),
     reason="promtool runs in the prom/prometheus container; Docker unreachable",
 )
 def test_every_alert_rule_fires_on_real_names_and_labels(
-    live: Exposition, follower: Exposition, hostile_mid: Exposition, tmp_path: Any
+    live: Exposition,
+    follower: Exposition,
+    hostile_mid: Exposition,
+    emitter: Exposition,
+    tmp_path: Any,
 ) -> None:
     """Every shipped rule must fire against its pathology, built from the
     metric names + label sets the real worker exposition served; the
@@ -1098,22 +1390,13 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     # Gate: every taskq/messaging series the rules reference is one the
     # real probes emitted (the healthy run for every family a healthy
     # worker carries; the hostile run adds the failure-only counters -
-    # taskq_heartbeat_misses_total among them). Label values and PromQL
-    # syntax are stripped before scanning; a rule operand the bridge
-    # never serves would make the rule unevaluatable against real data.
-    #
-    # Exempt: the two sweep-abort counters. Their pathology - Postgres
-    # aborting a bounded prune-family batch - cannot be staged against a
-    # live shared schema without colliding with the worker's own retry
-    # ladder and loop-guard recovery machinery; their emission paths are
-    # driven through the real prune_terminal_jobs emitters in
-    # tests/test_leader_prune_shared.py, and the promtool evaluation
-    # below still pins the RULES to the real sweep_name label shape.
-    emission_exempt = {
-        "taskq_maintenance_leader_sweep_timeouts_total",
-        "taskq_maintenance_leader_sweep_unexpected_errors_total",
-    }
-    emitted = live.names() | follower.names() | hostile_mid.names()
+    # taskq_heartbeat_misses_total among them; the emitter probe adds the
+    # two sweep-abort counters whose PG-abort pathology cannot be staged
+    # against a live shared schema but whose emission paths are the real
+    # public record_sweep_* API). Label values and PromQL syntax are
+    # stripped before scanning; a rule operand the bridge never serves
+    # would make the rule unevaluatable against real data.
+    emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     for rule in rules_data["groups"][0]["rules"]:
         expr = re.sub(r'"[^"]*"', '""', str(rule["expr"]))
         expr = re.sub(r"\{[^}]*\}", "{}", expr)
@@ -1124,11 +1407,10 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
         # Grouping clauses (by/without/on/ignoring) name LABELS, not series.
         expr = re.sub(r"\b(by|without|on|ignoring)\s*\([^)]*\)", r"\1 ()", expr)
         for token in set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_:]*", expr)):
-            if token in _PROMQL_KEYWORDS or token in emission_exempt:
+            if token in _PROMQL_KEYWORDS:
                 continue
             assert token in emitted, (
-                f"rule {rule['alert']} references {token}, which the real "
-                "worker scrape never emitted"
+                f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
             )
         # The label names the rule matches on must be real too.
         for label in set(re.findall(r"(\w+)\s*=\"", str(rule["expr"]))):

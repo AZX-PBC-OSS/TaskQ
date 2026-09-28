@@ -18,6 +18,7 @@ and the gauge overflow carrying the summed depth.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from typing import Any
 
@@ -26,7 +27,11 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("opentelemetry.exporter.prometheus")
 
-from tests._prom_review import parse_exposition, probe_env
+from tests._prom_review import (  # pyright: ignore[reportPrivateUsage]  # Why: the migration helper is the review harness's own; importing it keeps one migration path.
+    _migrate_schema,
+    parse_exposition,
+    probe_env,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.otel]
 
@@ -286,3 +291,190 @@ class TestGaugeCapContract:
                         f"gauge family {name} serves {len(samples)} series "
                         "at fleet shape - past the bounded-cardinality contract"
                     )
+
+
+# ── the REAL sampler, end to end ────────────────────────────────────
+#
+# The capped-gauge contract above feeds the cache by hand. The sampler the
+# leader actually runs is ``_queue_depth_loop``: a SQL GROUP BY over the
+# jobs table, fed through ``update_queue_depth_cache`` every tick. This
+# leg drives that REAL read - the shipped SQL template over a real
+# migrated schema seeded with 150 distinct queue values - into the real
+# cache write and asserts the SERVED exposition's series count, so the
+# SQL's row shape (queue names straight out of the jobs table) is proven
+# to enter the cap unchanged.
+
+_SAMPLER_SUBPROCESS = '''
+"""Feeds the REAL sampler's read result through the real cache write and
+dumps the bridge's served exposition."""
+
+import asyncio
+import json
+import os
+import sys
+
+PROBE_DIR = os.environ["PROBE_DIR"]
+SAMPLER_CACHE_PATH = os.environ["SAMPLER_CACHE_PATH"]
+sys.path.insert(0, PROBE_DIR)
+
+from opentelemetry import metrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.sdk.metrics import MeterProvider
+from prometheus_client import CollectorRegistry, generate_latest
+
+REGISTRY = CollectorRegistry()
+READER = PrometheusMetricReader(registry=REGISTRY)
+metrics.set_meter_provider(MeterProvider(metric_readers=[READER]))
+
+from taskq.obs._otel import update_queue_depth_cache  # noqa: E402
+
+
+async def _run() -> None:
+    with open(SAMPLER_CACHE_PATH) as fh:
+        sampled = json.load(fh)
+    # The cache write is exactly what _queue_depth_loop does with its rows.
+    update_queue_depth_cache(sampled)
+    text = generate_latest(REGISTRY).decode()
+    with open(os.environ["PROBE_SCRAPE_PATH"], "w") as fh:
+        fh.write(text)
+    print("SAMPLER_SCRAPE_BYTES:", len(text), flush=True)
+
+
+asyncio.run(_run())
+'''
+
+
+def test_real_queue_depth_sampler_serves_a_bounded_exposition(
+    pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any
+) -> None:
+    """150 distinct queues through the leader's REAL depth-sampler read
+    (the shipped SQL over a migrated schema) → the real cache write → the
+    SERVED exposition: exactly 101 series (the 100 deepest + `_other_`),
+    `_other_` carrying the summed overflow, the fleet total exact."""
+    import asyncio
+    import json
+
+    from taskq._ids import new_uuid
+
+    schema = module_pg_schema.schema_name
+    _migrate_schema(pg_dsn, schema)
+
+    # Seed 150 distinct queue values straight into the jobs table - the
+    # sampler's GROUP BY sees exactly what production sees: queue names
+    # out of live rows. Queue i gets (i % 10) + 1 pending rows.
+    depths = {f"sampler_queue_{i:03d}": (i % 10) + 1 for i in range(150)}
+    workdir = tmp_path_factory.mktemp("prom_sampler_probe")
+    seed_rows = [
+        [str(new_uuid()), "sampler_actor", queue, str(count)]
+        for queue, count in depths.items()
+        for _ in range(count)
+    ]
+    seed_path = workdir / "sampler_seed.json"
+    seed_path.write_text(json.dumps(seed_rows))
+    seed_script = workdir / "probe_seed.py"
+    seed_script.write_text(
+        '''
+"""Seeds the sampler's fleet: 150 distinct queue values as pending jobs rows."""
+
+import asyncio
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ["PROBE_DIR"])
+
+
+async def _run() -> None:
+    import asyncpg
+
+    with open(os.environ["SAMPLER_SEED_PATH"]) as fh:
+        rows = json.load(fh)
+    conn = await asyncpg.connect(os.environ["PROBE_PG_DSN"])
+    try:
+        await conn.executemany(
+            f'INSERT INTO "{os.environ["PROBE_SCHEMA"]}".jobs '
+            "(id, actor, queue, payload, max_attempts, retry_kind) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 1, 'transient')",
+            [(r[0], r[1], r[2]) for r in rows],
+        )
+    finally:
+        await conn.close()
+    print("SEEDED:", len(rows), flush=True)
+
+
+asyncio.run(_run())
+'''
+    )
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
+        [sys.executable, str(seed_script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=probe_env(
+            PROBE_DIR=str(workdir),
+            PROBE_PG_DSN=pg_dsn,
+            PROBE_SCHEMA=schema,
+            SAMPLER_SEED_PATH=str(seed_path),
+        ),
+    )
+    assert result.returncode == 0, f"seeding failed: {result.stderr[-2000:]}"
+
+    # The REAL sampler read: the shipped SQL template, exactly as
+    # _queue_depth_loop runs it every tick.
+    from taskq.worker._leader_shared import _QUERY_QUEUE_DEPTH_SQL_TEMPLATE
+
+    async def _sample() -> dict[str, int]:
+        import asyncpg
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            db_rows = await conn.fetch(_QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema))
+        finally:
+            await conn.close()
+        return {row["queue"]: row["count"] for row in db_rows}
+
+    sampled = asyncio.run(_sample())
+    assert len(sampled) == 150, (
+        f"the sampler read saw {len(sampled)} queues, expected 150: the seed "
+        "or the shipped SQL drifted"
+    )
+
+    script = workdir / "probe_sampler.py"
+    script.write_text(_SAMPLER_SUBPROCESS)
+    cache_path = workdir / "sampler_cache.json"
+    cache_path.write_text(json.dumps(sampled))
+    scrape_path = workdir / "sampler_scrape.txt"
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell.
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=probe_env(
+            PROBE_DIR=str(workdir),
+            SAMPLER_CACHE_PATH=str(cache_path),
+            PROBE_SCRAPE_PATH=str(scrape_path),
+        ),
+    )
+    assert result.returncode == 0, (
+        f"sampler probe failed:\nstdout={result.stdout[-3000:]}\nstderr={result.stderr[-3000:]}"
+    )
+    served = parse_exposition(scrape_path.read_text())
+    queues = _queue_series(served, "taskq_queue_depth")
+    assert len(queues) == 101, (
+        f"150 real queues served {len(queues)} depth series - the served "
+        "exposition must be hard-bounded at 101 (100 deepest + _other_)"
+    )
+    ranked = sorted(depths.items(), key=lambda kv: (-kv[1], kv[0]))
+    named = {q: v for q, v in queues.items() if q != "_other_"}
+    assert named == dict(ranked[:100]), (
+        "the served exposition must keep exactly the 100 deepest queues "
+        "(ties by name) the REAL sampler read"
+    )
+    expected_overflow = sum(v for _, v in ranked[100:])
+    assert queues["_other_"] == expected_overflow, (
+        f"_other_ must carry the summed overflow of the 50 shallowest queues "
+        f"({expected_overflow}), got {queues['_other_']}"
+    )
+    assert sum(queues.values()) == sum(depths.values()), (
+        "the fleet total must stay exact through the cap"
+    )
