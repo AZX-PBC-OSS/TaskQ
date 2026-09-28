@@ -383,7 +383,12 @@ async def apply_batch_terminal_outcome(
     dispatch's to move, so no batch counter may budge).
 
     - ``"succeeded"``: resets the consecutive-failure counter and
-      attempts completion.
+      attempts completion. The reset carries a ``consecutive_failures
+      <> 0`` guard: a batch whose counter is already 0 - the healthy
+      steady state every successful job of the batch pays - is not
+      written, so the batches row is not locked and the member probe
+      does not run; the failure-counter contract is unchanged, a
+      non-zero counter resets exactly as before.
     - ``"failed"``: increments the consecutive-failure counter.  If the
       threshold is reached, aborts the batch and logs ``batch-aborted``
      , abort wins, so no completion attempt runs on that path.  The
@@ -439,7 +444,9 @@ async def apply_batch_terminal_outcome(
         # the completion decision, see the docstring's self-arbitrating
         # paragraph. complete_batch re-checks membership in its own
         # statement, so the optimistic attempt can delay but never
-        # complete prematurely.
+        # complete prematurely. (When the counter was already 0 the
+        # guarded reset writes nothing and returns 0; the completion
+        # attempt below is unaffected either way.)
         await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 

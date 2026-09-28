@@ -174,7 +174,7 @@ _RESET_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
     SET consecutive_failures = 0
-    WHERE id = $1 AND status = 'active'
+    WHERE id = $1 AND status = 'active' AND consecutive_failures <> 0
     RETURNING 1
 )
 SELECT c.remaining FROM updated u
@@ -253,56 +253,60 @@ WHERE id = $1 AND status = 'active'"""
 # the one complete_stale_batches already uses (worker/_leader_shared.py);
 # the status = 'active' sibling condition keeps abort-wins-over-complete
 # intact. The probe itself is the open-member predicate served by
-# jobs_batch_open_members_idx, so the guard costs one index seek per
-# terminal write however many members the batch has.
+# jobs_batch_open_members_idx, so the guard costs one index seek however
+# many members the batch has.
 #
-# The membership CTE closes the append-race window the guard alone cannot
-# see: a READ COMMITTED snapshot cannot see another transaction's
-# uncommitted member INSERT (the streaming-append path -- a caller-
-# supplied batch_id of an existing batch, members committed chunk by
-# chunk, each chunk transaction holding this same batches-row lock from
-# before its INSERTs to its commit -- see _enqueue.py's
-# _lock_batch_membership), so the guard alone would complete the batch
-# and the append would then commit a pending member onto a terminal row.
-# FOR UPDATE SKIP LOCKED makes the conflict itself the signal: an
-# in-flight append holds the row, the CTE yields nothing, and the UPDATE
-# no-ops -- a DELAY, the docstring's own "can delay completion but never
-# complete prematurely" contract -- leaving the row 'active' for the
-# append to commit and the next hook or the stale-batch sweep to
-# re-arbitrate. Skipping, not a blocking wait, is essential: the
-# completer may run inside a caller's open transaction (the
-# ``connection=`` arm, the shape the terminal-outcome hook uses), and
-# blocking here would park a terminal write behind an appender of
-# unbounded duration. Skipping rather than NOWAIT is equally
-# essential: a NOWAIT refusal is an error (SQLSTATE 55P03) that
-# leaves the enclosing transaction aborted even once caught, so the
-# terminal write committed alongside the probe would roll back with it.
-# The lock is held to this statement's commit, so an appender arriving
-# after it serializes behind the completion instead of racing it. The
-# statement reports which of the three outcomes it took -- completed,
-# delayed on the lock, or nothing to do (no row, not active, or a member
-# still open) -- so a delay stays traceable without an exception.
+# The statement runs while the CALLER holds the batches row lock
+# (complete_batch's bounded handshake) -- it is the guard + completion
+# write, not the whole arbitration body.
+#
+# Why the caller's handshake BLOCKS (bounded) instead of the former
+# membership CTE's FOR UPDATE SKIP LOCKED: the counter reset used to
+# serialize a batch's terminal writers -- its lock handoff granted only at
+# the previous writer's COMMIT, sequencing every writer's snapshot after
+# the earlier writers' commits -- which is what made "the attempt after
+# the last terminal write is the one that lands" hold. Guarding the reset
+# (the per-job hot path must not write the batches row; see
+# _RESET_BATCH_FAILURES_SQL) removed that serialization, and a skip-fast
+# attempt re-opens a lost-wakeup hole: the last committer's attempt
+# snapshots BEFORE its peers commit, vetoes on members it saw open, and
+# no attempt exists after the final commit -- an all-terminal batch stays
+# 'active' until the sweep. A bounded BLOCKING grant restores the
+# sequencing: grant means every earlier holder committed, so the
+# grantee's guard (this statement's fresh READ COMMITTED snapshot) sees
+# their terminal writes and the tail's last seeker lands. The bounded
+# wait keeps the no-parking constraint the skip enforced: the completer
+# may run inside a caller's open transaction (the ``connection=`` arm,
+# the shape the terminal-outcome hook uses), and parking behind an
+# unbounded holder -- the streaming appender's membership lock, the
+# conflict the skip existed for (see _enqueue.py's _lock_batch_membership)
+# -- would hold a terminal write for the appender's whole stream. The
+# bounded wait times out into the same disclosed delay the skip produced;
+# a NOWAIT refusal (raw 55P03) is equally unusable, the enclosing
+# transaction would abort even once caught. The lock is held to the
+# caller's commit, so an appender arriving after the grant serializes
+# behind the completion instead of racing it.
 _COMPLETE_BATCH_SQL = """\
-WITH membership AS (
-    SELECT id
-    FROM "{schema}".batches
-    WHERE id = $1
-    FOR UPDATE SKIP LOCKED
-),
-completed AS (
-    UPDATE "{schema}".batches
-    SET status = 'complete', completed_at = clock_timestamp()
-    WHERE id = $1 AND status = 'active'
-      AND EXISTS (SELECT 1 FROM membership)
-      AND NOT EXISTS (
-        SELECT 1 FROM "{schema}".jobs
-        WHERE {open_member}
-      )
-    RETURNING id
-)
-SELECT EXISTS (SELECT 1 FROM completed) AS completed,
-       EXISTS (SELECT 1 FROM "{schema}".batches WHERE id = $1)
-         AND NOT EXISTS (SELECT 1 FROM membership) AS delayed_on_membership_lock"""
+UPDATE "{schema}".batches
+SET status = 'complete', completed_at = clock_timestamp()
+WHERE id = $1 AND status = 'active'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "{schema}".jobs
+    WHERE {open_member}
+  )
+RETURNING id"""
+
+# The completion handshake's seat-taking statement: complete_batch holds
+# the batches row from this grant to the caller's commit, so the
+# completion write (_COMPLETE_BATCH_SQL, run right after the grant on a
+# fresh READ COMMITTED snapshot) is sequenced after every earlier
+# holder's commit -- the property the guarded counter reset's queue used
+# to provide for free (see _COMPLETE_BATCH_SQL's comment).
+_LOCK_BATCH_ROW_SQL = """\
+SELECT id FROM "{schema}".batches
+WHERE id = $1
+FOR UPDATE"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
@@ -373,6 +377,7 @@ class BatchSql:
     abort_batch_jobs: str
     abort_batch_row: str
     complete_batch: str
+    lock_batch_row: str
     count_batch_non_terminal: str
     list_batches_base: str
     prune_old_batches: str
@@ -400,6 +405,7 @@ def render_batch_sql(schema: str) -> BatchSql:
         complete_batch=_COMPLETE_BATCH_SQL.format(
             schema=schema, open_member=open_member_where("$2")
         ),
+        lock_batch_row=_LOCK_BATCH_ROW_SQL.format(schema=schema),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
             schema=schema, open_member=open_member_where("$1")
         ),
@@ -426,12 +432,36 @@ _BATCH_COUNTER_LOCK_TIMEOUT_MS: Final[float] = 2000.0
 #: committed page cancelled, nothing counts twice.
 _ABORT_DRAIN_RETRIES: Final = 3
 
+#: The tail-shape gate on the completion handshake (``complete_batch``): a
+#: completion attempt whose snapshot sees more than this many open members
+#: is mid-drain -- it would veto anyway, so it returns after one cheap
+#: member-count probe and never seeks the batches row (seeking would
+#: re-create the per-job row-lock queue the guarded counter reset
+#: removed). At most this many members are open, the members' terminal
+#: writes are in flight in peer transactions committing within a
+#: terminal-write duration, so the attempt joins the lock queue and the
+#: last committer's grant sequences its guard after every peer's commit --
+#: the "attempt after the last terminal write lands" invariant. Sized one
+#: power of two above the fleet profile's 8 concurrent terminal writers;
+#: a tail wider than this falls back to the members' own hooks and the
+#: leader's sweep, the reconciliation the single-shot shape had. The
+#: handshake itself waits on the SAME budget as the counter writes
+#: (``_BATCH_COUNTER_LOCK_TIMEOUT_MS``): the queue it must outlast is the
+#: tail depth times a holder's commit window -- up to ~16 holders, whose
+#: commits inflate under load (a 100 ms bound measurably expired under a
+#: 2.4x-slower box and left an all-terminal batch 'active') -- and the
+#: appender-hold case it must NOT park for is the same holder class the
+#: counter writes already disclose on expiry (M7's best-effort loss).
+_COMPLETE_TAIL_RECHECK_MAX_OPEN: Final[int] = 16
+
 
 async def _bounded_batches_row_wait[T](
     conn: ConnLike,
     write: Callable[[], Awaitable[T]],
+    *,
+    timeout_ms: float = _BATCH_COUNTER_LOCK_TIMEOUT_MS,
 ) -> T:
-    """Run one counter write under a bounded wait for the batches row.
+    """Run one batches-row write under a bounded wait for the row.
 
     A savepoint scopes a transaction-local ``lock_timeout`` around
     *write*: on a bare connection it is a real short transaction (the
@@ -447,14 +477,15 @@ async def _bounded_batches_row_wait[T](
     the caller's transaction and clobber a caller-set bound. The
     restore must not run on the timeout path (the scope is aborted; any
     statement in it would fail), which the linear structure below gives
-    for free.
+    for free. *timeout_ms* overrides the counter-write budget (a caller
+    with a different holder class passes its own bound).
     """
     nested = conn.is_in_transaction()
     async with conn.transaction():
         prior_lock_timeout: str | None = None
         if nested:
             prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
-        await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(_BATCH_COUNTER_LOCK_TIMEOUT_MS)}ms")
+        await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(timeout_ms)}ms")
         result = await write()
         if nested:
             await conn.execute(_LOCK_TIMEOUT_SET_SQL, str(prior_lock_timeout))
@@ -582,8 +613,17 @@ async def reset_batch_failures(
     """Reset consecutive_failures to 0 and return the number of non-terminal
     member jobs.
 
-    Returns ``0`` if the batch row does not exist. The member count is the
-    same index-served probe as :func:`count_batch_non_terminal`.
+    The write carries a ``consecutive_failures <> 0`` guard: when the
+    counter is already 0 - every successful job of a healthy batch pays
+    this statement, and none of them has anything to reset - the UPDATE
+    matches no row, so no batches-row lock is taken (the per-job terminal
+    writes of a batch's concurrent members never queue on the row) and
+    the LATERAL member count, hanging off the UPDATE's returned rows,
+    never executes. Such a skipped reset returns ``0``.
+
+    Returns ``0`` if the batch row does not exist or is not active. The
+    member count is the same index-served probe as
+    :func:`count_batch_non_terminal`.
 
     The bounded-wait semantics are :func:`increment_batch_failures`':
     when the batches row is held past the budget, the reset is SKIPPED
@@ -758,41 +798,69 @@ async def complete_batch(
     """Mark a batch as complete.  No-op if the batch is already terminal
     or any member job is still non-terminal.
 
-    Completion is arbitrated inside this statement: the ``NOT EXISTS``
-    guard counts non-terminal members in the statement's own snapshot,
-    so a caller acting on a stale count (two members terminating
-    concurrently can each read the other as non-terminal) can delay
-    completion but never complete prematurely, an optimistic attempt
-    after any terminal member is always safe, and the same attempt that
-    was vetoed lands once the last member turns terminal.
+    Completion is arbitrated against the batches row, in this statement's
+    own snapshot: a caller acting on a stale count (two members
+    terminating concurrently can each read the other as non-terminal) can
+    delay completion but never complete prematurely -- the guard in
+    ``_COMPLETE_BATCH_SQL`` re-checks open members in its own snapshot --
+    an optimistic attempt after any terminal member is always safe, and
+    the attempt that runs after the last member turns terminal lands.
 
-    Delay also covers the member-append window: the statement's
-    membership CTE takes the batches row ``FOR UPDATE SKIP LOCKED``, and
-    a concurrent append transaction holding that lock (the streaming
-    chunk path, see ``_COMPLETE_BATCH_SQL``'s comment) makes the CTE
-    yield nothing, so the UPDATE no-ops. That is a DELAY, not an error: a
-    READ COMMITTED snapshot cannot see the appender's uncommitted member
-    INSERT, so completing now would be precisely the premature completion
-    the guard exists to prevent. The row stays ``'active'``, the append
-    commits, and the next terminal hook or the leader's
-    ``complete_stale_batches`` sweep re-arbitrates against the
-    now-visible membership. Nothing raises, so the probe is safe inside a
-    caller's open transaction: a lock refusal that raised would leave that
-    transaction aborted and roll back the terminal write beside it.
+    The attempt is TAIL-GATED first: one cheap open-member count, and a
+    mid-drain snapshot (more than ``_COMPLETE_TAIL_RECHECK_MAX_OPEN``
+    members open) returns immediately -- the attempt would veto anyway,
+    and seeking the batches row there would re-create the per-job
+    row-lock queue the guarded counter reset removed. The members still
+    open will arbitrate through their own hooks.
+
+    A tail-shaped attempt takes the batches row lock with a BOUNDED
+    BLOCKING wait (a savepoint scopes a transaction-local
+    ``lock_timeout``, the counter writes' machinery): the grant sequences
+    the completion write's fresh snapshot after every earlier holder's
+    commit -- the counter reset's lock handoff used to provide this
+    ordering for free, and it is what makes the attempt after the last
+    terminal write land instead of leaving an all-terminal batch
+    'active' for the sweep. On expiry -- the streaming appender holding
+    the membership lock across its chunks (see _enqueue.py's
+    _lock_batch_membership), the one unbounded holder class -- the
+    attempt is a DELAY, not an error: a READ COMMITTED snapshot cannot
+    see the appender's uncommitted member INSERT, so completing now
+    would be precisely the premature completion the guard exists to
+    prevent. The row stays ``'active'``, the append commits, and the
+    next terminal hook or the leader's ``complete_stale_batches`` sweep
+    re-arbitrates against the now-visible membership. Nothing raises, so
+    the handshake is safe inside a caller's open transaction: a lock
+    refusal that raised would leave that transaction aborted and roll
+    back the terminal write beside it. The lock is held to the caller's
+    commit, so an appender arriving after the grant serializes behind
+    the completion instead of racing it.
     """
-    outcome = await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
-    if outcome is not None and outcome["delayed_on_membership_lock"]:
-        # Debug, not warning: this is the same optimistic-CAS miss class
-        # as the guard's own veto (a concurrent writer won the
-        # arbitration), an expected outcome under concurrency that
-        # reconciliation already covers; the log line exists so a delayed
-        # completion is traceable to its cause when someone asks why a
-        # batch with all terminal members is still 'active'.
+    open_members: int | None = await conn.fetchval(sql.count_batch_non_terminal, str(batch_id))
+    if open_members is None or open_members > _COMPLETE_TAIL_RECHECK_MAX_OPEN:
+        return
+    try:
+        locked = await _bounded_batches_row_wait(
+            conn,
+            lambda: conn.fetchrow(sql.lock_batch_row, batch_id),
+        )
+    except LockNotAvailableError:
+        # Debug, not warning: the same optimistic-CAS miss class as the
+        # guard's own veto (a concurrent writer won the arbitration),
+        # an expected outcome under concurrency that reconciliation
+        # already covers; the log line exists so a delayed completion is
+        # traceable to its cause when someone asks why a batch with all
+        # terminal members is still 'active'.
         logger.debug(
             "complete_batch_delayed_membership_lock",
             kind="batch",
             batch_id=str(batch_id),
         )
+        return
+    if locked is None:
+        # The row vanished between the probe and the grant (pruned); the
+        # completion write would no-op anyway.
+        return
+    await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
 
 
 async def count_batch_non_terminal(
