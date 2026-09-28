@@ -1118,4 +1118,8 @@ async def _write_attempt(
                 attempt.duration_ms,
                 attempt.worker_id,
                 jsonb_param(attempt.metadata),
+                # The claim-time due time (01.00.20_04): a direct write the
+                # caller knows it for stamps it, the ledger paths' twin
+                # (None) stays NULL - the documented pre-migration shape.
+                attempt.due_at,
             )
