@@ -2328,7 +2328,7 @@ def _ui_serve(
                 except ImportError as exc:
                     raise ImportError(
                         "redis_url is configured but the [redis] extra is not installed. "
-                        "Install it with: pip install 'taskq[redis]'"
+                        "Install it with: pip install 'taskq-py[redis]'"
                     ) from exc
 
                 if redis_factory is not None:

@@ -50,7 +50,7 @@ try:
 except ImportError as _exc:
     raise ImportError(
         "taskq[prometheus] is required to use the Prometheus metrics bridge. "
-        "Install it with: pip install 'taskq[prometheus]'"
+        "Install it with: pip install 'taskq-py[prometheus]'"
     ) from _exc
 
 try:
@@ -58,7 +58,7 @@ try:
 except ImportError as _exc:
     raise ImportError(
         "taskq[fastapi] is required to use the Prometheus metrics bridge. "
-        "Install it with: pip install 'taskq[fastapi]'"
+        "Install it with: pip install 'taskq-py[fastapi]'"
     ) from _exc
 
 from typing import TYPE_CHECKING, Literal

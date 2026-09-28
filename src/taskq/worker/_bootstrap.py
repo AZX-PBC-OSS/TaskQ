@@ -1710,7 +1710,7 @@ async def _main(
                         "TASKQ_REDIS_URL is set but the [redis] extra is not "
                         "installed; it is required by rate limit(s): "
                         f"{', '.join(redis_backed)}. Install it with: "
-                        "pip install 'taskq[redis]'"
+                        "pip install 'taskq-py[redis]'"
                     )
                     raise RuntimeError(msg)
             # Why: LoopScope.bootstrap eagerly resolves every LOOP provider,

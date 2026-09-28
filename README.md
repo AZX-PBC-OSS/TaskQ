@@ -63,6 +63,10 @@ Async-native, Postgres-backed background job library for Python 3.12+.
 
 ## Installation
 
+> **Name check:** the package is `taskq-py`. There is an unrelated `taskq`
+> distribution on PyPI — `pip install taskq` installs that package, not TaskQ.
+> Always use the `taskq-py` name.
+
 ```bash
 pip install taskq-py
 ```
@@ -87,6 +91,7 @@ Optional extras:
 | `[aws]`        | AWS IAM database authentication for Amazon RDS Postgres (boto3): `taskq.aws` credential providers |
 | `[vault]`      | HashiCorp Vault database secrets engine dynamic credentials (hvac): `taskq.vault` credential providers |
 | `[reload]`     | `watchfiles` for autoreload during local development                |
+| `[bench]`      | `py-spy` + `pyinstrument` profilers for the `benchmarks/` toolkit   |
 
 The core install depends only on `opentelemetry-api`; no SDK or exporters
 (see [Observability](docs/guides/observability.md)).

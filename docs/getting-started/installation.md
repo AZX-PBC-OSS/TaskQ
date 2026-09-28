@@ -20,6 +20,10 @@ and integration testing.
 
 ## Install
 
+> **Name check:** the package is `taskq-py`. There is an unrelated `taskq`
+> distribution on PyPI — `pip install "taskq[redis]"` installs that package,
+> not TaskQ. Always use the `taskq-py` name.
+
 ```bash
 pip install taskq-py                      # core only
 pip install "taskq-py[redis]"             # + real-time SSE fanout
@@ -36,22 +40,19 @@ uv add "taskq-py[redis,fastapi]"          # full
 
 **Extras:**
 
-> **Name check:** the package is `taskq-py`. There is an unrelated `taskq`
-> distribution on PyPI — `pip install "taskq[redis]"` installs that package,
-> not TaskQ. Always use the `taskq-py` name.
-
 | Extra | Installs | Features enabled |
 |-------|----------|-----------------|
 | `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters (`TokenBucket`, `SlidingWindow`) |
-| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Configuring OTel providers programmatically; in-process test utilities in `taskq.testing.otel` |
-| `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI (`taskq ui serve`), SSE progress bridge |
-| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes via `taskq.contrib.prometheus` |
+| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-instrumentation` | Configuring OTel providers programmatically; in-process test utilities in `taskq.testing.otel` |
+| `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn`, `humanize`, `python-multipart` | Admin UI (`taskq ui serve`), SSE progress bridge |
+| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus`, `prometheus-client` | Prometheus metric scrapes via `taskq.contrib.prometheus` |
 | `taskq-py[oidc]` | `authlib>=1.8`, `httpx2`, `itsdangerous` | OIDC/SSO auth backend for the admin UI; see [SSO / SAML](../guides/sso.md). The OIDC path uses `httpx2` as its HTTP client (authlib ≥ 1.8 is httpx2-first); `httpx` is not installed by this extra |
 | `taskq-py[saml]` | `python3-saml`, `itsdangerous` | SAML/SSO auth backend for the admin UI; see [SSO / SAML](../guides/sso.md) |
 | `taskq-py[aad]` | `azure-identity`, `aiohttp` | Azure Entra ID managed-identity DB auth; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[vault]` | `hvac` | HashiCorp Vault dynamic credentials; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
+| `taskq-py[bench]` | `py-spy`, `pyinstrument` | Profilers for the `benchmarks/` toolkit (spot-check profiling; nothing under `src/taskq` imports them) |
 
 **Without an extra installed**, the corresponding feature degrades gracefully or raises a clear `ImportError` with install instructions:
 

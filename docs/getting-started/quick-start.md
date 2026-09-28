@@ -36,6 +36,7 @@ pip install "taskq-py[redis,otel,fastapi]"  # full (add prometheus for scrapes)
 | `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[vault]` | `hvac` | HashiCorp Vault dynamic credentials; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
+| `taskq-py[bench]` | `py-spy`, `pyinstrument` | Profilers for the `benchmarks/` toolkit |
 
 ---
 

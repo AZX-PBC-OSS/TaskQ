@@ -270,7 +270,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
         from joserfc.jwk import KeySet
     except ImportError as exc:  # pragma: no cover - exercised only without extra
         raise ImportError(
-            "authlib is required for the OIDC backend. Install it with: pip install 'taskq[oidc]'"
+            "authlib is required for the OIDC backend. Install it with: pip install 'taskq-py[oidc]'"
         ) from exc
 
     warn_if_no_group_allowlist("oidc", config.allowed_groups)
