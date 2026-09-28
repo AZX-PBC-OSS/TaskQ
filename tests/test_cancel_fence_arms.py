@@ -364,7 +364,7 @@ async def _pair_force_deadline_lapsed(backend: Backend, job_id: JobId) -> None:
 
     The deferral arms compare the would-be reschedule time against the
     deadline; a lapsed deadline sends every deferral shape to the fused
-    statement's terminal arms, which is where the pre-fix deadline arm
+    statement's terminal arms, which is where the unguarded deadline arm
     terminalised 'failed' on a phase-carrying row.
     """
     if isinstance(backend, InMemoryBackend):

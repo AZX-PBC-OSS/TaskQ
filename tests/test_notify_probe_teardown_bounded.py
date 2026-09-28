@@ -178,7 +178,7 @@ async def test_health_check_probe_hang_is_treated_as_disconnected() -> None:
         try:
             await asyncio.wait_for(probe_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-            # RED pre-fix: the loop is parked inside execute("SELECT 1") -
+            # RED unguarded: the loop is parked inside execute("SELECT 1") -
             # the reconnect path never runs and this bounded wait fails by
             # name.
             await wait_for_condition(
@@ -240,7 +240,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
     try:
         await asyncio.wait_for(remove_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-        # RED pre-fix: the error path is parked inside remove_listener() -
+        # RED unguarded: the error path is parked inside remove_listener() -
         # the reconnect path never runs and this bounded wait fails by name.
         await wait_for_condition(
             lambda: deps.notify_conn is new_conn,
@@ -279,7 +279,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
     conn.remove_listener = hanging_remove
 
     try:
-        # RED pre-fix: the loop parks forever inside the FIRST
+        # RED unguarded: the loop parks forever inside the FIRST
         # remove_listener - this bounded wait raises TimeoutError.
         await asyncio.wait_for(
             notify_listener_loop(deps, backend, shutdown, _WORKER_ID),

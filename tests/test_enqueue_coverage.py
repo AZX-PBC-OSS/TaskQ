@@ -547,7 +547,7 @@ async def test_enqueue_batch_fast_nul_payload_names_item_and_field() -> None:
 async def test_memory_enqueue_batch_nul_payload_annotated_and_atomic() -> None:
     """InMemoryBackend parity: the batch mirror rejects a NUL-bearing item
     with the same per-item annotation AND the same all-or-nothing
-    admission as PG. Pre-fix the per-item loop admitted items 0..k-1
+    admission as PG. A per-item loop admits items 0..k-1
     before item k raised a bare, unattributed ValueError."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     args_list = [_make_args() for _ in range(4)]
@@ -909,8 +909,8 @@ async def test_enqueue_post_insert_statement_error_never_re_runs_the_write() -> 
     """Ordering 3 (the wrote-then-read case): the INSERT is acknowledged
     (dedup arm: no RETURNING row) and the follow-up SELECT then fails
     locally on the parked connection. The guard's mark refuses the retry:
-    the error propagates and the INSERT count stays one. Pre-fix the
-    wrapper read every InternalClientError as dead-on-acquire and re-ran
+    the error propagates and the INSERT count stays one. A wrapper that
+    reads every InternalClientError as dead-on-acquire and re-runs
     the enqueue with the same args -- against the jobs primary key that
     re-run raises UniqueViolationError for an enqueue that already
     committed, the error-for-succeeded-work whose caller-side retry (a

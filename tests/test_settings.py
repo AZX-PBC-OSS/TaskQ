@@ -64,7 +64,7 @@ def test_lock_lease_too_small_raises() -> None:
         + 1)-th consecutive failed beat, and each failed beat's cycle is
         the pool acquire (bounded by heartbeat_interval) plus the tick's
         ONE command budget, shared by the command sequence AND its
-        teardown (the pre-fix teardown's close burned a second full
+        teardown (an unguarded teardown's close burns a second full
         budget and the observed cascade ran past the old floor).
     """
     # Pin grace periods small so only the lock_lease invariant fires

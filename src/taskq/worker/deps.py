@@ -100,9 +100,8 @@ _TCP_KEEPCNT = 3
 # rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
 # that rejects unknown startup parameters (PgBouncer: "unsupported startup
 # parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
-# at the pooler, every TaskQ-built boot connection dies there. The
-# dispatcher pool previously carried ``jit = off`` this way; the guard it
-# provided is available server-side without the pooler hazard:
+# at the pooler, every TaskQ-built boot connection dies there. A
+# ``jit = off`` guard is available server-side without the pooler hazard:
 # ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
 # (docs/guides/ops.md §"Database performance knobs"), and a per-claim
 # ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in

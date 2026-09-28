@@ -74,7 +74,7 @@ async def test_stale_attempt_exit_spares_the_live_attempts_progress_buffer() -> 
        premise) as attempt 2. Attempt 2's consumer overwrites the key
        with ITS buffer B2, and its actor parks too.
     3. Attempt 1's actor raises (every exit path reaches the consumer's
-       ``finally``). The pre-fix exit did a bare ``_progress_buffers.pop(J)``
+       ``finally``). The unguarded exit does a bare ``_progress_buffers.pop(J)``
        there: the LIVE attempt's buffer B2 leaves the map, the flush
        loop's dirty snapshots stop draining it, and the live attempt's
        periodic progress is stranded until its terminal write.
@@ -153,7 +153,7 @@ async def test_stale_cancel_exit_spares_the_live_attempts_progress_buffer() -> N
     through the ``CancelledError`` handler (a cancel delivered to a
     stale attempt unwinding after a re-claim). The handler reads the
     buffer for its terminal seq/state override AND removes it; the
-    pre-fix bare pop handed it the LIVE attempt's buffer: the stale
+    unguarded bare pop hands it the LIVE attempt's buffer: the stale
     attempt consumed the live attempt's seq as its terminal override and
     evicted the live buffer besides.
     """
@@ -233,7 +233,7 @@ async def test_stale_generation_resolve_spares_the_live_claim_intent() -> None:
        sibling iteration B takes it: B's ``mark_claimed`` overwrites the
        intent key.
     3. A unwinds and calls ``resolve_claim(J)`` - a bare-id discard in
-       the pre-fix code. B's intent is gone, and the next hand-back pass
+       the unguarded code. B's intent is gone, and the next hand-back pass
        (which excludes exactly registered ids and intent ids) re-pends a
        row B is about to execute: concurrent double execution.
 
@@ -308,7 +308,7 @@ async def test_cron_commit_gate_hook_retires_only_its_own_sessions_arm() -> None
     weak-referenced, but a pid does not identify a session (issue #292:
     two Postgres servers in one process, or a server restarted under a
     long-lived worker, hand different connections the same pid). The
-    pre-fix hook popped the pid bare: a dead session's exit erased a
+    unguarded hook pops the pid bare: a dead session's exit erases a
     live session's armed emission and that tick's telemetry never
     landed. The arm carries the hook identity of the connection that
     armed it, and the retirement is scoped to its own generation.
@@ -376,7 +376,7 @@ async def test_cron_commit_gate_arm_failure_spares_a_foreign_sessions_arm() -> N
     """The arm-failure fallback pops only its own generation's entry.
 
     A tick whose gate setup fails takes the inline-emit fallback; the
-    pre-fix fallback popped the pid bare. With the pid shared by a LIVE
+    unguarded fallback pops the pid bare. With the pid shared by a LIVE
     session on another connection (two servers in one process), the
     fallback erased the live session's armed emission.
     """
@@ -419,7 +419,7 @@ async def test_cron_commit_gate_arm_failure_spares_a_foreign_sessions_arm() -> N
 async def test_ctx_progress_fences_a_stale_attempts_epoch() -> None:
     """A stale ctx must not mutate the live attempt's buffer.
 
-    The pre-fix ``ctx.progress`` read the map bare: after a same-worker
+    The unguarded ``ctx.progress`` reads the map bare: after a same-worker
     re-claim seeded the LIVE attempt's buffer at the shared key, the
     stale attempt's context (still reachable from an actor's unwinding
     or shielded section) would mix its progress state into the live

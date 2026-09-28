@@ -750,7 +750,7 @@ async def test_shutdown_seam_releases_the_never_started_claim_whole(
             "no ledger row: a never-started attempt is not an execution outcome"
         )
 
-        # THE LEAK'S TOOTH. Pre-fix, the seam returned from between the
+        # THE LEAK'S TOOTH. A seam returning from between the
         # buffer install and the ``finally`` that removes it: every
         # shutdown-raced dispatch left one entry in the map for the
         # process's remaining life, and the flush tick's dirty-scan

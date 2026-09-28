@@ -1242,7 +1242,7 @@ async def test_null_partition_key_is_the_documented_divergence(
       row refuses LOUDLY at migrate time with the pre-flight census
       refusal — the row count and the remediation, BEFORE any DDL
       (never silently dropping or silently converting, and never the
-      pre-fix shape: a NotNullViolationError mid-``migrate_data`` that
+      unguarded shape: a NotNullViolationError mid-``migrate_data`` that
       stranded a half-converted schema with the archive's primary key
       already dropped).
 
@@ -1307,7 +1307,7 @@ async def test_null_partition_key_is_the_documented_divergence(
             await enable_hypertables(setup, schema=schema, settings=settings)
         # The refusal is loud but clean: the census fires BEFORE any DDL,
         # so the schema stays vanilla and the row stays put (nothing
-        # half-applied anywhere — the pre-fix failure left the archive's
+        # half-applied anywhere — the unguarded failure leaves the archive's
         # primary key dropped and job_events already converted).
         tables = await setup.fetch(
             "SELECT table_name FROM information_schema.tables "
@@ -2804,7 +2804,7 @@ async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab
 
 async def test_invalid_cursors_and_filters_render_identically(lab: _Lab) -> None:
     """Operator question: when the URL is broken — a hand-edited cursor
-    (the shape that 500'd every page turn pre-fix), a partial or invalid
+    (the shape that 500s every page turn unguarded), a partial or invalid
     history cursor, a garbage or NUL-carrier filter — is every error
     status and body IDENTICAL on the converted schema, and does the
     malformed-cursor fallback still serve the honest first page?"""
@@ -2836,7 +2836,7 @@ async def test_invalid_cursors_and_filters_render_identically(lab: _Lab) -> None
         _diff(f"history 400 body {path}", resp_v.text, resp_h.text)
 
     # The jobs list filter family: garbage absolute time (the clean-400
-    # fix — pre-fix an opaque driver 500), a NUL-carrier text filter,
+    # fix — unguarded an opaque driver 500), a NUL-carrier text filter,
     # an invalid status. Bodies identical cross-engine.
     filter_bads: list[dict[str, str]] = [
         {"time_from": "garbage"},

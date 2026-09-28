@@ -852,7 +852,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
     recovery beat must land well inside the 2x floor, and the ledger
     must not treat the blip as the start of a cascade.
 
-    Deterministic by construction, not by racing. The pre-fix loop
+    Deterministic by construction, not by racing. The unguarded loop
     slept the FULL remaining interval after a tick that failed
     instantly, so after one good beat (t=0) and one fast failed tick
     (t≈interval) the recovery beat only STARTED at ≈2x interval - at
@@ -863,9 +863,9 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
     commit past the deadline through a window a production sweep -
     running continuously on the leader - provably fires in. The test
     sweeps on a short poll through and past that window, so on the
-    pre-fix pacing the reclaim is observed at ≈2x interval every run.
-    Post-fix, a failed tick is not a beat: it retries after a quarter
-    interval, the recovery beat commits at ≈(1.25x interval + stall),
+    unguarded pacing the reclaim is observed at ≈2x interval every run.
+    The pacing: a failed tick is not a beat - it retries after a quarter
+    interval, so the recovery beat commits at ≈(1.25x interval + stall),
     comfortably inside the deadline, and every sweep observes a fresh
     stamp on a still-running job.
     """
@@ -899,8 +899,8 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
         deps.heartbeat_pool = _BlipThenLoadedPool(  # type: ignore[assignment] # Why: chaos pool substitution, see the _FailingPool / _OneShotStallingPool patterns above.
             real_pool,
             # Bounded, and under half the interval: enough that the
-            # pre-fix recovery beat (which only STARTS at ≈2x interval)
-            # commits clearly past the deadline, while the post-fix
+            # unguarded recovery beat (which only STARTS at ≈2x interval)
+            # commits clearly past the deadline, while the paced
             # recovery beat (which starts at ≈1.25x interval) still
             # commits clearly inside it.
             recovery_delay=_SAFE_SIZING_INTERVAL * 0.25,

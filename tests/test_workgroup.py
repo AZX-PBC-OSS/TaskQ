@@ -1492,8 +1492,8 @@ async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
 
     with structlog.testing.capture_logs() as captured:
         pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double - readuntil is the only member _read_line touches.
-        # RED on the pre-fix code: this await raised RuntimeError and the
-        # task's exception was never retrieved anywhere.
+        # RED on the unguarded shape: this await raises RuntimeError and the
+        # task's exception is never retrieved anywhere.
         await asyncio.wait_for(pump, timeout=5.0)
 
     failures = [e for e in captured if e.get("event") == "workgroup.stream_pump_failed"]
@@ -1763,7 +1763,7 @@ async def test_run_forever_terminates_hung_health_pool_close(
         await _wait_for_run_forever_startup(sigterm_registered, health_pool_created)
 
         signal_handlers[signal.SIGTERM]()
-        # Why wait_for: pre-fix shutdown awaited pg_pool.close() unbounded,
+        # Why wait_for: unguarded, shutdown awaits pg_pool.close() unbounded,
         # so the RED state would hang forever instead of failing fast.
         await asyncio.wait_for(task, timeout=5)
 
@@ -1774,7 +1774,7 @@ async def test_run_forever_terminates_hung_health_pool_close(
 @pytest.mark.asyncio
 async def test_run_forever_fast_health_pool_close_not_terminated() -> None:
     """Healthy pool close at supervisor shutdown: closed once, never
-    terminated. Pins the no-regression behaviour (passes pre/post-fix)."""
+    terminated. A no-regression pin."""
     fake_proc = FakeProcess(returncode=None)
     fake_pool = _FakeHealthPool()
     signal_handlers: dict[int, Any] = {}
@@ -1977,7 +1977,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
 ) -> None:
     """A black-holed health query is bounded and errs on the healthy side.
 
-    RED pre-fix: the fetchrow had no client-side deadline, so the check
+    RED unguarded: the fetchrow had no client-side deadline, so the check
     (and the restart_lock its caller holds) parked forever - bounded
     only by TCP keepalives, minutes out. The timeout must land in the
     same transient accounting as any other query failure: logged,
@@ -2039,7 +2039,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
 
     The health loop walks children sequentially while holding each
     child's restart_lock across its check, and the shutdown path
-    acquires the same locks to forward SIGTERM - pre-fix, one
+    acquires the same locks to forward SIGTERM - unguarded, one
     never-answered fetchrow froze health checks for EVERY child and the
     supervisor's graceful shutdown with it.
     """
@@ -2121,7 +2121,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
                     pytest.fail(f"run_forever did not {what} within 5.0s")
 
             # The headline symptom: while w1's query is parked, w2's
-            # check must still complete - pre-fix the sequential loop
+            # check must still complete - unguarded the sequential loop
             # never reached w2 and this bounded wait fails by name.
             try:
                 await asyncio.wait_for(black_hole.conn.answered.wait(), timeout=2.0)

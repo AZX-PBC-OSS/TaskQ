@@ -83,18 +83,18 @@ def dumps(value: Any, /) -> bytes:
     the flag is 1.29-1.73x faster on str-keyed input (its only effect
     there).
 
-    This is a contract change for raw (unvalidated) caller dicts ,
+    This is a contract for raw (unvalidated) caller dicts ,
     ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
     and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
-    dump the dict directly) previously serialized via silent ``{"1": ...}``
-    coercion and now raise ``TypeError``. Pydantic-validated payloads are
+    dump the dict directly): non-str keys raise ``TypeError`` instead of
+    silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
     unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
     validation (they do not coerce), so a payload that reaches
     :class:`~taskq.backend._protocol.EnqueueArgs` through
-    ``jobs.enqueue`` already has string keys. Non-str keys were always
+    ``jobs.enqueue`` already has string keys. Non-str keys are always
     lossy on the wire, JSON objects and PG ``jsonb`` can only carry
-    string keys, so failing fast surfaces at the boundary what used to
-    surface as a silently rewritten key on read-back. NUL handling
+    string keys, so failing fast surfaces at the boundary what would
+    otherwise surface as a silently rewritten key on read-back. NUL handling
     (``dumps_jsonb_str``) and all other behaviour are unchanged.
 
     Every ``TypeError`` orjson raises here, a lone surrogate, a

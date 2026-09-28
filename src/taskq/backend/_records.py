@@ -204,11 +204,11 @@ def item_jsonb_param(
     """``jsonb_param`` for one *batch* item, with per-item NUL attribution.
 
     Why: the batch build loops serialize every item before any SQL runs,
-    so a NUL in any item previously raised a bare ``ValueError`` that
-    named neither the item nor the field, one bad item aborted the
+    so a NUL in any item would otherwise raise a bare ``ValueError`` that
+    named neither the item nor the field, aborting the
     whole batch with no attribution. Pydantic validation failures get
     per-item annotation in the client layer; the NUL ``ValueError``
-    bypassed that contract, so the same annotation is attached here, at
+    bypasses that contract, so the same annotation is attached here, at
     the serialization layer both backends share. The batch still refuses
     atomically: callers use this in the build loop, before any statement
     is issued, so nothing is written (attribution, not partial

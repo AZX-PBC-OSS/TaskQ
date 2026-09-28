@@ -86,8 +86,8 @@ class EventRetentionGapError(TaskQError):
     instead of silently skipping to live and letting the consumer believe it
     saw everything.
 
-    This is the fail-visible replacement for a loss that used to be silent:
-    no error was raised on either side, the poll simply returned the
+    This makes a loss loud that silent polling would hide:
+    no error is raised on either side, the poll simply returns the
     surviving rows and the consumer's ``async for`` read like a quiet fleet.
 
     The signal is conservative by design: the watermark is a union bound

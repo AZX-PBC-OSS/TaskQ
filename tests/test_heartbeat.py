@@ -667,8 +667,8 @@ async def test_unexpected_failure_counts_toward_isolate() -> None:
 
     The REVOKE-class shape: every statement the tick issues fails with a
     permanent refusal (InsufficientPrivilegeError, SQLSTATE 42501),
-    deliberately outside TRANSIENT_PG_ERRORS. Pre-fix the unexpected arm
-    only logged, the counter never moved, and the loop ticked forever on
+    deliberately outside TRANSIENT_PG_ERRORS. An unexpected arm that
+    only logs never moves the counter, and the loop ticks forever on
     an expired lock with the gauge pinned at 0 and /ready green. Now the
     arm counts toward the same max_heartbeat_failures threshold as the
     transient arm: the counter climbs one per tick and isolate_self fires
@@ -2172,7 +2172,7 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     # The teardown found the budget exhausted (the close's bound is the
     # remainder, shared with the rollback - here ~zero), so it did not
     # wait for a graceful close: it terminated, and the server rolls the
-    # transaction back on disconnect. The pre-fix teardown handed the
+    # transaction back on disconnect. The unguarded teardown hands the
     # close a SECOND full budget; the shared remainder is what holds the
     # failed tick to acquire + ONE budget (see _lease_renewal_threshold).
     assert conn.terminated, (
@@ -2291,7 +2291,7 @@ async def test_heartbeat_tick_disowns_the_lost_claim() -> None:
     probe: the renewal stops, the lease lapses, and the reclaim sweep
     (not the heartbeat) owns the row from there.
 
-    The pre-fix tick renewed every running row locked to the worker
+    The unguarded tick renewed every running row locked to the worker
     except the disowned set, and the lost batch's ids are unknown to
     every set: the lease never lapsed, the sweep never reclaimed, and
     the job ran forever in the soak's settle window."""

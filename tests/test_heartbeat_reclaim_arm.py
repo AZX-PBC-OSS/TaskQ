@@ -482,7 +482,7 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
     assert await _job_status(clean_pg_conn, schema, deep_retryable) == "cancelled", (
         "a retryable heartbeat-stale row with a cancel in flight must land "
         "on 'cancelled' too: operator intent outranks the retry budget "
-        ": the pre-fix budget-first CASE re-pended this row 'pending' "
+        ": the unguarded budget-first CASE re-pended this row 'pending' "
         "and wiped the operator's cancel, addressed to a holder the sweep "
         "itself had just declared dead."
     )

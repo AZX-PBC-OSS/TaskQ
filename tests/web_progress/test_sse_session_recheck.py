@@ -193,9 +193,9 @@ async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
     generator's finally releases the SSE slot and unsubscribes/closes the
     Redis subscription, and a NEW request after revocation still gets 401.
 
-    REPRO (#316, pre-fix): auth ran once at request acceptance, so the old
-    stream kept emitting keepalives indefinitely -- three-plus keepalives in
-    the triage -- while new requests were correctly refused.
+    REPRO (#316): auth that runs only once at request acceptance keeps a
+    stream emitting keepalives indefinitely while new requests are
+    correctly refused.
     """
     pubsub = _KeepalivePubSub()
     app, auth_state = _make_app(pubsub)
@@ -247,8 +247,8 @@ async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
         assert task.done(), (
             "CONTRACT: a live SSE stream whose session is revoked must end at "
             "the next re-check tick (at most one keepalive interval later). "
-            "PRE-FIX (#316): the stream authenticated once at subscribe and "
-            f"kept delivering frames after revocation; tail after the grace "
+            "REGRESSION (#316): a stream that authenticates once at subscribe "
+            f"keeps delivering frames after revocation; tail after the grace "
             f"window: {b''.join(received[tail_len:])!r}"
         )
 

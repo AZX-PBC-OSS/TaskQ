@@ -1,6 +1,6 @@
 """Fixed-quota keyed buckets: which backends idle eviction must hold.
 
-Pre-fix, ``TokenBucket.holds_consumed_quota`` held EVERY Postgres fixed-quota
+Unguarded, ``TokenBucket.holds_consumed_quota`` holds EVERY Postgres fixed-quota
 keyed bucket, spent or not, so once a worker had seen
 ``max_keyed_rate_limits`` distinct keys, every NEW key raised
 ``ReservationUnavailable`` (routed by the consumer to the 429
@@ -99,11 +99,11 @@ def _seed_idle(reg: RateLimitRegistry, *buckets: str) -> None:
 async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
     """A PG fixed-quota bucket never holds its registry entry on eviction:
     the row-delete vetoes own the state-safety guarantee, so the in-process
-    hold is redundant bookkeeping, and (pre-fix) it was the cap-filling
+    hold is redundant bookkeeping, and (unguarded) it was the cap-filling
     leak that refused every new key past ``max_keyed_rate_limits``."""
     for spent in (False, True):
         # The instance carries no token state on the postgres backend:
-        # the pre-fix hold could not even see spentness, it keyed purely
+        # the unguarded hold could not even see spentness, it keyed purely
         # off (refill == 0, backend == postgres).
         tb = TokenBucket(name=f"tbfq_{spent}", capacity=5, refill_per_second=0, backend="postgres")
         assert tb.holds_consumed_quota() is False, (
@@ -164,8 +164,8 @@ async def test_idle_eviction_recycles_pg_fixed_quota_entries() -> None:
     )
     _seed_idle(reg, first, second)
 
-    # The pre-fix behavior this test replaces: the third resolution raised
-    # ReservationUnavailable because both held entries counted against the
+    # The unguarded shape: the third resolution raises
+    # ReservationUnavailable because both held entries count against the
     # cap forever.
     third = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
         _pg_ref("tbfq-cap"), _TenantPayload(tenant_id="k3"), settings=settings
@@ -212,7 +212,7 @@ async def test_idle_eviction_still_holds_spent_memory_fixed_quota() -> None:
 
 class TestPgFixedQuotaEvictReacquire:
     """Evicting a PG fixed-quota keyed entry must neither reset its spent
-    quota (the premise the pre-fix hold got wrong) nor double-grant under
+    quota (the premise the unguarded hold gets wrong) nor double-grant under
     concurrent re-materialization (the adversarial-review shape: two workers evict
     and re-materialize the same key at once)."""
 

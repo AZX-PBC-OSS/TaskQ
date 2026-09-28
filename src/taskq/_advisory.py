@@ -74,7 +74,7 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
 #: is a race the caller does not control, and both mean the same thing to
 #: it: this statement did not land, whatever committed before it is real
 #: progress, and the action is to run again. Catching only the server half
-#: is why a client-side deadline used to escape the move-queue CLI as a
+#: would let a client-side deadline escape the move-queue CLI as a
 #: raw ``TimeoutError`` instead of its documented exit code.
 #:
 #: Annotation-only declaration: the VALUE materializes lazily through the

@@ -88,8 +88,8 @@ async def test_mark_snoozed_rejects_execution_outcome_loudly(
     BOTH backends - before the ownership fence, leaving the row
     untouched.
 
-    Pre-fix this was the silent disagreement: PG returned ``"noop"`` and
-    stranded the running job; the twin rescheduled it uncounted.
+    Unguarded this is the silent disagreement: PG returns ``"noop"`` and
+    strands the running job; the twin reschedules it uncounted.
     """
     job_id, worker_id = await _running_job(backend_pair)
 

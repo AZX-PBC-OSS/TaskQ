@@ -1164,7 +1164,7 @@ class TestTwinCoverageIsPerSchedule:
         else the actor has queued.  This pins the producer-class half of
         the contract against a future widening of the walk's scope (e.g.
         a "legacy compatibility" clause matching unstamped jobs): under
-        the pre-fix actor-wide scope these 60 on-demand jobs would steal
+        the unguarded actor-wide scope these 60 on-demand jobs would steal
         the schedule's entire fold-1 pass.
         """
         schema = module_pg_schema.schema_name

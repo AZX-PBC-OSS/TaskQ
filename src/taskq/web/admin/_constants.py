@@ -137,9 +137,10 @@ def reject_unknown_query_params(request: Request, allowed: Collection[str]) -> N
     """Refuse query parameters the page does not declare with a clean 400.
 
     FastAPI drops undeclared query parameters, so a mistyped filter
-    (``actr`` typed for ``actor``) used to render the page 200-UNFILTERED:
-    the operator's ask was silently ignored, and the unfiltered render
-    read as the answer to it. The admin pages refuse instead -- the same
+    (``actr`` typed for ``actor``) would otherwise render the page
+    200-UNFILTERED: the operator's ask silently ignored, and the
+    unfiltered render read as the answer to it. The admin pages refuse
+    instead -- the same
     clean-400 contract the declared filters' own parsers serve -- naming
     the offending keys and what the page accepts.
     """

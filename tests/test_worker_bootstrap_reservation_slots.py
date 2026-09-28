@@ -78,7 +78,7 @@ async def test_starved_ensure_slots_logs_typed_timeout_and_continues() -> None:
     """A pool-acquire lapse must log ``ensure_slots_timeout`` and move on.
 
     The bound is the whole point of: the loop must finish (here under
-    a generous outer wait_for, on the pre-fix code the first acquire never
+    a generous outer wait_for, on the unguarded code the first acquire never
     resolves and the outer wait fires instead), the typed event must name
     the bucket and the budget, and the NEXT reservation's ensure must still
     run.

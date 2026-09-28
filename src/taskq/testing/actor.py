@@ -120,8 +120,8 @@ class FakeBackend:
     """
 
     # Bound to the canonical constant (not a literal) so the fake can
-    # never drift behind a protocol bump, a hardcoded 2 here previously
-    # survived the v2→v3 list_jobs contract change unnoticed.
+    # never drift behind a protocol bump (a hardcoded 2 survives a
+    # list_jobs contract change unnoticed).
     BACKEND_PROTOCOL_VERSION: int = BACKEND_PROTOCOL_VERSION
     supports_transactional_simulation: bool = False
 

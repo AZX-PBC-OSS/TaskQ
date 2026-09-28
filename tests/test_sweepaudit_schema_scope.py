@@ -58,7 +58,7 @@ class _RecordingConn:
 async def test_migration_lock_key_is_schema_qualified() -> None:
     """The lock must be a hashtextextended string key carrying the schema.
 
-    Pre-fix this was ``pg_advisory_lock($1)`` with a fixed bigint - one
+    A ``pg_advisory_lock($1)`` with a fixed bigint is one
     lock for every schema in the database.
     """
     conn = _RecordingConn()
@@ -90,8 +90,8 @@ async def test_migration_lock_cross_schema_isolation(pg_dsn: str) -> None:
     Two schemas in one database are two deployments: a long migration in
     schema A (index builds run for minutes) must not consume schema B's
     bounded startup wait - B's lock is a different key, so B proceeds even
-    while A holds its own migration lock. Pre-fix both schemas shared one
-    bigint key and B SystemExited at the wait bound.
+    while A holds its own migration lock. One shared
+    bigint key would SystemExit B at the wait bound.
     """
     schema_a = "sweepaudit_holder_a"  # Name-only: the lock precedes any table access.
     schema_b = "sweepaudit_isolated_b"

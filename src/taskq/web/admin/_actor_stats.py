@@ -7,8 +7,8 @@ drift. Read-only, cardinality-bounded at :data:`STATS_LIMIT` rows.
 
 Why the UNION with live ``jobs``: the History LIST page already reads
 ``jobs_archive`` UNION ``jobs`` (its rows are the same completed work a
-fresh failure lives in), but this aggregate read historically counted the
-archive alone. A terminal row stays in ``jobs`` for its whole prune
+fresh failure lives in), but an aggregate over the archive alone misses
+the live side. A terminal row stays in ``jobs`` for its whole prune
 retention before the prune sweep moves it, so an actor's freshest
 failures were invisible to the actors page for exactly as long as they
 matter most: the page could show a clean actor for hours after its jobs

@@ -567,7 +567,7 @@ async def test_archive_expiry_sweep_still_honors_expire_at(
 async def _prune_scenario(conn: asyncpg.Connection, schema: str) -> dict[str, Any]:
     """One shared behavior script, run identically on both legs.
 
-    Plants the pre-fix ghost state by hand (an archive row whose job is
+    Plants the unguarded ghost state by hand (an archive row whose job is
     still live and aged) and runs the real prune: the outcome must be
     the fold in BOTH modes. Returns the observable facts.
     """
@@ -592,7 +592,7 @@ async def _prune_scenario(conn: asyncpg.Connection, schema: str) -> dict[str, An
             _AGED,
             _AGED + timedelta(minutes=4),
         )
-    # The hand-planted ghost: archived once (a pre-fix version), the job
+    # The hand-planted ghost: archived once (an unguarded version), the job
     # retried and re-terminalized since (live, aged again).
     ghost = new_uuid()
     await conn.execute(
@@ -645,7 +645,7 @@ async def test_prune_folds_ghosts_and_archives_identically_on_both_engines(
     """Differential: vanilla Postgres and the hypertable mode agree.
 
     The same behavior script (archive two aged terminal jobs with their
-    attempts; meet a hand-planted pre-fix ghost) runs against both
+    attempts; meet a hand-planted unguarded ghost) runs against both
     engines and the observable outcomes must match exactly: same prune
     counts, exactly one archive row per job id (the ghost is FOLDED, the
     retried job's live row removed, no duplicate archive rows), no live
@@ -1158,10 +1158,10 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
     unstamped — the un-draining NULL tail of the prune's cursor walk, the
     shape its finished_at CASE comment names), and direct SQL carries it
     in today. TimescaleDB cannot convert the table while such rows exist
-    (the partition column must be NOT NULL), and the pre-fix behavior was
-    the worst shape: the NotNullViolationError surfaced mid-migrate_data,
+    (the partition column must be NOT NULL), and the unguarded behavior is
+    the worst shape: the NotNullViolationError surfaces mid-migrate_data,
     AFTER the primary-key drops, the unique adds, and the foreign-key
-    drop had already committed — a half-converted schema whose archive
+    drop have already committed — a half-converted schema whose archive
     has no primary key and whose job_events is already a hypertable.
     Pinned here, three facts:
 
@@ -1198,7 +1198,7 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
         assert "DELETE FROM" in message
 
         # ATOMIC: nothing applied. Every vanilla constraint the
-        # half-converted pre-fix state lost is still in place, no table
+        # unguarded half-conversion drops is still in place, no table
         # converted, and the debris row is exactly where it was.
         ht = await conn.fetch(
             "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
@@ -1215,7 +1215,7 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
         )
         names = {(r["tbl"], r["conname"]) for r in cons}
         assert ("jobs_archive", "jobs_archive_pkey") in names, (
-            "the archive must keep its primary key: the pre-fix failure "
+            "the archive must keep its primary key: the unguarded failure "
             "dropped it before surfacing, and a duplicate-id insert succeeded"
         )
         assert ("job_attempts_archive", "job_attempts_archive_pkey") in names
@@ -2422,7 +2422,7 @@ async def test_census_race_window_reenters_the_mid_migrate_data_failure(
     The census counts in its own autocommit transaction and every DDL
     statement commits separately, so a NULL ``finished_at`` row written
     between the census and ``jobs_archive``'s ``create_hypertable`` re-
-    enters the pre-fix failure shape: ``NotNullViolationError`` mid-
+    enters the unguarded failure shape: ``NotNullViolationError`` mid-
     ``migrate_data``, stranding the half-converted schema (``job_events``
     converted, the archive's primary key already dropped). A lock cannot
     close the window — the conversion is deliberately per-statement
@@ -2468,7 +2468,7 @@ async def test_census_race_window_reenters_the_mid_migrate_data_failure(
             )
         assert proxy.fired, "the census-race write must have fired inside the window"
 
-        # The pre-fix stranded state, exactly: job_events converted whole,
+        # The unguarded stranded state, exactly: job_events converted whole,
         # the archive's pkey dropped, the poison row inside the table.
         ht = await conn.fetch(
             "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",

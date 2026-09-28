@@ -655,7 +655,7 @@ async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane
     the metric plane too, because a gauge frozen at a stale reading is no
     more alertable than an absent one: the operator still needs something
     that names the loss while the alert's operand sits at whatever it last
-    read. Red for the half-valid shape pre-fix (the depth update ran
+    read. Red for the half-valid shape unguarded (the depth update runs
     before the raise).
     """
     conn = _BacklogTickConn(actor_rows=actor_rows)

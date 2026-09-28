@@ -1038,7 +1038,7 @@ async def test_spawner_unwedges_a_cancellation_swallowing_sibling() -> None:
             spawn(_swallows_cancellation())
             spawn(_dies_on_dead_pg())
 
-    # Pre-fix this never returns: the swallower re-parks forever.
+    # Unguarded this never returns: the swallower re-parks forever.
     with pytest.raises(BaseExceptionGroup) as exc_info:
         await asyncio.wait_for(_body(), timeout=5.0)
 

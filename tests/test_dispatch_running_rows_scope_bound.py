@@ -4,7 +4,7 @@ The axis this module isolates: RUNNING rows. Pending backlog is held
 fixed (the round's own small due backlog only), and only the fleet's
 running population grows - unrelated actors' rows this round never
 admits, plus (in the capped shape) the polled actor's own running rows.
-The pre-fix statement paid this axis on every round through the
+The unguarded statement paid this axis on every round through the
 ``running_per_actor`` CTE: referenced three times, so materialized once
 per round, scanning and aggregating EVERY running row in the fleet
 (``SELECT actor, count(*) FROM jobs WHERE status='running' GROUP BY
@@ -201,7 +201,7 @@ async def _seed(
         )
     if running_rows:
         # The running population: never-polled actors, live leases. On
-        # the pre-fix statement this is the population the
+        # the unguarded statement this is the population the
         # running_per_actor CTE scanned and aggregated per round.
         per_actor = running_rows // _UNRELATED_RUNNING_ACTORS
         await conn.execute(
@@ -284,7 +284,7 @@ async def test_uncapped_round_ignores_the_fleet_running_population(
     """An uncapped actor's dispatch round does zero running-row work,
     whether the fleet holds zero running rows or a thousand.
 
-    The pre-fix statement materialized the fleet-wide running count on
+    The unguarded statement materialized the fleet-wide running count on
     every round regardless of caps - this is the axis that made it a
     per-round tax proportional to fleet concurrency. The gated count's
     branch is never taken for an uncapped actor, so no plan node may

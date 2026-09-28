@@ -181,8 +181,8 @@ RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS: Final[int] = 3
 decision, one initial attempt plus two retries.
 
 Why retry at all: a TRANSIENT connection failure (a blip of 100ms to 1s,
-the container co-tenancy shape) previously took the SAME path as a
-persistent outage, straight to the fail-closed decision, so a
+the container co-tenancy shape) takes the same fail-closed path as a
+persistent outage without the bounded retry, so a
 redis-only deployment denied a legitimate request the store could have
 served a quarter-second later. Weather gets a bounded retry, lies get
 the sentinel: the retry arm exists ONLY for the connection family
@@ -297,8 +297,8 @@ CANCEL_ORIGIN_UNREQUESTED: Final[str] = "CancelledWithoutRequest"
 ``cancel_requested_at IS NULL``: the consumer's ``CancelledError`` handler
 routes there for any cancellation no controller stamped, a sibling task
 crash inside a TaskGroup, an actor raising its own ``CancelledError``, a
-child-task cancellation leaking through an await. The pre-fix CASE keyed
-on the phase alone and stamped such rows ``CancelledCooperatively``, a
+child-task cancellation leaking through an await. A CASE keyed
+on the phase alone would stamp such rows ``CancelledCooperatively``, a
 marker whose meaning is that an operator asked and the actor yielded. This
 origin is the truthful stamp for the same terminal state: the worker's
 runtime decided the cancellation on its own, and the distinguishing

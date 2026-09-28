@@ -5,7 +5,7 @@ every configured/materialized rate-limit bucket. Its name set is UNBOUNDED
 by construction: the page unions the in-process registry with every
 ``rate_limit_buckets`` PG row - keyed buckets are published there on first
 acquisition and never removed - so the set grows with distinct keys ever
-seen. One awaited Redis call per name (the pre-fix shape) is the
+seen. One awaited Redis call per name (the unguarded shape) is the
 per-row-round-trip class: at 10k keyed buckets that is 10k sequential
 awaits (~seconds at ~0.3 ms each) inside one request handler, on a page
 the admin UI re-polls every ``admin_ui_polling_interval_seconds``.

@@ -1721,9 +1721,9 @@ class TestDeleteSchedule:
 class _FakeRedisClient:
     """Fake redis.asyncio.Redis for JobsClient._open_redis tests.
 
-    Supports both lifecycle styles: async-CM (pre-fix enter_async_context
+    Supports both lifecycle styles: async-CM (unguarded enter_async_context
     path) and explicit initialize() + pushed bounded-aclose callback
-    (post-fix path). aclose() blocks while aclose_wait is cleared (hung
+    (the guarded path). aclose() blocks while aclose_wait is cleared (hung
     broker). Mirrors the _FakeRedisClient conventions in
     tests/test_worker_deps_teardown.py.
     """
@@ -1785,7 +1785,7 @@ class TestRedisCloseBounded:
         assert client._redis_client is fake
 
         fake.aclose_wait.clear()  # aclose() blocks forever from now on
-        # Why the outer timeout: pre-fix close() awaited aclose() unbounded
+        # Why the outer timeout: unguarded, close() awaited aclose() unbounded
         # (via Redis.__aexit__), so the RED state would hang forever instead
         # of failing fast.
         with structlog.testing.capture_logs() as captured:
@@ -1802,8 +1802,7 @@ class TestRedisCloseBounded:
 
     async def test_close_fast_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Healthy aclose(): the client is closed exactly once during
-        JobsClient.close(). Pins the no-regression behaviour (passes pre-
-        and post-fix)."""
+        JobsClient.close(). A no-regression pin."""
         import redis.asyncio as redis_async
 
         from taskq.settings import TaskQSettings

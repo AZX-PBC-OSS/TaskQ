@@ -377,7 +377,7 @@ def _call_window_leak_report(window: list[asyncio.Task[object]]) -> str | None:
     worker bootstrap left mid-drain at test end is exactly that shape:
     it kept writing shared state into the teardown window - and would
     have kept going into the next test had the drain been slower - yet
-    the live diff scores it green (probed pre-fix on this repo: a task
+    the live diff scores it green (probed unguarded on this repo: a task
     minted by a test body and reaped by an awaiting teardown fixture
     passed the guard untouched). The call-window snapshot is the guard's
     memory of test-end state; anything captured there is named, so a

@@ -54,9 +54,9 @@ async def test_sliding_window_pg_nodes_share_the_server_clock(
     timestamps are ``clock_timestamp()``-domain, so node B's own clock
     cannot shrink the window it is measured against.
 
-    Pre-fix: node B's boundary was ``clock.now() - window`` (90s ahead of
-    the server) and node A's entry - stamped in A's domain - fell outside
-    it; the delete even evicted A's entry outright. Node B was admitted:
+    A caller-domain boundary (``clock.now() - window``, 90s ahead of
+    the server) puts node A's entry - stamped in A's domain - outside
+    it; the delete even evicts A's entry outright. Node B is admitted:
     2 events inside the true 60s window (over-admission)."""
     settings = _pg_settings(module_pg_schema)
     name = f"sw_cd_{new_base62()}"
@@ -94,10 +94,10 @@ async def test_sliding_window_pg_gcra_tat_not_poisoned_by_skewed_caller(
     caller whose clock is 90s AHEAD acquires (allowed either way), then an
     unskewed caller acquires immediately and must ALSO be allowed.
 
-    Pre-fix: the skewed caller computed and stored its TAT in its own
-    Python epoch (server+90+1s), poisoning the shared state - the next
-    caller measured ``allow_at`` 32s in its future and was denied for ~90s
-    (under-admission caused by another node's skew). Post-fix the TAT is
+    A TAT computed and stored in the caller's own
+    Python epoch (server+90+1s) poisons the shared state - the next
+    caller measures ``allow_at`` 32s in its future and is denied for ~90s
+    (under-admission caused by another node's skew). The TAT is
     ``EXTRACT(EPOCH FROM clock_timestamp())``-domain, so a skewed node
     cannot move the shared admission boundary."""
     settings = _pg_settings(module_pg_schema)
@@ -134,9 +134,9 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
     token and must be DENIED - the elapsed-refill step must use the server
     epoch, so 90 seconds that never passed cannot mint a token.
 
-    Pre-fix: ``elapsed = clock.now().timestamp() - ts`` read the skewed
-    caller's epoch → 90s of phantom refill → the bucket refilled to full
-    and the caller was admitted (over-admission)."""
+    A caller-domain elapsed (``clock.now().timestamp() - ts``) reads the skewed
+    caller's epoch → 90s of phantom refill → the bucket refills to full
+    and the caller is admitted (over-admission)."""
     settings = _pg_settings(module_pg_schema)
     schema = module_pg_schema.schema_name
     name = f"tb_cd_{new_base62()}"
@@ -180,9 +180,9 @@ async def test_sliding_window_redis_nodes_share_the_time_clock(redis_url: str) -
     whose clock is 90s AHEAD, must be DENIED - the script's window
     boundary and ZADD scores are TIME-domain.
 
-    Pre-fix: node B passed its own now_ms as ARGV - its ZREMRANGEBYSCORE
-    boundary (now-90s ahead) evicted node A's entry outright and node B
-    was admitted (over-admission)."""
+    A caller-supplied now_ms as ARGV puts the ZREMRANGEBYSCORE
+    boundary (now-90s ahead) past node A's entry, evicting it outright: node B
+    is admitted (over-admission)."""
     settings = _redis_settings(redis_url)
     name = f"sw_cd_{new_base62()}"
 
@@ -253,7 +253,7 @@ async def test_token_bucket_redis_refill_measured_by_redis_time(redis_url: str) 
     must be DENIED - the script's elapsed-refill step reads TIME, so 90
     seconds that never passed cannot mint a token.
 
-    Pre-fix: node B passed its own now as ARGV - elapsed = its skewed now
+    A caller-supplied now as ARGV means elapsed = the skewed now
     minus A's ts = ~90s of phantom refill → admitted (over-admission)."""
     settings = _redis_settings(redis_url)
     name = f"tb_cd_{new_base62()}"

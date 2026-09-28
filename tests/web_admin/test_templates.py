@@ -96,7 +96,7 @@ def test_meta_refresh_delay_is_floored_at_one_second(
 ) -> None:
     """The refresh delay is evaluated against the BROWSER's clock and the
     browser honors ``content="0"`` as "reload immediately": a sub-second
-    admin_ui_polling_interval_seconds (the setting admits 0.1) used to
+    admin_ui_polling_interval_seconds (the setting admits 0.1) would
     floor to 0 and render a reload storm. The render clamps the delay to
     at least one whole second."""
     html = _render_base_with_poll_interval(monkeypatch, stub_pool, poll_interval_ms=500)

@@ -157,9 +157,6 @@ def _require_ident(schema: str) -> str:
 
 
 # The terminal-status IN list for the live side of every UNION, rendered
-# from the admin constants' closed set so a status added there follows
-# without a second hand-maintained literal.
-# The terminal-status IN list for the live side of every UNION, rendered
 # from the state machine's closed set so a status added there follows
 # without a second hand-maintained literal.  (The JobStatus values'
 # str form is the SQL enum's label; sorted() gives the rendered list a

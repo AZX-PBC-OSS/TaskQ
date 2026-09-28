@@ -18,7 +18,7 @@ pair) against that pop, both against real PostgreSQL:
    (a real awaited round trip) between the INSERT statement and the
    follow-up ``enqueue_select_by_key`` read. An archive transaction that
    runs entirely inside that yield commits before the follow-up read's
-   READ COMMITTED snapshot, the read finds NOTHING, and the pre-fix code
+   READ COMMITTED snapshot, the read finds NOTHING, and the unguarded code
    raised ``RuntimeError`` ("ON CONFLICT fired but follow-up SELECT found
    no row"): the re-registration lost a race the product semantic says it
    must win, with a bug-class internal error instead of a handle. The
