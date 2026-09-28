@@ -18,13 +18,19 @@ Shared stub classes live in the package ``__init__.py`` so they can be
 imported explicitly where type annotations need them.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 import structlog
 import structlog.types
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 from . import StubBackend as _StubBackend
 from . import StubPool as _StubPool
@@ -124,3 +130,29 @@ def make_app_with_backend(stub_pool: _StubPool) -> Callable[..., Any]:
         return TestClient(app), backend  # pyright: ignore[reportReturnType]
 
     return _factory
+
+
+async def get_csrf_then_post(
+    app: FastAPI,
+    get_url: str,
+    post_url: str,
+    data: dict[str, str] | None = None,
+) -> httpx.Response:
+    """GET *get_url* for the CSRF cookie, then POST *post_url* with it.
+
+    The two admin suites that exercise action endpoints (the audit-trail
+    redteam and the actors page) grew identical copies of this round
+    trip; this module is their single source. ``follow_redirects=False``
+    keeps a 303 from masking the POST's real status, and the missing
+    -cookie assertion fails loudly instead of posting without a token.
+    """
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        get_resp = await client.get(get_url)
+        assert get_resp.status_code == 200
+        csrf_token = get_resp.cookies.get("taskq_csrf_token", "")
+        assert csrf_token, "GET must set the taskq_csrf_token cookie"
+        return await client.post(post_url, data={"csrf_token": csrf_token, **(data or {})})

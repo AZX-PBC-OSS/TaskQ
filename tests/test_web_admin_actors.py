@@ -20,6 +20,7 @@ from taskq.actor_config import ActorConfig
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.worker.startup import sync_actor_config
+from tests.web_admin._fixtures import get_csrf_then_post as _get_csrf_then_post
 
 pytestmark = [pytest.mark.fastapi]
 
@@ -58,24 +59,6 @@ async def _seed_actor_config(
         [ActorConfig(actor=actor, max_concurrent=1, queue=queue)],
         schema=schema,
     )
-
-
-async def _get_csrf_then_post(
-    app: FastAPI,
-    get_url: str,
-    post_url: str,
-    data: dict[str, str] | None = None,
-) -> httpx.Response:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-        follow_redirects=False,
-    ) as client:
-        get_resp = await client.get(get_url)
-        assert get_resp.status_code == 200
-        csrf_token = get_resp.cookies.get("taskq_csrf_token", "")
-        assert csrf_token, "GET must set the taskq_csrf_token cookie"
-        return await client.post(post_url, data={"csrf_token": csrf_token, **(data or {})})
 
 
 async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
