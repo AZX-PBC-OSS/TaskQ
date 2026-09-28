@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -76,9 +77,9 @@ def test_show_renders_inert_max_attempts_for_indefinite_retry(
     result = runner.invoke(app, ["job", "show", _JOB_ID])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "max_attempts: — (indefinite)" in result.output
-    assert "max_attempts: 3" not in result.output
-    assert "attempt: 168" in result.output
+    assert "max_attempts: — (indefinite)" in plain_cli_output(result.output)
+    assert "max_attempts: 3" not in plain_cli_output(result.output)
+    assert "attempt: 168" in plain_cli_output(result.output)
 
 
 def test_show_renders_max_attempts_number_for_bounded_retry(
@@ -90,8 +91,8 @@ def test_show_renders_max_attempts_number_for_bounded_retry(
     result = runner.invoke(app, ["job", "show", _JOB_ID])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "max_attempts: 3" in result.output
-    assert "indefinite" not in result.output
+    assert "max_attempts: 3" in plain_cli_output(result.output)
+    assert "indefinite" not in plain_cli_output(result.output)
 
 
 def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,8 +103,8 @@ def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> Non
     result = runner.invoke(app, ["job", "show", _JOB_ID])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert f"id: {_JOB_ID}" in result.output
-    assert "archived: yes" in result.output
+    assert f"id: {_JOB_ID}" in plain_cli_output(result.output)
+    assert "archived: yes" in plain_cli_output(result.output)
 
 
 def test_show_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,7 +115,7 @@ def test_show_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None
     result = runner.invoke(app, ["job", "show", _JOB_ID])
 
     assert result.exit_code == 1
-    assert _JOB_ID in result.stderr
+    assert _JOB_ID in plain_cli_output(result.stderr)
 
 
 def test_show_rejects_a_malformed_job_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,4 +123,4 @@ def test_show_rejects_a_malformed_job_id(monkeypatch: pytest.MonkeyPatch) -> Non
     result = runner.invoke(app, ["job", "show", "not-a-uuid"])
 
     assert result.exit_code == 1
-    assert "expected a UUID" in result.stderr
+    assert "expected a UUID" in plain_cli_output(result.stderr)

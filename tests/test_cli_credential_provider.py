@@ -33,7 +33,7 @@ from taskq.actor import ActorRef, actor
 from taskq.auth import PgCredential, RedisCredential
 from taskq.cli import app
 from taskq.settings import WorkerSettings
-from taskq.testing.assertions import wait_for
+from taskq.testing.assertions import plain_cli_output, wait_for
 from taskq.worker.deps import open_worker_deps, reload_credentials
 
 runner = CliRunner()
@@ -390,7 +390,7 @@ def test_worker_subprocess_fails_loudly_on_bad_provider_env() -> None:
 def test_bad_pg_provider_is_fatal(monkeypatch: pytest.MonkeyPatch, ref: str, needle: str) -> None:
     result, _settings, connections = _invoke_worker(monkeypatch, "--pg-credential-provider", ref)
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert needle in result.stderr
+    assert needle in plain_cli_output(result.stderr)
     assert connections is None, "worker started despite an unusable credential provider"
 
 
@@ -399,7 +399,7 @@ def test_bad_redis_provider_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch, "--redis-credential-provider", f"{_MODULE}:NOT_A_PROVIDER"
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "get_redis_credential" in result.stderr
+    assert "get_redis_credential" in plain_cli_output(result.stderr)
     assert connections is None
 
 
@@ -410,7 +410,7 @@ def test_redis_provider_without_redis_url_is_fatal(monkeypatch: pytest.MonkeyPat
         monkeypatch, "--redis-credential-provider", f"{_MODULE}:PROVIDER"
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "TASKQ_REDIS_URL" in result.stderr
+    assert "TASKQ_REDIS_URL" in plain_cli_output(result.stderr)
     assert connections is None
 
 
@@ -518,7 +518,7 @@ def test_ui_serve_redis_provider_without_url_is_fatal(monkeypatch: pytest.Monkey
         app, ["ui", "serve", "--redis-credential-provider", f"{_MODULE}:PROVIDER"]
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "TASKQ_REDIS_URL" in result.stderr
+    assert "TASKQ_REDIS_URL" in plain_cli_output(result.stderr)
 
 
 async def test_reload_interval_without_provider_warns_at_startup(

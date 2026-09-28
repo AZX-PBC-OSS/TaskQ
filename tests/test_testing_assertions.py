@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -37,6 +39,60 @@ def test_plain_cli_output_strips_ansi_and_collapses_whitespace() -> None:
 
 def test_plain_cli_output_empty_string() -> None:
     assert plain_cli_output("") == ""
+
+
+def test_plain_cli_output_strips_full_escape_grammar() -> None:
+    """Not just SGR colors: private-mode CSI, bare two-byte escapes, OSC 8.
+
+    Rich emits cursor hide/show (``\\x1b[?25l`` / ``\\x1b[?25h``) around
+    progress rendering and OSC 8 hyperlink wrappers on link-aware
+    terminals; a CSI-only regex (``\\x1b\\[[0-9;]*[A-Za-z]``) lets both
+    through and re-colorizes the assertion surface the helper exists to
+    keep plain.
+    """
+    raw = (
+        "\x1b[?25l\x1b]8;;file:///tmp/x\x1b\\linked\x1b]8;;\x1b\\ "
+        "\x1b[38;5;196mword\x1b[0m \x1b[1;31;40mstyled\x1b[0m\x1b[?25h"
+    )
+    assert plain_cli_output(raw) == "linked word styled"
+    assert plain_cli_output("\x1bcreset\x1b7saved") == "resetsaved"
+    # Content between the wrappers must survive the strip.
+    assert plain_cli_output("\x1b]0;title\x07body") == "body"
+
+
+def test_cli_help_markers_survive_ci_colorization() -> None:
+    """The run-36369327985 reproduction: typer force-colorizes help output
+    whenever ``GITHUB_ACTIONS`` is set - which is EVERY GitHub runner - so
+    the same CLI test that is green locally meets ANSI escapes interleaved
+    inside its markers in CI. ``FORCE_COLOR`` and ``PY_COLORS`` trigger the
+    identical path (typer/rich_utils.py FORCE_TERMINAL). The helper must
+    recover the plain markers from the colorized bytes the real CLI emits.
+    """
+
+    import typer.rich_utils
+    from typer.testing import CliRunner
+
+    import taskq.cli as cli
+
+    runner = CliRunner()
+
+    def invoke_help_with(env_key: str) -> str:
+        os.environ[env_key] = "1"
+        try:
+            importlib.reload(typer.rich_utils)
+            result = runner.invoke(cli.app, ["doctor", "--help"])
+        finally:
+            del os.environ[env_key]
+            importlib.reload(typer.rich_utils)
+        assert result.exit_code == 0, result.stderr
+        return result.output
+
+    for env_key in ("GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS"):
+        raw = invoke_help_with(env_key)
+        assert "\x1b[" in raw, f"{env_key}=1 must colorize the help output"
+        plain = plain_cli_output(raw)
+        assert "Usage:" in plain, f"{env_key}=1: the marker must survive the strip"
+        assert "\x1b" not in plain, f"{env_key}=1: no escape may reach the assertion"
 
 
 # ── parse_detail ────────────────────────────────────────────────────────────

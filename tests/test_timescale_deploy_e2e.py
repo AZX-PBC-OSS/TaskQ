@@ -38,6 +38,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.pg import create_running_job
 from taskq.timescale import disable_hypertables
 from tests.test_timescaledb_hypertables import _TIMESCALE_IMAGE_DEFAULT
@@ -328,7 +329,7 @@ async def test_capability_refusal_exits_one_names_the_setting(vanilla_dsn: str) 
     schema = "tsrefusal_" + new_uuid().hex[:12]
     result = _invoke_migrate_up(vanilla_dsn, schema, flag=True)
     assert result.returncode == 1, f"expected the refusal exit, got {result.returncode}"
-    assert "TASKQ_TIMESCALEDB_HYPERTABLES" in result.stderr
+    assert "TASKQ_TIMESCALEDB_HYPERTABLES" in plain_cli_output(result.stderr)
 
     conn = await asyncpg.connect(vanilla_dsn)
     try:
@@ -562,7 +563,7 @@ async def test_disable_hypertables_cli_subprocess_end_to_end(deploy_dsn: str) ->
         # The mistyped invocation — the flag still true — exits 1 loudly.
         refused = _invoke_migrate_disable_hypertables(deploy_dsn, schema, flag=True)
         assert refused.returncode == 1
-        assert "TASKQ_TIMESCALEDB_HYPERTABLES" in refused.stderr
+        assert "TASKQ_TIMESCALEDB_HYPERTABLES" in plain_cli_output(refused.stderr)
         assert await _hypertables(conn, schema) == {
             "job_events",
             "jobs_archive",
@@ -572,8 +573,8 @@ async def test_disable_hypertables_cli_subprocess_end_to_end(deploy_dsn: str) ->
         # The real one: flag off, one subprocess, exit 0, the report on stdout.
         result = _invoke_migrate_disable_hypertables(deploy_dsn, schema, flag=False)
         assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "disabled hypertables on 3 table(s)" in result.stdout
-        assert "restored to plain: job_events" in result.stdout
+        assert "disabled hypertables on 3 table(s)" in plain_cli_output(result.stdout)
+        assert "restored to plain: job_events" in plain_cli_output(result.stdout)
         assert await _hypertables(conn, schema) == set()
         assert await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive') == n_archive
         assert (

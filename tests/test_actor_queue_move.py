@@ -61,6 +61,7 @@ from taskq.backend._protocol import EnqueueArgs
 from taskq.backend._sql_templates import render
 from taskq.cli import app
 from taskq.exceptions import ActorConfigDriftList, ActorNotFoundError
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.queue_ops import set_queue_max_concurrent, set_queue_mode
 from taskq.worker.startup import sync_actor_config
@@ -777,11 +778,11 @@ def test_cli_move_queue_reports_result(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["actor-config", "move-queue", _ACTOR, _NEW_QUEUE])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "tqm_old" in result.output
-    assert "tqm_new" in result.output
-    assert "jobs_moved=3" in result.output
+    assert "tqm_old" in plain_cli_output(result.output)
+    assert "tqm_new" in plain_cli_output(result.output)
+    assert "jobs_moved=3" in plain_cli_output(result.output)
     # The irreducible producer-side residual the operator must plan for.
-    assert "tqm_old" in result.stderr
+    assert "tqm_old" in plain_cli_output(result.stderr)
 
 
 def test_cli_move_queue_unknown_actor_exit_3(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -832,7 +833,9 @@ def test_cli_move_queue_statement_timeout_uses_documented_exit_code(
     # The drain commits per batch, so an aborted run leaves real partial
     # progress: the operator must be told the move is incomplete and
     # re-runnable, not left to infer it from an exit code alone.
-    assert "move-queue" in result.stderr or "re-run" in result.stderr, (
+    assert "move-queue" in plain_cli_output(result.stderr) or "re-run" in plain_cli_output(
+        result.stderr
+    ), (
         "an aborted drain must tell the operator the move is incomplete and "
         f"safe to re-run; stderr={result.stderr!r}"
     )
@@ -903,8 +906,8 @@ def test_queue_migrate_moves_the_actor_and_reports_the_move(
     result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert _OLD_QUEUE in result.output
-    assert _NEW_QUEUE in result.output
+    assert _OLD_QUEUE in plain_cli_output(result.output)
+    assert _NEW_QUEUE in plain_cli_output(result.output)
 
 
 def test_queue_migrate_reports_pending_jobs_still_on_the_old_queue(
@@ -935,7 +938,7 @@ def test_queue_migrate_reports_pending_jobs_still_on_the_old_queue(
 
     result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
 
-    combined = result.output + result.stderr
+    combined = plain_cli_output(result.output + result.stderr)
     assert "2" in combined and _OLD_QUEUE in combined, (
         "the command must report how many pending jobs still carry the old "
         f"queue; output={combined!r}"
@@ -972,7 +975,7 @@ def test_queue_migrate_with_zero_residual_omits_the_keep_consuming_advice(
 
     result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
 
-    combined = result.output + result.stderr
+    combined = plain_cli_output(result.output + result.stderr)
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert "0" in combined and _OLD_QUEUE in combined, (
         f"the zero residual must still be reported; output={combined!r}"
@@ -1011,7 +1014,7 @@ def test_queue_migrate_leaves_no_partial_move_on_failure(
     assert result.exit_code == 2, (
         f"a concurrent-assignment refusal must exit 2; got {result.exit_code}: {result.output!r}"
     )
-    assert "assignment changed concurrently" in (result.output + result.stderr), (
+    assert "assignment changed concurrently" in plain_cli_output(result.output + result.stderr), (
         "the refusal's reason must reach the operator, not just its exit code"
     )
 
