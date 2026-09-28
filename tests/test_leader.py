@@ -1498,6 +1498,31 @@ async def test_load_actor_retention_overrides_with_rows() -> None:
     }
 
 
+async def test_load_actor_retention_overrides_isolates_invalid_rows() -> None:
+    rows = [
+        [
+            _FakeRecord({"actor": "numeric", "retention_days": 7}),
+            _FakeRecord({"actor": "legacy_text", "retention_days": "30"}),
+            _FakeRecord({"actor": "too_large", "retention_days": "4000000000"}),
+            _FakeRecord({"actor": "malformed", "retention_days": "not-a-number"}),
+            _FakeRecord({"actor": "json_null", "retention_days": None}),
+        ],
+    ]
+    conn = _FakeConnForPrune(batch_rows=rows)
+
+    with structlog.testing.capture_logs() as captured:
+        result = await _load_actor_retention_overrides(conn, schema="taskq")
+
+    assert result == {
+        "numeric": timedelta(days=7),
+        "legacy_text": timedelta(days=30),
+    }
+    warnings = [e for e in captured if e["event"] == "actor-retention-override-invalid"]
+    assert {e["actor"] for e in warnings} == {"too_large", "malformed", "json_null"}
+    assert all(e["log_level"] == "warning" for e in warnings)
+    assert all("value" not in e for e in warnings)
+
+
 async def test_load_actor_retention_overrides_empty() -> None:
     """_load_actor_retention_overrides returns empty dict when no rows."""
     conn = _FakeConnForPrune(batch_rows=[[]])

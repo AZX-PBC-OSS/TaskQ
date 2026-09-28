@@ -22,7 +22,12 @@ from taskq._json import dumps_str
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.constants import schema_lock_name
 from taskq.settings import TaskQSettings
-from taskq.worker.leader import PruneResult, archive_expiry_sweep, prune_terminal_jobs
+from taskq.worker.leader import (
+    PruneResult,
+    _load_actor_retention_overrides,
+    archive_expiry_sweep,
+    prune_terminal_jobs,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -727,6 +732,48 @@ async def test_per_actor_retention(pg_conn: asyncpg.Connection, settings: TaskQS
 
     b_in_jobs = await pg_conn.fetchrow(f"SELECT id FROM {schema}.jobs WHERE id = $1", jid_b)  # noqa: S608
     assert b_in_jobs is not None, "actor_b job should remain in jobs (30d retention)"
+
+
+async def test_invalid_actor_retention_does_not_stop_global_prune(
+    pg_conn: asyncpg.Connection,
+    settings: TaskQSettings,
+) -> None:
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    sixty_days_ago = datetime.now(UTC) - timedelta(days=60)
+
+    await pg_conn.executemany(
+        f"""INSERT INTO {schema}.actor_config (actor, max_concurrent, queue, metadata)
+            VALUES ($1, 5, 'default', $2::jsonb)""",  # noqa: S608
+        [
+            ("postgres_overflow", '{"retention_days": 4000000000}'),
+            ("timedelta_overflow", '{"retention_days": 1000000000}'),
+            ("valid_override", '{"retention_days": "7"}'),
+        ],
+    )
+    healthy_job = await _seed_terminal_job(
+        pg_conn,
+        status="succeeded",
+        finished_at=sixty_days_ago,
+        actor="healthy_actor",
+        schema=schema,
+    )
+
+    overrides = await _load_actor_retention_overrides(pg_conn, schema=schema)
+
+    assert overrides == {"valid_override": timedelta(days=7)}
+    await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=10000,
+        schema=schema,
+        actor_overrides=overrides,
+    )
+    assert (
+        await pg_conn.fetchval(f"SELECT id FROM {schema}.jobs WHERE id = $1", healthy_job)  # noqa: S608
+        is None
+    )
 
 
 # ── Acceptance B - expiry sweep ───────────────────────────────────

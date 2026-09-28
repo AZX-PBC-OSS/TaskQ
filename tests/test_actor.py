@@ -64,6 +64,49 @@ def test_metadata_round_trip() -> None:
     assert my_actor.metadata["retention_days"] == 30
 
 
+@pytest.mark.parametrize("value", [0, 999_999_999])
+def test_retention_days_integer_boundaries(value: int) -> None:
+    @actor(metadata={"retention_days": value})
+    async def my_actor(payload: SimplePayload) -> None:
+        pass
+
+    assert my_actor.metadata["retention_days"] == value
+
+
+def test_retention_days_digit_string_preserves_caller_metadata() -> None:
+    metadata: dict[str, object] = {"retention_days": "30", "owner": "ops"}
+
+    @actor(metadata=metadata)
+    async def my_actor(payload: SimplePayload) -> None:
+        pass
+
+    assert metadata == {"retention_days": "30", "owner": "ops"}
+    assert my_actor.metadata is metadata
+    assert my_actor.metadata == {"retention_days": "30", "owner": "ops"}
+
+
+def test_retention_days_accepts_long_zero_padded_digit_string() -> None:
+    value = "0" * 5_000 + "30"
+
+    @actor(metadata={"retention_days": value})
+    async def my_actor(payload: SimplePayload) -> None:
+        pass
+
+    assert my_actor.metadata["retention_days"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-1, 1_000_000_000, True, False, 1.5, "", " ", "-1", "+1", "1.0", "thirty"],
+)
+def test_invalid_retention_days_raises_at_decoration(value: object) -> None:
+    with pytest.raises(ValueError, match=r"metadata\.retention_days"):
+
+        @actor(metadata={"retention_days": value})
+        async def my_actor(payload: SimplePayload) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: only exists to test decoration-time validation; never called.
+            pass
+
+
 def test_metadata_default_is_empty_dict() -> None:
     """@actor() produces metadata == {}."""
 
