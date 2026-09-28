@@ -40,7 +40,13 @@ from taskq.worker._watchdog import EXIT_WATCHDOG
 from taskq.worker.heartbeat import (  # pyright: ignore[reportPrivateUsage]  # Why: the failed-tick retry constant is the cascade pace's own term, imported not re-copied.
     _FAILED_TICK_RETRY_FRACTION,
 )
-from tests.system_e2e._harness import WorkerProc, reap, spawn_worker, wait_worker_ready
+from tests.system_e2e._harness import (
+    WorkerProc,
+    reap,
+    scoped_dsn,
+    spawn_worker,
+    wait_worker_ready,
+)
 from tests.system_e2e._invariants import assert_balanced, assert_effects_balance, delete_tagged
 from tests.system_e2e._toxiproxy import dsn_host_port, proxied_dsn
 from tests.system_e2e.actors import SysPayload, sys_fast, sys_slow
@@ -108,6 +114,22 @@ _A_LOCK_LEASE_S = 285.0  # >= the cascade floor 280 the settings' post_load enfo
 #: below is arithmetic, not a race. (Load only STRETCHES cycles: the
 #: loop's sleeps oversleep, the timeouts fire late - the floor is the
 #: one direction starvation cannot undercut.)
+#:
+#: Refuse-conditional caveat, measured: the floor's premise is that a
+#: blackholed cycle can end at NOTHING faster than a local timeout -
+#: true for the shipped weather (toxiproxy's ``timeout: 0`` ACCEPTS the
+#: TCP handshake, holds bytes, and keeps the connection ESTABLISHED: a
+#: live census of a blackholed listener showed connect succeed in
+#: <1ms, 20s of silence, and asyncpg's connect hanging to its own
+#: budget - never a refusal). A weather that REFUSES instead (a dead
+#: proxy listener - infra failure, not load) collapses a failed tick's
+#: duration to ~0, and the failed cycle gaps at only the prompt-retry
+#: backoff, ``0.25 * interval`` (heartbeat_loop waits
+#: ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` after a
+#: failed tick): the honest refuse-shape lifetime is the tail (21s) +
+#: 7 x 5.25s = ~58s - NOT 147s, but still ~3x the probe's 20s budget,
+#: so the concurrency assert below holds under BOTH shapes; only the
+#: 147s figure is refuse-conditional.
 _A_MIN_FAILED_CYCLE_S = min(
     _A_HEARTBEAT_INTERVAL_S,
     _A_HEARTBEAT_COMMAND_TIMEOUT_S + _FAILED_TICK_RETRY_FRACTION * _A_HEARTBEAT_INTERVAL_S,
@@ -270,7 +292,15 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         schema,
         tag="part-a",
         extra_env={
-            "TASKQ_PG_DSN": proxied_dsn(pg_dsn, proxy_a),
+            # scoped BEFORE proxied: ``proxied_dsn`` swaps the host:port and
+            # PRESERVES the query, so composing them keeps the harness's
+            # ``application_name=<schema>`` stamp through the weather.
+            # (Measured in a live census: a bare ``proxied_dsn(pg_dsn, ...)``
+            # override replaces the harness's scoped DSN wholesale and leaves
+            # A the one worker in pg_stat_activity with an empty
+            # application_name - unaddressable to any failover shape that
+            # targets workers by that stamp, unlike every sibling.)
+            "TASKQ_PG_DSN": proxied_dsn(scoped_dsn(pg_dsn, schema), proxy_a),
             "TASKQ_HEARTBEAT_INTERVAL": str(_A_HEARTBEAT_INTERVAL_S),
             "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": str(_A_HEARTBEAT_COMMAND_TIMEOUT_S),
             "TASKQ_MAX_HEARTBEAT_FAILURES": str(_A_MAX_HEARTBEAT_FAILURES),
@@ -380,6 +410,13 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # competes with the weather); the cut arms ─before→ the probe
         # enqueues (the probe's whole pipeline runs in-window - A's link
         # is already down, the probe can only land on B).
+        # Clock provenance: all three stamps are ``time.monotonic()`` in
+        # THIS test process, assigned strictly sequentially between the
+        # awaits they witness (and ``b_ready_at`` is stamped by the
+        # harness's readiness gate, whose health socket the worker only
+        # serves after ``open_worker_deps`` has yielded - post-bootstrap)
+        # - one monotonic clock, no wall-clock source, so NTP/step cannot
+        # reorder a pin the sequencing already fixes.
         assert b_ready_at < cut_at < probe_enqueued_at, (
             f"the ordering regressed (B ready {b_ready_at:.3f}, cut armed {cut_at:.3f}, "
             f"probe enqueued {probe_enqueued_at:.3f}): B must ready-gate BEFORE the cut "
