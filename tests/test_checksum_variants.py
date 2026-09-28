@@ -1,22 +1,30 @@
-"""The accepted-checksums contract: a migration's published history is
-legitimate provenance.
+"""The accepted-checksums contract, behaviorally: a migration's published
+history is legitimate provenance.
 
 Some migration files exist in more than one published version — the bytes
 were amended after first shipping, and databases that applied the earlier
 bytes carry that version's checksum in their ledger permanently. No
-single file can match two ledgers, so the drift check renders every
-bundled published variant with the CHECKING database's own schema and
-accepts a stored checksum any of them produces. A checksum no bundled
-version produces is still drift — the schema was built from SQL this
-package cannot account for — and the refusal keeps its teeth.
+single file can match two ledgers. The BEHAVIOR under contract:
 
-The anchor pins are LITERAL: the two checksums below are the ones a live
-production ledger recorded (schema ``taskq``), reproduced here byte-for-
-byte from the bundled variant templates. If these pins fail, the variants
-no longer describe what actually shipped — fix the variants, not the pin.
+- a database whose ledger holds ANY published version's checksum upgrades
+  with zero drift refusals, through the same public surfaces every
+  deployment uses (``apply_pending`` / ``taskq migrate status``);
+- a ledger checksum NOTHING published produced still refuses — the guard
+  keeps its teeth;
+- a migration with no published history behaves exactly as before.
+
+Every assertion here runs through public API only — the drift verdict
+arrives the way an operator sees it: apply succeeding or raising, and
+``migrate status`` reporting. The anchor checksums are LITERals from a
+live production ledger (schema ``taskq``), reproduced from the bundled
+published bytes by an independent path (file bytes → render → hash), never
+through the guard's own internals.
 """
 
 import hashlib
+import os
+import subprocess
+from importlib import resources
 from pathlib import Path
 
 import asyncpg
@@ -37,24 +45,78 @@ PROD_CHECKSUMS: dict[str, str] = {
     ),
 }
 
-#: A checksum NOTHING in the package's history produced — the tamper arm's
-#: anchor.
+#: A checksum NOTHING published produced — the tamper arm's anchor.
 UNKNOWN_CHECKSUM = "d" * 64
 
+RUNNER_ENV = {"TASKQ_PG_DSN", "TASKQ_SCHEMA_NAME"}
 
-def _variant_checksums(filename: str, schema: str) -> set[str]:
-    """Render each bundled variant of ``filename`` with ``schema`` and hash
-    — computed HERE from the bundled bytes, independently of the guard's
-    own helper, so the acceptance proof is not self-fulfilling."""
-    variants_dir = (
-        Path(migrate_mod.__file__).parent / "migrations" / "_variants" / Path(filename).stem
+
+def _migrate_status(settings: TaskQSettings) -> subprocess.CompletedProcess[str]:
+    """The REAL operator surface: the taskq CLI as its own process — no
+    event-loop collision with the test's loop, and the same command an
+    operator types."""
+    env = dict(os.environ)
+    env["TASKQ_PG_DSN"] = str(settings.pg_dsn)
+    env["TASKQ_SCHEMA_NAME"] = settings.schema_name
+    return subprocess.run(  # Why: fixed argv, no shell — the operator's own command.
+        ["uv", "run", "--no-sync", "taskq", "migrate", "status"],  # noqa: S607  # Why: fixed argv, no shell — the operator command.
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
+
+
+def _published_versions(filename: str) -> list[bytes]:
+    """Every published version of a migration file: the bundled file plus
+    the file's bundled historical variants — raw bytes, the package's own
+    public data."""
+    package = resources.files("taskq.migrations")
+    versions = [package.joinpath(filename).read_bytes()]
+    variants_dir = package.joinpath("_variants").joinpath(Path(filename).stem)
+    if variants_dir.is_dir():
+        for entry in variants_dir.iterdir():
+            if entry.is_file() and entry.name.endswith(".sql"):
+                versions.append(entry.read_bytes())
+    return versions
+
+
+def _ledger_checksums(filename: str, schema: str) -> set[str]:
+    """The checksums a database with schema ``schema`` could legitimately
+    hold for ``filename`` — computed HERE from the published bytes by an
+    independent path (bytes → render → hash), never via the guard's
+    internals."""
+    template_text = [v.decode("utf-8-sig") for v in _published_versions(filename)]
     return {
-        hashlib.sha256(
-            migrate_mod.render(p.read_text(encoding="utf-8-sig"), schema).encode("utf-8")
-        ).hexdigest()
-        for p in variants_dir.glob("*.sql")
+        hashlib.sha256(migrate_mod.render(t, schema).encode("utf-8")).hexdigest()
+        for t in template_text
     }
+
+
+async def _point_ledger_at_a_published_version(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings, filename: str
+) -> str:
+    """Record, in this database's ledger, the checksum of a NON-current
+    published version — the prod shape: the database applied the bytes of
+    an older vintage. Returns the version digest written."""
+    match = migrate_mod._NAME_RE.match(filename)
+    assert match is not None
+    key = f"{match.group('ver')}_{match.group('seq')}:{match.group('phase')}"
+    current = {m.filename: m for m in migrate_mod.discover()}[filename].checksum(
+        settings.schema_name
+    )
+    historical = _ledger_checksums(filename, settings.schema_name) - {current}
+    assert historical, f"{filename} has no published history to point at"
+    digest = sorted(historical)[0]
+    updated = await pg_conn.execute(  # Why: schema is a fixture-provided identifier.
+        f'UPDATE "{settings.schema_name}".schema_migrations SET checksum = $1 WHERE version = $2',  # noqa: S608  # Why: schema is a fixture-provided identifier.
+        digest,
+        key,
+    )
+    assert updated == "UPDATE 1", (
+        f"the tamper must hit exactly the ledger row {key!r} — a zero-row update proves nothing"
+    )
+    return digest
 
 
 @pytest.fixture
@@ -62,53 +124,48 @@ async def _applied_schema(pg_conn: asyncpg.Connection, settings: TaskQSettings) 
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
 
-class TestVariantsReproducePublishedHistory:
-    """The bundled variant templates render to the checksums real ledgers
-    hold."""
+class TestPublishedHistoryIsAccepted:
+    """The behavioral contract: every published vintage upgrades cleanly,
+    through the operator's surfaces."""
 
     @pytest.mark.parametrize("filename", sorted(PROD_CHECKSUMS))
-    def test_variant_renders_to_the_prod_checksum(self, filename: str) -> None:
-        prod = PROD_CHECKSUMS[filename]
-        rendered = _variant_checksums(filename, "taskq")
-        assert prod in rendered, (
-            f"the bundled variants of {filename} render to "
-            f"{sorted(h[:12] for h in rendered)}, not the published "
-            f"{prod[:12]} — the variants no longer describe what shipped"
-        )
-
-
-class TestTheProdShapeUpgrades:
-    """A database holding a published variant's checksum — the prod shape —
-    upgrades with zero drift refusals. The tamper values are the variants'
-    checksums rendered under THIS database's own schema (an independent
-    path: file bytes → render → hash), which is exactly what a real
-    deployment's ledger holds for its applied vintage."""
-
-    async def _point_ledger_at_the_variant(
-        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
-    ) -> None:
-        for filename in PROD_CHECKSUMS:
-            version = filename.removesuffix(".sql")
-            variant = _variant_checksums(filename, settings.schema_name)
-            assert len(variant) == 1, f"one published variant for {filename}"
-            await pg_conn.execute(
-                f'UPDATE "{settings.schema_name}".schema_migrations'  # noqa: S608  # Why: schema is a fixture-provided identifier.
-                " SET checksum = $1 WHERE version = $2",
-                next(iter(variant)),
-                version,
-            )
-
-    async def test_apply_pending_does_not_refuse(
+    async def test_a_ledger_holding_an_older_vintage_upgrades_cleanly(
         self,
         pg_conn: asyncpg.Connection,
         settings: TaskQSettings,
         _applied_schema: None,
+        filename: str,
     ) -> None:
-        await self._point_ledger_at_the_variant(pg_conn, settings)
+        await _point_ledger_at_a_published_version(pg_conn, settings, filename)
+
+        # The operator surface first: migrate status reports NO drift for a
+        # database holding a published version's checksum.
+        result = _migrate_status(settings)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "drift" not in result.stdout.lower(), (
+            f"migrate status must not report drift for a published vintage: {result.stdout}"
+        )
+
+        # Then the apply: zero refusals, nothing pending, and the public
+        # drift report empty.
         applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
         assert applied == [], "an up-to-date database has nothing pending"
         drifts = await migrate_mod.checksum_drifts(pg_conn, schema=settings.schema_name)
-        assert drifts == {}, f"the published-history ledger must not drift: {drifts}"
+        assert drifts == {}, f"published history must not drift: {drifts}"
+
+    @pytest.mark.parametrize("filename", sorted(PROD_CHECKSUMS))
+    def test_the_live_production_checksum_is_a_published_version(self, filename: str) -> None:
+        """The anchor: the checksum a live production ledger recorded is
+        among the published versions, rendered under the schema the
+        recording database used. If this fails, the published bytes no
+        longer describe what shipped."""
+        prod = PROD_CHECKSUMS[filename]
+        rendered = _ledger_checksums(filename, "taskq")
+        assert prod in rendered, (
+            f"the published versions of {filename} render to "
+            f"{sorted(h[:12] for h in rendered)}, not the recorded "
+            f"{prod[:12]}"
+        )
 
 
 class TestTheGuardKeepsItsTeeth:
@@ -120,7 +177,7 @@ class TestTheGuardKeepsItsTeeth:
         settings: TaskQSettings,
         _applied_schema: None,
     ) -> None:
-        await pg_conn.execute(
+        await pg_conn.execute(  # Why: schema is a fixture-provided identifier.
             f'UPDATE "{settings.schema_name}".schema_migrations'  # noqa: S608  # Why: schema is a fixture-provided identifier.
             " SET checksum = $1 WHERE version = '01.00.13_03:pre'",
             UNKNOWN_CHECKSUM,
@@ -128,12 +185,35 @@ class TestTheGuardKeepsItsTeeth:
         with pytest.raises(migrate_mod.ChecksumDriftError):
             await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
-    async def test_a_migration_without_variants_has_no_variant_dir_crash(
-        self, settings: TaskQSettings
+    async def test_migrate_status_reports_the_unknown_checksum_as_drift(
+        self,
+        pg_conn: asyncpg.Connection,
+        settings: TaskQSettings,
+        _applied_schema: None,
     ) -> None:
-        """The file that CRASHED every drift check before this fix: a
-        migration with no published variants must contribute zero accepted
-        variants, not a FileNotFoundError."""
-        plain = {m.filename: m for m in migrate_mod.discover()}["01.00.00_01_pre_initial.sql"]
-        accepted = migrate_mod._accepted_checksums(plain, settings.schema_name)
-        assert len(accepted) == 1, "no variants: only the current file's checksum"
+        await pg_conn.execute(  # Why: schema is a fixture-provided identifier.
+            f'UPDATE "{settings.schema_name}".schema_migrations'  # noqa: S608  # Why: schema is a fixture-provided identifier.
+            " SET checksum = $1 WHERE version = '01.00.13_03:pre'",
+            UNKNOWN_CHECKSUM,
+        )
+        result = _migrate_status(settings)
+        assert "drift" in result.stdout.lower(), (
+            f"migrate status must surface the unknown checksum as drift: {result.stdout}"
+        )
+
+    async def test_a_migration_without_published_history_behaves_as_before(
+        self,
+        pg_conn: asyncpg.Connection,
+        settings: TaskQSettings,
+        _applied_schema: None,
+    ) -> None:
+        """01.00.00_01 has one published version (the bundled file). Its
+        ledger row matching the file = no drift; anything else = drift.
+        The historical-shape FileNotFoundError class must not exist."""
+        await pg_conn.execute(  # Why: schema is a fixture-provided identifier.
+            f'UPDATE "{settings.schema_name}".schema_migrations'  # noqa: S608  # Why: schema is a fixture-provided identifier.
+            " SET checksum = $1 WHERE version = '01.00.00_01:pre'",
+            UNKNOWN_CHECKSUM,
+        )
+        with pytest.raises(migrate_mod.ChecksumDriftError):
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
