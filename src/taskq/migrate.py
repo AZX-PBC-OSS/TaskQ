@@ -57,6 +57,7 @@ import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Literal, TypeAlias
 
 import asyncpg
@@ -653,6 +654,38 @@ async def list_applied(conn: asyncpg.Connection, schema: str) -> set[str]:
     return applied_keys
 
 
+def _variant_templates(filename: str) -> list[str]:
+    """The published historical versions of a migration file, bundled.
+
+    Some migrations exist in more than one published version: the bytes
+    were amended after first shipping, and databases that applied the
+    earlier bytes carry its checksum in their ledger forever. One file
+    cannot match two ledgers; the variants directory carries the published
+    history instead, and the drift check renders each variant with the
+    checking database's own schema, so an accepted checksum is schema-
+    agnostic by construction. Variants are code: reviewed, bundled, and
+    versioned — adding one is a PR, never a runtime knob.
+    """
+    package = resources.files("taskq.migrations")
+    variants: list[str] = []
+    variant_dir = package.joinpath("_variants").joinpath(Path(filename).stem)
+    if not variant_dir.is_dir():
+        return variants
+    entries = [e for e in variant_dir.iterdir() if e.is_file() and e.name.endswith(".sql")]
+    for entry in sorted(entries, key=lambda e: e.name):
+        variants.append(entry.read_text(encoding="utf-8-sig"))
+    return variants
+
+
+def _accepted_checksums(m: Migration, schema: str) -> set[str]:
+    """Every ledger checksum this migration's history legitimately
+    produced: the current file's, plus each published variant's."""
+    accepted = {m.checksum(schema)}
+    for template in _variant_templates(m.filename):
+        accepted.add(hashlib.sha256(render(template, schema).encode("utf-8")).hexdigest())
+    return accepted
+
+
 def _detect_checksum_drifts(
     all_migrations: list[Migration],
     applied_checksums: dict[str, str],
@@ -661,15 +694,20 @@ def _detect_checksum_drifts(
     """Compare every APPLIED migration's ledger checksum against the file.
 
     Checksums are computed over the schema-rendered SQL, the same input
-    the apply path hashes. NOT-YET-APPLIED files are not in
-    ``applied_checksums`` and cannot drift, nothing is recorded for them
-    yet.
+    the apply path hashes. A stored checksum ALSO matches when it is what
+    any bundled published variant of the file renders to (see
+    :func:`_variant_templates`): some files exist in more than one
+    published version, and a database's ledger keeps the checksum of the
+    version IT applied. A checksum no bundled version produces is drift —
+    the schema was built from SQL this package cannot account for.
+    NOT-YET-APPLIED files are not in ``applied_checksums`` and cannot
+    drift, nothing is recorded for them yet.
     """
     drifts: list[ChecksumDrift] = []
     for m in all_migrations:
         stored = applied_checksums.get(m.key)
-        if stored is not None and stored != (current := m.checksum(schema)):
-            drifts.append(ChecksumDrift(key=m.key, stored=stored, current=current))
+        if stored is not None and stored not in _accepted_checksums(m, schema):
+            drifts.append(ChecksumDrift(key=m.key, stored=stored, current=m.checksum(schema)))
     return drifts
 
 
