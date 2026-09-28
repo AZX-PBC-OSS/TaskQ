@@ -17,12 +17,14 @@ containers the fixtures below already own.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING
 
+import pytest
 import pytest_asyncio
 
 from taskq import TaskQ
+from tests.system_e2e._toxiproxy import Toxiproxy, start_toxiproxy
 
 if TYPE_CHECKING:
     import asyncpg
@@ -70,3 +72,25 @@ async def sys_client(pg_dsn: str, module_pg_schema: ModulePgSchema) -> AsyncIter
     two generations of everything, clients included)."""
     async with TaskQ(dsn=pg_dsn, schema=module_pg_schema.schema_name) as client:
         yield client
+
+
+@pytest.fixture(scope="session")
+def toxiproxy() -> Iterator[Toxiproxy]:
+    """One toxiproxy server per session (per xdist worker): the partition
+    campaign's weather engine, see :mod:`tests.system_e2e._toxiproxy`.
+
+    The server itself carries NO weather - individual tests create the
+    proxies they need (per-worker cuts a container outage cannot express)
+    and clear them in their own ``finally``; the session teardown stops
+    the container. Skips with a reason (never errors) when the Docker
+    daemon is unreachable, the same contract every container fixture
+    here honors.
+    """
+    from taskq.testing._shared_containers import skip_test_without_docker
+
+    skip_test_without_docker()
+    weather = start_toxiproxy()
+    try:
+        yield weather
+    finally:
+        weather.stop()

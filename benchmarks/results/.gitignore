@@ -1,7 +1,12 @@
 # Everything here is throwaway history or profiling output except
-# the canonical baseline and the committed TimescaleDB A/B runs (the
-# docs' cited evidence), which are the tracked regression-gate inputs.
+# the canonical baseline, the committed TimescaleDB A/B runs (the
+# docs' cited evidence), and the scale campaign's artifacts (the
+# numbers the scan-budget pins and the migration rationales cite),
+# which are the tracked regression-gate inputs.
 *
 !.gitignore
 !baseline.json
 !timescale-*.json
+!backlog-throughput.json
+!archive-scale*.json
+!backlog-rss-soak.json

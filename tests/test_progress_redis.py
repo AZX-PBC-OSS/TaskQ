@@ -2,6 +2,15 @@
 
 All tests require a live Redis container and are marked @pytest.mark.integration.
 
+Broker tenancy: every test here takes ``private_redis_url`` - a per-test
+disposable Dragonfly, never the shared pair. These pins assert PUB/SUB
+FANOUT TIMING and COALESCING (delivery windows, "at most 2 received",
+ordering across round trips), the exact surface a shared-broker
+co-tenancy stall band reds without any defect in the code under test -
+the historical weather class (subscriber wake, then the ping pins, then
+attack478's CLIENT PAUSE). A private broker ends the class by
+construction; see ``taskq.testing.fixtures.redis_url``'s tenancy contract.
+
 Test plan
 ---------
 Actor calls ctx.progress() 100 times; the publish gate coalesces: the
@@ -237,7 +246,7 @@ async def _get_job_row(pool: asyncpg.Pool, schema: str, actor_name: str) -> asyn
 
 
 async def test_ti2_hundred_progress_events(
-    pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
+    pg_dsn: str, private_redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """Actor calls ctx.progress() 100 times; the publish gate coalesces.
 
@@ -253,7 +262,7 @@ async def test_ti2_hundred_progress_events(
     import redis.asyncio as redis_async
 
     stack, deps, backend = await _setup_worker(
-        pg_dsn, redis_url, schema=module_pg_schema.schema_name
+        pg_dsn, private_redis_url, schema=module_pg_schema.schema_name
     )
     try:
         wid = new_uuid()
@@ -265,7 +274,9 @@ async def test_ti2_hundred_progress_events(
         # fresh connection's handshake read under a co-tenant-stretched runner
         # (Timeout reading from localhost:..., the subscribe ack never arriving in
         # time); the scenario's real bounds are the test's own wait_for windows.
-        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
+        redis_client = redis_async.from_url(
+            private_redis_url, decode_responses=False, socket_timeout=None
+        )
         received_events: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -325,7 +336,7 @@ async def test_ti2_hundred_progress_events(
 
 
 async def test_ti3_event_ordering_progress_then_succeeded(
-    pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
+    pg_dsn: str, private_redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """Events arrive in order: state_change(running), kind='progress',
     kind='state_change'(succeeded).
@@ -339,7 +350,7 @@ async def test_ti3_event_ordering_progress_then_succeeded(
     import redis.asyncio as redis_async
 
     stack, deps, backend = await _setup_worker(
-        pg_dsn, redis_url, schema=module_pg_schema.schema_name
+        pg_dsn, private_redis_url, schema=module_pg_schema.schema_name
     )
     try:
         wid = new_uuid()
@@ -351,7 +362,9 @@ async def test_ti3_event_ordering_progress_then_succeeded(
         # fresh connection's handshake read under a co-tenant-stretched runner
         # (Timeout reading from localhost:..., the subscribe ack never arriving in
         # time); the scenario's real bounds are the test's own wait_for windows.
-        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
+        redis_client = redis_async.from_url(
+            private_redis_url, decode_responses=False, socket_timeout=None
+        )
         ordered_events: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -423,7 +436,7 @@ async def test_ti3_event_ordering_progress_then_succeeded(
 
 
 async def test_ti3b_first_message_is_state_change_running(
-    pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
+    pg_dsn: str, private_redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """When subscribing before the job starts, the first real message
     received must be a kind='state_change' with status='running' - published
@@ -435,7 +448,7 @@ async def test_ti3b_first_message_is_state_change_running(
     import redis.asyncio as redis_async
 
     stack, deps, backend = await _setup_worker(
-        pg_dsn, redis_url, schema=module_pg_schema.schema_name
+        pg_dsn, private_redis_url, schema=module_pg_schema.schema_name
     )
     try:
         wid = new_uuid()
@@ -448,7 +461,9 @@ async def test_ti3b_first_message_is_state_change_running(
         # fresh connection's handshake read under a co-tenant-stretched runner
         # (Timeout reading from localhost:..., the subscribe ack never arriving in
         # time); the scenario's real bounds are the test's own wait_for windows.
-        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
+        redis_client = redis_async.from_url(
+            private_redis_url, decode_responses=False, socket_timeout=None
+        )
         first_real_message: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -519,7 +534,7 @@ class _FailingPipeline:
 
 async def test_tc1_publish_failure_counter_labeled_per_job(
     pg_dsn: str,
-    redis_url: str,
+    private_redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
     module_pg_schema: ModulePgSchema,
 ) -> None:
@@ -536,7 +551,7 @@ async def test_tc1_publish_failure_counter_labeled_per_job(
     )
 
     stack, deps, backend = await _setup_worker(
-        pg_dsn, redis_url, schema=module_pg_schema.schema_name
+        pg_dsn, private_redis_url, schema=module_pg_schema.schema_name
     )
     try:
         # Inject failure after the 1st publish round trip: each progress

@@ -94,6 +94,17 @@ _CRON_BUDGET_SEVERITIES = {
     "TaskQCronBudgetDeferrals": "warning",
 }
 
+#: The runaway-fan-out family: the catch-up window's skip branch dropping
+#: schedule occurrences (fires the system cannot even attempt), the
+#: producer side of the runaway detection. Skipped slots are counted,
+#: never replayed -- sustained, it is the system losing the race every
+#: period. A degradation signal at warning, like its budget sibling.
+_CRON_SKIP_ALERTS = ("TaskQCronSkippedSlots",)
+
+_CRON_SKIP_SEVERITIES = {
+    "TaskQCronSkippedSlots": "warning",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
 _ALL_RUNBOOKED_ALERTS = (
@@ -103,6 +114,7 @@ _ALL_RUNBOOKED_ALERTS = (
     + _JOB_OUTCOME_ALERTS
     + _UNSERVED_ALERTS
     + _CRON_BUDGET_ALERTS
+    + _CRON_SKIP_ALERTS
 )
 
 
@@ -352,6 +364,32 @@ def test_both_rule_files_carry_the_cron_budget_alert_at_warning() -> None:
             assert by_name[alert]["labels"]["severity"] == severity, (
                 f"{rules_path.name}: {alert!r} must be {severity!r}"
             )
+
+
+def test_both_rule_files_carry_the_cron_skipped_slots_alert_at_warning() -> None:
+    """The runaway-fan-out alert lives in BOTH rule files at warning
+    severity: a skipped slot is a fire the system dropped BY DESIGN (the
+    catch-up window's skip is the admission it lost the race), counted and
+    logged -- degradation with data loss the counter makes legible, so it
+    pages as warning like its budget sibling, not as emergency."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        rules = _rules_from(rules_path)
+        by_name = {r["alert"]: r for r in rules}
+        for alert, severity in _CRON_SKIP_SEVERITIES.items():
+            assert alert in by_name, (
+                f"{rules_path.name} is missing the alert {alert!r} - the "
+                "runaway fan-out (jobs clearing slower than the cron "
+                "period) is otherwise invisible until slots start dropping "
+                "with no counter to say so"
+            )
+            assert by_name[alert]["labels"]["severity"] == severity, (
+                f"{rules_path.name}: {alert!r} must be {severity!r}"
+            )
+        expr = " ".join(str(by_name["TaskQCronSkippedSlots"]["expr"]).split())
+        assert "taskq_cron_skipped_slots_total" in expr, (
+            f"{rules_path.name}: the TaskQCronSkippedSlots expr must read "
+            "the skip counter the cron tick emits"
+        )
 
 
 def test_job_outcome_alerts_read_the_series_that_mean_what_they_say() -> None:
@@ -708,3 +746,21 @@ def test_every_series_name_the_shipped_text_cites_is_registered() -> None:
         cited = set(re.findall(r"\b(?:taskq|messaging)_[a-z][a-z0-9_]*\b", text))
         unknown = sorted(cited - allowed.keys())
         assert not unknown, f"{text_path.name}: cites series no code path registers: {unknown}"
+
+
+def test_ops_md_claimed_rule_count_matches_the_shipped_files() -> None:
+    """ops.md §8 tells operators the shipped rule set carries a specific
+    number of rules ("(N rules: ...)"); that count must equal what both
+    files actually ship. A stale count is how an operator importing the
+    file concludes a rule family went missing (or that the docs describe a
+    set they did not install)."""
+    ops_md = _REPO_ROOT / "docs" / "guides" / "ops.md"
+    match = re.search(r"\((\d+) rules:", ops_md.read_text(encoding="utf-8"))
+    assert match, "ops.md no longer states the shipped rule count"
+    claimed = int(match.group(1))
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        assert len(_rules_from(rules_path)) == claimed, (
+            f"{rules_path.name} no longer carries the {claimed} rules ops.md "
+            "advertises - correct the count (and the enumeration beside it) "
+            "whenever the rule set changes"
+        )

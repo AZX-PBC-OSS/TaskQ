@@ -22,13 +22,19 @@ import sys
 
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
+from tests.system_e2e._kill_actors import ACTORS as KILL9_ACTORS
 from tests.system_e2e.actors import ACTORS
+
+#: The full worker-side registry: the graceful scenarios' actors plus the
+#: kill9 campaign's (the kill SEAMS live in ``_kill_entry``, not here -
+#: this entry is always seam-free).
+REGISTRY: dict[str, object] = {**ACTORS, **KILL9_ACTORS}
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()
     try:
         with asyncio.Runner() as runner:
-            code = runner.run(_main(settings, actor_registry=ACTORS))
+            code = runner.run(_main(settings, actor_registry=REGISTRY))
         # Same post-drain guard worker_main carries (see its comment): the
         # closed loop restored SIG_DFL, and the harness's graceful_stop
         # signals a second time - a pod that drained cleanly must exit
