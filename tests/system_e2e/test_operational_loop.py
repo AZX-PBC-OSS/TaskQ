@@ -846,6 +846,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                         left(query, 60) AS query
                     FROM pg_stat_activity
                     WHERE application_name = $1
+                        AND datname = current_database()
                     """,
                     schema,
                 )
