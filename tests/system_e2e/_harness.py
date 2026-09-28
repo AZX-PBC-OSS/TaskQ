@@ -179,7 +179,6 @@ def spawn_worker(
     MUST pass one: the default PIPE pair is sized for short-lived
     readiness-spawned workers, and a full pipe blocks the child's first
     logging write - a harness-manufactured wedge.
->>>>>>> origin/main
     """
     sock_path = unique_health_sock_path(f"syse2e-{tag}")
     env = {**os.environ, **_BASE_ENV}
@@ -205,21 +204,17 @@ def spawn_worker(
         [sys.executable, "-m", _WORKER_ENTRY],
         env=env,
         cwd=os.environ.get("TASKQ_REPO_ROOT", os.getcwd()),
-<<<<<<< HEAD
-        stderr=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-    )
-    _tee_stderr(proc, f"{sock_path}.worker.log")
-    return WorkerProc(proc=proc, sock_path=sock_path)
-=======
         stderr=stderr,
         stdout=stdout,
     )
     if log_file is not None:
         # The child owns the dup'ed descriptors now.
         log_file.close()
+    else:
+        # No sink given: drain the PIPEs with the daemon tee so a chatty
+        # worker can never wedge on a full 64K pipe.
+        _tee_stderr(proc, f"{sock_path}.worker.log")
     return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink)
->>>>>>> origin/main
 
 
 def _tee_stderr(proc: subprocess.Popen[bytes], log_path: str) -> None:
