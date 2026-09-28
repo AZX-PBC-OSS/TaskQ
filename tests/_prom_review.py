@@ -867,11 +867,12 @@ def run_hostile_probe(
 _DOCKER = shutil.which("docker")
 
 _EMITTER_PROBE = '''
-"""Emitter probe: drives the real sweep-abort counter emitters - the two
-families a live worker probe cannot stage (Postgres aborting a bounded
-prune batch collides with the worker's own retry ladder) but whose
-emission paths are real public API - and dumps the exposition their
-series actually serve."""
+"""Emitter probe: drives the real cannot-stage-live counter emitters -
+the sweep-abort pair (Postgres aborting a bounded prune batch collides
+with the worker's own retry ladder) and the cron skipped-slots counter
+(no live run reaches it: the 1-hour default catch-up window swallows the
+probes' staged 2-minute backlog) - families whose emission paths are real
+public API - and dumps the exposition their series actually serve."""
 
 import asyncio
 import os
@@ -889,13 +890,18 @@ REGISTRY = CollectorRegistry()
 READER = PrometheusMetricReader(registry=REGISTRY)
 metrics.set_meter_provider(MeterProvider(metric_readers=[READER]))
 
-from taskq.obs import record_sweep_timeout, record_sweep_unexpected_error  # noqa: E402
+from taskq.obs import (  # noqa: E402
+    record_cron_skipped_slots,
+    record_sweep_timeout,
+    record_sweep_unexpected_error,
+)
 from taskq.obs import _otel as otel_mod  # noqa: E402
 
 otel_mod.set_otel_enabled(True)
 
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
+record_cron_skipped_slots("probe_fail_actor", 1)
 
 with open(os.environ["PROBE_SCRAPE_PATH"], "w") as fh:
     fh.write(generate_latest(REGISTRY).decode())
@@ -904,10 +910,11 @@ print("EMITTER_PROBE_OK", flush=True)
 
 
 def run_emitter_probe(workdir: Path) -> str:
-    """Drive the real sweep-abort emitters through the real bridge; return
-    the exposition their series serve.
+    """Drive the real cannot-stage-live emitters (the sweep-abort pair and
+    the cron skipped-slots counter) through the real bridge; return the
+    exposition their series serve.
 
-    The promtool harness's sweep-abort cases (and the rules' operand
+    The promtool harness's cannot-stage-live cases (and the rules' operand
     gate) bind to THIS scrape: the families a live worker probe cannot
     stage are still bound to the names the real emitters serve, so the
     harness's hand-typed series cannot drift from them.

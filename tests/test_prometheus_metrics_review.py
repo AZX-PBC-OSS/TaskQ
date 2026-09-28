@@ -591,6 +591,7 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
         0.0167,
     ),
     "TaskQCronScheduleDisabled": ({}, 2.0),
+    "TaskQCronSkippedSlots": ({"actor": "probe_fail_actor"}, 1.0),
     "TaskQScheduledBacklogGrowing": ({}, 600.0),
     "TaskQPromotionStalled": ({"sweep_name": "scheduled_to_pending"}, 380.0),
     "TaskQSweepTimeouts": ({"sweep_name": "scheduled_to_pending"}, 0.0167),
@@ -1023,6 +1024,20 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
 
     cases.append(
         _firing_case(
+            "TaskQCronSkippedSlots",
+            [
+                # The emitter-staged shape: no live run reaches the skip
+                # branch (the 1-hour default catch-up window swallows the
+                # probes' staged backlog), so the series comes from the
+                # emitter probe's real record_cron_skipped_slots call.
+                ("taskq_cron_skipped_slots_total", {"actor": "probe_fail_actor"}, "0+1x30"),
+            ],
+            "14m",
+        )
+    )
+
+    cases.append(
+        _firing_case(
             "TaskQQueueUnserved",
             [
                 ("taskq_queue_depth", {"queue": "ghost_queue"}, "7+0x30"),
@@ -1325,18 +1340,20 @@ def test_harness_series_are_bound_to_the_served_exposition(
     """A rule-test harness that hand-types series can drift from the
     emitted truth while every case still passes (a wrong-but-consistent
     name evaluates an empty vector and the SILENT guards still pass). The
-    binding pin: every input series name the 32 cases feed must be a name
+    binding pin: every input series name the 33 cases feed must be a name
     a real scrape actually served - the worker probes for everything a
-    live worker carries, the emitter probe for the two sweep-abort
-    families whose pathology cannot be staged live - and the case counts
-    must be the honest 22 firing + 10 healthy guards covering every
-    shipped rule."""
+    live worker carries, the emitter probe for the three families whose
+    pathology cannot be staged live (the sweep-abort pair, and the
+    skipped-slots counter no live run reaches: the 1-hour default
+    catch-up window swallows the probes' staged backlog) - and the case
+    counts must be the honest 23 firing + 10 healthy guards covering
+    every shipped rule."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
     firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
     guards = [c for c in cases if not c["alert_rule_test"][0]["exp_alerts"]]
-    assert (len(firing), len(guards)) == (22, 10), (
-        f"the harness must stay 22 firing + 10 guards, got {len(firing)} + {len(guards)}"
+    assert (len(firing), len(guards)) == (23, 10), (
+        f"the harness must stay 23 firing + 10 guards, got {len(firing)} + {len(guards)}"
     )
     for case in cases:
         for input_entry in case["input_series"]:
@@ -1345,21 +1362,22 @@ def test_harness_series_are_bound_to_the_served_exposition(
                 f"promtool input series {name!r} is not a series the real "
                 "scrapes served - the harness has drifted from the emitted truth"
             )
-    # The two emitter-bound families: the fed LABEL VALUES must match what
-    # the real emitters serve, not just the names.
-    for family in (
-        "taskq_maintenance_leader_sweep_timeouts_total",
-        "taskq_maintenance_leader_sweep_unexpected_errors_total",
+    # The three emitter-bound families: the fed LABEL VALUES must match
+    # what the real emitters serve, not just the names.
+    for family, bound_label in (
+        ("taskq_maintenance_leader_sweep_timeouts_total", "sweep_name"),
+        ("taskq_maintenance_leader_sweep_unexpected_errors_total", "sweep_name"),
+        ("taskq_cron_skipped_slots_total", "actor"),
     ):
-        served_sweep_names = emitter.label_values(family, "sweep_name")
+        served_label_values = emitter.label_values(family, bound_label)
         for case in cases:
             for input_entry in case["input_series"]:
                 if input_entry["series"].split("{")[0] != family:
                     continue
                 fed = dict(re.findall(r'(\w+)="([^"]*)"', input_entry["series"]))
-                assert fed.get("sweep_name") in served_sweep_names, (
-                    f"{family}: fed sweep_name {fed.get('sweep_name')!r} is not "
-                    f"one the real emitters served: {sorted(served_sweep_names)}"
+                assert fed.get(bound_label) in served_label_values, (
+                    f"{family}: fed {bound_label} {fed.get(bound_label)!r} is not "
+                    f"one the real emitters served: {sorted(served_label_values)}"
                 )
     # And the firing set covers every shipped alert exactly once.
     rules = yaml.safe_load(RULES_PATH.read_text())["groups"][0]["rules"]
@@ -1391,11 +1409,14 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     # real probes emitted (the healthy run for every family a healthy
     # worker carries; the hostile run adds the failure-only counters -
     # taskq_heartbeat_misses_total among them; the emitter probe adds the
-    # two sweep-abort counters whose PG-abort pathology cannot be staged
-    # against a live shared schema but whose emission paths are the real
-    # public record_sweep_* API). Label values and PromQL syntax are
-    # stripped before scanning; a rule operand the bridge never serves
-    # would make the rule unevaluatable against real data.
+    # three cannot-stage-live counters - the two sweep-abort counters
+    # whose PG-abort pathology cannot be staged against a live shared
+    # schema, and the cron skipped-slots counter no live run reaches -
+    # whose emission paths are the real public
+    # record_sweep_*/record_cron_skipped_slots API). Label values and
+    # PromQL syntax are stripped before scanning; a rule operand the
+    # bridge never serves would make the rule unevaluatable against real
+    # data.
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     for rule in rules_data["groups"][0]["rules"]:
         expr = re.sub(r'"[^"]*"', '""', str(rule["expr"]))
