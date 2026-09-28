@@ -187,7 +187,7 @@ async def render_pdf(payload: RenderPayload) -> RenderResult:
 Declaring the instance inline needs no separate registration step; the worker
 registers it and pre-allocates its slot rows at bootstrap. See
 [Wiring to Actors](rate-limiting.md#wiring-to-actors); use
-[`sync_slots`](rate-limiting.md#sync_slotsreservations-pool-schemataskq-timeoutnone---syncresult)
+[`sync_slots`](rate-limiting.md#sync_slotsreservations-pool-schemataskq-timeoutnone-syncresult)
 when changing `slots` on a running deployment.
 
 Two things to get right:
