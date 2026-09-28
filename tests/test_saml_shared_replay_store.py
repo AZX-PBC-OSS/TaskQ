@@ -148,9 +148,9 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     Two bundles over one shared store, both replicas live at once. Replica A
     performs an honest login; the captured POST is then presented to replica
     B with the correlation cookie re-supplied (the browser's copy was
-    cleared; a replaying party holds a capture). Pre-fix, B's records were
-    process-local, saw nothing of A's acceptance, and minted a second
-    session. Post-fix, B reads the row A wrote and refuses.
+    cleared; a replaying party holds a capture). A process-local store on
+    B sees nothing of A's acceptance and mints a second
+    session; the shared store makes B read the row A wrote and refuse.
     """
     config = _config()
     with (

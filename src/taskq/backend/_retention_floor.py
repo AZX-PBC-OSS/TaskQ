@@ -1,12 +1,12 @@
 """The retention-policy floor probe, in its own asyncpg-free module.
 
-This helper used to live in :mod:`taskq.timescale`, and that cost a
-contract: :mod:`taskq.timescale` is the deploy-step conversion machinery
+This helper lives outside :mod:`taskq.timescale` for a contract reason:
+:mod:`taskq.timescale` is the deploy-step conversion machinery
 (module-level ``import asyncpg``), while the sweeps bind the floor probe
 by name — ``taskq.backend._sweeps`` and ``taskq.worker._leader_shared``
 both import it — and ``taskq.testing``'s sweeps twin imports the real
 sweeps module as its parity seam.  The chain
-``taskq.testing → backend/_sweeps → taskq.timescale → asyncpg`` dragged
+``taskq.testing → backend/_sweeps → taskq.timescale → asyncpg`` would drag
 asyncpg into ``sys.modules`` on ``import taskq.testing``, breaking the
 no-transitive-heavy-deps contract
 (``tests/test_memory_jobs_fixture.py::test_testing_no_transitive_asyncpg``).

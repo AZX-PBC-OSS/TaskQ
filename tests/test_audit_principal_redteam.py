@@ -4,7 +4,7 @@ review of the fix): credential shapes the first pass's mask chain missed.
 The first fix proved ``Authorization: Bearer <JWT>`` cannot reach the
 ledger. This module attacks the shapes its chain still bound verbatim --
 each one was EXECUTED against a real ``admin_audit`` row before being
-pinned here (the row really did carry the secret on the pre-fix chain):
+pinned here (the row really did carry the secret on the unguarded chain):
 
 * a raw Authorization header VALUE (``request.headers["authorization"]``,
   the most natural "return the credential" mistake): a bare scheme word
@@ -56,7 +56,7 @@ _JWT = (
 # (label, principal, secret material that must not appear in the row)
 _BYPASS_SHAPES: list[tuple[str, Any, tuple[str, ...]]] = [
     # The raw header VALUE (no header name around it), opaque token:
-    # shipped verbatim through the pre-fix chain.
+    # shipped verbatim through the unguarded chain.
     ("raw header value, bearer scheme, opaque token", f"Bearer {_OPAQUE}", (_OPAQUE,)),
     ("raw header value, bearer scheme, JWT", f"Bearer {_JWT}", (_JWT,)),
     ("raw header value, basic scheme", f"Basic {_B64_CREDS}", (_B64_CREDS,)),

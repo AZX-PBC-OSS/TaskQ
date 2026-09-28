@@ -242,7 +242,7 @@ class _SamlReplayStore(Protocol):
     answered-AuthnRequest gate. Both carry their own expiry; rows past
     theirs neither block nor are required (the assertion's own timestamp
     validation, and the correlation cookie's signature window, refuse what
-    an expired record no longer can).
+    an expired record cannot).
     """
 
     async def consume(self, assertion_id: str, expires_at: float, *, now: float) -> None:
@@ -707,7 +707,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     @router.post("/logout")
     async def logout(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         # Same contract as the OIDC backend (shared require_logout_csrf): a
-        # forced top-level navigation is a GET and can no longer clear an
+        # forced top-level navigation is a GET and cannot clear an
         # admin session, and a cross-site form POST carries neither the
         # session cookie it must derive the token from nor the secret.
         await require_logout_csrf(request, session_manager)

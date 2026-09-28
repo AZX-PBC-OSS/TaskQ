@@ -129,9 +129,9 @@ def _lease_renewal_threshold(
     consecutive failure, and the lease must still be valid at that
     decision.
 
-    A premise correction: an earlier derivation assumed a
-    failed tick was bounded by "acquire-block then a timed-out command"
-    (interval + ONE command timeout). That premise was false, the tick
+    A premise: a failed tick is NOT bounded by
+    "acquire-block then a timed-out command"
+    (interval + ONE command timeout): the tick
     issues >= 3 commands each separately bounded by the pool's
     per-query command timeout, and the transaction's teardown adds its
     own round trip, so a brownout tick (a contended acquire, then two
@@ -147,9 +147,9 @@ def _lease_renewal_threshold(
       a budget-cut sequence, a teardown close stalling to its bound -
       and found the observed cascade running PAST the validator's own
       floor: the accounting counted (F+1) failed cycles from the last
-      renewal but not the last good beat's tail, and the pre-fix
-      teardown's close burned a SECOND full command budget after the
-      rollback had consumed the remainder (observed: a cascade of
+      renewal but not the last good beat's tail, and a teardown whose
+      close burned a SECOND full command budget after the
+      rollback had consumed the remainder (the measured cascade:
       2.758s against a 2.4s floor at F=2, I=0.5, c=0.15). The
       shared-remainder teardown makes the per-tick cost
       ``acquire + ONE budget`` by enforcement, and the tail term in the
@@ -198,15 +198,14 @@ def _lease_renewal_threshold(
     lease judges it.
 
     Pacing correction: a FAILED tick is not a
-    beat. The loop no longer sleeps the full remaining interval after a
-    tick that raised - it retries promptly, after
-    ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` - so the
-    worst-case arithmetic above has to be re-derived against the new
-    pacing. A failed cycle's gap is ``duration + min(max(0, interval -
-    duration), retry_backoff)``, which is bounded by
-    ``max(interval, duration)``: a fast failed tick (the common
-    transient shape - a refused connection, an immediately-raised
-    acquire) now gaps at ``duration + retry_backoff`` (< the interval),
+    beat. After a tick that raised, the loop retries promptly, after
+    ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` rather than
+    the full remaining interval - so the worst-case arithmetic above is
+    derived against that pacing. A failed cycle's gap is
+    ``duration + min(max(0, interval - duration), retry_backoff)``, which
+    is bounded by ``max(interval, duration)``: a fast failed tick (the
+    common transient shape - a refused connection, an immediately-raised
+    acquire) gaps at ``duration + retry_backoff`` (< the interval),
     a failed tick that consumed its whole acquire allowance gaps at
     exactly the interval, and a tick that ran past the interval gaps at
     its own duration. The worst failed cycle is unchanged in SHAPE - a
@@ -412,9 +411,9 @@ async def _failed_tick_ledger(
     blip: connection loss, 40001, a timeout) and the unexpected arm
     (anything else). The ledger is deliberately ONE threshold, not two: a
     persistent non-transient fault (a REVOKE'd UPDATE, a driver contract
-    violation) fails every tick exactly as a dead PG does, and the
-    pre-fix asymmetric ledger (the transient arm counted, the unexpected
-    arm only logged) let such a fault loop forever on a worker that
+    violation) fails every tick exactly as a dead PG does, and a
+    two-threshold ledger (the transient arm counts, the unexpected
+    arm only logs) would let such a fault loop forever on a worker that
     looked perfectly healthy: ``heartbeat_failures`` pinned at 0, the
     consecutive-failures gauge at 0, ``record_heartbeat_miss`` never
     called, /ready green with no reasons, while the lock expired
@@ -723,10 +722,10 @@ async def heartbeat_loop(
                         # terminate, never a second full command budget.
                         # This is what holds the failed tick's enforced
                         # cost to acquire + ONE budget (see
-                        # _lease_renewal_threshold): the pre-fix close
-                        # took a FULL second budget after the rollback
-                        # had already consumed the remainder, and a
-                        # cascade of such ticks ran
+                        # _lease_renewal_threshold): a close that took
+                        # a FULL second budget after the rollback
+                        # had already consumed the remainder would run a
+                        # cascade of such ticks
                         # (F+1) * (interval + 2 * command_timeout) past
                         # the last renewal PLUS the last good beat's
                         # tail - measurably past the very cascade floor
@@ -840,7 +839,7 @@ async def heartbeat_loop(
             # beat-cadence meaning deliberately: it is stamped on every
             # successful tick, whether or not the gate renewed any rows,
             # so a late or failing beat lowers it exactly as before and
-            # alert thresholds calibrated to the old per-tick cadence
+            # alert thresholds calibrated to the beat cadence
             # keep their semantics. For rows the gate skipped (still
             # above the threshold) the true remaining is anywhere up to
             # the full lease, the sample is the "if this beat renewed
@@ -981,8 +980,8 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # reason the attempt rows differ: the sweep's reclaim means the
 # LEADER declared the holder dead, isolate means the worker itself
 # declared PG unreachable and is walking away. The job row must
-# self-describe on the crashed arm either way (the
-# pre-fix template left both fields NULL while claiming the mirror).
+# self-describe on the crashed arm either way (leaving both fields
+# NULL would claim the mirror without honoring it).
 # Note the mirror covers the SET clause, NOT the
 # selection predicate: the sweep leaves cancel-in-flight jobs alone until
 # cancel_grace + cleanup_grace + 60s has passed (a merely-slow
@@ -1080,8 +1079,8 @@ SET status = CASE
     -- crashed arm in shape: 'HeartbeatLost' plus this module's own
     -- message, not the sweep's 'WorkerCrashed': the same distinction
     -- the attempt rows have always carried (documented above); the
-    -- pre-fix template stamped nothing here while claiming the
-    -- branch-for-branch mirror. The re-pend and cancelled arms keep
+    -- crashed arm stamps its own fields, a NULL stamp would claim the
+    -- branch-for-branch mirror without honoring it. The re-pend and cancelled arms keep
     -- their error fields: a handed-back row has no failure to
     -- describe, and a cancel-honouring row's record is the in-flight
     -- request the row preserves above.
@@ -1142,9 +1141,9 @@ async def isolate_self(
     # arithmetic explainable (selected rows = pending + crashed +
     # cancelled + lost_race).
     jobs_lost_race_count = 0
-    # The re-pend's exclusion set is deliberately NOT captured here: the
-    # pre-join snapshot this spot used to take re-pended every row claimed
-    # during the join window below (the producer kept claiming for the
+    # The re-pend's exclusion set is deliberately NOT captured here: a
+    # snapshot taken this early re-pends every row claimed
+    # during the join window below (the producer keeps claiming for the
     # window's whole bound), handing back rows whose local handlers were
     # live. The capture lives inside _inner, after the join, immediately
     # before the SELECT that binds it.
@@ -1355,21 +1354,22 @@ async def isolate_self(
                         # THE STANDING-CLAIM FENCE, read from the ARBITER's
                         # RETURNING - never from the SELECT snapshot above.
                         # The gap this closes (the soak's reconciliation red,
-                        # run 36175331443, ``attempt counter 1 vs 2 attempt
-                        # rows``): the claim-loss reconcile's refund
+                        # ``attempt counter 1 vs 2 attempt rows``): the
+                        # claim-loss reconcile's refund
                         # (_RECONCILE_LOST_CLAIMS_SQL, the same worker's
                         # heartbeat pool, or the shutdown drain's
                         # ATTEMPT_REFUND_SQL arm) can commit in the window
                         # between this path's SELECT and the guarded UPDATE
-                        # - the SELECT took no row lock, the refund matches
+                        # - the SELECT takes no row lock, the refund matches
                         # exactly the row it sees there (running, locked by
                         # this worker, its charge de-charged and its
-                        # started_at un-stamped), and the pre-fix arbiter
-                        # (status + holder, no standing-claim conjunct) won
-                        # the transition anyway, then the INSERT below wrote
-                        # the SNAPSHOT's (attempt, started_at) - a stale
-                        # epoch the counter no longer carries, minted AFTER
-                        # the refund. The next claim re-mints that number
+                        # started_at un-stamped), and an arbiter judging
+                        # only (status + holder, no standing-claim conjunct)
+                        # would win the transition anyway, then the INSERT
+                        # below would write the SNAPSHOT's (attempt,
+                        # started_at) - an epoch minted AFTER the refund
+                        # that the live counter never carried. The next
+                        # claim re-mints that number
                         # (the refund's whole point) and the ledger closes
                         # the lineage with more attempt rows than the
                         # counter. The arbiter is the trustworthy read: it
@@ -1437,7 +1437,7 @@ async def isolate_self(
             # suspected dead (heartbeat failures exceeded), so this close is
             # exactly the dead-PG hang case, unbounded, it would
             # wedge shutdown.set() below. The helper never raises, so a
-            # close error can no longer mask an in-flight exception or be
+            # close error cannot mask an in-flight exception or be
             # misreported as an isolate-self failure.
             await close_conn_bounded(conn, "isolate-self", CLOSE_TIMEOUT_SECS, mid_run=True)
     except Exception as exc:

@@ -21,6 +21,7 @@ Covers:
 
 import asyncio
 import json
+import time
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
@@ -300,6 +301,46 @@ async def _collect_stream_events(
     return events
 
 
+#: The broker-facing wait budget, DERIVED from the repo's measured
+#: constants (never a guess). The fixed 30.0 this leg shipped with was a
+#: single-shot wall bet on a REAL, invocation-wide SHARED broker (one
+#: Dragonfly behind every xdist worker of the run,
+#: :func:`taskq.testing.fixtures.redis_container`), and the measured
+#: co-tenant stall band of these runners under ``-n 2`` leg load exceeds
+#: it: the sibling reconnect leg's docstring records 30+s shared-broker
+#: stalls, and ``tests/test_ratelimit_provider.py``'s derived ping window
+#: cites the same-day cross-leg reds. The stretch is the cancel-storm
+#: doctrine's 20x (``tests/system_e2e/test_cancel_storm.py``'s
+#: ``_COTENANCY_STRETCH``, the stall band these runners produce between a
+#: seed and its observation). 30s x 20 = 600s — which can never fire:
+#: the harness's global per-test guillotine (``--timeout=300``,
+#: ``pyproject.toml`` addopts) executes the TEST first, so the bound
+#: actually honored is the cap, 300 - 60 = 240s (60s bounds the leg's
+#: own measured cost outside the waits; the healthy leg runs ~3s end to
+#: end). A stall EATS a fixed wall budget but cannot eat a poll of
+#: observed state that outlives the band: the budget bounds FAILURE
+#: only — a healthy broker pays nothing.
+_LEG_SINGLE_SHOT_BUDGET_SECS = 30.0
+_COTENANCY_STRETCH = 20  # the cancel-storm doctrine's measured stall band
+_DERIVED_BROKER_UNCAPPED_SECS = _LEG_SINGLE_SHOT_BUDGET_SECS * _COTENANCY_STRETCH
+_HARNESS_GUILLOTINE_SECS = 300.0  # --timeout=300, the global per-test bound
+_LEG_OVERHEAD_SECS = 60.0  # the leg's measured cost outside the waits
+_DERIVED_BROKER_BUDGET_SECS = min(
+    _DERIVED_BROKER_UNCAPPED_SECS, _HARNESS_GUILLOTINE_SECS - _LEG_OVERHEAD_SECS
+)  # 240s
+
+
+async def _pg_shows_the_full_stream(pool: asyncpg.Pool, schema: str, job_id: UUID) -> bool:
+    """The OBSERVED state the leg waits for: the durable PG truth — the
+    job terminal-successful AND its full progress stream consumed
+    (``progress_seq == 7``: 5 progress calls plus the running
+    transition's and the terminal write's consumed seqs). Pub/sub is the
+    delivery channel under test, not the record: PG is what a stall
+    cannot unwrite."""
+    row = await _get_job_by_id(pool, schema, job_id)
+    return row is not None and row["status"] == "succeeded" and row["progress_seq"] == 7
+
+
 # ── Redis subscriber receives all progress events ───────────────────────────
 
 
@@ -356,10 +397,32 @@ async def test_redis_subscriber_receives_progress_events(
                             return
 
             collect_task = asyncio.create_task(_collect_until_terminal())
-            await asyncio.wait_for(
-                asyncio.gather(consume_task, collect_task),
-                timeout=30.0,
-            )
+
+            # Poll the OBSERVED state on the DERIVED budget instead of
+            # racing a fixed wall clock: a co-tenant stall on the shared
+            # broker delays delivery, it cannot unwrite PG. The terminal
+            # publish happens with the terminal PG write (the consume's
+            # last act), so PG reaching succeeded/progress_seq==7 bounds
+            # the job side of the race.
+            deadline = time.monotonic() + _DERIVED_BROKER_BUDGET_SECS
+            while not await _pg_shows_the_full_stream(deps.worker_pool, schema, job_id):
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"the job never reached succeeded/progress_seq==7 in PG "
+                        f"within {_DERIVED_BROKER_BUDGET_SECS:.0f}s (the derived "
+                        f"budget: {_LEG_SINGLE_SHOT_BUDGET_SECS:.0f}s x "
+                        f"{_COTENANCY_STRETCH} co-tenancy stretch)"
+                    )
+                await asyncio.sleep(0.5)
+
+            # The pubsub delivery drain, bounded by the SAME derived
+            # budget: every event was PUBLISHED while the actor ran, so
+            # once PG is terminal the tail is in the socket buffer — a
+            # broker that actually LOST the events reds here (this wait
+            # keeps the leg's teeth: the delivery assertions below are
+            # what the poll must never substitute for).
+            await asyncio.wait_for(consume_task, timeout=_DERIVED_BROKER_BUDGET_SECS)
+            await asyncio.wait_for(collect_task, timeout=_DERIVED_BROKER_BUDGET_SECS)
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()
         finally:

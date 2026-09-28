@@ -5,8 +5,8 @@ The adopter red team's repro shape, held green: follow the documented
 quick-start (``pip install taskq-py[prometheus]``, no ``OTEL_*`` env vars),
 run real work, scrape ``GET /jobs/health/metrics`` as mounted by
 ``taskq ui serve`` - the served text must contain the ``taskq_*`` series
-the shipped ``rules.yaml`` alert set references. Pre-fix it contained only
-Python process defaults: 200, valid Prometheus text, zero ``taskq_*``
+the shipped ``rules.yaml`` alert set references; a text with only
+Python process defaults (200, valid Prometheus text, zero ``taskq_*``
 series, no error anywhere.
 
 The subprocess gets a freshly migrated schema (the module PG fixtures) and
@@ -151,6 +151,6 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
         f"absent from the served scrape: {result.stdout!r}"
     )
     assert out.get("ANY_TASKQ") == "True", (
-        "no taskq_* series at all in the served scrape - the pre-fix "
+        "no taskq_* series at all in the served scrape - the unguarded "
         "silent-failure shape (200, valid text, only process defaults)"
     )
