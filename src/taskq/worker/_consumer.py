@@ -1752,8 +1752,8 @@ async def _enforce_start_to_close(
                 # arm owns the row now and the body must get the cancel
                 # it owes. The unwind is detached (below), so the arm
                 # runs while the body unwinds and the exit-proof hold
-                # reads the ctx handle instead of the old inline
-                # propagation assumption.
+                # reads the ctx handle rather than relying on inline
+                # propagation.
                 body_task.cancel()
             # Detach tracked, retrieval pinned: the exit-proof hold /
             # shutdown watchdog own the unwind from here. The attempt's

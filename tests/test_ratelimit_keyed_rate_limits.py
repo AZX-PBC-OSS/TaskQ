@@ -464,7 +464,7 @@ async def test_resolve_keyed_ref_empty_key_error_does_not_embed_payload(as_dict:
     so it must not embed payload values - they are attacker-controlled. This
     holds for both payload shapes ``acquire_for_actor`` accepts: a raw dict
     and a validated model (whose ``model_dump()`` output was embedded
-    pre-fix, so a sanitized-looking model path leaked just as badly)."""
+    unguarded, so a sanitized-looking model path leaked just as badly)."""
     reg = RateLimitRegistry()
     canary = "TOP-SECRET-canary-d4e5f6"
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda p: "")

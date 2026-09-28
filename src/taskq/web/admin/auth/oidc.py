@@ -56,9 +56,10 @@ class _IssuerMetadata:
 class _OIDCMetadataCache:
     """Process-local TTL cache of discovery documents and JWKS, keyed per issuer.
 
-    Every unauthenticated ``/login`` used to perform a live outbound fetch,
-    and every ``/callback`` a discovery fetch plus a JWKS fetch, so a flood
-    of login attempts was a flood of outbound requests to the IdP. One cache
+    Without the cache, every unauthenticated ``/login`` performs a live
+    outbound fetch, and every ``/callback`` a discovery fetch plus a JWKS
+    fetch, so a flood of login attempts is a flood of outbound requests to
+    the IdP. One cache
     entry per issuer bounds that to one fetch per TTL window: the second
     ``/login`` and the ``/callback`` after it read from memory.
 
@@ -443,7 +444,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
     @router.post("/logout")
     async def logout(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         # POST + a CSRF token bound to the live session: a forced top-level
-        # navigation is a GET and can no longer clear an admin session, and a
+        # navigation is a GET and cannot clear an admin session, and a
         # cross-site form POST carries neither the session cookie it must
         # derive the token from (HttpOnly, SameSite=Lax) nor the secret.
         await require_logout_csrf(request, session_manager)

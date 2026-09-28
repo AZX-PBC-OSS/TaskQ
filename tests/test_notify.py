@@ -970,7 +970,7 @@ class TestReconnectFactoryBound:
                         for c in logger_mock.warning.call_args_list
                     )
 
-                # RED pre-fix: the loop is parked inside factory() - no
+                # RED unguarded: the loop is parked inside factory() - no
                 # reconnect attempt is ever logged and this bounded wait
                 # fails by name.
                 await wait_for_condition(
@@ -1056,7 +1056,7 @@ class TestReconnectFactoryBound:
 # connection can complete the factory handshake and then black-hole on
 # the LISTEN execute - exactly the black-hole shape the health-check
 # query bound closes.
-# Pre-fix, that execute was unbounded while the add_listener beside it
+# Unguarded, that execute was unbounded while the add_listener beside it
 # was bounded, so the reconnect loop parked inside execute() while
 # holding notify_reconnect_lock - poll dispatch kept working, but the
 # notify channel stayed down until process restart. The bound is the
@@ -1125,7 +1125,7 @@ class TestReconnectListenBound:
                         for c in logger_mock.warning.call_args_list
                     )
 
-                # RED pre-fix: the loop is parked inside execute(LISTEN) -
+                # RED unguarded: the loop is parked inside execute(LISTEN) -
                 # no reconnect attempt is ever logged and this bounded
                 # wait fails by name.
                 await wait_for_condition(
@@ -1459,7 +1459,7 @@ class TestBoundedConnClose:
 
         deps.notify_conn_factory = factory
 
-        # Why the outer timeout: pre-fix the cleanup awaited conn.close()
+        # Why the outer timeout: unguarded, the cleanup awaited conn.close()
         # unbounded, so the RED state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):
@@ -1472,8 +1472,8 @@ class TestBoundedConnClose:
         self,
     ) -> None:
         """Same path with a healthy close(): the fresh conn is closed once,
-        never terminated, and the setup error propagates. Pins the
-        no-regression behaviour (passes pre- and post-fix)."""
+        never terminated, and the setup error propagates. A
+        no-regression pin."""
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -1516,7 +1516,7 @@ class TestBoundedConnClose:
 
         deps.notify_conn_factory = factory
 
-        # Why the outer timeout: pre-fix the background close awaited
+        # Why the outer timeout: unguarded, the background close awaited
         # old_conn.close() unbounded, so terminate is never reached and the
         # poll below would spin forever in the RED state.
         async with asyncio.timeout(5):
@@ -1531,8 +1531,7 @@ class TestBoundedConnClose:
 
     async def test_reconnect_close_old_conn_fast_close_not_terminated(self) -> None:
         """close_old=True with a healthy close(): the old conn is closed
-        once, never terminated. Pins the no-regression behaviour (passes
-        pre- and post-fix)."""
+        once, never terminated. A no-regression pin."""
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -1585,7 +1584,7 @@ class TestBoundedConnClose:
 
         task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
         try:
-            # Why the outer timeout: pre-fix the error path awaited
+            # Why the outer timeout: unguarded, the error path awaited
             # conn.close() unbounded, so the swap never happens and the
             # poll below would spin forever in the RED state.
             async with asyncio.timeout(5):

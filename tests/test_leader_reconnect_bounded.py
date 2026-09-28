@@ -143,7 +143,7 @@ def _make_leader(deps: WorkerDeps) -> MaintenanceLeader:
 async def _factory_calls_reach(factory_calls: list[int], n: int) -> None:
     """Bounded wait until the hanging factory has been entered n times.
 
-    RED pre-fix: the loop is parked inside the FIRST factory() call - no
+    RED unguarded: the loop is parked inside the FIRST factory() call - no
     retry ever happens and this bounded wait fails by name.
     """
     deadline = asyncio.get_running_loop().time() + _TEST_BUDGET_SECS
@@ -187,7 +187,7 @@ async def test_election_leader_conn_rebuild_factory_hang_is_bounded_and_retried(
     try:
         await asyncio.wait_for(factory_entered.wait(), timeout=_TEST_BUDGET_SECS)
         # Two entries prove the first call's bound fired and the loop's own
-        # retry took over - pre-fix the loop parks inside call one.
+        # retry took over - unguarded the loop parks inside call one.
         await _factory_calls_reach(factory_calls, 2)
         assert not deps.is_leader.is_set(), "no conn, no leadership"
 

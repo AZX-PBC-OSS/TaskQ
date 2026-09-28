@@ -644,9 +644,9 @@ class JobsClient:
             )
             # An explicit trace_id/span_id overrides the ambient span, per
             # docs/guides/jobs-clients.md: "pass explicitly to override or
-            # to propagate an external trace context". Both were previously
-            # accepted and then dropped in favour of the extracted values,
-            # so cross-service propagation silently produced an unlinked
+            # to propagate an external trace context". Explicit values
+            # dropped in favour of the extracted ones leave cross-service
+            # propagation silently producing an unlinked
             # consumer span. SubJobEnqueuer.enqueue has no such override and
             # correctly exposes no parameter for one.
             args = build_enqueue_args(

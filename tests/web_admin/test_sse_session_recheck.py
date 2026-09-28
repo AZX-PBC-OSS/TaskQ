@@ -258,7 +258,8 @@ async def test_admin_sse_stream_opened_before_revocation_ends_after_recheck(
 
         assert task.done(), (
             "CONTRACT: an admin /sse stream whose session is revoked must end "
-            "at the next re-check tick. PRE-FIX (#316): it kept delivering "
+            "at the next re-check tick. REGRESSION (#316): a stream that "
+            f"authenticates only at subscribe keeps delivering "
             f"frames after revocation; tail: {b''.join(received[tail_len:])!r}"
         )
         keepalives_after_flip = b"".join(received[tail_len:]).count(b": keepalive")

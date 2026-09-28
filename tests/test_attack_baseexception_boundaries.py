@@ -161,8 +161,8 @@ async def test_cron_sync_factory_systemexit_is_a_tick_failure() -> None:
     """A sync payload factory's ``sys.exit()`` (raised on the executor-pool
     thread) is recorded as the schedule's own tick failure: the tick task
     completes, the failure UPDATE carries the factory's own exception text,
-    and the worker survives. Pre-fix, the SystemExit crossed the executor
-    future into the tick task's frame, escaped the per-schedule ``except
+    and the worker survives. Unguarded, the SystemExit crosses the executor
+    future into the tick task's frame, escapes the per-schedule ``except
     Exception`` and the tick task ended with the bare re-raise that kills
     the loop: no strike, no telemetry, every sibling cancelled."""
     row = _make_schedule_row(
@@ -279,8 +279,8 @@ async def test_notify_factory_systemexit_is_a_reconnect_failure() -> None:
     """The notify connection factory's ``sys.exit()`` is an ordinary
     reconnect failure: the retry loop logs the attempt (naming the
     factory's own exception, never a carrier's name), backs off, retries,
-    and the second attempt's success lands the connection. Pre-fix, the
-    SystemExit crossed the bare await into the reconnect frame, escaped
+    and the second attempt's success lands the connection. Unguarded, the
+    SystemExit crosses the bare await into the reconnect frame, escapes
     the loop's ``except Exception`` and the health-check sibling died with
     the bare re-raise that kills the loop."""
     deps = _notify_deps()
@@ -425,8 +425,8 @@ def test_classifier_hook_keyboardinterrupt_propagates_raw() -> None:
 
 async def test_sync_lifecycle_hook_systemexit_is_a_hook_failure() -> None:
     """A sync ``on_success`` hook raising ``SystemExit`` is logged and
-    dropped: the terminal write's outcome stands. Pre-fix, the escapee
-    tore the terminal path down after the success write had landed - the
+    dropped: the terminal write's outcome stands. Unguarded, the escapee
+    tears the terminal path down after the success write has landed - the
     dispatch misrouted it into the failure handler (a succeeded job
     recorded failed, a re-execution risk) or the dispatch task died with
     the bare re-raise that kills the loop."""
@@ -686,8 +686,8 @@ async def test_provider_systemexit_is_an_attempt_level_failure_the_job_retries()
     SystemExit), the dispatch completes, and the worker survives. The
     failure is terminal for the ATTEMPT (no actor code ran), not for the
     job: under the default transient policy the handler re-schedules it -
-    the pin's outcome is ``scheduled``. Pre-fix,
-    the SystemExit escaped ``dispatch_one_job``'s ``except Exception`` and
+    the pin's outcome is ``scheduled``. Unguarded,
+    the SystemExit escapes ``dispatch_one_job``'s ``except Exception`` and
     the per-job dispatch task ended with the bare re-raise that kills the
     loop: the row stranded ``running`` for lease expiry."""
     registry = ProviderRegistry()

@@ -369,9 +369,9 @@ async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> N
 
     The claimed row though is DISOWNED before the continue: it is
     running under this worker's lock with no runner left to move it,
-    and the pre-fix handler's "recovers by lock-lease expiry" was
-    fiction - the heartbeat's renewal kept that lease alive forever, so
-    the row was lost (the grand-mixin soak's settle-timeout signature).
+    and the unguarded handler's "recovers by lock-lease expiry" is
+    fiction - the heartbeat's renewal keeps that lease alive forever, so
+    the row is lost (the grand-mixin soak's settle-timeout signature).
     The disown is what stops the renewal and lets the reclaim sweep own
     the row.
     """

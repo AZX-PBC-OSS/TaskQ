@@ -244,7 +244,7 @@ def register(router: APIRouter) -> None:
         without a manual reload. This is the only reachable reachability probe
         a mounted admin router has: the worker health router's
         ``/jobs/health/ready`` answers a different process's deps and is not
-        registered here, so the client used to 404 it forever.
+        registered here, so the admin page needs this same-process probe.
         """
         mode, _label = await get_realtime_mode(redis_client)
         return JSONResponse({"realtime": mode == "realtime"})
@@ -274,7 +274,7 @@ def register(router: APIRouter) -> None:
         # session cookie the request arrived with, and a session revoked
         # mid-stream fails the re-check even though those bytes are unchanged
         # (#316). None when the host wired no verifier: the stream then
-        # authenticates once, the pre-#316 behavior.
+        # authenticates once at subscribe only, with no mid-stream re-check.
         _session_verifier: Callable[[], Awaitable[bool]] | None = (
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )

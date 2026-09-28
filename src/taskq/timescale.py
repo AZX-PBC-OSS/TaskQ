@@ -143,11 +143,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import asyncpg
 import structlog
 
+from taskq._humantime import split_seconds
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
@@ -157,11 +159,15 @@ if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
 
 __all__ = [
+    "STORAGE_MODE_SUMMARY",
     "HypertableReport",
+    "StorageMode",
     "TimescaleCapability",
     "TimescaleDBUnavailableError",
+    "detect_storage_mode",
     "disable_hypertables",
     "enable_hypertables",
+    "probe_registered_policy_jobs",
     "probe_timescale_capability",
 ]
 
@@ -199,6 +205,63 @@ _DEFAULT_DECOMPRESSION_BUDGET = 100_000
 _COMPRESSION_SETTINGS: dict[str, tuple[str, str]] = {
     "jobs_archive": ("actor, queue", "finished_at DESC"),
     "job_attempts_archive": ("job_id", "started_at DESC"),
+}
+
+
+class StorageMode(StrEnum):
+    """The three first-class storage modes a connected server can present.
+
+    Detected — never guessed from settings — by :func:`detect_storage_mode`;
+    ``taskq doctor`` reports the detected mode as its first finding family,
+    and the mode x capability matrix in ``docs/guides/timescaledb.md`` is
+    the prose form of this enum plus the branches :func:`enable_hypertables`
+    takes on it.
+
+    * ``vanilla``: no ``timescaledb`` extension installed. Plain tables;
+      retention is TaskQ's row-level sweeps alone. The default mode, and
+      fully supported.
+    * ``timescale-tsl``: the extension installed AND the server's
+      ``timescaledb.license`` grants the Timescale-license features. The
+      full mode: hypertables, the archive tables' columnstore, and the
+      policy-driven chunk-drop retention.
+    * ``timescale-apache``: the extension installed but the license GUC is
+      ``apache`` (either an Apache-2-edition build, or a TSL-capable build
+      configured down to Apache features). Hypertables convert, but BOTH
+      the chunk-drop policies and the columnstore are Timescale-license
+      features and are refused by the server — measured on 2.30.1:
+      ``add_retention_policy`` and any ``timescaledb.compress*`` option
+      raise ``FeatureNotSupportedError`` under this license. Retention
+      stays with the row-level sweeps; :func:`enable_hypertables` skips
+      the policy arms and says so loudly.
+    """
+
+    VANILLA = "vanilla"
+    TIMESCALE_APACHE = "timescale-apache"
+    TIMESCALE_TSL = "timescale-tsl"
+
+
+#: The capability consequences per mode, ONE line each: the same text
+#: ``taskq doctor`` renders as its first finding family and the seed of
+#: the docs' support matrix. Kept beside the detection code so a change
+#: to a mode's capability (an :func:`enable_hypertables` branch moving,
+#: a new Timescale feature being adopted) must touch this dict in the
+#: same commit — the doctor line, the docs matrix, and the behavior
+#: cannot drift apart by edit distance.
+STORAGE_MODE_SUMMARY: dict[StorageMode, str] = {
+    StorageMode.TIMESCALE_TSL: (
+        "hypertables + columnstore on the archive tables + policy-driven "
+        "chunk-drop retention; the row-level sweeps still expire inside young "
+        "chunks and remain the only expire_at-exact mechanism"
+    ),
+    StorageMode.TIMESCALE_APACHE: (
+        "hypertables, rowstore - the chunk-drop policies AND the columnstore "
+        "are Timescale-license features this server's license disables, so "
+        "retention is the row-level sweeps (bounded batch deletes)"
+    ),
+    StorageMode.VANILLA: (
+        "plain tables - no hypertables, no columnstore; retention is the "
+        "row-level sweeps (bounded batch deletes)"
+    ),
 }
 
 
@@ -242,6 +305,15 @@ class TimescaleCapability:
     preloaded: bool
     """``timescaledb`` appears in ``shared_preload_libraries``."""
 
+    license: str | None = None
+    """The server's ``timescaledb.license`` setting, read with
+    ``current_setting(..., missing_ok)``: ``'timescale'`` (the TSL build's
+    default; older builds spell it ``'tsl'``), ``'apache'`` (the Apache-2
+    feature set — the build itself, or a TSL build configured down), or
+    ``None`` when the server defines no such GUC at all (vanilla Postgres,
+    or a build old enough to predate the GUC — :func:`detect_storage_mode`
+    falls back to a compression-machinery probe for that corner)."""
+
 
 @dataclass(frozen=True, slots=True)
 class HypertableReport:
@@ -270,7 +342,21 @@ class HypertableReport:
     under its 100000 default: the archive-expiry sweep hard-errors on
     compressed chunks at that budget (measured
     ``ConfigurationLimitExceededError``). None when the budget is raised
-    (or unlimited) or the probe could not read it."""
+    (or unlimited), the probe could not read it — or the mode is not
+    ``timescale-tsl`` (no columnstore was adopted, nothing to warn)."""
+
+    mode: StorageMode | None = None
+    """The detected storage mode this run converged to, or None when the
+    run was a flag-gate no-op (nothing was probed). The doctor surfaces
+    the same classification."""
+
+    policies_skipped: str | None = None
+    """Loud reason text when NO policies were registered despite the flag
+    being on: the ``timescale-apache`` mode refuses both the retention
+    policies and the columnstore under its license, so the hypertables
+    convert bare and retention stays with the row-level sweeps. None in
+    the ``timescale-tsl`` mode (everything registered) and on every
+    no-op run."""
 
 
 async def probe_timescale_capability(conn: asyncpg.Connection) -> TimescaleCapability:
@@ -290,13 +376,106 @@ async def probe_timescale_capability(conn: asyncpg.Connection) -> TimescaleCapab
         "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = $1)",
         _TIMESCALE_EXTENSION_NAME,
     )
-    preload = await conn.fetchval("SELECT current_setting('shared_preload_libraries', true)")
+    try:
+        preload = await conn.fetchval("SELECT current_setting('shared_preload_libraries', true)")
+    except asyncpg.InsufficientPrivilegeError:
+        # Measured on PG18 (the 2.30.1 image): examining this GUC is
+        # restricted to the pg_read_all_settings role - a restricted
+        # role's read raises, missing_ok or not, because the setting
+        # EXISTS. The preload FACT is then unknown, and the guard it
+        # feeds is advisory: it exists to convert create_hypertable's
+        # confusing error into a named one, and the DDL's own error is
+        # the loud backstop when the preload really is missing. Reading
+        # the unknown as "loaded" keeps the doctor's mode detection (the
+        # mode needs only installed + license - both PUBLIC reads,
+        # measured) working for unprivileged operators, and never blocks
+        # a deployment on a privilege gap the DDL would name anyway.
+        preload = _TIMESCALE_EXTENSION_NAME
     preloaded = preload is not None and _TIMESCALE_EXTENSION_NAME in preload.split(",")
+    license_value = await conn.fetchval("SELECT current_setting('timescaledb.license', true)")
     return TimescaleCapability(
         available=bool(available),
         installed=bool(installed),
         preloaded=preloaded,
+        license=license_value,
     )
+
+
+async def detect_storage_mode(conn: asyncpg.Connection) -> StorageMode:
+    """Classify the connected server into one of the three first-class
+    storage modes (:class:`StorageMode`).
+
+    The detection the doctor's first finding family and the docs' support
+    matrix both cite, in order:
+
+    1. The extension is not installed in this database — ``vanilla``.
+       (Availability is deliberately NOT consulted: a server that offers
+       the extension but has not created it IS a vanilla server to every
+       runtime path.)
+    2. ``timescaledb.license`` = ``'apache'`` — ``timescale-apache``. This
+       is the authoritative signal: the GUC is the extension's own
+       statement of which feature set is in force, and it covers BOTH
+       Apache-edition builds and TSL-capable builds configured down to
+       Apache features (``ALTER SYSTEM SET timescaledb.license =
+       'apache'``; the GUC cannot be changed inside a running session).
+    3. ``timescaledb.license`` = ``'timescale'`` (older builds spell it
+       ``'tsl'``) — ``timescale-tsl``.
+    4. The GUC is absent entirely (a build old enough to predate it):
+       fall back to the compression machinery's presence
+       (``to_regproc('compress_chunk')`` — defined by TSL-capable builds,
+       absent from Apache-edition ones), which is the only capability the
+       mode classification exists to distinguish at those ages.
+    """
+    capability = await probe_timescale_capability(conn)
+    return await _classify_storage_mode(conn, capability)
+
+
+async def _classify_storage_mode(
+    conn: asyncpg.Connection, capability: TimescaleCapability
+) -> StorageMode:
+    """The classification steps of :func:`detect_storage_mode`, shared with
+    :func:`enable_hypertables` (which has already probed the capability and
+    must not probe twice)."""
+    if not capability.installed:
+        return StorageMode.VANILLA
+    if capability.license == "apache":
+        return StorageMode.TIMESCALE_APACHE
+    if capability.license in ("timescale", "tsl"):
+        return StorageMode.TIMESCALE_TSL
+    compress = await conn.fetchval("SELECT to_regproc('compress_chunk')")
+    return StorageMode.TIMESCALE_TSL if compress is not None else StorageMode.TIMESCALE_APACHE
+
+
+async def probe_registered_policy_jobs(conn: asyncpg.Connection, schema: str) -> tuple[str, ...]:
+    """The ``"proc:table"`` strings of every TimescaleDB policy job
+    registered in *schema*, fail-open to ``()``.
+
+    The license-downgrade probe behind ``taskq doctor``'s second storage-
+    mode drift arm: on a server whose ``timescaledb.license`` was
+    downgraded to apache after an earlier timescale-license deployment,
+    the conversion-era policies are still registered - measured on 2.30.1
+    they now FAIL on every background run (``sqlerrcode 0A000``, retried
+    forever), and the row-level sweeps defer the aged end to them (the
+    retention-policy floor), so rows older than their horizon strand. The
+    healthy apache mode registers nothing, so ANY answer here on an
+    apache-licensed server is downgrade debris. Never raises: a probe or
+    permission failure degrades to ``()`` - the doctor is a diagnostic
+    and must not crash for it (the disable path's own loud check, which
+    DOES raise, is the backstop when the schema is disabled).
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT proc_name, hypertable_name FROM timescaledb_information.jobs
+            WHERE hypertable_schema = $1
+              AND proc_name IN ('policy_retention', 'policy_compression', 'policy_columnstore')
+            """,
+            schema,
+        )
+    except Exception as exc:  # Why: fail-open - a diagnostic probe may never break the doctor; the information views' absence or a permission gap reads as "nothing registered".
+        logger.debug("registered-policy-jobs-probe-failed", schema=schema, error=repr(exc))
+        return ()
+    return tuple(sorted(f"{r['proc_name']}:{r['hypertable_name']}" for r in rows))
 
 
 def _chunk_interval(retention: timedelta) -> timedelta:
@@ -443,22 +622,53 @@ async def enable_hypertables(
     await _convert_job_events(conn, schema, settings, converted)
     await _convert_archive_tables(conn, schema, settings, converted)
 
-    policies = await _register_retention_policies(conn, schema, settings)
-    compression = await _register_compression_policies(conn, schema, settings)
-    guc_warning = await _probe_decompression_budget(conn)
+    # The mode decides the policy arms, not the other way round. The
+    # full TSL mode adopts the chunk-drop retention AND the columnstore;
+    # the apache mode cannot adopt either (the server refuses every
+    # policy/compression API under its license — measured on 2.30.1),
+    # so its hypertables convert bare and retention stays with the
+    # row-level sweeps. Skipped, not failed: the conversion itself is
+    # Apache-licensed and succeeds, and the skip is a documented mode
+    # consequence (the report carries the reason; the doctor line and
+    # the docs matrix state it).
+    mode = await _classify_storage_mode(conn, capability)
+    policies_skipped: str | None = None
+    if mode is StorageMode.TIMESCALE_TSL:
+        policies = await _register_retention_policies(conn, schema, settings)
+        compression = await _register_compression_policies(conn, schema, settings)
+        guc_warning = await _probe_decompression_budget(conn)
+    else:
+        policies, compression, guc_warning = (), (), None
+        policies_skipped = (
+            f"this server's timescaledb.license is {capability.license!r}: the "
+            "chunk-drop retention policies and the columnstore are "
+            "Timescale-license features the server refuses under it, so NONE "
+            "were registered - retention stays with the row-level sweeps "
+            "(bounded batch deletes), and expire_at stays exact everywhere"
+        )
     report = HypertableReport(
         converted=tuple(converted),
         retention_policies=policies,
         compression_policies=compression,
         decompression_guc_warning=guc_warning,
+        mode=mode,
+        policies_skipped=policies_skipped,
     )
     if converted:
         logger.info(
             "hypertables-enabled",
             schema=schema,
             converted=list(converted),
+            mode=mode.value,
             retention_policies=list(policies),
             compression_policies=list(compression),
+        )
+    if policies_skipped is not None:
+        logger.warning(
+            "hypertable-policy-registration-skipped",
+            schema=schema,
+            mode=mode.value,
+            reason=policies_skipped,
         )
     if guc_warning is not None:
         logger.warning("hypertable-decompression-budget-at-default", schema=schema)
@@ -894,13 +1104,17 @@ async def _probe_decompression_budget(conn: asyncpg.Connection) -> str | None:
 
 
 def _format_interval(td: timedelta) -> str:
-    """Human form for the report only ('30 days', '7 days'), never SQL."""
+    """Human form for the report only ('30 days', '7 days'), never SQL.
+
+    The report's presentation contract over the shared
+    :func:`taskq._humantime.split_seconds` cascade — one split, this
+    surface's whole-unit pluralised wording on top.
+    """
     seconds = int(td.total_seconds())
-    days, rem = divmod(seconds, 86400)
-    if days and not rem:
+    days, hours, minutes, secs = split_seconds(seconds)
+    if days and not (hours or minutes or secs):
         return f"{days} days"
-    hours, rem = divmod(rem, 3600)
-    if hours and not rem:
+    if hours and not (minutes or secs):
         return f"{hours} hours"
     return f"{seconds} seconds"
 
@@ -963,6 +1177,8 @@ def _add_foreign_key_sql(
 async def _remove_registered_policies(
     conn: asyncpg.Connection,
     schema: str,
+    *,
+    mode: StorageMode,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Remove every registered policy (retention on all three tables,
     compression on the two archives), idempotently, BEFORE any table
@@ -974,6 +1190,18 @@ async def _remove_registered_policies(
     The pre-read fails open — a report degradation, never a blocked
     removal — but the removals and the convergence check below are loud:
     nothing of either kind may survive this function.
+
+    ``mode`` is the detected storage mode: the ``timescale-apache`` mode
+    refuses every policy API under its license (measured on 2.30.1 —
+    both the retention and the compression removals raise
+    ``FeatureNotSupportedError``), which also means NOTHING can have been
+    registered there, so the removal calls are skipped outright and only
+    the loud remaining-check runs. A schema converted under the full TSL
+    mode and downgraded to the apache license before its disable keeps
+    that check's teeth: the stale policies show up in
+    ``timescaledb_information.jobs``, the removals cannot land, and the
+    disable refuses loudly instead of swapping tables under a live
+    policy.
     """
     try:
         jobs = await conn.fetch(
@@ -997,31 +1225,36 @@ async def _remove_registered_policies(
     # trash rename and its drop leaves the retired hypertable registered
     # under ``{table}__hypertable_trash``, and a policy that outlived the
     # crashed run's removal must not survive into the converging re-run.
-    for table in ("jobs_archive", "job_attempts_archive", "job_events"):
-        for name in (table, f"{table}{_TRASH_SUFFIX}"):
-            if not await _is_hypertable(conn, schema, name):
-                continue
-            await conn.execute(
-                "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
-                f'"{schema}"."{name}"',
-            )
-    for table in ("jobs_archive", "job_attempts_archive"):
-        for name in (table, f"{table}{_TRASH_SUFFIX}"):
-            if not await _is_hypertable(conn, schema, name):
-                continue
-            target = f'"{schema}"."{name}"'
-            # Either removal API landing is enough: the new-style columnstore
-            # name is a procedure on some versions, the legacy name a function
-            # (probed, the house pattern).
-            for remover in (
-                "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
-                "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
-            ):
-                try:
-                    await conn.execute(remover, target)
-                    break
-                except Exception:  # noqa: S112  # Why: probe across extension versions; a surviving policy fails the loud check below.
+    #
+    # In the apache mode both removal APIs raise under the license and
+    # nothing can be registered in the first place — skip the calls, let
+    # the remaining-check below speak if anything survived anyway.
+    if mode is not StorageMode.TIMESCALE_APACHE:
+        for table in ("jobs_archive", "job_attempts_archive", "job_events"):
+            for name in (table, f"{table}{_TRASH_SUFFIX}"):
+                if not await _is_hypertable(conn, schema, name):
                     continue
+                await conn.execute(
+                    "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
+                    f'"{schema}"."{name}"',
+                )
+        for table in ("jobs_archive", "job_attempts_archive"):
+            for name in (table, f"{table}{_TRASH_SUFFIX}"):
+                if not await _is_hypertable(conn, schema, name):
+                    continue
+                target = f'"{schema}"."{name}"'
+                # Either removal API landing is enough: the new-style columnstore
+                # name is a procedure on some versions, the legacy name a function
+                # (probed, the house pattern).
+                for remover in (
+                    "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
+                    "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
+                ):
+                    try:
+                        await conn.execute(remover, target)
+                        break
+                    except Exception:  # noqa: S112  # Why: probe across extension versions; a surviving policy fails the loud check below.
+                        continue
     remaining = await conn.fetch(
         """
         SELECT hypertable_name, proc_name FROM timescaledb_information.jobs
@@ -1031,9 +1264,30 @@ async def _remove_registered_policies(
         schema,
     )
     if remaining:
+        left = [(r["proc_name"], r["hypertable_name"]) for r in remaining]
+        if mode is StorageMode.TIMESCALE_APACHE:
+            # The apache-mode arm: the removals above were SKIPPED, never
+            # attempted - under this license every removal API refuses
+            # (measured on 2.30.1), which is also why nothing could have
+            # been removed here. The surviving policies are a license
+            # DOWNGRADE's debris (converted under the full TSL license,
+            # then downgraded), and the honest refusal names that: the
+            # license is why they are still there, and the license restore
+            # is the only way out - nothing under apache can remove them.
+            raise RuntimeError(
+                f"could not disable the hypertables for schema {schema!r}: this server's "
+                f"timescaledb.license is 'apache' and {len(left)} TimescaleDB policy job(s) "
+                f"from an earlier timescale-license deployment are still registered ({left}) "
+                "- the policy removal APIs were never attempted (they are refused under "
+                "this license, so nothing here could remove them), and the swap refuses "
+                "to run under a live policy. Restore the timescale license (ALTER SYSTEM "
+                "SET timescaledb.license = 'timescale' and reload), re-run "
+                "`taskq migrate up` if the policies need converging, then disable under "
+                "it (see docs/guides/timescaledb.md)."
+            )
         raise RuntimeError(
             f"could not remove the registered policies for schema {schema!r}: "
-            f"{[(r['proc_name'], r['hypertable_name']) for r in remaining]} survived "
+            f"{left} survived "
             "the removal APIs; refusing to swap tables under a live policy"
         )
     retention = tuple(
@@ -1646,7 +1900,9 @@ async def disable_hypertables(
             "Restore the preload (and restart) before disabling."
         )
 
-    retention_removed, compression_removed = await _remove_registered_policies(conn, schema)
+    retention_removed, compression_removed = await _remove_registered_policies(
+        conn, schema, mode=await _classify_storage_mode(conn, capability)
+    )
 
     staging = _vanilla_staging_schema(schema)
     # Crash convergence FIRST — before any DROP SCHEMA CASCADE (the one
