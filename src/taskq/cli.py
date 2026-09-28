@@ -540,7 +540,11 @@ def worker(
     # are dropped, not replayed. Logging is configured first (the same
     # idempotent setup worker_main repeats) so the wiring's startup line
     # renders in the operator's configured format.
-    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    setup_logging(
+        level=settings.log_level,
+        log_format=settings.log_format,
+        events_level=settings.log_events_level,
+    )
     try:
         configure_exporters(settings)
     except OtelExporterConfigurationError as exc:
@@ -726,6 +730,11 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
     conn = await _open_migrate_conn(settings, conn_factory)
     try:
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
+        # checksum_drifts' docstring promises status shares the drift report
+        # with migrate up's refusal — an operator checking a drifted ledger
+        # must see it HERE, not discover it as a deploy-time refusal. The
+        # connection is the one this command owns; the call is read-only.
+        drifts = await migrate_mod.checksum_drifts(conn, schema=settings.schema_name)
     finally:
         # Why bounded: a dead PG can block close() indefinitely, wedging even
         # this one-shot command before process exit. The
@@ -737,7 +746,20 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
     for migration in migrate_mod.discover():
         marker = "✔" if migration.key in applied else " "
         suffix = "" if migration.use_transaction else " (no transaction)"
+        if migration.key in drifts:
+            drift = drifts[migration.key]
+            marker = "✗"
+            suffix += (
+                f"  CHECKSUM DRIFT: ledger {drift.stored[:12]} != file {drift.current[:12]}"
+                " — the next migrate up will refuse; see upgrading.md"
+            )
         typer.echo(f"  [{marker}] {migration.filename}{suffix}")
+    if drifts:
+        typer.echo(
+            f"CHECKSUM DRIFT: {len(drifts)} applied migration(s) no longer match the bundled files"
+        )
+        for key, drift in sorted(drifts.items()):
+            typer.echo(f"  {key}: ledger {drift.stored[:12]} != file {drift.current[:12]}")
 
 
 async def _up(

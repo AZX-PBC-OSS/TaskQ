@@ -1225,8 +1225,12 @@ class InMemoryBackend:
         batch_id: UUID,
         *,
         connection: object = None,
-    ) -> None:
+    ) -> bool:
+        # The in-memory backend is single-threaded and its completion
+        # decision reads the live member set at the write, so it never
+        # gates out mid-drain and never owes a reissue.
         _complete_batch(self, batch_id, connection)
+        return False
 
     async def get_batch(
         self,
