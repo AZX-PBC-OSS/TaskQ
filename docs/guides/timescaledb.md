@@ -20,6 +20,29 @@ document is required to run TaskQ.
 
 ## The three storage modes (the support matrix)
 
+**Which mode should you choose?** The measured answer, from the campaign's
+committed benchmarks (`benchmarks/results/`):
+
+- **On Azure (Apache-2 is the only Timescale offering): run vanilla PG.**
+  Apache keeps hypertables and chunk management but loses compression and
+  policy-driven retention (both TSL-only) — and TaskQ's Apache mode falls
+  back to the same row-level retention sweeps vanilla uses. The measured
+  reads favor vanilla once the page-keyset index exists (the archive tab's
+  10M-row walk: 3.63→0.60 ms/page plain vs 113→52 ms over hypertable
+  chunks). Apache's count(*) metadata win is also columnstore-bound, so it
+  does not apply. What Apache buys is the **upgrade path**: on a later
+  TSL-capable deployment, `taskq migrate up` adopts the full policy and
+  columnstore set in place (pinned).
+- **Self-hosted with the TSL license (free to use, source-available): the
+  full feature set is worth it at scale** — the columnstore's 6.2–20.7×
+  storage reduction and chunk-drop retention pay for their operational
+  surface on large archives; below ~10k archive rows the vanilla column of
+  this table is the cheaper, simpler choice (ops.md §13's framework).
+- **Vanilla**: the default, the simplest operational surface, and — with
+  the page-keyset index — measured as fast or faster on every read this
+  campaign measured. Start here unless a TSL deployment is available and
+  the archive's scale justifies the columnstore.
+
 TaskQ supports three first-class storage modes. The mode is **detected from
 the connected server** — `taskq.timescale.detect_storage_mode` in
 `src/taskq/timescale.py`: the extension catalog first (`pg_extension` — a
