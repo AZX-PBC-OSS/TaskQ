@@ -1177,6 +1177,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 await client.enqueue(sys_slow, SysPayload(sleep=_SLOW_SLEEP), tags=[_TAG])
                 for _ in range(3)
             ]
+            recovery_ids = [str(h.job_id) for h in recovery_jobs]
 
             # The victim: whichever replica is running the recovery work.
             victim_box: list[WorkerProc] = []
@@ -1189,8 +1190,10 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                     JOIN "{schema}".workers w ON w.id = j.locked_by_worker
                     WHERE tags @> ARRAY[$1::text] AND j.status = 'running'
                       AND j.actor = 'sys_slow'
+                      AND j.id = ANY($2::uuid[])
                     """,
                     _TAG,
+                    recovery_ids,
                 )
                 for row in rows:
                     pid = int(row["pid"])
@@ -1236,8 +1239,6 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # Self-heal: the survivor reclaims the orphaned lease and
             # re-runs the work to succeeded (a fresh attempt under the
             # retry budget).
-            recovery_ids = [str(h.job_id) for h in recovery_jobs]
-
             async def _recovered() -> bool:
                 row = await conn.fetchval(
                     f"""
