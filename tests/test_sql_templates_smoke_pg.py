@@ -319,6 +319,19 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "bundle fields (resolved through the prepared inventory, the arbiters "
         "are built inside render()) carry and validate its text",
     ),
+    "taskq.backend._sql_fragments:PROGRESS_MERGE_SQL": (
+        (
+            "taskq.backend._sql_templates:SqlTemplates.mark_snoozed",
+            "taskq.backend._sql_templates:SqlTemplates.mark_retry_after_consume_true",
+        ),
+        None,
+        "a SET-clause fragment (the docstring's two-line progress-merge "
+        "discipline), never a standalone statement; interpolated verbatim "
+        "into the two non-terminal arbiters that bind progress through the "
+        "params CTE, so their rendered bundle fields (resolved through the "
+        "prepared inventory, the arbiters are built inside render()) carry "
+        "and validate its text",
+    ),
 }
 
 # Prefix constants completed at their sole call site: qualified name ->

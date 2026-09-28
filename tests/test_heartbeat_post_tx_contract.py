@@ -22,46 +22,16 @@ from uuid import UUID
 import asyncpg
 import pytest
 import pytest_asyncio
-import structlog
-from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import CancelPhase, JobId
-from taskq.client._enqueuer import SubJobEnqueuer
-from taskq.context import JobContext
-from taskq.obs import bind_job_context
 from taskq.testing.fixtures import JobsApp, ModulePgSchema
 from taskq.testing.pg import create_workered_running_job
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.heartbeat import heartbeat_loop
+from tests._cancel_ctx import make_ctx
 
 pytestmark = pytest.mark.integration
-
-
-class _StubPayload(BaseModel):
-    """Minimal payload for a cancel-path JobContext."""
-
-
-def _make_ctx(job_id: JobId, worker_id: UUID) -> JobContext[BaseModel]:
-    return JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        claim_epoch=0,
-        worker_id=worker_id,
-        payload=_StubPayload(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),
-        log=bind_job_context(
-            structlog.get_logger("taskq.test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-    )
 
 
 def _sleeper() -> asyncio.Task[object]:
@@ -210,7 +180,7 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
         )
 
     task = _sleeper()
-    await deps.active_jobs.register(JobId(job_id), task, _make_ctx(JobId(job_id), worker_id))
+    await deps.active_jobs.register(JobId(job_id), task, make_ctx(JobId(job_id), worker_id))
     active = deps.active_jobs.get(JobId(job_id))
     assert active is not None
     active.cancel_phase = CancelPhase.COOPERATIVE
@@ -283,7 +253,7 @@ async def test_failed_abandon_keeps_the_job_registered_for_a_retry(
         )
 
     task = _sleeper()
-    await deps.active_jobs.register(JobId(job_id), task, _make_ctx(JobId(job_id), worker_id))
+    await deps.active_jobs.register(JobId(job_id), task, make_ctx(JobId(job_id), worker_id))
     active = deps.active_jobs.get(JobId(job_id))
     assert active is not None
     active.cancel_phase = CancelPhase.FORCED
