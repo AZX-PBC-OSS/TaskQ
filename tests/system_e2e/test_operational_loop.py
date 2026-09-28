@@ -88,10 +88,14 @@ from taskq.insights import (
 )
 from taskq.web.admin import create_router, setup_admin_state
 from tests.system_e2e._harness import (
+    DEPLOYMENT_CANCELLATION_GRACE_S,
+    DEPLOYMENT_CLEANUP_GRACE_S,
+    DEPLOYMENT_HEARTBEAT_INTERVAL_S,
+    DEPLOYMENT_LOCK_LEASE_S,
+    DEPLOYMENT_TERMINATION_GRACE_S,
     WorkerProc,
     reap,
-    spawn_worker,
-    wait_worker_ready,
+    spawn_joined_worker,
 )
 from tests.system_e2e._invariants import (
     assert_balanced,
@@ -123,12 +127,11 @@ _MOVE_TARGET_QUEUE = "ops_moved"
 _CRON_EXPR = "* * * * *"
 _CRON_NAME = "ops-loop-cron"
 _CANCEL_REASON = "ops-loop cancel: the operator stopped this one"
-#: The harness's own grace knobs (the worker env's
-#: TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD above): the
-#: reclaim's cancel carve-out reads them, so the limbo contract here
-#: reads the same numbers.
-_CANCELLATION_GRACE_S = 10.0
-_CLEANUP_GRACE_S = 10.0
+#: The harness's grace knobs for this fleet (the deployment-shaped pair
+#: from _harness - the reaping window and the reclaim's cancel carve-out
+#: read them, so the limbo contract here reads the same numbers).
+_CANCELLATION_GRACE_S = DEPLOYMENT_CANCELLATION_GRACE_S
+_CLEANUP_GRACE_S = DEPLOYMENT_CLEANUP_GRACE_S
 #: The slow workload's simulated runtime: long enough that the OBSERVE
 #: probes and the ACT cancel land mid-run (the read sweep spends seconds,
 #: not tens of seconds), short enough to keep the loop under its timeout.
@@ -147,33 +150,20 @@ CREATE TABLE IF NOT EXISTS "{schema}".sys_effects (
 );
 """
 
-# The fleet env: the harness's defaults with the loop's cadence. The
-# harness's 0.5s beat puts the stale-worker reaping window at
-# 0.5 * (max_heartbeat_failures + 3) = 3s - a window this shared host's
-# load stalls (observed: load average 20 on 32 cores, swap pressure)
-# routinely trips, reaping a healthy replica's row mid-test. The loop's
-# fleet therefore runs a 2s beat, deployment-grade cancel graces (the
-# documented escalation-to-abandoned fires when a stalled holder cannot
-# honour the request inside the graces), and the lease those settings
-# pin (cancellation + cleanup < lease; command budget 0.5 + 4 * (2.0 +
-# 0.5) = 10.5 <= lease 24): the reaping window becomes 12s, the kill9
-# reclaim still lands well inside the recovery poll, and the fleet-wide
-# surfaces (the 30s liveness window) see the same healthy fleet.
+# The fleet env: the harness's defaults with the loop's cadence - the
+# DEPLOYMENT-shaped pair from the tier's own constants (the rationale
+# lives on the constants; the reaping window at this beat is 12s, the
+# kill9 reclaim still lands well inside the recovery poll, and the
+# fleet-wide surfaces (the 30s liveness window) see the same healthy
+# fleet).
 _WORKER_ENV = {
     "TASKQ_QUEUES": _LOOP_QUEUES,
-    "TASKQ_HEARTBEAT_INTERVAL": "2.0",
-    "TASKQ_LOCK_LEASE": "24.0",
-    # Operator-grade graces: the harness's 1s+1s pair is the chaos tier's
-    # precision (a body must hit the forced ladder within seconds), but a
-    # cancel whose holder's loop stalls a few seconds under host load
-    # lands the row 'abandoned' - the documented escalation the graces'
-    # expiry produces - instead of 'cancelled'. The loop's fleet runs
-    # deployment-shaped margins (the shipped defaults are 20s+20s): a
-    # stalled beat still honours the cooperative phases.
-    "TASKQ_CANCELLATION_GRACE_PERIOD": "10.0",
-    "TASKQ_CLEANUP_GRACE_PERIOD": "10.0",
+    "TASKQ_HEARTBEAT_INTERVAL": str(DEPLOYMENT_HEARTBEAT_INTERVAL_S),
+    "TASKQ_LOCK_LEASE": str(DEPLOYMENT_LOCK_LEASE_S),
+    "TASKQ_CANCELLATION_GRACE_PERIOD": str(DEPLOYMENT_CANCELLATION_GRACE_S),
+    "TASKQ_CLEANUP_GRACE_PERIOD": str(DEPLOYMENT_CLEANUP_GRACE_S),
     # The shutdown budget the graces imply (grace + cleanup + 5 <= 25).
-    "TASKQ_TERMINATION_GRACE_PERIOD": "40.0",
+    "TASKQ_TERMINATION_GRACE_PERIOD": str(DEPLOYMENT_TERMINATION_GRACE_S),
 }
 # The standalone admin deployment: actions enabled (the operator's choice
 # the checklist documents), http-dev so the CSRF cookie works over plain
@@ -553,48 +543,11 @@ async def _spawn_fleet_worker(
 ) -> WorkerProc:
     """One fleet replica, held to the operator's own deployment standard.
 
-    Not just "the process booted and its health socket answers": the
-    replica must JOIN the fleet - a registered row whose
-    ``last_seen_at`` the heartbeat actually advances. The distinction is
-    not decorative: a replica whose bootstrap wedges between worker
-    registration and the loop TaskGroup (observed here against cold,
-    contended TimescaleDB containers) is registered and health-green
-    while NEVER running a loop, its row then reaped by the stale-worker
-    cleanup - an operator sees a pod that never went Ready and restarts
-    it. This helper does exactly that: verify the heartbeat advances,
-    else reap and respawn, and fail only when no spawn joins.
+    The tier's shared spawn standard (``_harness.spawn_joined_worker``):
+    a registered row whose heartbeat advances, else reap and respawn —
+    the ghost-replica accommodation every multi-replica scenario shares.
     """
-    last_error = ""
-    for _attempt in range(3):
-        worker = spawn_worker(dsn, schema, tag=tag, extra_env=_WORKER_ENV)
-        wait_worker_ready(worker)
-        pid = worker.proc.pid
-
-        async def _registered(pid: int = pid) -> bool:
-            row = await conn.fetchval(
-                f'SELECT last_seen_at FROM "{schema}".workers WHERE pid = $1', pid
-            )
-            return row is not None
-
-        try:
-            await _poll(_registered, 20.0, f"replica {tag} registered its fleet row")
-            seen_1 = await conn.fetchval(
-                f'SELECT last_seen_at FROM "{schema}".workers WHERE pid = $1', pid
-            )
-            await asyncio.sleep(5.0)  # two and a half beats at the fleet's cadence
-            seen_2 = await conn.fetchval(
-                f'SELECT last_seen_at FROM "{schema}".workers WHERE pid = $1', pid
-            )
-            if seen_2 is not None and seen_1 is not None and seen_2 > seen_1:
-                return worker
-            last_error = (
-                f"replica {tag}'s heartbeat never advanced its registered row "
-                f"(booted green, never joined the fleet); restarted"
-            )
-        except AssertionError as exc:
-            last_error = str(exc)
-        reap(worker)
-    raise AssertionError(f"the replica never joined the fleet in 3 spawns: {last_error}")
+    return await spawn_joined_worker(conn, dsn, schema, tag, extra_env=_WORKER_ENV)
 
 
 @pytest.mark.timeout(900)

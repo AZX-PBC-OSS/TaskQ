@@ -552,7 +552,7 @@ Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive
 
 **How to remediate.**
 
-1. One actor, one `error_class`: fix that actor or its dependency; failed rows can be retried from the admin UI's Retry button or `backend.retry_job()` once the cause is fixed.
+1. One actor, one `error_class`: fix that actor or its dependency; failed rows can be retried with `taskq job retry`, the embedded admin UI's Retry button, or `backend.retry_job()` once the cause is fixed (the standalone `taskq ui serve`'s Retry button answers 503 — no Backend there; see [admin-ui.md](admin-ui.md#starting-the-ui)).
 2. `DeadlineExceeded` dominating: widen `schedule_to_close` (or the retry `base`/`cap`) for the actor; see [ops.md: Timeouts](ops.md#2-timeouts-start_to_close-and-schedule_to_close).
 3. Many actors at once: a shared dependency (database, downstream API); check `TaskQRetryRateHigh` and `TaskQDispatchLatencyHigh` first; the terminal share is the tail end of the same incident once budgets run out.
 
@@ -714,7 +714,7 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
 
 **How to remediate.**
 
-1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, or the admin UI's cancel action) so they stop counting.
+1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, `taskq job cancel-where`, or the embedded admin UI's cancel action) so they stop counting.
 2. `unserved_queue`: follow [TaskQQueueUnserved](#taskqqueueunserved): subscribe a live worker to the named queue, or move the actor's assignment with `taskq actor-config move-queue`.
 3. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs.
 
