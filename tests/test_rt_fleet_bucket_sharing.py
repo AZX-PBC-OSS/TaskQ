@@ -59,6 +59,11 @@ pytestmark = [pytest.mark.integration]
 
 @pytest.mark.redis
 async def test_redis_fleet_double_spend_exact(redis_url: str) -> None:
+    # Shared-pair tenant (documented, per fixtures.redis_url's tenancy
+    # contract): logical acquire/deny assertions on the test's own unique
+    # logical DB - no broker-global command, no latency or wall-clock
+    # boundary assertion. The boundary-timing sibling below is NOT such a
+    # tenant and rides a private broker.
     """Two worker instances bursting one shared fixed-quota hash admit
     exactly ``capacity`` total, not per instance."""
     settings = WorkerSettings.load_from_dict(
@@ -98,17 +103,29 @@ async def test_redis_fleet_double_spend_exact(redis_url: str) -> None:
 
 
 @pytest.mark.redis
-async def test_redis_deny_then_allow_boundary_at_the_hint(redis_url: str) -> None:
+async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str) -> None:
     """A denied acquire stays denied strictly before its own retry_after
     and is admitted once it has elapsed: the hint is honored, never a
-    spin, never an early grant."""
+    spin, never an early grant.
+
+    The broker is the test's PRIVATE Dragonfly (``private_redis_url``): the
+    pin is WALL-CLOCK BOUNDARY TIMING across broker round trips - sleep
+    hint/2, deny; sleep past the hint, admit - and a shared-broker
+    co-tenancy stall band shifts that boundary (a stretched round trip
+    lands the "early" acquire past the hint, or the "late" one inside a
+    queue). See ``taskq.testing.fixtures.redis_url``'s tenancy contract.
+    """
     settings = WorkerSettings.load_from_dict(
-        {"pg_dsn": "postgresql://u:p@h/d", "redis_url": redis_url, "schema_name": "rt_fleet_pin"}
+        {
+            "pg_dsn": "postgresql://u:p@h/d",
+            "redis_url": private_redis_url,
+            "schema_name": "rt_fleet_pin",
+        }
     )
     tb = TokenBucket(
         name=f"rt_boundary_{new_base62()}", capacity=1.0, refill_per_second=1.0, backend="redis"
     )
-    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
+    client = redis_async.from_url(private_redis_url, decode_responses=False, socket_timeout=None)
 
     try:
         first = await tb.acquire(1.0, redis_client=client, settings=settings)
@@ -235,6 +252,8 @@ async def test_pg_allow_boundary_is_inclusive_at_exact_refill(
 
 @pytest.mark.redis
 async def test_redis_last_token_of_a_fixed_quota_is_grantable(redis_url: str) -> None:
+    # Shared-pair tenant (documented, per fixtures.redis_url's tenancy
+    # contract): logical grant assertion on the test's own unique logical DB.
     """The Redis script's spend boundary is inclusive too: the last token
     of a fixed quota is granted, the quota fully spends, the next denial
     stores exactly 0."""

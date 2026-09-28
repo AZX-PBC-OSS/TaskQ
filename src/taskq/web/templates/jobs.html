@@ -4,20 +4,27 @@
 {% block title %}Jobs — TaskQ Admin{% endblock %}
 
 {% block head %}
+{# Every value reaches a <script> block, so every string is encoded as a
+   JS literal (| tojson), never HTML-escaped: inside <script> the browser
+   decodes no entities, so the HTML-escaped form reached the JS config
+   with the entities intact (a search for O'Brien read back as
+   O&#39;Brien) - corrupted data on the very object the live machinery
+   reads. | tojson is also the script-safe JSON encoding (it escapes <,
+   >, &, and quotes as JS escapes), so the XSS boundary holds. #}
 <script>
 window.__taskqJobConfig = {
-    tab: "{{ tab }}",
-    basePath: "{{ base_path }}",
-    realtimeMode: "{{ realtime_mode }}",
+    tab: {{ tab | tojson }},
+    basePath: {{ base_path | tojson }},
+    realtimeMode: {{ realtime_mode | tojson }},
     pollIntervalMs: {{ poll_interval_ms }},
-    actor: "{{ actor_filter }}",
-    queue: "{{ queue_filter }}",
-    timeRange: "{{ time_range }}",
-    timeFrom: "{{ time_from }}",
-    timeTo: "{{ time_to }}",
-    identityKey: "{{ identity_key }}",
-    fairnessKey: "{{ fairness_key }}",
-    search: "{{ search }}",
+    actor: {{ actor_filter | tojson }},
+    queue: {{ queue_filter | tojson }},
+    timeRange: {{ time_range | tojson }},
+    timeFrom: {{ time_from | tojson }},
+    timeTo: {{ time_to | tojson }},
+    identityKey: {{ identity_key | tojson }},
+    fairnessKey: {{ fairness_key | tojson }},
+    search: {{ search | tojson }},
     liveOn: {{ 'true' if live == 'on' else 'false' }},
     selectedStatuses: {{ statuses | tojson }},
     allStatuses: {{ all_statuses | tojson }},

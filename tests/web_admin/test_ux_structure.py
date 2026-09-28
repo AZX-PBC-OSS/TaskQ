@@ -373,4 +373,4 @@ def test_dark_class_is_applied_before_first_paint(
     html = client.get(f"{_PREFIX}/queues").text
     head = html[: html.find("</head>")]
     assert "documentElement.classList.add" in head
-    assert head.find("documentElement.classList.add") < head.find("alpinejs")
+    assert head.find("documentElement.classList.add") < head.find("alpine.min.js")

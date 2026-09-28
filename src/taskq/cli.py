@@ -1517,7 +1517,10 @@ class _StrandedActorJobs:
 
 
 async def _list_stranded_pending_jobs(
-    conn: asyncpg.Connection, *, schema: str
+    conn: asyncpg.Connection,
+    *,
+    schema: str,
+    worker_liveness_seconds: int,
 ) -> list[_StrandedActorJobs]:
     """Pending/scheduled jobs grouped by the actor nothing alive consumes.
 
@@ -1527,8 +1530,12 @@ async def _list_stranded_pending_jobs(
     routing-queue discriminator (a re-pended row routes by its actor's
     stored assignment, not its label) is dispatch's own contract, mirrored
     from the sweep so both surfaces answer the same question the same way.
-    The result is per ACTOR, bounded by the distinct-actor count, never
-    by backlog depth.
+    "Serves" means a LIVE worker subscribes the queue, the sweep's own
+    liveness arm: a worker row whose heartbeat has gone stale must not
+    count as serving until the stale-worker sweep removes it, or a ghost
+    row hides an unserved queue from the operator mid-incident. The
+    result is per ACTOR, bounded by the distinct-actor count, never by
+    backlog depth.
     """
     if not _IDENT_RE.match(schema):
         # Defence in depth: TaskQSettings validates schema_name at load;
@@ -1551,6 +1558,14 @@ FROM (
              AND NOT EXISTS (
                SELECT 1 FROM "{schema}".workers w
                WHERE r.routing_queue = ANY(w.queues)
+                 -- Mirrors the leader sweep's liveness arm: a worker row
+                 -- whose heartbeat has gone stale is not dispatching; until
+                 -- the stale-worker sweep removes it, it must not count as
+                 -- serving the queue. statement_timestamp() (STABLE), the
+                 -- two-clock rule every sampler follows; the window is the
+                 -- admin UI's own liveness setting.
+                 AND w.last_seen_at > statement_timestamp()
+                      - make_interval(secs => $1)
              ) AS unserved_queue
     FROM (
         SELECT j.actor,
@@ -1565,7 +1580,8 @@ FROM (
     ) r
 ) s
 WHERE s.no_actor_config OR s.unserved_queue
-GROUP BY s.actor"""  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+GROUP BY s.actor""",  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+        worker_liveness_seconds,
     )
     return [
         _StrandedActorJobs(
@@ -1860,7 +1876,11 @@ async def _doctor(
     try:
         rows = await list_actor_configs(conn, schema=settings.schema_name)
         queues = await list_queues(conn, schema=settings.schema_name)
-        stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
+        stranded = await _list_stranded_pending_jobs(
+            conn,
+            schema=settings.schema_name,
+            worker_liveness_seconds=settings.admin_worker_liveness_seconds,
+        )
         worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)

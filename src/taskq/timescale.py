@@ -112,6 +112,31 @@ that never converted. The behaviors the conversion traded away come back
 with the shape: the bare primary keys reject duplicates, the
 ``job_attempts_archive → jobs_archive`` foreign key cascades again, and
 the event id sequence continues from the restored maximum.
+
+The NULL finished_at tail (the pre-flight refusal)
+--------------------------------------------------
+
+``jobs_archive.finished_at`` is nullable (the archive mirrors ``jobs``,
+where the column is NULL until a terminal transition stamps it), so a
+legacy archive can hold rows whose ``finished_at`` is NULL — version
+skew (an older reclaim sweep terminalised cancelled rows without
+stamping; those rows are the un-draining NULL tail of the prune's
+cursor walk) or direct SQL carries the shape in. No production write
+produces one (every terminal arm stamps ``finished_at``, and the prune's
+archive COPY requires it non-NULL in both its candidate and lock-time
+predicates), and TimescaleDB cannot convert the table while they exist:
+the partition column must be NOT NULL, and ``create_hypertable`` with
+``migrate_data => TRUE`` aborts on them with NotNullViolationError —
+mid-conversion, after the primary-key drops and the foreign-key drop
+have already committed (the conversion's statements run one per
+transaction on the deploy connection's autocommit), stranding a
+half-converted schema whose archive has no primary key.
+
+So the enable path runs a pre-flight census BEFORE any DDL and refuses
+loudly with the row count and both remediations (complete the rows —
+``finished_at = archived_at`` — or discard them), leaving the schema
+byte-identical. The rows are debris, never converted silently: the
+operator decides, and a re-run after the backfill converts cleanly.
 """
 
 from __future__ import annotations
@@ -182,14 +207,17 @@ class TimescaleDBUnavailableError(Exception):
     cannot honor it.
 
     Never a silent degrade: the setup path refuses loudly and names what is
-    missing. ``reason`` distinguishes the three failure shapes:
+    missing. ``reason`` distinguishes the four failure shapes:
 
     * the extension is not offered by the server (absent from
       ``pg_available_extensions``),
     * the extension could not be created (the connecting role lacks the
       privilege; pre-create it with an administrative role),
     * the extension is installed but TimescaleDB is absent from
-      ``shared_preload_libraries``.
+      ``shared_preload_libraries``,
+    * the archive holds rows the conversion cannot move (the pre-flight
+      census: ``jobs_archive`` rows with a NULL ``finished_at`` — the
+      message carries the count and the remediation).
 
     Unset ``TASKQ_TIMESCALEDB_HYPERTABLES`` (or leave it false) to run on
     this server without hypertables: vanilla Postgres remains fully
@@ -322,6 +350,15 @@ async def enable_hypertables(
     re-asserted interval shapes future chunks only: existing chunks keep
     the interval they were created with.
 
+    One data-state refusal runs before ANY DDL (see
+    :func:`_refuse_null_archive_tail`): an archive holding rows whose
+    ``finished_at`` is NULL — legacy debris no production write produces —
+    is refused loudly with the row count and the remediation, because
+    ``create_hypertable(migrate_data => TRUE)`` would otherwise abort on
+    it mid-conversion and strand a half-converted schema (the constraint
+    surgery before it commits statement-by-statement on the deploy
+    connection's autocommit). The refusal leaves the schema untouched.
+
     The two archive tables also adopt the columnstore: per-table
     segmentby/orderby settings plus a compression policy registered at
     one chunk interval (a chunk compresses once it has stopped receiving
@@ -400,6 +437,8 @@ async def enable_hypertables(
             "TASKQ_TIMESCALEDB_HYPERTABLES."
         )
 
+    await _refuse_null_archive_tail(conn, schema)
+
     converted: list[str] = []
     await _convert_job_events(conn, schema, settings, converted)
     await _convert_archive_tables(conn, schema, settings, converted)
@@ -469,6 +508,91 @@ async def _to_hypertable(
         chunk_interval,
     )
     return True
+
+
+async def _refuse_null_archive_tail(conn: asyncpg.Connection, schema: str) -> None:
+    """The pre-flight census: refuse the conversion BEFORE any DDL when
+    ``jobs_archive`` holds rows whose ``finished_at`` is NULL.
+
+    Why this census exists (the NULL tail): ``jobs_archive.finished_at``
+    is nullable — the archive mirrors every ``jobs`` column, and a job's
+    ``finished_at`` is NULL through its whole non-terminal life (dispatch
+    stamps ``finished_at = NULL`` on claim). No production write can land
+    one in the archive — every terminal transition stamps
+    ``finished_at = clock_timestamp()`` (all ten terminal arms in
+    :mod:`taskq.backend._sql_templates`), and the prune's archive COPY
+    could not pick a NULL row up anyway: both the candidate window
+    (``_ARCHIVE_CANDIDATE_SQL``) and the lock-time re-read in
+    ``_ARCHIVE_CTE_SQL`` require ``finished_at < statement_timestamp() -
+    retention``, and ``NULL < x`` is NULL. But version skew can: an older
+    reclaim sweep's pre-reorder shape terminalised budget-carrying
+    cancelled rows without stamping (the shape named in the
+    ``finished_at`` CASE comment in ``backend/_sweeps.py``), those rows
+    are the un-draining NULL tail of the prune's cursor walk (invisible
+    to the age predicate forever), and any hand-run backfill that moves
+    them into the archive by hand carries the NULLs along. The archive's
+    own data model (nullable column, no status/finished_at CHECK) admits
+    exactly that shape.
+
+    Verdict: debris, not legitimate data — nothing reads them (the admin
+    history seam's ``__NULL__`` sentinel range exists for the LIVE walk,
+    and is dead on arrival on a converted schema), and "converting" them
+    would mean inventing a finish timestamp, a silent data-semantics
+    rewrite. The house doctrine is a loud refusal: the operator decides
+    whether to complete or discard the rows, and the message names the
+    count and both remediations. The census runs before ANY statement of
+    the conversion (see the stranded-state rationale on the raise below)
+    so the refusal leaves the schema byte-identical to what the operator
+    arrived with. The other two partition columns need no census: both
+    are NOT NULL in the bundled schema, so the NULL shape is
+    structurally impossible there.
+
+    The stranded-state rationale: the conversion's statements run one per
+    transaction on the deploy connection's autocommit. Without this
+    census, the failure surfaced mid-``create_hypertable`` — AFTER the
+    foreign-key drop, both primary-key drops, and both unique-constraint
+    adds had committed, and after ``job_events`` had converted whole.
+    A NotNullViolationError from ``migrate_data`` therefore stranded a
+    half-converted schema: an archive with no primary key (a duplicate-id
+    insert succeeds), no attempts FK, and ``job_events`` already a
+    hypertable — degraded until an operator diagnosed it, while every
+    re-run failed at the same spot. Refusing first is what makes the
+    failure atomic.
+    """
+    if not await _table_exists(conn, schema, "jobs_archive"):
+        return
+    if await _is_hypertable(conn, schema, "jobs_archive"):
+        # Already converted: the partition column is NOT NULL now, so the
+        # NULL shape cannot exist and the count query would only scan the
+        # archive on every converging re-run. Skip it.
+        return
+    null_count = int(
+        await conn.fetchval(
+            # Why noqa S608: schema is _IDENT_RE-validated in enable_hypertables;
+            # the table and column names are module-owned constants, never input.
+            f'SELECT count(*) FROM "{schema}".jobs_archive WHERE finished_at IS NULL'  # noqa: S608
+        )
+    )
+    if not null_count:
+        return
+    raise TimescaleDBUnavailableError(
+        # Why noqa S608: the schema inside the remediation SQL is
+        # _IDENT_RE-validated in enable_hypertables; the table and column
+        # names are module-owned constants, never input.
+        f"TASKQ_TIMESCALEDB_HYPERTABLES=true: the conversion refuses to run — "  # noqa: S608
+        f'"{schema}".jobs_archive holds {null_count} row(s) whose finished_at is '
+        "NULL, and TimescaleDB requires the partition column to be NOT NULL: "
+        "create_hypertable would abort on them mid-conversion and strand the "
+        "schema half-converted (the primary keys and the attempts foreign key "
+        "drop in statements that have already committed by then). No archive "
+        "write can produce such a row — every terminal transition stamps "
+        "finished_at and the prune's archive COPY requires it non-NULL — so "
+        "these are legacy debris (an older version's writers, or direct SQL). "
+        "Complete or discard them explicitly, then re-run `taskq migrate up`:  "
+        f'UPDATE "{schema}".jobs_archive SET finished_at = archived_at WHERE '
+        "finished_at IS NULL;  -- complete: stamp the archive time  |  "
+        f'DELETE FROM "{schema}".jobs_archive WHERE finished_at IS NULL;  -- discard'
+    )
 
 
 async def _convert_job_events(
