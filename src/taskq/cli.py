@@ -45,6 +45,7 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
+from taskq._humantime import humanize_age
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
@@ -3007,18 +3008,13 @@ async def _queues_depth(settings: TaskQSettings) -> None:
 
 
 def _format_age(seconds: float) -> str:
-    """Humanize a server-computed age for the depth table."""
-    total = int(seconds)
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
-    if days > 0:
-        return f"{days}d{hours}h"
-    if hours > 0:
-        return f"{hours}h{minutes}m"
-    if minutes > 0:
-        return f"{minutes}m{secs}s"
-    return f"{secs}s"
+    """Humanize a server-computed age for the depth table.
+
+    The CLI's presentation contract over the shared
+    :func:`taskq._humantime.humanize_age` split — one cascade, this
+    surface's compact no-space shape on top.
+    """
+    return humanize_age(seconds)
 
 
 # ── job ────────────────────────────────────────────────────────────────
