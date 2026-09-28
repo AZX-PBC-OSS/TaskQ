@@ -11,3 +11,5 @@
 !archive-scale*.json
 !backlog-rss-soak.json
 !hotpath-fix-sweep-render.json
+!hotpath-profile.json
+!hotpath-profile.md
