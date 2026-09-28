@@ -1012,7 +1012,15 @@ def test_help_contract_covers_every_rendered_column_and_marker(
     assert captured, "every surface must render a table to capture headers from"
     help_result = runner.invoke(app, ["insights", "--help"])
     assert help_result.exit_code == 0
-    plain = " ".join(help_result.output.split()).lower()
+    # CI's environment makes rich colorize the help even without a TTY
+    # (the run-36369327985 lesson: the words arrive interleaved with
+    # \x1b[..m escapes, and a whitespace-only normalization still misses
+    # every marker). Presentation is not contract: strip the escapes
+    # before matching.
+    import re as _re
+
+    ansi_free = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    plain = " ".join(ansi_free.sub("", help_result.output).split()).lower()
     for headers in captured:
         for header in headers:
             for token in header.lower().split("_"):
