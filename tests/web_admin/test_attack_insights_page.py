@@ -777,6 +777,67 @@ async def test_the_mode_badge_tells_the_same_truth_as_every_other_page(
         _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_the_mode_decision_moves_the_transport_not_just_the_badge(
+    plain_dsn: str, lab: _Lab
+) -> None:
+    """The queues page's mode split, insights edition: POLLING mode
+    renders the meta refresh and no htmx poll — a page without JS
+    machinery stays live (the #570 contract); REALTIME mode renders the
+    htmx poll and NO meta refresh — the six archive-UNION aggregates
+    must not be re-fetched by both transports (#337's double-fetch,
+    #567's complaint); and an HX-Request poll tick returns the body
+    partial alone, never the whole document."""
+    from taskq.web.admin import _factory
+
+    _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]  # Why: the module-level 5s cache is the reset point the realtime-badge suite uses too.
+    _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    schema = lab.plain_twin.schema
+    pool = await asyncpg.create_pool(plain_dsn, min_size=1, max_size=2)
+    try:
+        polling_bundle = create_router(pool, schema=schema, base_path="/admin")
+        polling_app = FastAPI()
+        setup_admin_state(polling_app, polling_bundle)
+        polling_app.include_router(polling_bundle.router, prefix="/admin")
+        polling_mounted = _Mounted(schema=schema, app=polling_app, pool=pool)
+
+        polling_html = await _html(polling_mounted)
+        assert 'http-equiv="refresh"' in polling_html, (
+            "polling mode's no-JS liveness: the meta refresh is the transport"
+        )
+        assert "hx-get" not in polling_html, (
+            "polling mode runs ONE transport: the htmx poll must be off"
+        )
+
+        realtime_bundle = create_router(
+            pool, schema=schema, base_path="/admin", redis_client=_HealthyRedis()
+        )
+        realtime_app = FastAPI()
+        setup_admin_state(realtime_app, realtime_bundle)
+        realtime_app.include_router(realtime_bundle.router, prefix="/admin")
+        realtime_mounted = _Mounted(schema=schema, app=realtime_app, pool=pool)
+
+        realtime_html = await _html(realtime_mounted)
+        assert 'http-equiv="refresh"' not in realtime_html, (
+            "realtime mode's htmx poll is the page's only refresh: a meta "
+            "refresh alongside it re-fetches the six archive-UNION "
+            "aggregates every tick (the double-fetch)"
+        )
+        assert 'hx-trigger="every' in realtime_html, "the htmx poll is realtime's transport"
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=realtime_app), base_url="http://test"
+        ) as client:
+            tick = await client.get("/admin/insights", headers={"HX-Request": "true"})
+        assert tick.status_code == 200
+        assert "<html" not in tick.text, "the poll must return the partial, not the full page"
+        assert 'id="insights-body"' in tick.text, "the poll swaps the body partial"
+    finally:
+        await pool.close()
+        _factory._redis_health_cache.ok = False  # pyright: ignore[reportPrivateUsage]
+        _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
+
+
 # ── Attack 5: the template's injection surface ──────────────────────────
 
 

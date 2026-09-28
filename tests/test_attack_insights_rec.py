@@ -770,12 +770,14 @@ async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
     pg_dsn: str,
 ) -> None:
     """An ALREADY-migrated dev database (pre-01.00.20_04) upgrades: the
-    runner applies exactly the new migration, records its rendered
-    checksum, reports NO drift (the ledger is honest), and a second
-    apply_pending is a clean no-op."""
+    runner applies exactly the PENDING TAIL of the bundled migrations —
+    01.00.20_04 and every migration bundled after it (01.00.21_01
+    today; the expectation is derived from ``discover()`` itself, so the
+    next bundled migration extends this pin instead of breaking it) —
+    records their rendered checksums, reports NO drift (the ledger is
+    honest), and a second apply_pending is a clean no-op."""
     from taskq.migrate import apply_pending, checksum_drifts, discover
 
-    migration = next(m for m in discover() if m.version == "01.00.20_04")
     schema = "ck_due_" + new_uuid().hex[:10]
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -791,16 +793,22 @@ async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
                 earlier.key,
                 earlier.checksum(schema),
             )
-        # The upgrade: EXACTLY the new migration applies.
+        # The upgrade: EXACTLY the pending tail applies — everything from
+        # the 01.00.20_04 cutoff onward (01.00.20_04 itself through the
+        # bundled set's end: main's 01.00.21_01 archive keyset index
+        # today). Derived from discover()'s own ordering, never a
+        # hardcoded literal, so the next bundled migration extends the
+        # expectation instead of re-breaking it.
         applied = await apply_pending(conn, schema=schema)
-        assert [m.key for m in applied] == [migration.key]
+        assert [m.key for m in applied] == [m.key for m in migrations[index:]]
 
-        # The recorded checksum is the file's honest rendered checksum.
-        recorded = await conn.fetchval(
-            f'SELECT checksum FROM "{schema}".schema_migrations WHERE version = $1',
-            migration.key,
-        )
-        assert recorded == migration.checksum(schema)
+        # Every recorded checksum is the file's honest rendered checksum.
+        for m in applied:
+            recorded = await conn.fetchval(
+                f'SELECT checksum FROM "{schema}".schema_migrations WHERE version = $1',
+                m.key,
+            )
+            assert recorded == m.checksum(schema), f"{m.key}'s ledger row drifted"
         assert await checksum_drifts(conn, schema=schema) == {}
 
         # Idempotence at the runner level: nothing pending, no drift error.
