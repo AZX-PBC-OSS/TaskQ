@@ -148,6 +148,7 @@ from typing import TYPE_CHECKING
 import asyncpg
 import structlog
 
+from taskq._humantime import split_seconds
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
@@ -894,13 +895,17 @@ async def _probe_decompression_budget(conn: asyncpg.Connection) -> str | None:
 
 
 def _format_interval(td: timedelta) -> str:
-    """Human form for the report only ('30 days', '7 days'), never SQL."""
+    """Human form for the report only ('30 days', '7 days'), never SQL.
+
+    The report's presentation contract over the shared
+    :func:`taskq._humantime.split_seconds` cascade — one split, this
+    surface's whole-unit pluralised wording on top.
+    """
     seconds = int(td.total_seconds())
-    days, rem = divmod(seconds, 86400)
-    if days and not rem:
+    days, hours, minutes, secs = split_seconds(seconds)
+    if days and not (hours or minutes or secs):
         return f"{days} days"
-    hours, rem = divmod(rem, 3600)
-    if hours and not rem:
+    if hours and not (minutes or secs):
         return f"{hours} hours"
     return f"{seconds} seconds"
 
