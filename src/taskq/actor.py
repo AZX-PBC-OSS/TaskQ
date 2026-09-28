@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Concatenate, Protocol, get_type_hints, overloa
 import structlog
 from pydantic import BaseModel, TypeAdapter
 
+from taskq.actor_config import normalize_retention_days
 from taskq.backend._protocol import (
     _QUEUE_NAME_MAX_CHARS,  # pyright: ignore[reportPrivateUsage]  # Why: the queue name's btree bound governs the actor name's too (the two share the composite dispatch indexes); one constant, no drift.
     DEFAULT_UNIQUE_STATES,
@@ -163,7 +164,10 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
             ``actor_config.metadata`` (``jsonb NOT NULL``). Must be a
             plain ``dict[str, object]``, mapping proxies and
             frozendicts are rejected at decoration time to avoid
-            surprises at JSONB serialization time.
+            surprises at JSONB serialization time. ``retention_days``
+            accepts an integer or ASCII digit string from 0 through
+            999999999, and 0 archives terminal jobs on the next prune
+            sweep.
 
     Both are stored as instance fields rather than class metadata so
     pyright can infer ``P`` and ``R`` from a constructor call without
@@ -638,6 +642,9 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
             f"actor handler {fn.__qualname__!r} metadata must be a dict or None; "
             f"got {type(metadata).__name__!r}.",
         )
+
+    if metadata is not None and "retention_days" in metadata:
+        normalize_retention_days(metadata["retention_days"])
 
     if max_concurrent is not None and (not isinstance(max_concurrent, int) or max_concurrent < 0):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker.
         raise ValueError(

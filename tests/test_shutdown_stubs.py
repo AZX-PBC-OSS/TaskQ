@@ -11,13 +11,13 @@ import asyncio
 import contextlib
 from typing import cast
 from unittest.mock import create_autospec
-from uuid import UUID
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobId, JobRow
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import consumer_loop_stub, producer_loop_stub
+from tests._stub_job_row import make_job as _make_job
 
 
 def _stub_deps() -> WorkerDeps:
@@ -77,57 +77,6 @@ def _make_backend_mock() -> Backend:
     raw.mark_succeeded.return_value = True  # type: ignore[attr-defined] # Why: create_autospec returns Any; attribute correctly typed at runtime.
     raw.mark_cancelled.return_value = True  # type: ignore[attr-defined]
     return cast(Backend, raw)
-
-
-def _make_job(
-    *,
-    job_id: UUID | None = None,
-    actor: str = "test_actor",
-    queue: str = "default",
-    attempt: int = 1,
-) -> JobRow:
-    if job_id is None:
-        job_id = new_uuid()
-    return JobRow(
-        id=JobId(job_id),
-        actor=actor,
-        queue=queue,
-        identity_key=None,
-        fairness_key=None,
-        payload={},
-        payload_schema_ver=1,
-        status="running",
-        priority=0,
-        attempt=attempt,
-        max_attempts=3,
-        retry_kind="transient",
-        schedule_to_close=None,
-        start_to_close=None,
-        heartbeat_timeout=None,
-        created_at=None,  # type: ignore[arg-type] # Why: not read by stub; None satisfies runtime check.
-        scheduled_at=None,  # type: ignore[arg-type]
-        started_at=None,
-        finished_at=None,
-        last_heartbeat_at=None,
-        locked_by_worker=None,
-        lock_expires_at=None,
-        cancel_requested_at=None,
-        cancel_phase=None,  # type: ignore[arg-type] # Why: not read by stub.
-        error_class=None,
-        error_message=None,
-        error_traceback=None,
-        progress_state={},
-        progress_seq=0,
-        result=None,
-        result_size_bytes=None,
-        result_expires_at=None,
-        idempotency_key=None,
-        idempotency_scope="",
-        trace_id=None,
-        span_id=None,
-        metadata={},
-        tags=(),
-    )
 
 
 def _install_call_tracker(

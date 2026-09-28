@@ -2,6 +2,35 @@
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Final
+
+MAX_ACTOR_RETENTION_DAYS: Final[int] = timedelta.max.days
+"""Maximum supported ``actor_config.metadata.retention_days`` value."""
+_MAX_ACTOR_RETENTION_DAYS_TEXT = str(MAX_ACTOR_RETENTION_DAYS)
+
+
+def normalize_retention_days(value: object) -> int:
+    """Validate and normalize a per-actor retention override."""
+    if type(value) is int:
+        days = value
+    elif type(value) is str and value.isascii() and value.isdigit():
+        normalized = value.lstrip("0") or "0"
+        if len(normalized) > len(_MAX_ACTOR_RETENTION_DAYS_TEXT) or (
+            len(normalized) == len(_MAX_ACTOR_RETENTION_DAYS_TEXT)
+            and normalized > _MAX_ACTOR_RETENTION_DAYS_TEXT
+        ):
+            days = -1
+        else:
+            days = int(normalized)
+    else:
+        days = -1
+
+    if not 0 <= days <= MAX_ACTOR_RETENTION_DAYS:
+        raise ValueError(
+            "metadata.retention_days must be an integer or ASCII digit string "
+            f"from 0 through {MAX_ACTOR_RETENTION_DAYS}"
+        )
+    return days
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,3 +67,7 @@ class ActorConfig:
     # ref's validated values explicitly.
     max_attempts: int = 3
     retry_kind: str = "transient"
+
+    def __post_init__(self) -> None:
+        if "retention_days" in self.metadata:
+            normalize_retention_days(self.metadata["retention_days"])
