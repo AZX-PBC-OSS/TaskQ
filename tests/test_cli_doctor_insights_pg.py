@@ -431,7 +431,11 @@ async def test_doctor_renders_nothing_for_the_healthy_fleet(
     exit_code, output = await _run_doctor(monkeypatch, dsn, schema)
 
     assert exit_code == 0, output
-    assert "no findings" in output
+    # The storage-mode family (main's #574) is an informational line in
+    # every report — the healthy fleet's ONLY finding. Any other family
+    # phrase firing here is a false positive an operator stops reading.
+    assert "findings (1):" in output, output
+    assert "storage mode: " in output
     for phrase in ("STARVED", "STRANDED WORK", "OVERPROVISIONED", "SLOW DRAIN", "CRON LAG"):
         assert phrase not in output
 
@@ -471,8 +475,6 @@ async def test_doctor_issues_only_reads_against_the_real_statement_set(
     command issues - the insights reads included.  A recording proxy wraps
     the actual connection, so nothing is faked: every statement that runs
     is captured and scanned for writing verbs."""
-    import taskq.cli as cli_mod
-
     conn, schema, dsn = doctor_env
     await _seed_pathological(conn, schema)
 
@@ -485,7 +487,7 @@ async def test_doctor_issues_only_reads_against_the_real_statement_set(
         recorders.append(recorder)
         return recorder
 
-    monkeypatch.setattr(cli_mod.asyncpg, "connect", recording_connect)
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", recording_connect)
 
     exit_code, output = await _run_doctor(monkeypatch, dsn, schema)
 
