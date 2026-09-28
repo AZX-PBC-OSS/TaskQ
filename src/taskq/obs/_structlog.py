@@ -28,25 +28,33 @@ worker bootstrap and the CLI). Four values, case-insensitive:
     all — they are new call sites that only ``debug`` reveals). A
     deployment that never sets the knob cannot observe any difference.
 
-``warning``
+ ``warning``
     The failure/anomaly stream only: the failed ticks, the isolates, the
-    reclaims, the watchdog trips, the backpressure refusals. The
-    happy-path per-job lines (``state-change``, ``cancel_phase_change``)
-    and the once-per-process lifecycle INFO lines are dropped. Anomaly
-    events survive EVEN WHEN logged at INFO (``isolate-self-complete``,
-    ``sweep-drained-pending-reservation-reclaims``), because the
-    classification is by event name, not by stdlib level — the operator
-    who drops to ``warning`` asked the happy path to be quiet, not the
-    anomalies.
+    watchdog trips, the backpressure refusals. The happy-path per-job
+    lines (``state-change``, ``cancel_phase_change``) and the
+    once-per-process lifecycle INFO lines are dropped. Anomaly events
+    survive EVEN WHEN logged at INFO (``cron-fire-budget-deferred``,
+    ``cron-schedule-auto-disable-reverted`` — both emitted at INFO by
+    the cron loop), because the classification is by event name, not by
+    stdlib level — the operator who drops to ``warning`` asked the happy
+    path to be quiet, not the anomalies. (The RECLAIMS are the one
+    documented exception, argued below: a successful reclaim's
+    completion line is emitted at stdlib DEBUG, so no level reveals it.)
+    Unclassified events pass here too (fail open).
 
-``off``
+ ``off``
     For deployments consuming OTel spans or tailing ``job_events``
     directly: the state-change lines are gone entirely, and the
-    INFO-level anomaly lines go too. WARNING-and-above anomalies STILL
-    emit (``job-failed``, ``heartbeat-tick-failure``,
+    INFO-method lines of CLASSIFIED anomalies go too. WARNING-and-above
+    anomalies STILL emit (``job-failed``, ``heartbeat-tick-failure``,
     ``terminal-write-failed``, ``worker-watchdog-trip``): ``off`` turns
     off the event STREAM, never the operator's sight of failures.
-
+    Unclassified events FAIL OPEN here as at every other level: they
+    pass at every method. (The first cut of this filter dropped every
+    INFO/DEBUG-method event at ``off``, classified or not — which
+    silently failed CLOSED on unclassified INFO events and broke this
+    contract. Found by red-team; fixed: the INFO-method drop now applies
+    only to names the classification table has actually met.)
 ``debug``
     Everything ``info`` emits PLUS the DEBUG_ONLY per-tick internals:
     the loop-lag traces and the poll-cadence details (see the
@@ -85,11 +93,11 @@ Event (family)                         Class       Rationale / boundary case
                                                    the claim's per-job
                                                    state-changes are already
                                                    ledgered.
-``prune``, ``archive_expiry``          HAPPY       Daily maintenance
-                                                   completions (the happy
-                                                   path; failures of the
-                                                   same sweeps classify
-                                                   ANOMALY).
+``prune-completed``, ``batches         HAPPY       Daily maintenance
+pruned``, ``archive-expiry-                         completions (the happy
+completed``, ``keepalive-                           path; failures of the
+applied``                                           same sweeps classify
+                                                    ANOMALY).
 lifecycle INFO lines                   HAPPY       Once per process, not per
 (``health-server-*``,                              job, but they are the
 ``pool-draining``,                                 happy path; ``warning``
@@ -192,10 +200,22 @@ Boundary cases, argued:
   ``state-change`` is the FIRST event classified HAPPY, and why the
   ledger is asserted untouched by the level tests
   (``tests/system_e2e/test_log_events_levels.py``).
-- *isolate/reclaim completions are INFO but stay at ``warning``*: the
-  mission for ``warning`` is "the failure/anomaly stream", and a worker
-  isolating itself or rows being reclaimed IS the anomaly, whatever
-  stdlib level it happens to carry.
+- *isolate completions stay at ``warning``*: the mission for
+  ``warning`` is "the failure/anomaly stream", and a worker isolating
+  itself IS the anomaly, whatever stdlib level it happens to carry
+  (``isolate-self-complete`` is emitted at WARNING by the heartbeat's
+  shutdown path; ``isolate-self-failure`` too).
+- *a successful reclaim has NO log line at any level*:
+  ``sweep-drained-pending-reservation-reclaims`` is emitted at stdlib
+  DEBUG (worker/_leader_sweeps.py), so the root INFO level gates it
+  before this filter ever sees it — at ``warning``, at ``off``, and
+  even at ``debug`` (the knob never raises the root level). A
+  red-team kill -9/reclaim run proved it: the surviving worker's
+  stream shows nothing about the reclaim at any knob setting. The
+  ``job_events`` ledger rows are the reclaim's audit trail; the
+  failed-reclaim WARNING (``sweep-drain-pending-reservation-reclaims-
+  failed``) is the log-visible half. Do not promote the DEBUG line to
+  fix this casually — it is per-sweep noise on the leader loop.
 - *``off`` still emits WARNING+*: an operator tailing ``job_events`` or
   OTel spans has the event data, but a failing tick with no log line at
   all would blind the incident responder reading stderr. ``off`` is
@@ -264,8 +284,16 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
         "heartbeat-tick-success",
         "heartbeat-post-tx-deferred",
         "dispatch",
-        "prune",
-        "archive_expiry",
+        # Sweep/prune/archive completions (their failures are ANOMALY,
+        # below). The names are the EMITTED ones — the prune family's
+        # completion lines are "prune-completed" and "batches pruned"
+        # (worker/_leader_sweeps.py), the archive-expiry family's is
+        # "archive-expiry-completed"; a table entry under a name no call
+        # site emits is a dead classification (found by red-team).
+        "prune-completed",
+        "batches pruned",
+        "archive-expiry-completed",
+        "keepalive-applied",
         # Lifecycle INFO lines (once per process, but the happy path).
         "health-server-started",
         "health-server-stopped",
@@ -429,9 +457,10 @@ def _events_level_filter(
 
     - ``info``: passthrough except DEBUG_ONLY (byte-identical default);
     - ``warning``: HAPPY_PATH dropped, ANOMALY kept (any stdlib level),
-      WARNING+ kept;
-    - ``off``: WARNING-and-above only - HAPPY_PATH and INFO-level
-      ANOMALY dropped, the WARNING-and-above anomalies STILL emit;
+      WARNING+ kept, unclassified kept (fail open);
+    - ``off``: HAPPY_PATH dropped at any method, classified-ANOMALY
+      INFO/DEBUG-method lines dropped, WARNING-and-above kept,
+      unclassified kept at every method (fail open);
     - ``debug``: everything, DEBUG_ONLY included.
     """
     name = event_dict.get("event")
@@ -441,16 +470,23 @@ def _events_level_filter(
         raise structlog.DropEvent
     if _events_level == "info":
         return event_dict
-    # warning / off: the happy path goes.
+    # warning / off: the happy path goes (at any method — every HAPPY_PATH
+    # member is emitted at INFO or DEBUG, verified across src/).
     if name in _HAPPY_PATH_EVENTS:
         raise structlog.DropEvent
     if _events_level == "warning":
         # Anomalies (any stdlib level) and WARNING+ pass.
         return event_dict
-    # off: WARNING-and-above only. `method` is the stdlib method the
-    # BoundLogger proxied to (`.exception()` arrives as "error" via
-    # _ExcInfoSafeBoundLogger, CRITICAL as "critical").
-    if method in ("info", "debug"):
+    # off: classified anomalies at INFO/DEBUG method go (the table's
+    # documented "INFO-level anomaly lines go too"); everything classified
+    # ANOMALY at WARNING-and-above still emits. UNCLASSIFIED events FAIL
+    # OPEN here too — they pass at every method — so the contract "a
+    # future event can never be silently suppressed by a stale table"
+    # holds at every level, not just at warning. (This arm previously
+    # dropped EVERY info/debug-method event, classified or not, which
+    # silently failed CLOSED on unclassified INFO events: a real event
+    # the table had not met yet vanished at off. Found by red-team.)
+    if name in _ANOMALY_EVENTS and method in ("info", "debug"):
         raise structlog.DropEvent
     return event_dict
 

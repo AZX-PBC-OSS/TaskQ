@@ -42,8 +42,10 @@ _HAPPY_REPRESENTATIVES = (
     "state-change",
     "cancel_phase_change",
     "dispatch",
-    "prune",
-    "archive_expiry",
+    "prune-completed",
+    "batches pruned",
+    "archive-expiry-completed",
+    "keepalive-applied",
     "health-server-started",
     "producer-loop-exit",
     "cron-schedule-registered",
@@ -54,8 +56,8 @@ _ANOMALY_REPRESENTATIVES = (
     "heartbeat-tick-failure",
     "heartbeat-tick-unexpected-error",
     "terminal-write-failed",
-    "isolate-self-complete",  # INFO-level: survives warning BY NAME
-    "sweep-drained-pending-reservation-reclaims",  # INFO-level reclaim
+    "isolate-self-complete",  # WARNING-level in production (the heartbeat's
+    # shutdown path emits it at .warning); survives warning BY NAME either way
     "rate-limit-dependency-failure",
     "worker-watchdog-trip",
     "cron-tick-failed",
@@ -231,18 +233,27 @@ def test_filter_at_off_drops_the_event_stream(events_level: object) -> None:
     (off never blinds the operator to failures)."""
     captured = _capture_with_filter("off", _HAPPY_REPRESENTATIVES)
     assert _captured_names(captured) == set()
-    # isolate-self-complete is an INFO-level anomaly: the info-method
+    # isolate-self-complete is a classified anomaly: the info-method
     # line dies at off...
     obs_structlog.set_events_level("off")
     with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
         log = obs_structlog.get_logger("test")
         log.info("isolate-self-complete")
     assert cap == []
-    # ...but its WARNING-method emission (the production shape) survives.
+    # ...but its WARNING-method emission (the production shape - the
+    # heartbeat's shutdown path emits it at .warning) survives.
     with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
         log = obs_structlog.get_logger("test")
         log.warning("isolate-self-complete")
     assert len(cap) == 1
+    # Real UNCLASSIFIED INFO events in the codebase today fail OPEN at
+    # off (they pass): the contract is per-event-name, not just per the
+    # test's synthetic name.
+    for real_name in ("singleton-collision", "batch-aborted", "enqueue_deduplicated"):
+        with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
+            log = obs_structlog.get_logger("test")
+            log.info(real_name)
+        assert len(cap) == 1, f"{real_name} was suppressed at off"
 
 
 def test_filter_at_off_keeps_warning_and_above(events_level: object) -> None:
@@ -292,11 +303,20 @@ def test_internals_suppressed_at_non_debug_levels(level: str) -> None:
 
 @pytest.mark.parametrize("level", ["info", "warning", "off", "debug"])
 def test_unclassified_event_fails_open(level: str) -> None:
-    """A future event not in the classification table passes at every
-    level - a new event can never be silently suppressed by a stale
-    table."""
-    captured = _capture_with_filter(level, ("some-future-event",))
-    assert _captured_names(captured) == {"some-future-event"}
+    """A future event not in the classification table passes at EVERY
+    method and at EVERY level - a new event can never be silently
+    suppressed by a stale table. (The method-level assertion is the
+    load-bearing one: the filter's first cut dropped every INFO-method
+    event at ``off``, classified or not, silently failing CLOSED on
+    unclassified INFO events while this test still passed on name
+    membership alone. Found by red-team.)"""
+    obs_structlog.set_events_level(level)
+    with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
+        log = obs_structlog.get_logger("test")
+        log.info("some-future-event", kind="x", job_id="j")
+        log.warning("some-future-event")
+        log.error("some-future-event")
+    assert [e.get("log_level") for e in cap] == ["info", "warning", "error"]
 
 
 # ── the classification table itself ──────────────────────────────────
