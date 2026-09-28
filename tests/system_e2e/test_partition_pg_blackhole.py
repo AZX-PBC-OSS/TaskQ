@@ -89,6 +89,48 @@ _ISOLATE_EXIT_BUDGET_S = 40.0
 #: sweep+delay 3 + claim+body 5 + slack -> 70.
 _RERUN_BUDGET_S = 70.0
 
+#: The sibling-health probe's budget, DERIVED from the documented band
+#: (the storm's ``_STORM_DEADLINE_SECS`` arithmetic, 74c5931b), never
+#: bare. The original 20s was one pipeline's IDLE-box cost and flaked
+#: exactly there (the CI red: ``<Record status='running'>`` - the
+#: sibling's OWN bootstrap, pool creation + listen attach + the
+#: schema's first-touch, alone outgrew it on a loaded -n 2 runner).
+#: One pipeline's components, each a documented constant:
+#:
+#: * B's bootstrap - the readiness gate the shared harness itself
+#:   grants one worker (``_harness.wait_for_socket``: 30s for the
+#:   health socket to answer). The probe is enqueued BEFORE that gate
+#:   is awaited, so the bootstrap rides INSIDE this budget, not on top
+#:   of it - carried at full weight, unstretched: it is already the
+#:   harness's loaded-box tolerance.
+#: * the claim poll (0.05 - the worker's TASKQ_POLL_INTERVAL, the
+#:   harness default, the same constant the storm's arithmetic names)
+#:   + the probe's body (0.1, the SysPayload sleep) + the terminal
+#:   commit's wire slack (0.5, one heartbeat interval) = 0.65s of
+#:   tail, times the storm's 20x co-tenancy stretch (the stall band
+#:   those runners produce between a seed and its observation)
+#:   -> 13s;
+#: * the original 20s kept as the floor (the storm keeps its original
+#:   8s soak the same way).
+#:
+#:   30 + 0.65 * 20 + 20  =>  63.0s.
+#:
+#: Like the storm's, the budget bounds FAILURE only: a sibling that
+#: genuinely cannot serve never completes the probe (the teeth below
+#: pin that - pointed at the cut, it must red), and at the band's very
+#: edge a probe completing only after A's forced exit reds the
+#: concurrency assert instead, which is that assert's own posture.
+_PROBE_READY_GATE_S = 30.0  # _harness.wait_for_socket's bound for one worker's bootstrap
+_PROBE_CLAIM_POLL_S = 0.05  # the worker's TASKQ_POLL_INTERVAL (the harness default)
+_PROBE_BODY_S = 0.1  # the probe's SysPayload sleep
+_PROBE_COMMIT_S = 0.5  # the terminal commit's wire slack (one heartbeat interval)
+_PROBE_TAIL_S = _PROBE_CLAIM_POLL_S + _PROBE_BODY_S + _PROBE_COMMIT_S
+_COTENANCY_STRETCH = 20  # the storm's band (74c5931b) on loaded -n 2 runners
+_PROBE_FLOOR_S = 20.0  # the original idle-box budget, kept as the floor
+_PROBE_BUDGET_S = (
+    _PROBE_READY_GATE_S + _PROBE_TAIL_S * _COTENANCY_STRETCH + _PROBE_FLOOR_S
+)  # 30 + 0.65 * 20 + 20 == 63.0
+
 
 @pytest.mark.timeout(240)
 @pytest.mark.load_sensitive
@@ -183,7 +225,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # re-run settled. (A re-run asserted only after A's exit would
         # prove nothing about the cut's window.)
         probe = await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG])
-        probe_deadline = time.monotonic() + 20.0
+        probe_deadline = time.monotonic() + _PROBE_BUDGET_S
         probe_row: asyncpg.Record | None = None
         while time.monotonic() < probe_deadline:
             probe_row = await conn.fetchrow(
@@ -195,7 +237,10 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
             await asyncio.sleep(0.05)
         assert probe_row is not None and probe_row["status"] == "succeeded", (
             f"the healthy sibling did not complete a probe job during the cut "
-            f"(bootstrap + claim + body + commit, poll 0.05): {probe_row}"
+            f"(bootstrap gate {_PROBE_READY_GATE_S}s + claim {_PROBE_CLAIM_POLL_S}s + body "
+            f"{_PROBE_BODY_S}s + commit {_PROBE_COMMIT_S}s, x{_COTENANCY_STRETCH} co-tenancy "
+            f"stretch + {_PROBE_FLOOR_S}s floor = {_PROBE_BUDGET_S}s budget, poll 0.05): "
+            f"{probe_row}"
         )
         assert worker_a.proc.poll() is None, (
             "the sibling's probe completed only after the partitioned worker had "

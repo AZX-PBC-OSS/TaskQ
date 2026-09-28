@@ -475,22 +475,26 @@ async def test_progress_buffers_starts_empty(pg_dsn: str) -> None:
 @pytest.mark.redis
 async def test_redis_client_opened_and_closed_when_configured(
     pg_dsn: str,
-    redis_url: str,
+    private_redis_url: str,
 ) -> None:
     """redis_client is opened when redis_url is set; closed on teardown.
 
     The lifecycle contract under test is OPEN/CLOSE behavior, not broker
     latency. The ping rides the product's own production socket budget
     (deliberately not opted out - the deps client is the worker-loop's
-    real client), and the SHARED co-tenanted broker's stall band
-    measurably exceeds 5s under -n 2 load (the same weather class the
-    test-built clients opt out of, and the same disease the
-    ``test_ratelimit_provider`` provider pin was cured for): a single
-    ping is a lottery. Bounded retries prove pingability while
-    tolerating the stall; a broker down for all three is a real failure
-    that the open/close contract still wants surfaced.
+    real client), so the broker under the ping must be one whose latency
+    the test OWNS: a PRIVATE per-test Dragonfly (``private_redis_url``).
+    On the SHARED pair a single ping is a lottery - its co-tenancy stall
+    band measurably exceeds the 5s production budget under -n 2 load (the
+    weather class that reded this test and ``test_ratelimit_provider``'s
+    pin in consecutive legs; every budget-stretch cure found the next
+    exposed ping). A private broker ends the class by construction, and
+    the retained bounded retries are belt-and-braces for the private
+    container's first handshake under runner load, not co-tenancy: a
+    broker down for all three is a real failure that the open/close
+    contract still wants surfaced.
     """
-    settings = make_integration_settings(pg_dsn, REDIS_URL=redis_url)
+    settings = make_integration_settings(pg_dsn, REDIS_URL=private_redis_url)
 
     async with open_worker_deps(settings) as deps:
         assert deps.redis_client is not None

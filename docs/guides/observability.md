@@ -70,8 +70,11 @@ through structlog). Startup logs one line saying what was wired:
 otel-exporter-configured  traces=otlp  metrics=otlp  logs=  source=env
 ```
 
-and `source=none` when nothing asked for an exporter. Two other startup
-lines matter:
+and `source=none` when nothing asked for an exporter. (That is the
+`console` renderer's shape; the default `TASKQ_LOG_FORMAT=json` emits the
+same line as the `otel-exporter-configured` event with `traces`/`metrics`/
+`logs`/`source` — and the port fields — as JSON fields, so grep for the
+event name there.) Two other startup lines matter:
 
 - `otel-exporter-unavailable` (WARNING, with `extra=otel` or
   `extra=prometheus`); the variables are set but the package that
@@ -381,7 +384,9 @@ TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
 ```
 
 The startup line reads `otel-exporter-configured metrics=prometheus
-source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
+source=prometheus prometheus_port=9464` (the console shape; the default
+`TASKQ_LOG_FORMAT=json` emits the same fields on the `otel-exporter-configured`
+event); with an OTLP endpoint set as well,
 `metrics=otlp,prometheus source=env,prometheus`: both exporters share one
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the

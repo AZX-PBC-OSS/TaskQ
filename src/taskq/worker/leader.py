@@ -118,6 +118,8 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     record_sweep_success,
     record_sweep_timeout,
     update_queue_depth_cache,
+    update_queue_live_workers_cache,
+    update_queue_utilization_cache,
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
 )
@@ -562,6 +564,8 @@ class MaintenanceLeader:
         # series and clearing them would mute the detectors under the exact
         # leadership failure they exist to expose.
         update_queue_depth_cache({})
+        update_queue_live_workers_cache({})
+        update_queue_utilization_cache({})
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
         # The sweep-health stamps (last success, batch size) are leader-loop

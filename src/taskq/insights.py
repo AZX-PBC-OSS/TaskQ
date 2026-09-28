@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from taskq.backend._protocol import ConnLike
 
 __all__ = [
+    "INSIGHTS_CONTRACT_VERSION",
     "INSIGHTS_WINDOWS",
     "fetch_actor_backlog",
     "fetch_cron_ledger",
@@ -112,6 +113,21 @@ __all__ = [
     "fetch_wait_distribution",
     "fetch_worker_busy_ratio",
 ]
+
+
+#: The version of the SQL contract this module's ``fetch_*`` functions are
+#: pinned to: the function set, each function's keyword-only parameter
+#: names and defaults, and every statement's return-row column names and
+#: Postgres types (``tests/test_insights_contract.py`` asserts all three
+#: against the live statements).  A dynamic worker-scaling operator may
+#: build its queries directly on this surface, so a signature or row-shape
+#: change is a BREAKING change and must bump this version — a bump that
+#: the contract test refuses to accept silently (it asserts the constant
+#: equals the version the test itself documents).  Additive changes (a new
+#: function, a new column appended at the END of a row) do not bump the
+#: major version on their own, but a column REMOVED, RENAMED, RETYPED or
+#: REORDERED before an operator's read does.
+INSIGHTS_CONTRACT_VERSION: int = 1
 
 
 #: The window selector's closed set — the named ranges every windowed

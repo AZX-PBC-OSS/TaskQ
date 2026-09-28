@@ -3,6 +3,24 @@
 
 {% block title %}Rate Limits — TaskQ Admin{% endblock %}
 
+{% block head %}
+<script>
+{# The reset confirm is a delegated listener reading the bucket name from
+   a data attribute - the actors page's deregister idiom. The bucket name
+   must never ride inside an inline JS string: an onclick="confirm('... {{
+   bucket }} ...')" interpolates operator-stored text (keyed buckets
+   materialize per-key names) into a JS string context, and the HTML
+   parser decodes the attribute's entities BEFORE the JS runs, so a name
+   carrying '); breaks the string and executes. #}
+document.addEventListener('submit', function(e) {
+  var form = e.target;
+  if (!form.classList.contains('reset-form')) return;
+  var bucket = form.dataset.bucketName || 'this bucket';
+  if (!confirm("Reset rate limit bucket '" + bucket + "' to full capacity?")) e.preventDefault();
+});
+</script>
+{% endblock %}
+
 {% block content %}
 <h2 class="text-xl font-semibold tracking-tight mb-4">Rate Limits</h2>
 
@@ -78,9 +96,9 @@
                         <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.updated_at or "—" }}</td>
                         {% if allow_reset %}
                         <td class="px-4 py-2.5">
-                            <form method="post" action="{{ base_path }}/rate-limits/{{ b.bucket_name }}/reset" class="inline">
+                            <form method="post" action="{{ base_path }}/rate-limits/{{ b.bucket_name }}/reset" class="inline reset-form" data-bucket-name="{{ b.bucket_name }}">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                <button type="submit" class="px-2 py-1 text-xs font-medium bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors" onclick="return confirm('Reset rate limit bucket \'{{ b.bucket_name }}\' to full capacity?')">
+                                <button type="submit" class="px-2 py-1 text-xs font-medium bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors">
                                     Reset
                                 </button>
                             </form>
@@ -92,6 +110,9 @@
             </table>
         </div>
     </div>
+    {% if truncated %}
+    <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Showing the first {{ page_size }} buckets; buckets beyond the cap are visible through the client API.</p>
+    {% endif %}
     {% if redis_configured and not redis_available and redis_state is none and buckets %}
     <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">Redis state unavailable — showing PostgreSQL data only.</div>
     {% endif %}

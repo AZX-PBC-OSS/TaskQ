@@ -18,6 +18,7 @@ Covers all unit tests:
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import time
 from collections.abc import Generator
@@ -410,6 +411,45 @@ def test_rules_yaml_exactly_21_alerts() -> None:
     rules = data["groups"][0]["rules"]
     assert len(rules) == 23
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
+
+
+# ── the docs' rule citation is bound to the file ────────────────────
+
+
+def test_docs_rule_citation_matches_rules_yaml() -> None:
+    """The guides' ``22 rules (...)`` citation is bound to rules.yaml itself.
+
+    The existing pins above go red when rules.yaml drifts from the
+    hard-coded count and name set - but those pins live on the FILE side:
+    a rule deleted from rules.yaml with the tests updated in step left the
+    guides' "(22 rules: ...)" citation and its enumerated summary stale and
+    nothing went red. This closes that asymmetry from the DOCS side: the
+    claimed count and the length of the comma-separated enumeration in
+    BOTH guides must equal the file's actual rule count, so any change to
+    rules.yaml that is not mirrored into the docs' citation fails here.
+    """
+    actual = len(yaml.safe_load(_RULES_YAML.read_text())["groups"][0]["rules"])
+    citations = (
+        (
+            Path(__file__).parent.parent / "docs" / "guides" / "observability.md",
+            re.compile(r":\s*(\d+) rules \(([^)]+)\)"),
+        ),
+        (
+            Path(__file__).parent.parent / "docs" / "guides" / "ops.md",
+            re.compile(r"\((\d+) rules: ([^)]+)\)"),
+        ),
+    )
+    for page, pattern in citations:
+        match = pattern.search(page.read_text(encoding="utf-8"))
+        assert match, (
+            f"{page.name} no longer carries the rules.yaml citation in the "
+            "expected shape - if the citation moved or was rewritten, re-point "
+            "this pin; do not unpin the docs' rule count"
+        )
+        claimed, enumeration = int(match.group(1)), match.group(2)
+        named = len(" ".join(enumeration.split()).split(", "))
+        detail = f"cites {claimed} rules naming {named}; rules.yaml ships {actual}"
+        assert claimed == actual == named, f"{page.name} {detail} - update the citation"
 
 
 # ── plain rules.yaml and k8s PrometheusRule stay in lockstep ────────

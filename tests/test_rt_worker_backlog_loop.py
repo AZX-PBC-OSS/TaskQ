@@ -367,6 +367,8 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         update_actor_oldest_pending_age_cache,
         update_oldest_due_age_cache,
         update_queue_depth_cache,
+        update_queue_live_workers_cache,
+        update_queue_utilization_cache,
         update_reservation_slots_cache,
         update_running_lease_expired_cache,
         update_scheduled_count_cache,
@@ -374,6 +376,8 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     )
 
     update_queue_depth_cache({"default": 4})
+    update_queue_live_workers_cache({"default": 2})
+    update_queue_utilization_cache({"default": 2.0})
     update_reservation_slots_cache({"gpu": 2})
     update_stranded_jobs_cache({("orphan", "no_actor_config"): 7})
     otel_mod.update_jobs_by_status_cache({"scheduled": 9})  # pyright: ignore[reportPrivateUsage]  # Why: the cache-update seams are the loop's own inputs; the public re-export covers the backlog pair being asserted.
@@ -395,6 +399,14 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
 
         assert deps.is_leader.is_set() is False, "demotion must clear is_leader"
         assert not _queue_depth_cache(), "queue depth must lose authority on demotion"
+        assert not otel_mod._queue_live_workers_cache, (  # pyright: ignore[reportPrivateUsage]  # Why: reading the singleton cache the demotion path clears, same as the depth read above.
+            "the live-workers gauge joins the depth gauge's clear list - it "
+            "is sampled by the same leader-only tick"
+        )
+        assert not otel_mod._queue_utilization_cache, (  # pyright: ignore[reportPrivateUsage]  # Why: as above, for the utilization ratio computed FROM the live-workers read.
+            "the utilization ratio is computed from the leader-only "
+            "live-workers read - demotion must clear it with its operands"
+        )
         assert not _reservation_cache(), "reservation slots must lose authority on demotion"
         assert not _stranded_cache(), "stranded jobs must lose authority on demotion"
         assert otel_mod._jobs_by_status_cache == {"scheduled": 9}, (  # pyright: ignore[reportPrivateUsage]  # Why: same singleton-cache read the observable callback performs.
@@ -420,6 +432,8 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     finally:
         # Restore the process-wide sampler caches this test populated.
         update_queue_depth_cache({})
+        update_queue_live_workers_cache({})
+        update_queue_utilization_cache({})
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
         otel_mod.update_jobs_by_status_cache({})

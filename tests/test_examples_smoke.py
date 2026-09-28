@@ -266,13 +266,22 @@ async def _asgi_stream_first_data(
 @pytest.mark.redis
 async def test_fastapi_app_enqueue_and_stream(
     pg_dsn: str,
-    redis_url: str,
+    private_redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST /jobs enqueues a job; GET /jobs/{job_id}/stream yields at least
-    one ``data:`` line containing valid ``JobEvent`` JSON."""
+    one ``data:`` line containing valid ``JobEvent`` JSON.
+
+    PRIVATE broker (``private_redis_url``): the pin bounds the SSE stream's
+    FIRST-DATA latency (``got_first_data.wait()`` window) - pub/sub fanout
+    timing, the surface a shared-broker co-tenancy stall band reds without
+    any code defect. See ``taskq.testing.fixtures.redis_url``'s tenancy
+    contract. The sibling enqueue smoke (``test_trigger_app_enqueue``)
+    stays on the shared pair: it only enqueues and reads a redirect, no
+    fanout, no latency assertion.
+    """
     monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
-    monkeypatch.setenv("TASKQ_REDIS_URL", redis_url)
+    monkeypatch.setenv("TASKQ_REDIS_URL", private_redis_url)
     schema = f"tes_fastapi_{new_base62()}".lower()
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")

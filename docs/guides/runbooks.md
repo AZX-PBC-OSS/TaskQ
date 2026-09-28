@@ -553,6 +553,22 @@ Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive
 
 - The admin `/jobs` page renders the same state per row (Lease column): a red `expired` badge with the holding worker.
 
+  A note on the two clocks this runbook lives between: a holder can read as
+  **dead** on the liveness surfaces (the admin banner, `taskq doctor`'s
+  "no live worker serves", `taskq.queue.live_workers`) while its RUNNING
+  rows are **not yet zombies**. Liveness is the worker row's heartbeat
+  window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`, default 30 s); the
+  reclaim is the ROW's own lease (`lock_expires_at`, default lease 60 s)
+  or its per-job heartbeat deadline - whichever fires first governs, and
+  neither consults the banner. So "doctor says no live worker" plus a
+  stuck `running` row inside its lease is the designed shape, not a
+  contradiction: the row's job follows the lease (this runbook), the
+  queue's *pending* work follows liveness ([TaskQStrandedJobs](#taskqstrandedjobs)).
+  The worker row itself is removed later still, by the stale-worker sweep's
+  own window (`heartbeat_interval * (max_heartbeat_failures + 3)`, 60 s at
+  the defaults) - the band between the liveness edge and that removal is
+  where the surfaces legitimately disagree.
+
 **How to remediate.**
 
 1. If `TaskQHeartbeatMisses` is firing or the holders' workers are gone: the jobs self-heal: the reclaim sweep transitions them (retryable → `pending` after a backoff; exhausted → `crashed`). The alert's value is that it stays non-zero when that does NOT happen.
