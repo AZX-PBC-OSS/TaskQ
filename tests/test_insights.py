@@ -37,6 +37,8 @@ import taskq.insights as insights_mod  # pyright: ignore[reportPrivateUsage]
 from taskq._ids import new_job_id, new_uuid
 from taskq.insights import (
     _build_cron_ledger_sql,
+    _build_drain_sql,
+    _build_queue_imbalance_sql,
     _build_wait_sql,
     fetch_actor_backlog,
     fetch_cron_ledger,
@@ -921,20 +923,12 @@ async def test_explain_no_seq_scan_on_hot_paths(
         (_build_wait_sql(schema, per_actor=False), (timedelta(hours=24),), windowed),
         (_build_wait_sql(schema, per_actor=True), (timedelta(hours=24),), windowed),
         (
-            insights_mod._QUEUE_IMBALANCE_SQL.format(  # pyright: ignore[reportPrivateUsage]  # Why: the pin renders the module's own template so it validates the production text, never a copy.
-                schema=schema,
-                _DUE_NOW=insights_mod._DUE_NOW,  # pyright: ignore[reportPrivateUsage]
-            ),
+            _build_queue_imbalance_sql(schema),
             (30,),
             windowed,
         ),
         (
-            insights_mod._QUEUE_DRAIN_SQL.format(  # pyright: ignore[reportPrivateUsage]
-                schema=schema,
-                _TERMINAL_IN=insights_mod._TERMINAL_IN,  # pyright: ignore[reportPrivateUsage]
-                _FINISHED_BOUND=insights_mod._FINISHED_BOUND,  # pyright: ignore[reportPrivateUsage]
-                _DUE_NOW=insights_mod._DUE_NOW,  # pyright: ignore[reportPrivateUsage]
-            ),
+            _build_drain_sql(schema),
             (timedelta(hours=24),),
             windowed,
         ),
