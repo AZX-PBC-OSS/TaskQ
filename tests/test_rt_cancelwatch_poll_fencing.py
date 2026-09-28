@@ -35,25 +35,21 @@ from uuid import UUID
 import asyncpg
 import pytest
 import pytest_asyncio
-import structlog
-from pydantic import BaseModel
 
 from taskq._ids import new_base62, new_job_id, new_uuid
-from taskq.backend._protocol import CancelPhase, JobId
+from taskq.backend._protocol import CancelPhase
 from taskq.backend._sql import POLL_CANCEL_FLAGS_SQL, build_heartbeat_sql
 from taskq.backend._sql_templates import render
 from taskq.backend._sweeps import sweep_expired_locks
 from taskq.backend._terminal import _mark_succeeded_on_conn
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
-from taskq.client._enqueuer import SubJobEnqueuer
-from taskq.context import JobContext
 from taskq.migrate import apply_pending
-from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.pg import create_running_job, create_worker, seed_actors
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
+from tests._cancel_ctx import make_ctx
 from tests.conftest import _FakePool
 
 pytestmark = pytest.mark.integration
@@ -70,32 +66,6 @@ class _BackendDepsShim:
         self.worker_pool = pool
         self.heartbeat_pool = pool
         self.dispatcher_pool = pool
-
-
-class _StubPayload(BaseModel):
-    """Minimal payload for a cancel-path JobContext."""
-
-
-def _make_ctx(job_id: JobId, worker_id: UUID) -> JobContext[BaseModel]:
-    return JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        claim_epoch=0,
-        worker_id=worker_id,
-        payload=_StubPayload(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),
-        log=bind_job_context(
-            structlog.get_logger("taskq.test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-    )
 
 
 def _sleeper() -> asyncio.Task[object]:
@@ -228,7 +198,7 @@ async def test_stale_cancel_request_on_terminal_row_is_inert(
 
         # Registry entry maximally triggerable: already COOPERATIVE, both
         # deadlines long past. Three full ticks against the terminal row.
-        await deps.active_jobs.register(job_id, _sleeper(), _make_ctx(job_id, worker_id))
+        await deps.active_jobs.register(job_id, _sleeper(), make_ctx(job_id, worker_id))
         entry = deps.active_jobs.get(job_id)
         assert entry is not None
         entry.cancel_phase = CancelPhase.COOPERATIVE
@@ -297,7 +267,7 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
         # The actor task already completed on its own.
         done_task = asyncio.get_running_loop().create_task(asyncio.sleep(0))
         await done_task
-        await deps.active_jobs.register(job_id, done_task, _make_ctx(job_id, worker_id))
+        await deps.active_jobs.register(job_id, done_task, make_ctx(job_id, worker_id))
         entry = deps.active_jobs.get(job_id)
         assert entry is not None
         entry.cancel_phase = CancelPhase.COOPERATIVE
