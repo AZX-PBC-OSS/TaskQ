@@ -91,6 +91,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from taskq.backend.statemachine import (
     TERMINAL_STATUSES,
@@ -176,6 +177,80 @@ _FINISHED_BOUND = "j.finished_at >= statement_timestamp() - $1::interval"
 # STABLE, so the scheduled_at comparison is index-eligible inside
 # jobs_dispatch_idx (queue, priority DESC, scheduled_at).
 _DUE_NOW = "j.scheduled_at <= statement_timestamp()"
+
+# The per-queue CTE arms the three queue-shaped statements compose. The
+# module's statements are DESIGNED as recombinations of the same inputs
+# (the docstrings say so: "the imbalance statement's live arm", "the SAME
+# live + archive UNION the wait distribution and the overprovisioning
+# read"), so the arms travel as named fragments — a predicate tightened in
+# one statement but not its siblings is exactly the drift the fragments
+# make impossible. Each fragment is substituted by name into the statement
+# templates below so the rendered SQL stays byte-identical to the
+# hand-maintained shapes; the {bind} placeholder carries the statement's
+# own positional bind for the arm's one parameter (the liveness seconds:
+# $1 in the imbalance and drain statements, $2 in overprovisioning, whose
+# $1 is the window).
+
+# The live-workers arm: workers whose queues array subscribes the queue,
+# off workers_last_seen_idx with a STABLE statement_timestamp() liveness
+# bound.
+_LIVE_CTE = """\
+live AS (
+    SELECT q AS queue, count(*) AS live_workers
+    FROM "{schema}".workers w, unnest(w.queues) AS q
+    WHERE w.last_seen_at > statement_timestamp() - make_interval(secs => {bind})
+    GROUP BY q
+)"""
+
+# The future-armed arm: scheduled depth plus the incoming wave's min/max
+# scheduled_at, off jobs_scheduled_wake_idx (scheduled_at) WHERE status =
+# 'scheduled'.
+_ARMED_CTE = """\
+armed AS (
+    SELECT j.queue,
+           count(*) AS scheduled_depth,
+           min(j.scheduled_at) AS wave_min_scheduled_at,
+           max(j.scheduled_at) AS wave_max_scheduled_at
+    FROM "{schema}".jobs j
+    WHERE j.status = 'scheduled'
+    GROUP BY j.queue
+)"""
+
+# The due-now arm, short form (depth only): pending-and-due depth off
+# jobs_dispatch_idx.
+_DUE_CTE = """\
+due AS (
+    SELECT j.queue, count(*) AS depth
+    FROM "{schema}".jobs j
+    WHERE j.status = 'pending'
+      AND {_DUE_NOW}
+    GROUP BY j.queue
+)"""
+
+# The terminalisations arm: the two-sided terminal UNION bounded by the
+# finished_at anchor, grouped by queue.
+_DONE_CTE = """\
+done AS (
+    SELECT u.queue, count(*) AS terminalisations
+    FROM (
+        SELECT j.queue
+        FROM "{schema}".jobs j
+        WHERE j.status IN ({_TERMINAL_IN})
+          AND {_FINISHED_BOUND}
+        UNION ALL
+        SELECT j.queue
+        FROM "{schema}".jobs_archive j
+        WHERE j.status IN ({_TERMINAL_IN})
+          AND {_FINISHED_BOUND}
+    ) u
+    GROUP BY u.queue
+)"""
+
+# The keys arm: the union of the queues any composed input mentions.
+_QUEUES_CTE = """\
+queues AS (
+    SELECT queue FROM {arms}
+)"""
 
 
 # ── 1. Wait distributions ───────────────────────────────────────────────
@@ -291,7 +366,9 @@ async def fetch_wait_distribution(
         raise ValueError(f"wait window must be positive, got {window!r}")
     s = _require_ident(schema)
     sql = _build_wait_sql(s, per_actor=per_actor)
-    rows = await conn.fetch(sql, window)  # type: ignore[attr-defined]
+    rows = await conn.fetch(sql, window)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -335,21 +412,8 @@ WITH due AS (
       AND {_DUE_NOW}
     GROUP BY j.queue
 ),
-armed AS (
-    SELECT j.queue,
-           count(*) AS scheduled_depth,
-           min(j.scheduled_at) AS wave_min_scheduled_at,
-           max(j.scheduled_at) AS wave_max_scheduled_at
-    FROM "{schema}".jobs j
-    WHERE j.status = 'scheduled'
-    GROUP BY j.queue
-),
-live AS (
-    SELECT q AS queue, count(*) AS live_workers
-    FROM "{schema}".workers w, unnest(w.queues) AS q
-    WHERE w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
-    GROUP BY q
-),
+{_ARMED_CTE},
+{_LIVE_CTE},
 cap AS (
     SELECT ac.queue,
            sum(ac.max_concurrent)::int AS actor_capacity
@@ -357,12 +421,7 @@ cap AS (
     WHERE ac.max_concurrent IS NOT NULL
     GROUP BY ac.queue
 ),
-queues AS (
-    SELECT queue FROM due
-    UNION SELECT queue FROM armed
-    UNION SELECT queue FROM live
-    UNION SELECT queue FROM cap
-)
+{_QUEUES_CTE}
 SELECT q.queue,
        coalesce(d.depth, 0)::int AS depth,
        d.oldest_due_at,
@@ -383,6 +442,29 @@ LEFT JOIN armed a ON a.queue = q.queue
 LEFT JOIN live l ON l.queue = q.queue
 LEFT JOIN cap c ON c.queue = q.queue
 ORDER BY q.queue"""
+
+
+def _build_queue_imbalance_sql(schema: str) -> str:
+    """Return the per-queue imbalance SQL (schema baked in).
+
+    Composes the statement's shared CTE arms (armed, live, queues) from
+    the module's named fragments; the due arm is this statement's OWN
+    long form (it carries the oldest-due stamp the short form lacks) and
+    the cap arm is unique to it, so both stay inline. The live arm binds
+    the liveness seconds as ``$1``.
+    """
+    s = _require_ident(schema)
+    return _QUEUE_IMBALANCE_SQL.format(
+        schema=s,
+        _DUE_NOW=_DUE_NOW,
+        _ARMED_CTE=_ARMED_CTE.format(schema=s),
+        _LIVE_CTE=_LIVE_CTE.format(schema=s, bind="$1"),
+        _QUEUES_CTE=_QUEUES_CTE.format(
+            arms="due\n    UNION SELECT queue FROM armed\n"
+            "    UNION SELECT queue FROM live\n"
+            "    UNION SELECT queue FROM cap"
+        ),
+    )
 
 
 async def fetch_queue_imbalance(
@@ -421,8 +503,10 @@ async def fetch_queue_imbalance(
     indexes key on ``actor``, not ``queue``.
     """
     s = _require_ident(schema)
-    sql = _QUEUE_IMBALANCE_SQL.format(schema=s, _DUE_NOW=_DUE_NOW)
-    rows = await conn.fetch(sql, worker_liveness_seconds)  # type: ignore[attr-defined]
+    sql = _build_queue_imbalance_sql(s)
+    rows = await conn.fetch(sql, worker_liveness_seconds)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -488,7 +572,9 @@ async def fetch_actor_backlog(
     """
     s = _require_ident(schema)
     sql = _ACTOR_BACKLOG_SQL.format(schema=s)
-    rows = await conn.fetch(sql)  # type: ignore[attr-defined]
+    rows = await conn.fetch(sql)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -512,39 +598,10 @@ async def fetch_actor_backlog(
 # sustains the verdict across windows — the statement returns the raw
 # inputs so a dashboard can trend them instead of trusting one boolean.
 _QUEUE_OVERPROVISIONING_SQL = """\
-WITH due AS (
-    SELECT j.queue, count(*) AS depth
-    FROM "{schema}".jobs j
-    WHERE j.status = 'pending'
-      AND {_DUE_NOW}
-    GROUP BY j.queue
-),
-live AS (
-    SELECT q AS queue, count(*) AS live_workers
-    FROM "{schema}".workers w, unnest(w.queues) AS q
-    WHERE w.last_seen_at > statement_timestamp() - make_interval(secs => $2)
-    GROUP BY q
-),
-done AS (
-    SELECT u.queue, count(*) AS terminalisations
-    FROM (
-        SELECT j.queue
-        FROM "{schema}".jobs j
-        WHERE j.status IN ({_TERMINAL_IN})
-          AND {_FINISHED_BOUND}
-        UNION ALL
-        SELECT j.queue
-        FROM "{schema}".jobs_archive j
-        WHERE j.status IN ({_TERMINAL_IN})
-          AND {_FINISHED_BOUND}
-    ) u
-    GROUP BY u.queue
-),
-queues AS (
-    SELECT queue FROM due
-    UNION SELECT queue FROM live
-    UNION SELECT queue FROM done
-)
+WITH {_DUE_CTE},
+{_LIVE_CTE},
+{_DONE_CTE},
+{_QUEUES_CTE}
 SELECT q.queue,
        coalesce(l.live_workers, 0)::int AS live_workers,
        coalesce(d.depth, 0)::int AS depth,
@@ -558,6 +615,27 @@ LEFT JOIN live l ON l.queue = q.queue
 LEFT JOIN due d ON d.queue = q.queue
 LEFT JOIN done dn ON dn.queue = q.queue
 ORDER BY q.queue"""
+
+
+def _build_overprovisioning_sql(schema: str) -> str:
+    """Return the per-queue overprovisioning SQL (schema baked in).
+
+    Wholly composed of the shared CTE arms (due, live, done, queues) at
+    the overprovisioning statement's bind positions: the liveness floor
+    is ``$2`` on the live arm and the window on the finished bounds.
+    """
+    s = _require_ident(schema)
+    return _QUEUE_OVERPROVISIONING_SQL.format(
+        schema=s,
+        _DUE_CTE=_DUE_CTE.format(schema=s, _DUE_NOW=_DUE_NOW),
+        _LIVE_CTE=_LIVE_CTE.format(schema=s, bind="$2"),
+        _DONE_CTE=_DONE_CTE.format(
+            schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND
+        ),
+        _QUEUES_CTE=_QUEUES_CTE.format(
+            arms="due\n    UNION SELECT queue FROM live\n    UNION SELECT queue FROM done"
+        ),
+    )
 
 
 async def fetch_overprovisioning(
@@ -580,11 +658,10 @@ async def fetch_overprovisioning(
     """
     if window <= timedelta(0):
         raise ValueError(f"overprovisioning window must be positive, got {window!r}")
-    s = _require_ident(schema)
-    sql = _QUEUE_OVERPROVISIONING_SQL.format(
-        schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND, _DUE_NOW=_DUE_NOW
-    )
-    rows = await conn.fetch(sql, window, worker_liveness_seconds)  # type: ignore[attr-defined]
+    sql = _build_overprovisioning_sql(_require_ident(schema))
+    rows = await conn.fetch(sql, window, worker_liveness_seconds)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -646,7 +723,7 @@ async def fetch_worker_busy_ratio(
     *,
     schema: str,
     window: timedelta,
-    worker_id: Any = None,
+    worker_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Per-worker busy ratio over the trailing *window* — summed attempt
     ``duration_ms`` (live attempts + archive twin) against the
@@ -673,7 +750,9 @@ async def fetch_worker_busy_ratio(
         raise ValueError(f"busy-ratio window must be positive, got {window!r}")
     s = _require_ident(schema)
     sql = _WORKER_BUSY_SQL.format(schema=s)
-    rows = await conn.fetch(sql, window, worker_id)  # type: ignore[attr-defined]
+    rows = await conn.fetch(sql, window, worker_id)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -692,42 +771,10 @@ async def fetch_worker_busy_ratio(
 # estimate does NOT include (the estimate counts the due population
 # only; the wave lands after it).
 _QUEUE_DRAIN_SQL = """\
-WITH due AS (
-    SELECT j.queue, count(*) AS depth
-    FROM "{schema}".jobs j
-    WHERE j.status = 'pending'
-      AND {_DUE_NOW}
-    GROUP BY j.queue
-),
-armed AS (
-    SELECT j.queue,
-           count(*) AS scheduled_depth,
-           min(j.scheduled_at) AS wave_min_scheduled_at,
-           max(j.scheduled_at) AS wave_max_scheduled_at
-    FROM "{schema}".jobs j
-    WHERE j.status = 'scheduled'
-    GROUP BY j.queue
-),
-done AS (
-    SELECT u.queue, count(*) AS terminalisations
-    FROM (
-        SELECT j.queue
-        FROM "{schema}".jobs j
-        WHERE j.status IN ({_TERMINAL_IN})
-          AND {_FINISHED_BOUND}
-        UNION ALL
-        SELECT j.queue
-        FROM "{schema}".jobs_archive j
-        WHERE j.status IN ({_TERMINAL_IN})
-          AND {_FINISHED_BOUND}
-    ) u
-    GROUP BY u.queue
-),
-queues AS (
-    SELECT queue FROM due
-    UNION SELECT queue FROM armed
-    UNION SELECT queue FROM done
-)
+WITH {_DUE_CTE},
+{_ARMED_CTE},
+{_DONE_CTE},
+{_QUEUES_CTE}
 SELECT q.queue,
        coalesce(d.depth, 0)::int AS depth,
        coalesce(dn.terminalisations, 0)::int AS terminalisations,
@@ -747,6 +794,27 @@ LEFT JOIN due d ON d.queue = q.queue
 LEFT JOIN armed a ON a.queue = q.queue
 LEFT JOIN done dn ON dn.queue = q.queue
 ORDER BY q.queue"""
+
+
+def _build_drain_sql(schema: str) -> str:
+    """Return the per-queue drain-estimate SQL (schema baked in).
+
+    Wholly composed of the shared CTE arms (due, armed, done, queues) at
+    the drain statement's bind positions: the window is ``$1`` on both
+    the finished bounds and the rate normalization.
+    """
+    s = _require_ident(schema)
+    return _QUEUE_DRAIN_SQL.format(
+        schema=s,
+        _DUE_CTE=_DUE_CTE.format(schema=s, _DUE_NOW=_DUE_NOW),
+        _ARMED_CTE=_ARMED_CTE.format(schema=s),
+        _DONE_CTE=_DONE_CTE.format(
+            schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND
+        ),
+        _QUEUES_CTE=_QUEUES_CTE.format(
+            arms="due\n    UNION SELECT queue FROM armed\n    UNION SELECT queue FROM done"
+        ),
+    )
 
 
 async def fetch_drain_estimates(
@@ -782,10 +850,10 @@ async def fetch_drain_estimates(
     if window <= timedelta(0):
         raise ValueError(f"drain window must be positive, got {window!r}")
     s = _require_ident(schema)
-    sql = _QUEUE_DRAIN_SQL.format(
-        schema=s, _TERMINAL_IN=_TERMINAL_IN, _FINISHED_BOUND=_FINISHED_BOUND, _DUE_NOW=_DUE_NOW
-    )
-    rows = await conn.fetch(sql, window)  # type: ignore[attr-defined]
+    sql = _build_drain_sql(s)
+    rows = await conn.fetch(sql, window)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]
 
 
@@ -949,5 +1017,7 @@ async def fetch_cron_ledger(
         raise ValueError(f"cron ledger window must be positive, got {window!r}")
     s = _require_ident(schema)
     sql = _build_cron_ledger_sql(s)
-    rows = await conn.fetch(sql, window, 2 * window)  # type: ignore[attr-defined]
+    rows = await conn.fetch(sql, window, 2 * window)  # type: ignore[attr-defined]  # Why: ConnLike unions asyncpg.Connection with
+    # PoolConnectionProxy, which forwards attributes dynamically to the wrapped
+    # connection, so pyright cannot see fetch on the union.
     return [dict(r) for r in rows]

@@ -28,6 +28,28 @@ def test_actor_config_construction_with_metadata() -> None:
     assert cfg.metadata == {"owner": "team-a", "priority": "high"}
 
 
+def test_actor_config_revalidates_retention_days_before_sync() -> None:
+    with pytest.raises(ValueError, match=r"metadata\.retention_days"):
+        ActorConfig(
+            actor="my_actor",
+            max_concurrent=5,
+            queue="default",
+            metadata={"retention_days": 1_000_000_000},
+        )
+
+
+def test_actor_config_accepts_long_zero_padded_retention_days() -> None:
+    value = "0" * 5_000 + "30"
+    cfg = ActorConfig(
+        actor="my_actor",
+        max_concurrent=5,
+        queue="default",
+        metadata={"retention_days": value},
+    )
+
+    assert cfg.metadata["retention_days"] == value
+
+
 # ── Frozen dataclass invariant ─────────────────────────────────────────────
 
 

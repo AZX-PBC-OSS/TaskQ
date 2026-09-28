@@ -49,7 +49,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62, new_job_id, new_uuid
+from taskq._ids import new_base62, new_job_id
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import JobId
 from taskq.backend._sweeps import _RECLAIM_DELAY_SQL, _RECLAIM_JITTER_FRACTION_SQL
@@ -64,6 +64,7 @@ from taskq.retry import (
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import _open_pg_backend
 from taskq.testing.in_memory import InMemoryBackend
+from tests._worker_of import worker_of
 
 pytestmark = pytest.mark.integration
 
@@ -102,25 +103,6 @@ _WIDE_POLICY = RetryPolicy(
 #: clock_timestamp() - orders of magnitude below the multi-day miss a
 #: missing clamp produces, so the band stays decisive.
 _CLOCK_GAP_SLACK = timedelta(seconds=30)
-
-
-async def _worker_of(backend: Backend) -> UUID:
-    """A worker id that exists in the backend's ``workers`` table."""
-    if isinstance(backend, InMemoryBackend):
-        return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_reclaim_retry_budget_parity.py
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_reclaim_retry_budget_parity.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
-    worker_id = new_uuid()
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
-        await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
-            worker_id,
-            "test-host",
-            12345,
-            ["default"],
-        )
-    return worker_id
 
 
 async def _enqueue(
@@ -236,7 +218,7 @@ async def test_reclaim_applies_the_actors_configured_backoff(
     anything it is a reason to respect it, since the downstream is least
     likely to be healthy at that moment.
     """
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     job_id = await _enqueue(backend_pair)
     attempt = await _claim(backend_pair, job_id, worker_id)
 
@@ -275,7 +257,7 @@ async def test_reclaim_jitters_a_cohort_reclaimed_together(
     fleet that is still coming up. Jitter is the mechanism that spreads it,
     and it is the actor's policy that configures it.
     """
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     job_ids = [await _enqueue(backend_pair) for _ in range(8)]
 
     # One claim round takes the whole cohort, as a single worker's dispatch
@@ -337,7 +319,7 @@ async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
     later on Postgres while the in-memory twin says hours - the twin
     certifying a delay Postgres never applies.
     """
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     job_id = await _enqueue(backend_pair, policy=_WIDE_POLICY)
     await _claim(backend_pair, job_id, worker_id)
 
@@ -381,7 +363,7 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
         # deps, and the sweep reads it per call - the same seam the suite's
         # interval-shrinking tests use.
         backend_pair._deps.settings.max_retry_backoff = ceiling  # pyright: ignore[reportPrivateUsage]
-    worker_id = await _worker_of(backend_pair)
+    worker_id = await worker_of(backend_pair)
     job_id = await _enqueue(backend_pair, policy=_WIDE_POLICY)
     await _claim(backend_pair, job_id, worker_id)
 
@@ -636,7 +618,7 @@ async def test_reclaim_sweep_stamps_the_identical_delay_on_both_backends(
     stack, _deps, pg = await _open_pg_backend(pg_dsn, schema_name=f"trbp_{new_base62()}".lower())
     try:
         for backend in (memory, pg):
-            worker_id = await _worker_of(backend)
+            worker_id = await worker_of(backend)
             await _enqueue(backend, job_id=_SWEEP_PARITY_JOB_ID, policy=policy)
             attempt = await _claim(backend, _SWEEP_PARITY_JOB_ID, worker_id)
             assert attempt == 1, "the pin's delay is keyed on the row's first attempt"

@@ -19,6 +19,7 @@ import asyncpg
 import structlog
 
 from taskq._advisory import DEADLINE_ERRORS
+from taskq.actor_config import normalize_retention_days
 from taskq.backend._batch_sql import open_member_where
 from taskq.backend._protocol import Backend, ConnLike
 from taskq.backend._retention_floor import retention_policy_floor
@@ -148,10 +149,9 @@ def _build_retention_per_status(  # pyright: ignore[reportUnusedFunction]  # Why
 
 
 _ACTOR_RETENTION_SQL = (
-    "SELECT actor, (metadata->>'retention_days')::int AS retention_days "
+    "SELECT actor, metadata->>'retention_days' AS retention_days "
     'FROM "{schema}".actor_config '
-    "WHERE metadata ? 'retention_days' "
-    "AND (metadata->>'retention_days') ~ '^\\d+$'"
+    "WHERE metadata ? 'retention_days'"
 )
 
 
@@ -166,9 +166,17 @@ async def _load_actor_retention_overrides(  # pyright: ignore[reportUnusedFuncti
     result: dict[str, timedelta] = {}
     for row in rows:
         actor: str = row["actor"]
-        days: int | None = row["retention_days"]
-        if days is not None:
-            result[actor] = timedelta(days=days)
+        try:
+            days = normalize_retention_days(row["retention_days"])
+        except ValueError as exc:
+            log.warning(
+                "actor-retention-override-invalid",
+                kind="actor_retention_override_invalid",
+                actor=actor,
+                reason=str(exc),
+            )
+            continue
+        result[actor] = timedelta(days=days)
     return result
 
 
