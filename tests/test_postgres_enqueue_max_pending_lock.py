@@ -306,7 +306,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     async def test_lock_timeout_budget_zero_waits_indefinitely(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``timeout_ms <= 0`` disables the bound (the pre-fix behavior),
+        """``timeout_ms <= 0`` disables the bound (the unguarded behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
         plain blocking acquire with NO savepoint and NO GUC statements -
         only an unbounded server-side wait reaches the admission."""

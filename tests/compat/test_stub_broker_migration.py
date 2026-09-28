@@ -6,8 +6,8 @@ Validates that the test surface is equivalent to a legacy ``stub_broker``
 pattern.
 
 The test uses the direct-call form of ``actor_runner`` (no enqueue /
-drain loop) for simplicity. A TODO references the full
-enqueue-then-drain form for a follow-up if needed.
+drain loop) for simplicity: it validates the actor body in isolation;
+the full enqueue-then-drain form belongs to the dispatch-loop families.
 
 No ``EventLoopThread`` or ``stub_worker.join()`` is required; both are
 replaced by ``await actor_runner(...)``.
@@ -124,11 +124,9 @@ async def test_update_property_happy_path(
     assert http.calls[0] == ("GET", "/properties/prop42")
     assert len(neo4j.queries) == 1
 
-    # TODO: Add the full enqueue-then-drain form:
-    # 1. Register the actor stub on memory_jobs
-    # 2. Enqueue the job
-    # 3. Call memory_jobs.run_until_drained()
-    # 4. Assert via memory_jobs.get(job_id) that status == "succeeded"
-    # and attempt count == 1.
-    # This validates the full dispatch loop; the direct-call form here
-    # validates the actor body in isolation.
+    # The full enqueue-then-drain form, for reference: register the
+    # actor stub on memory_jobs, enqueue the job, call
+    # memory_jobs.run_until_drained(), then assert via
+    # memory_jobs.get(job_id) that status == "succeeded" and attempt
+    # count == 1. That form validates the full dispatch loop; the
+    # direct-call form here validates the actor body in isolation.

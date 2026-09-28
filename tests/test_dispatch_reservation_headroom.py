@@ -308,7 +308,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
 async def test_queue_cap_saturation_scopes_to_its_queue(pg_dsn: str) -> None:
     """A full QUEUE-CAP bucket gates its holder actors' claims on THAT
     queue only, the same actor's claims on every other queue flow
-    untouched (pre-fix, the per-actor MIN fold zeroed the actor's
+    untouched (unguarded the per-actor MIN fold zeroes the actor's
     admission everywhere once any one queue's cap saturated)."""
     schema = f"headroom_qcap_{new_base62()}".lower()
     async with open_fleet(

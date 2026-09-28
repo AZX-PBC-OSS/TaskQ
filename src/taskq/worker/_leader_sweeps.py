@@ -830,8 +830,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             except Exception as exc:
                 # Backstop (see _transient.py): a non-transient error here is
                 # a bug, not a PG moment, loud, counted, tolerated briefly,
-                # then deliberately fatal. Pre-fix it escaped straight into
-                # MaintenanceLeader.run's TaskGroup and tore down the whole
+                # then deliberately fatal. An unguarded escape goes straight into
+                # MaintenanceLeader.run's TaskGroup and tears down the whole
                 # worker on the first hit.
                 guard.unexpected(exc)
         # Keyed-primitive eviction is process-local bookkeeping, NOT
@@ -840,8 +840,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # eviction). Always safe to call; with the singleton default this
         # is a no-op behavior change, N workers idempotently evict the
         # same shared registry (in a multi-process fleet each process has
-        # its OWN singleton copy, so non-leader processes previously got
-        # NO periodic eviction and now sweep their own copy).
+        # its OWN singleton copy, so every process, leader or not, sweeps
+        # its own copy periodically).
         # ctx.rate_limit_registry is None for direct SweepContext
         # constructions → fall back to the module singleton when None.
         rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry

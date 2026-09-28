@@ -855,7 +855,7 @@ class _OrderPayloadWithDefault(BaseModel):
 
 class _RefRequiresTenant(BaseModel):
     """Keyed-ref payload model: tenant_id is REQUIRED - a raw dict without
-    it fails validation (the pre-fix failure mode the consumer must not
+    it fails validation (the unguarded failure mode the consumer must not
     hit, because the actor model already filled the default)."""
 
     tenant_id: str

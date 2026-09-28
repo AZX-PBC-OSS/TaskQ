@@ -138,7 +138,7 @@ async def _drain_healthy_actor_throughput(
 
     async def producer() -> None:
         while not stop.is_set():
-            # Deliberately the pre-fix queue-emptiness formula: this
+            # Deliberately the unguarded queue-emptiness formula: this
             # harness measures the dispatch SQL's reservation gate
             # (perf-evidence-dispatch.md A6), whose conditions include
             # claims landing while consumers are busy - the shipped

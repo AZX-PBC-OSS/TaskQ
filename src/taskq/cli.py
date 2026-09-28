@@ -330,10 +330,9 @@ def _load_redis_credential_provider(ref: str, *, option: str) -> RedisCredential
 def _resolved_ref(flag: str | None, configured: str | None) -> str | None:
     """Resolve a credential-provider ref: explicit CLI flag beats settings.
 
-    The refs used to be read by Typer's ``envvar=``, which sees
-    ``os.environ`` and nothing else. They are now ordinary settings, so
-    they take part in dotenvmodel's ``.env`` cascade like everything else;
-    the flag-wins precedence Typer gave them is preserved here.
+    The refs are ordinary settings, so they take part in dotenvmodel's
+    ``.env`` cascade like everything else; the explicit flag beats the
+    configured value.
     """
     return flag if flag is not None else configured
 
@@ -712,8 +711,8 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
     finally:
         # Why bounded: a dead PG can block close() indefinitely, wedging even
         # this one-shot command before process exit. The
-        # helper terminates on timeout and never raises, so a close error can
-        # no longer mask an in-flight exception from list_applied.
+        # helper terminates on timeout and never raises, so a close error cannot
+        # mask an in-flight exception from list_applied.
         await close_conn_bounded(conn, "migrate-status", CLOSE_TIMEOUT_SECS)
     typer.echo(f"schema: {settings.schema_name}")
     typer.echo(f"applied: {len(applied)}")
