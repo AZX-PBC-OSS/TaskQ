@@ -554,6 +554,11 @@ jobs:
           listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
           echo "$listing" | grep -q "taskq/py.typed"
           echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep -q "taskq/migrations/_variants/"
+          # ^ migrate.py's checksum-drift check reads the published variant
+          # history from the installed package (importlib.resources); a wheel
+          # without it silently narrows every accepted-checksum set to the
+          # current file only.
           echo "$listing" | grep -q "taskq/web/templates/"
 
       - name: Test installation from wheel
