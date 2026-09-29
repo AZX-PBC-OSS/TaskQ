@@ -262,8 +262,35 @@ class CapSampler:
       per tenant, across the whole fleet;
     * the worker cap: a pod never runs more than its max_concurrency.
 
-    The sampler also records each cap's PEAK, so the pins are provably
-    not vacuous (a cap never exercised proves nothing).
+    The sampler also records each cap's PEAK. The peaks are diagnostics
+    and, on ONE surface, an exercise pin - the two surfaces are not
+    symmetric:
+
+    * the JOBS surface is durable: a running row lives for its body's
+      whole duration, so even the sparse ticks of a starved test
+      process catch it. ``peak.capped_queue >= _QUEUE_CAP`` is pinned
+      in the drain scenarios as the exercise proof - the DB-level
+      evidence that the cap was actually admitted through (measured
+      under load: 2 on the very run whose slot-surface peak read 1);
+    * the SLOTS surface is transient: a slot flips free at every
+      claim/release turnover and the lease predicate excludes the
+      renewal gaps, so a 100 ms tick witnesses a LOWER BOUND of the
+      true peak and, under runner load, the sparse ticks land in the
+      turnover gaps - observed ``peak.slots:...:roll_capped`` = 1 >= 2
+      on a loaded box while CI stayed green on the same sha: the
+      sampler caught a gap, not a cap defect. That slot-bucket peak is
+      therefore recorded but NEVER pinned - its intent (the cap was
+      exercised, the hard pin is not vacuous) is subsumed by the
+      durable jobs-surface pin above, because a capped-queue job's body
+      runs only inside an acquired slot (the post-claim
+      ``acquire_for_actor`` is the admission authority, the release
+      rides the body's finally), so two durable running rows ARE two
+      slots simultaneously held; the cap-churn scenario's wait-until DB
+      polls re-prove the exercise under churn and its corpse-slot
+      checks query ``reservation_slots`` directly.
+
+    The never-exceed checks keep their teeth: a sample ABOVE the bound
+    is still a violation, and no weather can hide one.
     """
 
     def __init__(self, dsn: str, schema: str) -> None:
@@ -576,9 +603,12 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
         assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
             "the queue cap was never exercised - the sampler pins are vacuous"
         )
-        assert sampler.peak.get("peak.slots:taskq:global:queue:roll_capped", 0) >= _QUEUE_CAP, (
-            "the capped bucket's slots were never all held - the hard pin is vacuous"
-        )
+        # The slots-surface twin is deliberately NOT pinned: its peak is
+        # diagnostic only (the CapSampler docstring carries the doctrine
+        # - a 100ms instantaneous max misses the slot turnover gaps
+        # under load and reded `1 >= 2` on a healthy fleet), and its
+        # intent - the cap was exercised, the never-exceed pin is not
+        # vacuous - is subsumed by the durable jobs-surface pin above.
         for label, measured, bound in measurements:
             print(f"[s7] {label}: measured {measured:.2f}s vs bound {bound:.0f}s")
     finally:
@@ -699,9 +729,9 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
         assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
             "the queue cap was never exercised - the sampler pins are vacuous"
         )
-        assert sampler.peak.get("peak.slots:taskq:global:queue:roll_capped", 0) >= _QUEUE_CAP, (
-            "the capped bucket's slots were never all held - the hard pin is vacuous"
-        )
+        # The slots-surface twin is deliberately NOT pinned - the
+        # sequential-drains scenario and the CapSampler docstring carry
+        # the doctrine.
     finally:
         await sampler.close()
         for name in _PODS:
