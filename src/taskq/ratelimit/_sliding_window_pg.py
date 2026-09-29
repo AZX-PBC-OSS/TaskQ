@@ -12,6 +12,7 @@ with divergent Python clocks are all measured against the same window.
 """
 
 import asyncio
+import math
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -24,10 +25,11 @@ from taskq._advisory import (
     acquire_advisory_xact_lock_bounded,
 )
 from taskq.backend._records import jsonb_to_dict
-from taskq.exceptions import RateLimitDependencyUnavailable
+from taskq.exceptions import RateLimitDependencyUnavailable, RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._lock_budget import resolve_sliding_window_lock_timeout_ms
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
+from taskq.ratelimit.token_bucket import _retry_after
 
 if TYPE_CHECKING:
     import asyncpg
@@ -137,8 +139,26 @@ async def _peek_pg_gcra(
         else:
             now_seconds = float(row["now_s"])
             state = jsonb_to_dict(row["state"], column="state")
-            current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
+            try:
+                current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
+            except (TypeError, ValueError, OverflowError) as exc:
+                # The trust boundary is the same as the redis GCRA peek's: a
+                # state value no honest write could have produced (the row
+                # IS the reply) is a store lie, failed closed as the outage
+                # it is indistinguishable from, never a ValueError crash
+                # with no provenance.
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window GCRA peek read a non-numeric TAT: {row['state']!r}"
+                ) from exc
 
+    if not math.isfinite(current_tat):
+        # '1e999' survives jsonb (text or numeric) and floats to Infinity:
+        # every window comparison downstream runs in that domain (int(-inf)
+        # is an OverflowError crash). The redis twin raises the identical
+        # verdict for the identical shape.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window GCRA peek read a non-finite TAT: {current_tat!r}"
+        )
     tat = max(now_seconds, current_tat)
     remaining = float(
         max(0, int((delay_tolerance_seconds - (tat - now_seconds)) / emission_interval_seconds))
@@ -151,7 +171,13 @@ async def _peek_pg_gcra(
         retry_after_seconds = allow_at - now_seconds
         if retry_after_seconds <= 0:
             retry_after_seconds = 0.001
-        retry_after = timedelta(seconds=retry_after_seconds)
+        # Why the hint goes through token_bucket._retry_after: the finite
+        # check above still admits any finite float (1e300), and
+        # timedelta(seconds=1e300) overflows out of the peek. The hint is
+        # advisory, so a value no honest store can ask for is clamped to
+        # the same bounded "not any time soon" hint the redis GCRA peek
+        # uses; the denial itself stands, only the wait is bounded.
+        retry_after = _retry_after(retry_after_seconds)
 
     return RateLimitState(
         bucket_name=self._name,
@@ -576,9 +602,14 @@ async def _acquire_pg_gcra(
         f"{_now_epoch}::float8 AS now_s"
     )
     # The denial follow-up: the standing TAT and the server now for the
-    # retry hint, plus the kind the WHERE guard may have refused on.
+    # retry hint, plus the kind the WHERE guard may have refused on. The
+    # TAT is carried as TEXT and converted in Python at the trust
+    # boundary (guarded conversion family + finite check + the advisory
+    # _retry_after clamp): a server-side ::float8 cast would crash the
+    # read with NumericValueOutOfRangeError on a poisoned value — a class
+    # no handler recognises — where the sentinel belongs.
     deny_read_sql = (
-        f"SELECT kind, (state->>'tat')::float8 AS tat, "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound.
+        f"SELECT kind, state->>'tat' AS tat, "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound.
         f"EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "
         f'FROM "{schema}".rate_limit_buckets '
         f"WHERE bucket_name = $1"
@@ -681,14 +712,35 @@ async def _acquire_pg_gcra(
             )
         if deny_row is not None:
             now_seconds = float(deny_row["now_s"])
-            current_tat = float(deny_row["tat"]) if deny_row["tat"] is not None else now_seconds
+            try:
+                current_tat = float(deny_row["tat"]) if deny_row["tat"] is not None else now_seconds
+            except (TypeError, ValueError, OverflowError) as exc:
+                # The row IS the reply: a standing TAT no honest write could
+                # have produced is a store lie, failed closed with the
+                # sentinel — never a bare ValueError out of the acquire.
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window GCRA deny read a non-numeric TAT: {deny_row['tat']!r}"
+                ) from exc
+            if not math.isfinite(current_tat):
+                # '1e999' survives jsonb and floats to Infinity; every hint
+                # computation below runs in that domain. The sentinel, the
+                # same verdict the peek twin hands the identical shape.
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window GCRA deny read a non-finite TAT: {current_tat!r}"
+                )
             allow_at = (
                 max(now_seconds, current_tat) + emission_interval_seconds - delay_tolerance_seconds
             )
             retry_after_seconds = allow_at - now_seconds
             if retry_after_seconds <= 0:
                 retry_after_seconds = 0.001
-            retry_after = timedelta(seconds=retry_after_seconds)
+            # Why the hint goes through token_bucket._retry_after: the
+            # finite check still admits any finite float (1e300), and
+            # timedelta(seconds=1e300) overflows out of the acquire —
+            # the outage-fallback admission path. The hint is advisory;
+            # the denial stands, only the wait is bounded (the same clamp
+            # the redis GCRA peek applies).
+            retry_after = _retry_after(retry_after_seconds)
         else:
             # The row vanished between the fused statement and this read
             # (a concurrent reset): the pre-fused preseed made this
