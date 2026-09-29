@@ -683,9 +683,15 @@ _SHOWING_RE = re.compile(r"Showing (\d+) results")
 # now()-seeded stamps (worker heartbeats) can cross a humanize boundary
 # between two requests milliseconds apart. Stripped before any full-HTML
 # differential so the comparison tests structure, not wall-clock prose.
+# The number belongs to the phrase: `\bdays? ago\b` alone strips only the
+# words and LEAVES the bare digit, so "4 days ago" vs "5 days ago" (one
+# engine's render straddled the day tick - observed on the coverage leg,
+# run 36622474331, where instrumentation slows each render to seconds)
+# still disagreed as "4 …" vs "5 …". Strip the quantified phrase whole,
+# past and future; the article forms ("a day ago") too.
 _VOLATILE_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
-    r"|\bdays? ago\b|\bhours? ago\b|\bminutes? ago\b|\bseconds? ago\b"
+    r"|\b(?:a|an|\d+ )?(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?) ago\b"
     r"|\bjust now\b|\bin \d+ (?:seconds?|minutes?|hours?|days?)\b"
 )
 _CSRF_RE = re.compile(r'name="csrf_token"[^>]*value="[^"]*"|value="[^"]*"[^>]*name="csrf_token"')
