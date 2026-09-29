@@ -298,11 +298,15 @@ WHERE id = $1 AND status = 'active'
 RETURNING id"""
 
 # The completion handshake's seat-taking statement: complete_batch holds
-# the batches row from this grant to the caller's commit, so the
-# completion write (_COMPLETE_BATCH_SQL, run right after the grant on a
-# fresh READ COMMITTED snapshot) is sequenced after every earlier
-# holder's commit -- the property the guarded counter reset's queue used
-# to provide for free (see _COMPLETE_BATCH_SQL's comment).
+# the batches row from this grant through the completion write's OWN
+# commit -- the grant and _COMPLETE_BATCH_SQL run inside ONE transaction
+# (the caller's on the transactional-caller shape, the bounded wait's on
+# the autonomous shape), so the write's READ COMMITTED statement
+# snapshot postdates the grant AND no appender can take the row between
+# the two statements -- the property the guarded counter reset's queue
+# used to provide for free (see _COMPLETE_BATCH_SQL's and
+# complete_batch's docstrings for the gap the split-transaction shape
+# re-opened).
 _LOCK_BATCH_ROW_SQL = """\
 SELECT id FROM "{schema}".batches
 WHERE id = $1
