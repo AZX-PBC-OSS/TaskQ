@@ -54,11 +54,14 @@ _STALENESS_BOUND = timedelta(seconds=2 * _HEARTBEAT_INTERVAL)
 
 async def _setup_fast(
     module_pg_schema: ModulePgSchema,
+    **overrides: str,
 ) -> tuple[AsyncExitStack[bool | None], WorkerDeps, str, asyncpg.Connection]:
     """Create WorkerDeps with fast heartbeat intervals per test.
 
     Uses the module-scoped PG schema (migrated once per test file) and
-    truncates all tables for per-test isolation.
+    truncates all tables for per-test isolation. ``overrides`` pass
+    through to :func:`make_integration_settings` for tests that need a
+    non-default lease or cadence.
 
     Returns (stack, deps, schema, obs_conn) - the caller MUST ``await
     stack.aclose()``; *obs_conn* is the test's dedicated DML connection
@@ -70,9 +73,10 @@ async def _setup_fast(
         module_pg_schema.pg_dsn,
         SCHEMA_NAME=module_pg_schema.schema_name,
         HEARTBEAT_INTERVAL=str(_HEARTBEAT_INTERVAL),
-        LOCK_LEASE=str(_LOCK_LEASE),
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
+        LOCK_LEASE=overrides.pop("LOCK_LEASE", str(_LOCK_LEASE)),
+        **overrides,
     )
     schema = settings.schema_name
 
@@ -942,5 +946,151 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
             assert rows[disowned_id]["lock_expires_at"] - rows[disowned_id]["pg_now"] <= timedelta(
                 seconds=25.0
             )
+    finally:
+        await stack.aclose()
+
+
+# ── Threshold-gated renewal: the LIVE loop's skip-then-renew arc ──────
+
+
+async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The gated renewal, driven by the REAL loop end to end.
+
+    The statement-level pin above drives the gated SQL directly and the
+    loop-level pins run against fakes whose rowcounts are canned, so the
+    wiring in between - the loop deriving the threshold from its settings,
+    binding it as the gated statement's ``$4``, and the resulting
+    skip-then-renew arc on real rows - was pinned by neither: deleting the
+    gate from the loop's binding (or making it unconditional) survives
+    every existing pin. This pin closes that gap at integration speed.
+
+    Sizing: lease 30s with the factory cadence (interval 0.5s, command
+    timeout 0.1s, max failures 2) puts the threshold at the half-lease
+    arm, ``max(2.3, 15) = 15s``. A row seeded 20s above expiry sits ABOVE
+    the threshold:
+
+    * the first beat must SKIP it - the observed stamp decays from the
+      seed instead of jumping to a full fresh lease, which an
+      unconditional per-beat renewal (the gate deleted) cannot produce;
+    * beats then decay the row past the threshold, and the FIRST beat at
+      or under it must RENEW - a fresh full lease stamped while the old
+      one is still live (the lease never lapses mid-arc), which an
+      over-aggressive gate (skip past expiry) cannot produce.
+    """
+    stack, deps, schema, obs_conn = await _setup_fast(
+        module_pg_schema, LOCK_LEASE="30.0", MAX_HEARTBEAT_FAILURES="2"
+    )
+    try:
+        # The threshold the loop will actually derive: the half-lease arm
+        # dominates at this lease (the safety floor is 2.3s there).
+        from taskq.worker.heartbeat import _lease_renewal_threshold
+
+        lease = timedelta(seconds=30.0)
+        threshold = _lease_renewal_threshold(
+            lock_lease=lease,
+            heartbeat_interval=_HEARTBEAT_INTERVAL,
+            max_heartbeat_failures=2,
+            heartbeat_command_timeout=0.1,
+        )
+        assert threshold == timedelta(seconds=15.0)
+
+        async with contextlib.nullcontext(obs_conn) as conn:
+            worker_id, job_id = await setup_running_job(
+                conn,
+                schema,
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=20.0),
+            )
+
+        seeded = await conn.fetchval(
+            f'SELECT lock_expires_at FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert seeded is not None
+
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown),
+            name="heartbeat-gated-arc",
+        )
+        try:
+            # Sample the row beside the server clock (one statement per
+            # read, this file's standing doctrine) from the first landed
+            # beat until the renewal is observed. The skip phase lasts
+            # ~5s of beat decay, an order of magnitude wider than the
+            # sampling cadence, so the arc is sampled throughout.
+            renewed_at: datetime | None = None
+            first_stamp: datetime | None = None
+            last_stamp: datetime | None = None
+            pre_renewal_last_seen: datetime | None = None
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                async with contextlib.nullcontext(obs_conn) as conn:
+                    row = await conn.fetchrow(
+                        f"SELECT now() AS pg_now, lock_expires_at, last_heartbeat_at "
+                        f'FROM "{schema}".jobs WHERE id = $1',
+                        job_id,
+                    )
+                assert row is not None
+                stamp = row["lock_expires_at"]
+                if stamp is None:
+                    await asyncio.sleep(0.25)
+                    continue
+                if first_stamp is None:
+                    first_stamp = stamp
+                    # THE SKIP: the first observed stamp is at or under
+                    # the seed (byte-identical when the beat landed
+                    # within the same microsecond, decayed otherwise).
+                    # An unconditional per-beat renewal stamps
+                    # now + 30s - strictly ABOVE the 20s seed - on the
+                    # very first beat, so a first stamp at/under the seed
+                    # proves the first beat chose not to rewrite the row.
+                    assert stamp <= seeded, (
+                        f"the first beat's stamp ({stamp}) is above the "
+                        f"seeded lease ({seeded}): a row 5s above the renewal "
+                        "threshold was rewritten anyway - the loop is paying "
+                        "the per-beat non-HOT update the gate exists to save "
+                        "(the gate is missing, or an unconditional renewal is "
+                        "bound instead)"
+                    )
+                elif last_stamp is not None and stamp > last_stamp:
+                    # THE RENEWAL: the gated arc only ever DECAYS between
+                    # renewals (the skip writes nothing), so the first
+                    # observed increase is the fresh full lease the
+                    # threshold-crossing beat stamped.
+                    renewed_at = stamp
+                    break
+                last_stamp = stamp
+                pre_renewal_last_seen = row["last_heartbeat_at"]
+                await asyncio.sleep(0.25)
+            else:
+                pytest.fail(
+                    "the live loop never renewed the decaying row within 30s "
+                    "- the gate skipped past the threshold and never came back"
+                )
+
+            # The renewal must land while the old lease is still live: the
+            # last stamp observed before the jump is in the future of the
+            # server clock read alongside it. An over-aggressive gate
+            # (a skip that outlives the lease) fails here.
+            assert pre_renewal_last_seen is not None
+            assert renewed_at is not None
+            assert renewed_at > first_stamp
+            async with contextlib.nullcontext(obs_conn) as conn:
+                row = await conn.fetchrow(
+                    f"SELECT now() AS pg_now, lock_expires_at "
+                    f'FROM "{schema}".jobs WHERE id = $1',
+                    job_id,
+                )
+            assert row is not None
+            assert row["lock_expires_at"] is not None
+            assert row["lock_expires_at"] > row["pg_now"], (
+                "the renewal landed on an already-expired lease - the gate "
+                "held the row past its own expiry before renewing it, and a "
+                "sweep in that window reclaims a live worker's job"
+            )
+        finally:
+            shutdown.set()
+            await task
     finally:
         await stack.aclose()
