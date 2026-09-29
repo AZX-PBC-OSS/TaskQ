@@ -10,6 +10,13 @@
 !backlog-throughput.json
 !archive-scale*.json
 !backlog-rss-soak.json
+!hotpath-fix-sweep-render.json
+!hotpath-profile.json
+!hotpath-profile.md
+!attack-shape-*.json
+!attack-tracemalloc-*.json
+!attack-insights-scale.json
+!attack-hotpath-findings.md
 !loglevel-cpu-delta.json
 !loglevel-cpu-delta.md
 !batch-hotspot.md

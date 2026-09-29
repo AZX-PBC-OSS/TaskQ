@@ -321,6 +321,15 @@ class PostgresBackend:
         self._sql: SqlTemplates = render(self._schema_name)
         self._schedule_sql = ScheduleSql.build(self._schema_name)
         self._batch_sql: BatchSql = render_batch_sql(self._schema_name)
+        # Rendered once here, not per heartbeat tick: the schema is fixed
+        # for the backend's lifetime (validated above), so the per-call
+        # ``.format`` in heartbeat_jobs / extend_reservation_leases was a
+        # byte-identical re-render on every beat. The two statements are
+        # rendered with the same constants those methods read.
+        self._heartbeat_jobs_sql = UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=self._schema_name)
+        self._extend_reservation_leases_sql = UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(
+            schema=self._schema_name
+        )
 
         # Per-sweep batch sizers, built lazily on first use (see
         # _sweep_sizer): the breaker's latch state must survive across
@@ -487,9 +496,10 @@ class PostgresBackend:
         *,
         disowned: Collection[UUID] = (),
     ) -> int:
-        sql = UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=self._schema_name)
         async with _bounded_checkout(self._heartbeat_pool, "heartbeat_jobs") as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
+            tag = await conn.execute(
+                self._heartbeat_jobs_sql, worker_id, lock_lease, list(disowned)
+            )
         return parse_rowcount(tag)
 
     async def extend_reservation_leases(
@@ -499,9 +509,10 @@ class PostgresBackend:
         *,
         disowned: Collection[UUID] = (),
     ) -> int:
-        sql = UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=self._schema_name)
         async with _bounded_checkout(self._heartbeat_pool, "extend_reservation_leases") as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
+            tag = await conn.execute(
+                self._extend_reservation_leases_sql, worker_id, lock_lease, list(disowned)
+            )
         return parse_rowcount(tag)
 
     # ── Terminal writes ─────────────────────────────────────────────────
