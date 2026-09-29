@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -60,7 +59,9 @@ def test_plain_cli_output_strips_full_escape_grammar() -> None:
     assert plain_cli_output("\x1b]0;title\x07body") == "body"
 
 
-def test_cli_help_markers_survive_ci_colorization() -> None:
+def test_cli_help_markers_survive_ci_colorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The run-36369327985 reproduction: typer force-colorizes help output
     whenever ``GITHUB_ACTIONS`` is set - which is EVERY GitHub runner - so
     the same CLI test that is green locally meets ANSI escapes interleaved
@@ -76,19 +77,23 @@ def test_cli_help_markers_survive_ci_colorization() -> None:
 
     runner = CliRunner()
 
-    def invoke_help_with(env_key: str) -> str:
-        os.environ[env_key] = "1"
+    def invoke_help_with(env_key: str, monkeypatch: pytest.MonkeyPatch) -> str:
+        # The env mutation rides monkeypatch, never a bare os.environ write:
+        # the suite-hygiene guard (test_no_test_file_writes_os_environ_directly)
+        # exists because an unteardown env write leaks into later tests'
+        # settings loads (the atk_iso incident).
+        monkeypatch.setenv(env_key, "1")
         try:
             importlib.reload(typer.rich_utils)
             result = runner.invoke(cli.app, ["doctor", "--help"])
         finally:
-            del os.environ[env_key]
+            monkeypatch.delenv(env_key, raising=False)
             importlib.reload(typer.rich_utils)
         assert result.exit_code == 0, result.stderr
         return result.output
 
     for env_key in ("GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS"):
-        raw = invoke_help_with(env_key)
+        raw = invoke_help_with(env_key, monkeypatch)
         assert "\x1b[" in raw, f"{env_key}=1 must colorize the help output"
         plain = plain_cli_output(raw)
         assert "Usage:" in plain, f"{env_key}=1: the marker must survive the strip"
