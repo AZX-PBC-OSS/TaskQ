@@ -694,6 +694,39 @@ _VOLATILE_RE = re.compile(
     r"|\b(?:a|an|\d+ )?(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?) ago\b"
     r"|\bjust now\b|\bin \d+ (?:seconds?|minutes?|hours?|days?)\b"
 )
+
+
+class TestTheVolatileStripStripsWholePhrases:
+    """The strip's own contract: every humanize form _VOLATILE_RE claims to
+    remove is removed WHOLE (number included) — an incomplete strip here is
+    what made the two-engine differential flake on a humanize-tick crossing
+    ("4 days ago" survived as "4"). The real prose must survive."""
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "4 days ago",
+            "1 day ago",
+            "2 hours ago",
+            "1 hour ago",
+            "3 minutes ago",
+            "1 second ago",
+            "just now",
+            "in 3 hours",
+            "in 1 minute",
+            "in 2 days",
+        ],
+    )
+    def test_humanize_phrases_strip_whole(self, phrase: str) -> None:
+        stripped = _VOLATILE_RE.sub("\u2026", f"rendered {phrase} tail")
+        assert phrase not in stripped, f"'{phrase}' survived the strip: {stripped!r}"
+        assert stripped == "rendered \u2026 tail", stripped
+
+    def test_real_prose_survives(self) -> None:
+        prose = "the real days word stays"
+        assert _VOLATILE_RE.sub("\u2026", prose) == prose
+
+
 _CSRF_RE = re.compile(r'name="csrf_token"[^>]*value="[^"]*"|value="[^"]*"[^>]*name="csrf_token"')
 
 
