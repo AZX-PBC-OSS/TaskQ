@@ -2957,7 +2957,11 @@ async def worker_main_async(
     from taskq.scheduler import get_registered_crons
 
     schedule_specs = cron_registry if cron_registry is not None else get_registered_crons()
-    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    setup_logging(
+        level=settings.log_level,
+        log_format=settings.log_format,
+        events_level=settings.log_events_level,
+    )
     return await _main(
         settings,
         actor_registry=actor_registry,

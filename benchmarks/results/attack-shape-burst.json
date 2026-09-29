@@ -1,0 +1,147 @@
+{
+  "shape": "burst",
+  "jobs": 8000,
+  "enqueued": {
+    "shape": "burst",
+    "enqueued": 8000,
+    "bursts": 20,
+    "burst_size": 400,
+    "wall_s": 40.836
+  },
+  "drained": true,
+  "busy_seconds": 49.42,
+  "jps_over_busy_window": 161.9,
+  "contention": {
+    "samples": 1,
+    "ungranted_locks_max": 0,
+    "active_conns_max": 16,
+    "wait_events": {
+      "Client:ClientRead": 16
+    }
+  },
+  "statements_top": [
+    {
+      "query": "CLOSE ALL",
+      "calls": 10312,
+      "rows": 0,
+      "t_ms": 10.3
+    },
+    {
+      "query": "SELECT pg_advisory_unlock_all()",
+      "calls": 10312,
+      "rows": 10312,
+      "t_ms": 49.0
+    },
+    {
+      "query": "RESET ALL",
+      "calls": 10312,
+      "rows": 0,
+      "t_ms": 62.1
+    },
+    {
+      "query": "UNLISTEN *",
+      "calls": 10312,
+      "rows": 0,
+      "t_ms": 5.0
+    },
+    {
+      "query": "WITH upd AS ( UPDATE \"tq_bench_attack_burst\".jobs SET status = $10, finished_at = clock_timestamp(), locked_by_worker = ",
+      "calls": 8000,
+      "rows": 8000,
+      "t_ms": 3147.7
+    },
+    {
+      "query": "WITH RECURSIVE params AS ( SELECT $1::text[] AS queues, $2::int AS limit_n, $3::uuid AS worker_id, $4::interval AS lock_",
+      "calls": 2190,
+      "rows": 8000,
+      "t_ms": 2459.7
+    },
+    {
+      "query": "BEGIN",
+      "calls": 133,
+      "rows": 0,
+      "t_ms": 0.2
+    },
+    {
+      "query": "COMMIT",
+      "calls": 133,
+      "rows": 0,
+      "t_ms": 0.2
+    },
+    {
+      "query": "SELECT set_config($2, $1, $3)",
+      "calls": 122,
+      "rows": 122,
+      "t_ms": 1.1
+    },
+    {
+      "query": "SELECT current_setting($1)",
+      "calls": 54,
+      "rows": 54,
+      "t_ms": 0.5
+    },
+    {
+      "query": "SELECT statement_timestamp() AS server_now, s.id, s.actor, s.cron_expr, s.timezone, s.dst_strategy, s.payload_factory, s",
+      "calls": 52,
+      "rows": 0,
+      "t_ms": 1.1
+    },
+    {
+      "query": "WITH snap AS MATERIALIZED ( SELECT id, status AS prev_status FROM \"tq_bench_attack_burst\".jobs WHERE status = $2 AND sch",
+      "calls": 52,
+      "rows": 0,
+      "t_ms": 0.6
+    },
+    {
+      "query": "SELECT pg_try_advisory_xact_lock(hashtextextended($1, $2)) AS got",
+      "calls": 52,
+      "rows": 52,
+      "t_ms": 0.4
+    },
+    {
+      "query": "SELECT $1",
+      "calls": 21,
+      "rows": 21,
+      "t_ms": 0.1
+    },
+    {
+      "query": "INSERT INTO \"tq_bench_attack_burst\".jobs ( id, actor, queue, identity_key, fairness_key, payload, payload_schema_ver, st",
+      "calls": 20,
+      "rows": 8000,
+      "t_ms": 362.4
+    },
+    {
+      "query": "SELECT count(*) FROM \"tq_bench_attack_burst\".jobs WHERE status = $1",
+      "calls": 18,
+      "rows": 18,
+      "t_ms": 8.7
+    },
+    {
+      "query": "SELECT current_setting($1) AS cur, set_config($2, $3, $4) AS new",
+      "calls": 14,
+      "rows": 14,
+      "t_ms": 0.2
+    },
+    {
+      "query": "WITH RECURSIVE typeinfo_tree( oid, ns, name, kind, basetype, elemtype, elemdelim, range_subtype, attrtypoids, attrnames,",
+      "calls": 14,
+      "rows": 34,
+      "t_ms": 8.3
+    },
+    {
+      "query": "SELECT name, mode FROM \"tq_bench_attack_burst\".queues WHERE name = ANY($1)",
+      "calls": 11,
+      "rows": 0,
+      "t_ms": 0.1
+    },
+    {
+      "query": "SELECT id, cancel_phase FROM \"tq_bench_attack_burst\".jobs WHERE locked_by_worker = $1 AND cancel_requested_at IS NOT NUL",
+      "calls": 6,
+      "rows": 0,
+      "t_ms": 0.0
+    }
+  ],
+  "tracemalloc_windows": [],
+  "generated_at": "2026-09-28T07:51:42",
+  "schema": "tq_bench_attack_burst"
+}

@@ -38,6 +38,18 @@ class _FakeConn:
         self.executed.append(sql)
         return "SELECT 1"
 
+    async def fetchval(self, sql: str, *args: object) -> object:
+        """The status command's drift probe (the schema_migrations EXISTS
+        check): the fake reports the ledger table present."""
+        self.executed.append(sql)
+        return True
+
+    async def fetch(self, sql: str, *args: object) -> list[object]:
+        """The status command's drift read: no rows = no drift, the common
+        shape these doubles' tests assert."""
+        self.executed.append(sql)
+        return []
+
     async def close(self) -> None:
         self.close_calls += 1
         await self.close_wait.wait()

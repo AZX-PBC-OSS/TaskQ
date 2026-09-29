@@ -557,7 +557,10 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
 
         real = route_mod.fetch_wait_distribution  # pyright: ignore[reportPrivateImportUsage]  # Why: the route module re-imports the insights module's fetchers to bind them; the monkeypatch wraps the route's own binding, which is the point.
 
+        slow_entered = asyncio.Event()
+
         async def slow_wait(conn: Any, **kwargs: Any) -> Any:
+            slow_entered.set()
             await asyncio.sleep(0.5)
             return await real(conn, **kwargs)
 
@@ -567,7 +570,14 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             first = asyncio.create_task(client.get("/admin/insights"))
-            await asyncio.sleep(0.1)
+            # Fire the second view only when the first is OBSERVED holding
+            # the slot (it has entered the slow read): a fixed 0.1s stagger
+            # raced the first request's dependency setup on a loaded runner,
+            # where the second view could acquire first and hand the FIRST
+            # view the 503. With the event, the second view always arrives
+            # while ~0.4s of the slow read remains - strictly more than the
+            # 0.2s acquire timeout - so the 503 is arithmetic, not a race.
+            await asyncio.wait_for(slow_entered.wait(), 10.0)
             second = asyncio.create_task(client.get("/admin/insights"))
             first_resp, second_resp = await asyncio.gather(first, second)
         assert first_resp.status_code == 200
