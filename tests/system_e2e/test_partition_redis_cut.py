@@ -425,7 +425,16 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
             }
         )  # type: ignore[arg-type]  # Why: load_from_dict accepts the dict at runtime, the same boundary the lie-attack tests pin.
         started = time.monotonic()
-        with pytest.raises(redis_async.TimeoutError):
+        # The pin is the weather FAMILY, not one member: the held-then-close
+        # cut fails each attempt either at the CLIENT's 2s socket budget
+        # (TimeoutError) or at the proxy's close landing mid-handshake -
+        # redis-py's connect-time health check reads EOF and raises
+        # ConnectionError("Connection closed by server") before the budget
+        # fires. Both members travel the identical except clause in
+        # with_pg_fallback (the transient-retry ladder), and the no-fallback
+        # arm re-raises whichever the wire produced; pinning one member made
+        # the assert a coin flip on proxy-vs-budget timing, not a contract.
+        with pytest.raises((redis_async.TimeoutError, redis_async.ConnectionError)):
             await window.acquire(
                 redis_client=proxied_redis, pg_pool=pg_pool, settings=no_fallback_settings
             )

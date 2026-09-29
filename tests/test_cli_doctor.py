@@ -59,9 +59,10 @@ _REGISTRY: Mapping[str, ActorRef[Any, Any]] = {
 }
 _REGISTRY_PATH = "tests.test_cli_doctor:_REGISTRY"
 
-# Writing SQL verbs: any of these appearing in a statement the command
-# issued means `doctor` is no longer read-only.
-_WRITE_VERBS = ("insert", "update", "delete", "truncate", "drop", "alter", "create")
+# Writing SQL verbs: any of these appearing as a WORD in a statement the
+# command issued means `doctor` is no longer read-only.  Word-boundary
+# matched: a read selecting `updated_at` is not an UPDATE.
+_WRITE_VERBS = re.compile(r"\b(insert|update|delete|truncate|drop|alter|create)\b", re.IGNORECASE)
 
 
 def _row(
@@ -91,6 +92,11 @@ def _patch_db(
     worker_rows: list[dict[str, Any]] | None = None,
     storage_mode: StorageMode | None = StorageMode.VANILLA,
     downgraded_policies: Sequence[str] = (),
+    imbalance_rows: list[dict[str, Any]] | None = None,
+    wait_rows: list[dict[str, Any]] | None = None,
+    overprovisioning_rows: list[dict[str, Any]] | None = None,
+    drain_rows: list[dict[str, Any]] | None = None,
+    cron_rows: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Fake the doctor's reads at the ``taskq.cli`` boundary.
 
@@ -100,8 +106,15 @@ def _patch_db(
     ``stranded_rows`` feeds the pending/scheduled jobs scan (the one read
     that reaches the raw connection rather than a patched helper): rows in
     the per-actor shape ``_list_stranded_pending_jobs`` returns.  The scan
-    is identified by its ``.jobs`` table reference - it is the only
-    jobs-table statement the command issues.
+    is identified by its ``.jobs`` table reference - the insights reads
+    ride the ``taskq.insights`` fetchers, faked as functions below like
+    ``list_actor_configs`` is.
+
+    The ``*_rows`` insight parameters feed the four operational-insight
+    families (the shapes ``fetch_queue_imbalance``, ``fetch_wait_distribution``,
+    ``fetch_overprovisioning``, ``fetch_drain_estimates`` and
+    ``fetch_cron_ledger`` return); empty by default, which is every
+    pre-existing test's healthy fleet.
 
     ``storage_mode`` fakes the detected storage mode
     (``taskq.cli.detect_storage_mode``, patched here) - the rendering
@@ -119,6 +132,11 @@ def _patch_db(
     executed: list[str] = []
     stranded = [] if stranded_rows is None else stranded_rows
     worker_rows = [] if worker_rows is None else worker_rows
+    imbalance = [] if imbalance_rows is None else imbalance_rows
+    wait = [] if wait_rows is None else wait_rows
+    overprovisioning = [] if overprovisioning_rows is None else overprovisioning_rows
+    drain = [] if drain_rows is None else drain_rows
+    cron = [] if cron_rows is None else cron_rows
 
     class _FakeConn:
         async def execute(self, query: str, *args: Any) -> str:
@@ -159,6 +177,30 @@ def _patch_db(
 
     async def fake_list_queues(conn: Any, **kwargs: Any) -> list[QueueRow]:
         return queue_rows
+
+    async def fake_fetch_queue_imbalance(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(imbalance)
+
+    async def fake_fetch_wait_distribution(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(wait)
+
+    async def fake_fetch_overprovisioning(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(overprovisioning)
+
+    async def fake_fetch_drain_estimates(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(drain)
+
+    async def fake_fetch_cron_ledger(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(cron)
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
+    monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
+    monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
+    monkeypatch.setattr("taskq.cli.fetch_queue_imbalance", fake_fetch_queue_imbalance)
+    monkeypatch.setattr("taskq.cli.fetch_wait_distribution", fake_fetch_wait_distribution)
+    monkeypatch.setattr("taskq.cli.fetch_overprovisioning", fake_fetch_overprovisioning)
+    monkeypatch.setattr("taskq.cli.fetch_drain_estimates", fake_fetch_drain_estimates)
+    monkeypatch.setattr("taskq.cli.fetch_cron_ledger", fake_fetch_cron_ledger)
 
     monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
     monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
@@ -363,11 +405,7 @@ def test_doctor_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
         "the read-only property is only meaningful once the command runs; "
         f"exit_code={result.exit_code} output={result.output!r}"
     )
-    offenders = [
-        statement
-        for statement in executed
-        if any(verb in statement.lower() for verb in _WRITE_VERBS)
-    ]
+    offenders = [statement for statement in executed if _WRITE_VERBS.search(statement)]
     assert offenders == [], f"doctor issued writing statements: {offenders}"
 
 
@@ -891,5 +929,431 @@ def test_doctor_stays_read_only_with_the_storage_mode_family(
 
     assert result.exit_code == 0
     for statement in executed:
-        lowered = statement.lower()
-        assert not lowered.startswith(_WRITE_VERBS), statement
+        assert not _WRITE_VERBS.search(statement), statement
+
+
+# ── Operational-insight families (the insights.py reads) ───────────────
+#
+# The rows below are the shapes taskq.insights' fetchers return (the PG
+# tier for these families lives in tests/test_cli_doctor_insights_pg.py,
+# which seeds the pathological shapes in a real container).
+
+
+def _imbalance_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "queue": "batch",
+        "depth": 12,
+        "oldest_due_at": None,
+        "oldest_due_age_s": 30.0,
+        "scheduled_depth": 0,
+        "wave_min_scheduled_at": None,
+        "wave_max_scheduled_at": None,
+        "live_workers": 3,
+        "actor_capacity": 4,
+        "effective_capacity": 12,
+        "utilization": 1.0,
+    }
+    row.update(over)
+    return row
+
+
+def _wait_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "queue": "batch",
+        "segment": "clean",
+        "count": 40,
+        "p50_wait_s": 3.0,
+        "p95_wait_s": 5.0,
+        "max_wait_s": 9.0,
+    }
+    row.update(over)
+    return row
+
+
+def _overprovisioning_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "queue": "over_q",
+        "live_workers": 3,
+        "depth": 0,
+        "terminalisations": 1,
+        "overprovisioned": False,
+    }
+    row.update(over)
+    return row
+
+
+def _drain_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "queue": "bulk_q",
+        "depth": 200,
+        "terminalisations": 50,
+        "completions_per_second": 50 / 86400,
+        "has_traffic": True,
+        "eta_seconds": 200 * 86400 / 50,
+        "scheduled_depth": 0,
+        "wave_min_scheduled_at": None,
+        "wave_max_scheduled_at": None,
+    }
+    row.update(over)
+    return row
+
+
+def _cron_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "schedule_id": "9e1e1e1e-1111-1111-1111-111111111111",
+        "actor": "send_email",
+        "cron_expr": "*/5 * * * *",
+        "timezone": "UTC",
+        "dst_strategy": "skip",
+        "enabled": True,
+        "fires_window": 10,
+        "cleared_window": 2,
+        "fires_prior": 10,
+        "cleared_prior": 2,
+        "outstanding": 20,
+        "runaway_trending": True,
+    }
+    row.update(over)
+    return row
+
+
+def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queue whose utilization (depth / effective capacity) blows past the
+    2x threshold AND whose oldest due job has outlived the persistence
+    floor holds a full second claim-wave of due work after the first
+    drains - a fleet too small for its arrival rate, not a transient
+    burst. The remedy must name the levers the product actually has:
+    another worker on the queue, or a raised max_concurrent."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
+        queue_rows=[],
+        imbalance_rows=[
+            _imbalance_row(
+                depth=12,
+                live_workers=3,
+                actor_capacity=4,
+                utilization=6.0,
+                oldest_due_age_s=600.0,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "batch" in result.output
+    assert "STARVED" in result.output
+    assert "6.0x" in result.output
+    # The remedy names the real levers, not a fantasy knob.
+    assert "worker" in result.output
+    assert "max_concurrent" in result.output
+    assert "doctor_beta" in result.output
+
+
+def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): a 12-deep queue at 6x
+    utilization whose oldest due job is 10s old is a burst the dispatcher
+    may absorb before the report is read - an arrival-rate claim cannot
+    rest on a depth snapshot younger than the claim-in-flight window."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
+        queue_rows=[],
+        imbalance_rows=[
+            _imbalance_row(
+                depth=12,
+                live_workers=3,
+                actor_capacity=4,
+                utilization=6.0,
+                oldest_due_age_s=10.0,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "STARVED" not in result.output
+
+
+def test_doctor_is_silent_on_a_balanced_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control: utilization at the balanced edge (1.0 - one full wave, the
+    shape any enqueue burst produces transiently) renders NO imbalance
+    finding. A threshold at 1.0 would cry wolf on every burst."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(utilization=1.0)],
+    )
+
+    result = _invoke()
+
+    assert "STARVED" not in result.output
+
+
+def test_doctor_reports_stranded_work_when_oldest_due_blows_past_p95(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The strand shape: a due row whose age exceeds its queue's own p95
+    wait by the strand factor has outlived the entire observed wait
+    distribution including its tail - a burst cannot explain it, because
+    the p95 is computed over the same window the burst would inflate."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(oldest_due_age_s=600.0)],
+        wait_rows=[_wait_row(p95_wait_s=5.0)],
+    )
+
+    result = _invoke()
+
+    assert "batch" in result.output
+    assert "STRANDED WORK" in result.output
+    assert "600s" in result.output
+    assert "worker" in result.output
+    assert "max_concurrent" in result.output
+
+
+def test_doctor_is_silent_when_oldest_due_is_within_the_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: an oldest-due age inside the observed distribution's tail
+    (under both the factor arm and the absolute floor) renders NOTHING -
+    a just-enqueued job is not a strand."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="batch")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(oldest_due_age_s=10.0)],
+        wait_rows=[_wait_row(p95_wait_s=5.0)],
+    )
+
+    result = _invoke()
+
+    assert "STRANDED WORK" not in result.output
+
+
+def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live workers on a queue with zero due depth and near-zero
+    terminalisations over the whole window: the fleet's payroll outruns
+    its work. The remedy is consolidation in the workgroup config -
+    NEVER a destructive suggestion."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="over_q")],
+        queue_rows=[],
+        overprovisioning_rows=[
+            _overprovisioning_row(live_workers=3, depth=0, terminalisations=1, overprovisioned=True)
+        ],
+    )
+
+    result = _invoke()
+
+    assert "over_q" in result.output
+    assert "OVERPROVISIONED" in result.output
+    assert "consolidate" in result.output.lower()
+    assert "workgroup" in result.output.lower()
+    # The remedy must be non-destructive, and SAY so: no purge/drop
+    # suggestion, and the explicit nothing-is-deleted disclaimer.
+    assert "nothing is deleted" in result.output.lower()
+    assert "purge" not in result.output.lower()
+    assert "drop" not in result.output.lower()
+
+
+def test_doctor_is_silent_when_the_queue_earns_its_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: the same worker count with real throughput (the verdict
+    keys on work done, not queue emptiness) renders NOTHING."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="over_q")],
+        queue_rows=[],
+        overprovisioning_rows=[
+            _overprovisioning_row(
+                live_workers=3, depth=0, terminalisations=50, overprovisioned=False
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "OVERPROVISIONED" not in result.output
+
+
+def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drain eta beyond the observation window itself, on a depth that
+    has persisted past the persistence floor, means the due depth exceeds
+    everything the entire window completed: the operator would not
+    recognize the queue as draining by the time the extrapolation says it
+    lands. The finding states the eta AND the has_traffic confidence
+    caveat."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="bulk_q")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=600.0)],
+        drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
+    )
+
+    result = _invoke()
+
+    assert "bulk_q" in result.output
+    assert "SLOW DRAIN" in result.output
+    assert "4.0 days" in result.output
+    assert "extrapolation" in result.output.lower()
+    assert "50 completion(s)" in result.output
+
+
+def test_doctor_is_silent_when_a_young_burst_reads_a_fictional_eta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): an idle-capacity fleet's
+    51-job burst reads a ~1.0-day eta off a demand-limited rate, but the
+    depth is 2s old - the idle workers absorb it before the report is
+    read. No persistence, no rate claim."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="bulk_q")],
+        queue_rows=[],
+        imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=2.0)],
+        drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
+    )
+
+    result = _invoke()
+
+    assert "SLOW DRAIN" not in result.output
+
+
+def test_doctor_is_silent_when_drain_fits_inside_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: an eta inside the observation window (and the no-traffic
+    shape, whose estimate is honestly undefined) renders NOTHING."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_beta", queue="bulk_q")],
+        queue_rows=[],
+        drain_rows=[
+            _drain_row(eta_seconds=3600.0),
+            _drain_row(queue="empty_q", has_traffic=False, eta_seconds=None),
+        ],
+    )
+
+    result = _invoke()
+
+    assert "SLOW DRAIN" not in result.output
+
+
+def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schedule whose fan-out outruns clearance (two consecutive windows,
+    or an outstanding backlog above the catch-up window's demonstrated slot
+    capacity) must be named by id, with the backlog size and BOTH honest
+    remedies: slow the cron, or add workers for the actor."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("send_email", queue="batch")],
+        queue_rows=[],
+        cron_rows=[_cron_row()],
+    )
+
+    result = _invoke()
+
+    assert "9e1e1e1e-1111-1111-1111-111111111111" in result.output
+    assert "send_email" in result.output
+    assert "CRON LAG" in result.output
+    assert "20 fire(s) outstanding" in result.output
+    assert "slow the cron" in result.output.lower()
+    assert "max_concurrent" in result.output
+
+
+def test_doctor_is_silent_on_a_healthy_cron_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control: fires fully cleared in both windows, zero outstanding -
+    the ledger renders NOTHING."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("send_email", queue="batch")],
+        queue_rows=[],
+        cron_rows=[
+            _cron_row(
+                fires_window=5,
+                cleared_window=5,
+                fires_prior=5,
+                cleared_prior=5,
+                outstanding=0,
+                runaway_trending=False,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "CRON LAG" not in result.output
+
+
+def test_doctor_cron_lag_requires_demonstrated_clearance_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schedule that fired nothing in the trend horizon has no measured
+    clearance capacity to compare against: a weekly cron with one long
+    running fire must not read as a lag. The outstanding arm requires the
+    schedule to have actually fired within the two windows."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("send_email", queue="batch")],
+        queue_rows=[],
+        cron_rows=[
+            _cron_row(
+                fires_window=0,
+                cleared_window=0,
+                fires_prior=0,
+                cleared_prior=0,
+                outstanding=1,
+                runaway_trending=False,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "CRON LAG" not in result.output
+
+
+def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control (the measured false positive): a brand-new schedule's FIRST
+    fire is running right now - fires_window=1, no clearance in either
+    window, outstanding=1. With a zero demonstrated capacity the backlog
+    arm would read every in-flight fire as an uncatchable backlog; the
+    arm requires a POSITIVE demonstrated clearance to compare against."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("send_email", queue="batch")],
+        queue_rows=[],
+        cron_rows=[
+            _cron_row(
+                fires_window=1,
+                cleared_window=0,
+                fires_prior=0,
+                cleared_prior=0,
+                outstanding=1,
+                runaway_trending=False,
+            )
+        ],
+    )
+
+    result = _invoke()
+
+    assert "CRON LAG" not in result.output

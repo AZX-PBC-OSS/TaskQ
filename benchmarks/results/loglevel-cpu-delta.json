@@ -1,0 +1,93 @@
+{
+  "what": "TASKQ_LOG_EVENTS_LEVEL=warning vs info: the worker's CPU per drained job, interleaved A/B (the audit harness's shape: real worker_main subprocess, 8 actors, non-batch enqueue)",
+  "harness": "benchmarks/loglevel_ab.py (roles: worker / client / orchestrate)",
+  "generated_at": "2026-09-28T08:17:08",
+  "jobs_per_run": 4000,
+  "runs_per_level": 3,
+  "runs": [
+    {
+      "level": "info",
+      "run": 0,
+      "jobs": 4000,
+      "drain_s": 18.45,
+      "throughput_jps": 216.7,
+      "worker_cpu_s": 5.68,
+      "cpu_ms_per_job": 1.42,
+      "profile_out": "/tmp/opencode/feat-loglevels/benchmarks/results/loglevel-worker-info-r0.pstats"
+    },
+    {
+      "level": "warning",
+      "run": 0,
+      "jobs": 4000,
+      "drain_s": 17.9,
+      "throughput_jps": 223.4,
+      "worker_cpu_s": 3.97,
+      "cpu_ms_per_job": 0.993,
+      "profile_out": "/tmp/opencode/feat-loglevels/benchmarks/results/loglevel-worker-warning-r0.pstats"
+    },
+    {
+      "level": "info",
+      "run": 1,
+      "jobs": 4000,
+      "drain_s": 15.16,
+      "throughput_jps": 263.9,
+      "worker_cpu_s": 2.97,
+      "cpu_ms_per_job": 0.743,
+      "profile_out": null
+    },
+    {
+      "level": "warning",
+      "run": 1,
+      "jobs": 4000,
+      "drain_s": 10.17,
+      "throughput_jps": 393.4,
+      "worker_cpu_s": 2.19,
+      "cpu_ms_per_job": 0.547,
+      "profile_out": null
+    },
+    {
+      "level": "info",
+      "run": 2,
+      "jobs": 4000,
+      "drain_s": 9.79,
+      "throughput_jps": 408.5,
+      "worker_cpu_s": 2.52,
+      "cpu_ms_per_job": 0.63,
+      "profile_out": null
+    },
+    {
+      "level": "warning",
+      "run": 2,
+      "jobs": 4000,
+      "drain_s": 9.61,
+      "throughput_jps": 416.1,
+      "worker_cpu_s": 2.24,
+      "cpu_ms_per_job": 0.56,
+      "profile_out": null
+    }
+  ],
+  "median_cpu_ms_per_job": {
+    "info": 0.743,
+    "warning": 0.56
+  },
+  "median_throughput_jps": {
+    "info": 263.9,
+    "warning": 393.4
+  },
+  "cpu_delta": {
+    "abs_ms_per_job": -0.183,
+    "pct_reduction": 24.6
+  },
+  "cprofile_structlog_share": {
+    "info": {
+      "total_s": 32.14,
+      "structlog_inclusive_s": 4.11,
+      "structlog_share_pct": 12.8
+    },
+    "warning": {
+      "total_s": 31.61,
+      "structlog_inclusive_s": 0.37,
+      "structlog_share_pct": 1.2
+    }
+  }
+}

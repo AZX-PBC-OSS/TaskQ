@@ -1,0 +1,33 @@
+{
+  "shape": "batch-terminal-path",
+  "jobs": 2000,
+  "batches": 10,
+  "batch_size": 200,
+  "concurrency": 8,
+  "drain_s": 2.703,
+  "per_job_wall_ms": 1.352,
+  "reset_statement": {
+    "calls": 2000,
+    "mean_ms": 0.007,
+    "total_ms": 14.1
+  },
+  "increment_statement": {
+    "calls": 0,
+    "mean_ms": null,
+    "total_ms": null
+  },
+  "complete_statement": {
+    "calls": 123,
+    "mean_ms": 0.037,
+    "total_ms": 4.5
+  },
+  "terminal_update_statement": {
+    "calls": 2000,
+    "mean_ms": 0.191,
+    "total_ms": 382.5
+  },
+  "ungranted_locks_max": 7,
+  "active_batches_after": 0,
+  "generated_at": "2026-09-28T15:31:06.757996+00:00",
+  "schema": "batch_hotspot_s8djn7io"
+}
