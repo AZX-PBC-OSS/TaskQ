@@ -36,6 +36,7 @@ pip install "taskq-py[redis,otel,fastapi]"  # full (add prometheus for scrapes)
 | `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[vault]` | `hvac` | HashiCorp Vault dynamic credentials; see [Managed Identities](../guides/managed-identities.md) |
 | `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
+| `taskq-py[bench]` | `py-spy`, `pyinstrument` | Profilers for the `benchmarks/` toolkit |
 
 ---
 
@@ -256,6 +257,16 @@ The production path goes through the worker's `open_worker_deps` context manager
 result = await handle.wait(timeout=30.0)
 print(result.message_id)  # SendEmailResult.message_id
 ```
+
+`wait()` returns only once a **consumer** has run the job. Nothing executes it until then: in production the worker from the previous section is the consumer; in an in-process demo, register a stub and drain the backend before waiting:
+
+```python
+backend.register_stub(send_email, lambda payload, ctx: SendEmailResult(message_id="msg-123"))
+await backend.run_until_drained()
+result = await handle.wait(timeout=30.0)  # now resolves
+```
+
+Without a consumer, `wait()` simply times out after `timeout` seconds — a bare `TimeoutError` with no other signal.
 
 `wait()` raises:
 

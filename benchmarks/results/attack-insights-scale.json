@@ -1,0 +1,41 @@
+[
+  {
+    "queues": 1,
+    "actors": 4,
+    "terminal_jobs": 6000,
+    "pending_jobs": 100,
+    "wait_distribution_ms": 5.69,
+    "queue_imbalance_ms": 1.41,
+    "actor_backlog_ms": 0.57,
+    "overprovisioning_ms": 1.85,
+    "drain_estimates_ms": 1.72,
+    "cron_ledger_ms": 0.78,
+    "six_reads_sequential_ms": 12.03
+  },
+  {
+    "queues": 50,
+    "actors": 200,
+    "terminal_jobs": 6000,
+    "pending_jobs": 2000,
+    "wait_distribution_ms": 8.76,
+    "queue_imbalance_ms": 3.17,
+    "actor_backlog_ms": 1.96,
+    "overprovisioning_ms": 4.7,
+    "drain_estimates_ms": 4.64,
+    "cron_ledger_ms": 0.87,
+    "six_reads_sequential_ms": 24.11
+  },
+  {
+    "queues": 200,
+    "actors": 800,
+    "terminal_jobs": 6000,
+    "pending_jobs": 4000,
+    "wait_distribution_ms": 8.54,
+    "queue_imbalance_ms": 4.46,
+    "actor_backlog_ms": 3.34,
+    "overprovisioning_ms": 6.14,
+    "drain_estimates_ms": 5.72,
+    "cron_ledger_ms": 0.86,
+    "six_reads_sequential_ms": 29.07
+  }
+]

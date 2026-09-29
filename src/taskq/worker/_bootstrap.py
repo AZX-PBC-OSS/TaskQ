@@ -1710,7 +1710,7 @@ async def _main(
                         "TASKQ_REDIS_URL is set but the [redis] extra is not "
                         "installed; it is required by rate limit(s): "
                         f"{', '.join(redis_backed)}. Install it with: "
-                        "pip install 'taskq[redis]'"
+                        "pip install 'taskq-py[redis]'"
                     )
                     raise RuntimeError(msg)
             # Why: LoopScope.bootstrap eagerly resolves every LOOP provider,
@@ -2957,7 +2957,11 @@ async def worker_main_async(
     from taskq.scheduler import get_registered_crons
 
     schedule_specs = cron_registry if cron_registry is not None else get_registered_crons()
-    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    setup_logging(
+        level=settings.log_level,
+        log_format=settings.log_format,
+        events_level=settings.log_events_level,
+    )
     return await _main(
         settings,
         actor_registry=actor_registry,

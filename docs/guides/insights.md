@@ -12,6 +12,13 @@ name, and returns plain dicts. Nothing writes, nothing blocks a worker, and
 the module imports without `asyncpg` or FastAPI present — scripts,
 notebooks and deploy steps can use it.
 
+The layer's built-in consumer is `taskq doctor`: its STARVED,
+OVERPROVISIONED, SLOW DRAIN and CRON LAG findings are these statements'
+verdicts over the 24h window, with each threshold's derivation and the
+remedies documented in
+[cli.md: The operational-insight findings](cli.md#the-operational-insight-findings)
+(and the troubleshooting entry, §16).
+
 ```python
 import asyncpg
 from datetime import timedelta

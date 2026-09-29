@@ -146,7 +146,7 @@ async def with_pg_fallback(
     except ImportError as exc:
         raise ImportError(
             "taskq[redis] is required to use a Redis-backed rate limiter. "
-            "Install it with: pip install 'taskq[redis]'"
+            "Install it with: pip install 'taskq-py[redis]'"
         ) from exc
 
     async def _fail_closed(exc: Exception) -> RateLimitDecision:
