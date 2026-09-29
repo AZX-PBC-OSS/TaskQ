@@ -40,6 +40,7 @@ Key correctness invariants ():
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -61,6 +62,7 @@ from taskq.constants import (
 )
 from taskq.context import CancelOrigin, JobContext
 from taskq.obs import get_logger, get_meter, log_cancel_phase_change
+from taskq.worker.shutdown import ShutdownPhase
 
 if TYPE_CHECKING:
     from taskq.worker.deps import WorkerDeps
@@ -541,17 +543,26 @@ class _CancelController:
 
         Called by ``heartbeat_loop`` after each tick's ``async with
         conn.transaction()`` block exits.  At that point the row locks held by
-        the transaction are released, so ``mark_abandoned`` (which opens a
+        the transaction are released, so the terminal write (which opens a
         separate pool connection) can proceed without deadlocking.
 
         Each entry is processed unconditionally: failures propagate to the
         caller (heartbeat_loop), which counts them toward heartbeat_failures.
 
-        An abandon that did NOT apply (``mark_abandoned`` returns ``False``,
-        because its ``cancel_phase = 2`` guard did not match) leaves the job
-        registered and its phase back at FORCED, so a later tick can re-issue
-        the escalation and re-queue the abandon.  Deregistering there would
-        strand a still-running job with no route back to cancellation.
+        The verdict per entry: an UNHELD class entry (no registry entry -
+        the unheld walk's orphan) writes ``mark_abandoned``, the ladder's
+        own terminal. A HELD entry writes ``mark_abandoned`` while the
+        worker runs normally (the holder-ignored-the-cancel expiry), but
+        ``mark_cancelled`` while the shutdown orchestration is active -
+        the orchestrator owns the held exit then, and its RELEASING phase
+        plus the unwinding consumer both race the drain with the
+        operator's own verdict (see the comment in the body).
+
+        An abandon that did NOT apply (the write returns ``False``,
+        because its guard did not match) leaves the job registered and its
+        phase back at FORCED, so a later tick can re-issue the escalation
+        and re-queue the abandon.  Deregistering there would strand a
+        still-running job with no route back to cancellation.
 
         A False is also the shape of a budget cut whose detached write
         landed: the shield hands the cut to the caller while the inner
@@ -559,10 +570,11 @@ class _CancelController:
         and the next tick's re-issued abandon cannot match (the row is no
         longer ``running``, and the cancel-poll filters ``status =
         'running'``, so no ladder arm can ever fire again). The False arm
-        therefore re-reads the row before re-arming: an ``abandoned`` row
-        means the escalation IS durable and the delivery completes there,
-        with the same first-delivery-only shape as the applied arm - a
-        write this drain landed is never left with its cancellation
+        therefore re-reads the row before re-arming: an ``abandoned`` or
+        ``cancelled`` row means the verdict IS durable (this drain's
+        earlier write, or the consumer's own) and the delivery completes
+        there, with the same first-delivery-only shape as the applied arm
+        - a write this drain landed is never left with its cancellation
         silently undelivered.
 
         An abandon whose write RAISES is re-queued at the head of the deque
@@ -579,21 +591,46 @@ class _CancelController:
         deregistered entry against a row still at cancel_phase 1 (the
         consumer's unconditional finally would have removed the entry the
         re-issue arm needs). The cancellation is delivered here, after
-        mark_abandoned has made the abandon durable - first delivery only
+        the write has made the verdict durable - first delivery only
         (a task already cancelling or done takes no second cancel).
         """
         worker_id = self._worker_id
+        # The shutdown handover: while the shutdown orchestration is
+        # active, the orchestrator owns every HELD entry's exit (its
+        # RELEASING phase writes the operator's own verdict). A held
+        # abandon draining here would write `abandoned` over a consumer
+        # that is unwinding toward `mark_cancelled` - two writers racing
+        # DIFFERENT verdicts on one row, and whichever committed first
+        # owned the terminal state: a row the operator cancelled showed
+        # `abandoned` (the system tier's cancel-racing-SIGTERM scenario).
+        # The drain therefore writes the operator's verdict too
+        # (mark_cancelled, the same worker+attempt fence the consumer's
+        # write uses): whichever of the two commits, the row reads
+        # `cancelled`. The UNHELD class keeps mark_abandoned: no entry,
+        # no consumer, no other writer - the ladder is the row's only
+        # terminal writer.
+        shutdown_owns = self._deps.shutdown_phase is not ShutdownPhase.NONE
         while self._pending_abandons:
             job_id, queued_entry = self._pending_abandons.popleft()
             self._tick_liveness()
+            if shutdown_owns and queued_entry is not None:
+                write = partial(
+                    self._backend.mark_cancelled,
+                    job_id,
+                    worker_id,
+                    attempt=queued_entry.ctx.attempt,
+                    claim_epoch=queued_entry.ctx.claim_epoch,
+                )
+            else:
+                write = partial(self._backend.mark_abandoned, job_id)
             # shield_with_retrieval, not plain asyncio.shield: a second
             # CancelledError landing while this abandon write is detached
             # (shutdown racing a force-cancel escalation) must not orphan
             # the inner outcome, the retrieval callback logs its failure
             # instead of asyncio reporting "Task exception was never retrieved".
             try:
-                abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
-                if not abandoned:
+                applied = await shield_with_retrieval(write())
+                if not applied:
                     # A False is ambiguous: the guard no-ops for a job
                     # that finished naturally, for an escalation another
                     # writer moved, and for an abandon that is ALREADY
@@ -630,21 +667,23 @@ class _CancelController:
                 # absorbed by the not-applied guard below.
                 self._pending_abandons.appendleft((job_id, queued_entry))
                 raise
-            if not abandoned:
-                if row is not None and row.status == "abandoned":
+            if not applied:
+                if row is not None and row.status in ("abandoned", "cancelled"):
                     # The False was the durability of an earlier drain's
                     # write (detached by a budget cut and committed
-                    # afterwards), not a guard miss on a live escalation:
-                    # the abandon owns the terminal state, the guard
-                    # absorbed the duplicate WRITE, and the delivery the
-                    # cut dropped completes here. Same first-delivery-
-                    # only shape as the applied arm below, and no second
-                    # write: the attempt row is the first one's. The
-                    # delivery and the deregister are scoped to the
-                    # queued entry (issue 461), the same fence the
-                    # applied arm applies: a bare-id get() here could
-                    # hand back a live attempt's re-registered entry and
-                    # cancel it for an abandon this attempt never queued.
+                    # afterwards) or of the consumer's own verdict, not a
+                    # guard miss on a live escalation: the terminal state
+                    # owns the row (the shutdown swap's `cancelled` or the
+                    # ladder's `abandoned`), the guard absorbed the
+                    # duplicate WRITE, and the delivery the cut dropped
+                    # completes here. Same first-delivery-only shape as
+                    # the applied arm below, and no second write: the
+                    # attempt row is the first one's. The delivery and
+                    # the deregister are scoped to the queued entry
+                    # (issue 461), the same fence the applied arm
+                    # applies: a bare-id get() here could hand back a
+                    # live attempt's re-registered entry and cancel it
+                    # for an abandon this attempt never queued.
                     await _deliver_abandon(self._deps, job_id, queued_entry, worker_id)
                     continue
                 entry = self._deps.active_jobs.get(job_id)

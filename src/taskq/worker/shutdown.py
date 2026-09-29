@@ -30,10 +30,10 @@ and the forced cancel at FORCING; an actor that unwinds is *interrupted* ,
 released back to the fleet, the spent attempt standing; and one still
 alive past
 both graces is interrupted with a hold at RELEASING (released only once
-the process is provably gone). ``abandoned`` stays on the operator-cancel
-ladder (the row carries ``cancel_requested_at``): the FORCING escalation
-probe and the RELEASING ``mark_interrupted`` fence keep an operator's
-request ahead of any release.
+the process is provably gone). ``abandoned`` is never a shutdown verdict:
+an operator-cancelled row the process dies with is terminalised with the
+operator's OWN verdict (``mark_cancelled``, forced) at RELEASING - the
+same write its unwinding consumer races - never relabelled ``abandoned``.
 """
 
 import asyncio
@@ -108,7 +108,8 @@ class ShutdownPhase(IntEnum):
     RELEASING , release jobs whose actors never unwound back to the fleet
                  (``mark_interrupted``: the spent attempt stands, held
                  until this process is provably gone); jobs under an
-                 operator cancel still reach ``abandoned`` here.
+                 operator cancel are terminalised with the operator's own
+                 verdict (``mark_cancelled``, forced) here.
 
     The value 4 was ``ABANDONING`` before the release phase stopped
     abandoning, the integer is unchanged, so ``/health`` JSON and the CLI
@@ -554,22 +555,40 @@ async def orchestrate_shutdown(
         )
         released_count = 0
         noop_count = 0
-        abandoned_count = 0
+        cancelled_count = 0
         for active in deps.active_jobs.all():
             # An OPERATOR entry belongs to the cancel ladder, never to a
-            # release: one shielded write (mark_abandoned's phase-2 /
-            # NULL-lease guard decides, the FORCING probe put the row at
-            # phase 2 by construction), the phase's pre-rename shape
-            # exactly.
+            # release: one shielded write carrying the operator's OWN
+            # verdict. mark_cancelled, fenced to this worker's attempt
+            # (the fence mark_interrupted uses below), NOT mark_abandoned:
+            # an entry still registered here is a consumer whose unwind
+            # overran the cleanup grace - the FORCING probe escalated its
+            # row to phase 2 and delivered task.cancel(), and the
+            # consumer's own mark_cancelled is in flight (the unwind's
+            # commit lags the grace under co-tenant load; the system
+            # tier's cancel-racing-SIGTERM scenario). Two writers racing
+            # DIFFERENT verdicts on one row is the defect: whoever
+            # committed first owned the terminal state, so a row the
+            # operator cancelled could land `abandoned`. Writing the SAME
+            # verdict from here dissolves the race - one of the two
+            # mark_cancelled writes commits, the other's fence no-ops,
+            # and the row reads `cancelled` at every timing.
             if active.cancel_origin is CancelOrigin.OPERATOR:
                 try:
-                    if await shield_with_retrieval(backend.mark_abandoned(active.job_id)):
-                        abandoned_count += 1
+                    if await shield_with_retrieval(
+                        backend.mark_cancelled(
+                            active.job_id,
+                            worker_id,
+                            attempt=active.ctx.attempt,
+                            claim_epoch=active.ctx.claim_epoch,
+                        )
+                    ):
+                        cancelled_count += 1
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
                     _log.warning(
-                        "abandon-pg-write-failed",
+                        "cancel-pg-write-failed",
                         job_id=str(active.job_id),
                         error=str(exc),
                     )
@@ -630,10 +649,12 @@ async def orchestrate_shutdown(
                 # release (its own consumer already terminalised it, or an
                 # operator cancel landed on it between FORCING and
                 # RELEASING). The row is the arbiter of origin: a
-                # cancel-carrying row gets the ladder's terminal write,
-                # whose own guard decides (a phase-1 row rides the cancel
-                # controller's remaining rungs; a terminal row matches
-                # nothing).
+                # cancel-carrying row gets the operator's own verdict -
+                # mark_cancelled, the same fenced write the consumer's
+                # unwind is racing (the OPERATOR arm's comment), so either
+                # the consumer's write landed and this fence no-ops, or
+                # this one lands and the consumer's does. A row that moved
+                # to another owner no-ops the fence either way.
                 noop_count += 1
                 _log.debug(
                     "release-interrupted-noop",
@@ -642,13 +663,20 @@ async def orchestrate_shutdown(
                     cancel_origin=int(active.cancel_origin),
                 )
                 try:
-                    if await shield_with_retrieval(backend.mark_abandoned(active.job_id)):
-                        abandoned_count += 1
+                    if await shield_with_retrieval(
+                        backend.mark_cancelled(
+                            active.job_id,
+                            worker_id,
+                            attempt=active.ctx.attempt,
+                            claim_epoch=active.ctx.claim_epoch,
+                        )
+                    ):
+                        cancelled_count += 1
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
                     _log.warning(
-                        "abandon-pg-write-failed",
+                        "cancel-pg-write-failed",
                         job_id=str(active.job_id),
                         error=str(exc),
                     )
@@ -661,7 +689,7 @@ async def orchestrate_shutdown(
             released=released_count,
             held_seconds=hold.total_seconds(),
             noop=noop_count,
-            abandoned=abandoned_count,
+            cancelled=cancelled_count,
             elapsed_seconds=loop.time() - t0,
         )
 

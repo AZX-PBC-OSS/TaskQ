@@ -278,3 +278,84 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
         # running (no abandon, no escalation): the test stops the sleeper it
         # minted, or it stays pending on the module loop past teardown.
         await _reap_sleeper(sleeper)
+
+
+async def test_shutdown_owns_held_abandons_the_drain_writes_the_operators_verdict() -> None:
+    """While the shutdown orchestration is active, a HELD abandon drains as
+    the operator's OWN verdict (``mark_cancelled``), never ``mark_abandoned``.
+
+    The orchestration runs while the heartbeat keeps ticking (the loop
+    exits only on ``shutdown_event``, set at the orchestration's end), so
+    the ladder's phase-3 drain and the orchestrator's RELEASING phase can
+    both reach a row whose consumer is unwinding slowly (the system tier's
+    cancel-racing-SIGTERM scenario). Two writers racing DIFFERENT verdicts
+    on one row is the defect: whichever committed first owned the terminal
+    state, and a row the operator cancelled showed ``abandoned``. The
+    drain therefore carries the same verdict the consumer and RELEASING
+    write - ``mark_cancelled``, fenced to this worker's attempt - so the
+    row reads ``cancelled`` at every timing. The UNHELD class (no entry,
+    no consumer, no other writer) keeps ``mark_abandoned``: the ladder is
+    its only terminal writer.
+    """
+    from taskq.worker.shutdown import ShutdownPhase
+
+    held_id = new_job_id()
+    unheld_id = new_job_id()
+    worker_id = new_uuid()
+    ws = _ws(CANCELLATION_GRACE_PERIOD="0.0", CLEANUP_GRACE_PERIOD="0.0")
+    deps = _make_deps(ws)
+    deps.shutdown_phase = ShutdownPhase.FORCING
+    sleeper = _sleeper()
+    await deps.active_jobs.register(held_id, sleeper, _make_ctx())
+    entry = deps.active_jobs.get(held_id)
+    assert entry is not None
+    entry.cancel_phase = CancelPhase.COOPERATIVE
+    entry.cancel_observed_at = asyncio.get_running_loop().time() - 1.0
+
+    class _RecordingBackend(FakeBackend):
+        """Records the drain's terminal writes per verdict."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.abandoned: list[object] = []
+            self.cancelled: list[object] = []
+
+        async def mark_abandoned(self, job_id: object) -> bool:  # type: ignore[override]
+            self.abandoned.append(job_id)
+            return True
+
+        async def mark_cancelled(self, job_id: object, *args: object, **kwargs: object) -> bool:  # type: ignore[override]
+            self.cancelled.append(job_id)
+            return True
+
+    backend = _RecordingBackend()
+    controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
+
+    try:
+        # Two poll rows: the held entry's row (phase 1 - the fast path
+        # queues it past the zero graces) and an unheld row (no registry
+        # entry, phase 2 - the orphan class the unheld walk owns).
+        recorder = _Recorder(
+            [
+                _MockRow(id=held_id, cancel_phase=1),
+                _MockRow(id=unheld_id, cancel_phase=2),
+            ]
+        )
+        await _tick(controller, recorder)
+
+        assert backend.cancelled == [held_id], (
+            "Contract: with the orchestration active, the drain's held "
+            "abandon carries the operator's own verdict (mark_cancelled, "
+            "the write the unwinding consumer races) - an abandon here "
+            "races a DIFFERENT verdict and can relabel an operator's "
+            "cancelled job `abandoned`."
+        )
+        assert backend.abandoned == [unheld_id], (
+            "Contract: the UNHELD class keeps mark_abandoned - no entry, "
+            "no consumer, the ladder is the row's only terminal writer."
+        )
+        assert deps.active_jobs.get(held_id) is None, (
+            "Contract: the applied verdict's delivery still deregisters the held entry."
+        )
+    finally:
+        await _reap_sleeper(sleeper)
