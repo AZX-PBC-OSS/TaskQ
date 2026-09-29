@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from taskq._ids import new_job_id
 from taskq.backend._protocol import EnqueueArgs
-from taskq.exceptions import PayloadValidationError
+from taskq.exceptions import PayloadValidationError, ResultTooLarge, UnencodableValue
 from taskq.retry import (
     Fail,
     JobRetryState,
@@ -210,6 +210,57 @@ def test_payload_validation_error_wins_over_hook_in_adapter() -> None:
     assert not hook_called, "hook must not be called for PayloadValidationError"
     assert isinstance(decision, Fail)
     assert decision.error_class == "PayloadValidationError"
+
+
+def test_unencodable_value_wins_over_hook_in_adapter() -> None:
+    """UnencodableValue must not reach the hook - classify unconditionally
+    Fails it (a re-run reproduces the unencodable value), so a hook
+    override can never change the outcome and the adapter must skip the
+    hook exactly as it does for PayloadValidationError and ResultTooLarge.
+    Invoking the hook runs its side effects for a decision it cannot
+    influence."""
+    hook_called = False
+
+    def hook(exc: BaseException, attempt: int) -> RetryOverride:
+        nonlocal hook_called
+        hook_called = True
+        return RetryOverride(kind="indefinite")
+
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=hook,
+    )
+
+    decision = decide_after_failure(actor_config, UnencodableValue("lone surrogate"), _job_state())
+
+    assert not hook_called, "hook must not be called for UnencodableValue"
+    assert isinstance(decision, Fail)
+    assert decision.error_class == "UnencodableValue"
+
+
+def test_result_too_large_wins_over_hook_in_adapter() -> None:
+    """ResultTooLarge must not reach the hook - same unconditional-Fail
+    contract as PayloadValidationError, pinned beside it so the adapter's
+    exclusion tuple cannot quietly drop one member."""
+    hook_called = False
+
+    def hook(exc: BaseException, attempt: int) -> RetryOverride:
+        nonlocal hook_called
+        hook_called = True
+        return RetryOverride(kind="indefinite")
+
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=hook,
+    )
+
+    decision = decide_after_failure(actor_config, ResultTooLarge("too big"), _job_state())
+
+    assert not hook_called, "hook must not be called for ResultTooLarge"
+    assert isinstance(decision, Fail)
+    assert decision.error_class == "ResultTooLarge"
 
 
 def test_payload_validation_error_wins_over_hook_in_pure_classifier() -> None:
