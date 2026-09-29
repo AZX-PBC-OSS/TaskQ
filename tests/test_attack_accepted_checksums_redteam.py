@@ -521,5 +521,207 @@ def test_guard_reads_variants_through_the_real_package_resources() -> None:
     }
 
 
+# ── the variant LIST itself: multiplicities and duplicates ────────────────
+
+
+class _VariantEntry:
+    def __init__(self, name: str, text: str) -> None:
+        self._name = name
+        self._text = text
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_file(self) -> bool:
+        return True
+
+    def is_dir(self) -> bool:
+        return False
+
+    def read_text(self, encoding: str) -> str:
+        return self._text
+
+    def read_bytes(self) -> bytes:
+        return self._text.encode("utf-8")
+
+    def joinpath(self, *parts: str) -> _VariantEntry:
+        raise AssertionError(f"unexpected joinpath into a variant file: {parts}")
+
+
+class _VariantDir:
+    def __init__(self, entries: list[_VariantEntry]) -> None:
+        self._entries = entries
+
+    def is_dir(self) -> bool:
+        return True
+
+    def is_file(self) -> bool:
+        return False
+
+    def iterdir(self) -> list[_VariantEntry]:
+        return list(self._entries)
+
+    def read_text(self, encoding: str) -> str:
+        raise AssertionError("read_text on a variant directory")
+
+    def joinpath(self, *parts: str) -> _VariantEntry:
+        raise AssertionError(f"unexpected joinpath into a variant directory: {parts}")
+
+
+class _MissingEntry:
+    def is_dir(self) -> bool:
+        return False
+
+    def is_file(self) -> bool:
+        return False
+
+    def joinpath(self, *parts: str) -> _MissingEntry:
+        return self
+
+
+class _VariantsHop:
+    """The ``_variants`` intermediate hop: its joinpath resolves a stem."""
+
+    def __init__(self, stems: dict[str, list[tuple[str, str]]]) -> None:
+        self._stems = stems
+
+    def joinpath(self, *parts: str) -> _VariantDir | _MissingEntry:
+        entries = self._stems.get("/".join(parts))
+        if entries is None:
+            return _MissingEntry()
+        return _VariantDir([_VariantEntry(name, text) for name, text in entries])
+
+
+class _VariantsRoot:
+    """A resources root serving ONLY ``_variants/<stem>/`` lookups, with the
+    given entries per stem; every other path resolves missing. What
+    _variant_templates() traverses, no more."""
+
+    def __init__(self, stems: dict[str, list[tuple[str, str]]]) -> None:
+        self._stems = stems
+
+    def joinpath(self, *parts: str) -> _VariantDir | _MissingEntry | _VariantsHop:
+        key = "/".join(parts)
+        if key == "_variants":
+            # The caller chains joinpath("_variants").joinpath(stem): the
+            # second hop only sees the stem, so serve it from a hop object.
+            return _VariantsHop(self._stems)
+        if key.startswith("_variants/"):
+            entries = self._stems.get(key[len("_variants/") :])
+            if entries is None:
+                return _MissingEntry()
+            return _VariantDir([_VariantEntry(name, text) for name, text in entries])
+        return _MissingEntry()
+
+    def iterdir(self) -> list[_VariantEntry]:
+        raise AssertionError("_variant_templates must not iterate the package root")
+
+
+class TestTheVariantListEdges:
+    """Shapes of a migration's bundled variant list the shipped bundle never
+    exercises (every amended file carries exactly ONE variant today): a
+    file with TWO published variants, and a variant whose rendered bytes
+    equal the CURRENT file's (a duplicate). The acceptance is a SET of
+    legitimate checksums, so both shapes must behave."""
+
+    def _patch_root(
+        self, monkeypatch: pytest.MonkeyPatch, stems: dict[str, list[tuple[str, str]]]
+    ) -> None:
+        root = _VariantsRoot(stems)
+        real_files = resources.files
+
+        def files(name: str):
+            return root if name == "taskq.migrations" else real_files(name)
+
+        monkeypatch.setattr(resources, "files", files)
+
+    def test_two_variants_for_one_file_are_both_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file published twice (two amendments, two historical vintages):
+        a ledger holding EITHER vintage's checksum is honest provenance; a
+        checksum matching NEITHER is still drift. Order of the entries must
+        not matter (the acceptance is a set)."""
+        found = {m.filename: m for m in migrate_mod.discover()}
+        target = found["01.00.05_01_pre_batches.sql"]
+        # The real bundled variant's text, captured BEFORE the root is patched.
+        (real_variant_text,) = [
+            text.decode("utf-8-sig")
+            for name, text in _variant_files().items()
+            if name.startswith(f"{Path(target.filename).stem}/")
+        ]
+        real_variant = hashlib.sha256(
+            migrate_mod.render(real_variant_text, "taskq").encode("utf-8")
+        ).hexdigest()
+        extra_template = target.sql_template + "\n-- a second published vintage\n"
+        extra_checksum = hashlib.sha256(
+            migrate_mod.render(extra_template, "taskq").encode("utf-8")
+        ).hexdigest()
+        self._patch_root(
+            monkeypatch,
+            {
+                target.filename.removesuffix(".sql"): [
+                    ("bbbb_second.sql", extra_template),
+                    ("aaaa_first.sql", real_variant_text),
+                ]
+            },
+        )
+
+        # Both variant checksums accepted, in either listing order.
+        for digest in (real_variant, extra_checksum):
+            drifts = migrate_mod._detect_checksum_drifts(  # pyright: ignore[reportPrivateUsage]  # Why: the audit pins the guard directly.
+                list(found.values()), {target.key: digest}, "taskq"
+            )
+            assert drifts == [], f"published vintage {digest[:12]} must not drift: {drifts}"
+
+        # A checksum matching NEITHER still refuses.
+        drifts = migrate_mod._detect_checksum_drifts(  # pyright: ignore[reportPrivateUsage]
+            list(found.values()), {target.key: UNKNOWN_CHECKSUM}, "taskq"
+        )
+        assert [d.key for d in drifts] == [target.key]
+
+    def test_a_variant_equal_to_the_current_file_is_harmless(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A duplicate variant (its rendered checksum equals the CURRENT
+        file's) collapses the accepted set to one digest and must neither
+        crash the guard nor widen what it accepts: the current file's own
+        checksum was always accepted, so the union is unchanged."""
+        found = {m.filename: m for m in migrate_mod.discover()}
+        target = found["01.00.05_01_pre_batches.sql"]
+        current = target.checksum("taskq")
+        self._patch_root(
+            monkeypatch,
+            {
+                target.filename.removesuffix(".sql"): [
+                    ("deadbeef.sql", target.sql_template),
+                ]
+            },
+        )
+        assert migrate_mod._variant_templates(target.filename) == [target.sql_template]  # pyright: ignore[reportPrivateUsage]  # Why: the audit pins the helper directly.
+        drifts = migrate_mod._detect_checksum_drifts(  # pyright: ignore[reportPrivateUsage]
+            list(found.values()), {target.key: current}, "taskq"
+        )
+        assert drifts == []
+        drifts = migrate_mod._detect_checksum_drifts(  # pyright: ignore[reportPrivateUsage]
+            list(found.values()), {target.key: UNKNOWN_CHECKSUM}, "taskq"
+        )
+        assert [d.key for d in drifts] == [target.key]
+
+    def test_every_bundled_variant_renders_cleanly(self) -> None:
+        """The drift check renders every bundled variant with the checking
+        database's schema INSIDE the apply/status path: a variant whose
+        text breaks str.format (an unescaped ``{``) would crash EVERY
+        apply_pending and migrate status for every database, not just the
+        amended file's check. Pin that all shipped variants format cleanly
+        under an arbitrary valid schema."""
+        for name, text in sorted(_variant_files().items()):
+            stem = name.split("/")[0]
+            rendered = migrate_mod.render(text.decode("utf-8-sig"), "some_schema_name")
+            digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+            assert len(digest) == 64, f"variant {name} (of {stem}) failed to render"
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(f"run with {sys.executable} -m pytest {__file__}")
