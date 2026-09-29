@@ -301,8 +301,7 @@ async def test_exact_same_args_batch_rerun_dedupes_on_unnest_raises_pkey_on_copy
         )
     else:
         assert pg["records"]["error"] == "admitted-all", (
-            "the unnest arbiter dedupes the exact-same-args re-run; got "
-            f"{pg['records']['error']!r}"
+            f"the unnest arbiter dedupes the exact-same-args re-run; got {pg['records']['error']!r}"
         )
         assert mem["records"]["error"] == "admitted-all", (
             "the mirror's unnest tier must dedupe the exact-same-args "

@@ -676,9 +676,7 @@ def _first_row_violation(
             if args.idempotency_key is not None
             else None
         )
-        pair_conflict = pair is not None and (
-            pair in self._idempotency_index or pair in seen_pairs
-        )
+        pair_conflict = pair is not None and (pair in self._idempotency_index or pair in seen_pairs)
         if pair_conflict and not pairs_raise:
             # The unnest arbiter dedupes the row: it writes nothing, so
             # its id and singleton flag never reach the indexes a later
