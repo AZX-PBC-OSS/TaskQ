@@ -1461,3 +1461,99 @@ async def test_probe_row_without_the_drop_after_key_fails_open_and_the_sweep_run
     assert "occurred_at >= $3" not in sql, (
         "full-range: the floor conjunct must be absent from the rendered statement"
     )
+
+
+async def test_paused_policy_job_owns_nothing_and_both_sweeps_run_full_range(
+    ts_conn: asyncpg.Connection, ts_schema: str
+) -> None:
+    """H11, the PAUSED-policy edge: a ``policy_retention`` job whose
+    ``scheduled`` is FALSE (``alter_job(id, scheduled => FALSE)`` — the
+    same supported knob the lifecycle module's teeth leg uses as its
+    mutation) does NOT own the aged end. The floor's contract names the
+    policy's ownership claim as "a registered policy will drop these
+    rows"; a paused policy never runs, so deferring to it strands the
+    aged rows with NOBODY deleting them — the exact compound the
+    downgrade strand (the doctor's apache drift arm) measured, but
+    reachable on a healthy TSL server by pausing alone, where no doctor
+    arm looks. The honest answer is the probe's own fail-open polarity:
+    a policy that cannot run reads as "no answer", and the sweep runs
+    full-range — row-exact, watermark-visible, the sweep must not skip
+    a single row when nothing owns the aged end.
+
+    Pinned on the REAL engine for BOTH sweeps: the archive-expiry sweep
+    (the paused jobs_archive policy's would-be floor sits 2 days back;
+    the aged seed is 3.5 days back, ``expire_at`` passed — below the
+    would-be floor AND expired, the precise double shape only a floor
+    would skip) and the event-TTL sweep (the paused job_events policy's
+    floor 1 day back; the aged seed 2.5 days back). Both must delete.
+    """
+    from taskq.backend._retention_floor import (
+        retention_policy_floor,  # pyright: ignore[reportPrivateUsage]  # Why: the floor lives in the asyncpg-free probe module (deploy-step-free, the testing parity seam's contract); the house pattern imports the private module where used.
+    )
+
+    # The pause: every retention job in the schema stops being scheduled.
+    # (The compression jobs stay deferred-and-scheduled — irrelevant here,
+    # the floor only ever reads policy_retention jobs.)
+    jobs = await ts_conn.fetch(
+        "SELECT job_id, hypertable_name FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        ts_schema,
+    )
+    assert {r["hypertable_name"] for r in jobs} == {
+        "jobs_archive",
+        "job_attempts_archive",
+        "job_events",
+    }, "setup: all three retention policies are registered before the pause"
+    for r in jobs:
+        await ts_conn.execute("SELECT alter_job($1, scheduled => FALSE)", r["job_id"])
+    paused = await ts_conn.fetch(
+        "SELECT hypertable_name, scheduled FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        ts_schema,
+    )
+    assert {r["hypertable_name"] for r in paused if r["scheduled"]} == set(), (
+        "setup: the mutation must take — no scheduled retention job remains"
+    )
+
+    # The ownership claim dies with the schedule: the floor is None for
+    # both tables — the job is registered, but nothing will ever run it.
+    now = datetime.now(UTC)
+    assert (
+        await retention_policy_floor(ts_conn, ts_schema, "jobs_archive", "finished_at", now=now)
+        is None
+    ), "a paused policy owns nothing: the archive floor must fail open"
+    assert (
+        await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
+        is None
+    ), "a paused policy owns nothing: the events floor must fail open"
+
+    # And the sweeps run full-range: the aged, expired prey deletes.
+    aged_archive = await _seed_archive_row(
+        ts_conn,
+        ts_schema,
+        finished_at=now - _AGED_ARCHIVE_FINISHED_AT,
+        expire_at=now - timedelta(hours=1),
+    )
+    aged_event = await _seed_event(
+        ts_conn, ts_schema, occurred_at=now - _AGED_EVENT_OCCURRENCE, detail={}
+    )
+
+    expiry = await archive_expiry_sweep(ts_conn, schema=ts_schema, batch_size=100)
+    assert expiry.total_deleted == 1, (
+        "the paused policy must not strand the aged archive row: the sweep "
+        "runs full-range when nothing owns the aged end"
+    )
+    deleted = await sweep_expired_events(
+        ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
+    )
+    assert deleted == 1, (
+        "the paused policy must not strand the aged event row either: full-range"
+    )
+
+    archive_ids = {
+        r["id"] for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")
+    }
+    event_ids = {
+        int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")
+    }
+    assert aged_archive not in archive_ids and aged_event not in event_ids
