@@ -1,6 +1,6 @@
 # CLI reference
 
-The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel; environment variables take precedence over `.env` files.
+The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, rendering the operational insights, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel; environment variables take precedence over `.env` files.
 
 ## Installation
 
@@ -921,6 +921,88 @@ There is no 0 state: NULL (via `--clear`) is uncapped, and an emergency drain to
 | `0` | Row written and printed |
 | `1` | Both `--max-concurrent` and `--clear` given, neither given, or the queue name is not a valid queue name |
 | `2` | `--max-concurrent` below 1 (option range check, before any database access) |
+
+---
+
+## `taskq insights`
+
+Renders the [`taskq.insights`](insights.md) SQL layer as operator tables: how long work waited, whether the fleet is imbalanced, how long a queue needs to drain, and whether a cron schedule is fanning out faster than it clears. The command is the terminal surface for that module — it writes no SQL of its own, every row comes from the module's statements (over BOTH retention tiers, live `jobs` + `jobs_archive`).
+
+Read-only like `taskq doctor`: SELECT-only statements, exit 0 whether or not there is anything to report. Safe to run against production mid-incident.
+
+```shell
+taskq insights [wait|balance|drain|cron|all]   # default: all
+```
+
+Options: `--window` selects the trailing window for the windowed reads (wait, drain, cron); one of `1h`, `6h`, `24h`, `7d` (the module's `INSIGHTS_WINDOWS`). On hypertables a window older than the archive retention answers over the surviving chunks — the retention floor is the analytics floor. `--actor` is a wait-only grouping switch (see below). `--queue` keeps only that queue's rows on wait, balance, and drain; it is refused on cron, whose ledger is per schedule and has no queue dimension.
+
+### `taskq insights wait`
+
+Per queue, how long terminalised attempts waited before their claim. Wait per attempt is `started_at - scheduled_at` (the dispatch claim latency); the rows are SEGMENTED clean vs deferred:
+
+```
+queue   segment  count    p50    p95   max
+email     clean      4  1m15s  1m55s  2m0s
+email  deferred      1   5.0s   5.0s  5.0s
+```
+
+* `count` — terminalised attempts in the window.
+* `p50` / `p95` / `max` — the wait distribution's percentiles.
+* `segment` — `clean` = first-delivery attempts (`snooze_count = 0` and `rate_limit_blocked_count = 0`), the subset a queue-latency SLO is written against. `deferred` = rows whose `scheduled_at` a snooze or a rate limit moved forward: **reschedules are excluded from the clean percentiles**, and a deferred row's wait measures only the FINAL leg (the deferred time is by construction not in the number). `started_at - created_at` is NOT their wait — it would fold the operator's own snooze choice into the queue's latency.
+
+`--actor ACTOR` switches the statement to the module's per-(actor, queue) grouping and keeps one actor's rows — the plain per-queue read folds every actor's attempts together.
+
+### `taskq insights balance`
+
+Per queue, is the fleet imbalanced:
+
+```
+queue  depth  live  effective_capacity  utilization  oldest_due               flag
+email    122     1                   4        30.50       15m2s  !! over threshold
+idle       1     0                   0            -       10m2s     !! no capacity
+```
+
+* `depth` — pending rows due now (`scheduled_at <= now`): the work a worker could claim this instant.
+* `live` — workers subscribed to the queue and heartbeating in the last 30s.
+* `effective_capacity` — the routed actors' summed `max_concurrent` x live workers: the queue's in-flight ceiling under the current fleet.
+* `utilization` — depth ÷ effective capacity; `-` renders the NULL case.
+* `oldest_due` — age of the oldest due job: a large depth with a tiny age is a burst, a small depth with a large age is a strand.
+* `flag` — over-threshold rows are MARKED: `!! over threshold` when utilization > 1 (more due work than one wave of capacity can absorb), `!! no capacity` when nothing can serve the queue (no live worker or no actor capacity — the starvation shape).
+
+### `taskq insights drain`
+
+Per queue, seconds-to-drain: due depth ÷ completions per second over the window.
+
+```
+queue  depth                   eta
+email    122                  1d0h
+idle       1  no traffic in window
+```
+
+The eta is a THROUGHPUT extrapolation, not a promise: it assumes the next window looks like the last one, that the queue's workers stay up, and that nothing enqueues behind the current depth. The `has_traffic` caveat is rendered honestly: a queue whose window carried no completions has NO estimate — its eta renders `no traffic in window`, never `0`, which would read as "already drained". Widen `--window` (up to the archive retention floor) before trusting anything else.
+
+### `taskq insights cron`
+
+Per schedule, the fan-out ledger:
+
+```
+schedule   actor       cron  fires  cleared  outstanding  verdict
+ce6f7920  ticker  * * * * *      3        1            2       ok
+```
+
+* `schedule` — the schedule id, shortened to 8 characters.
+* `fires` / `cleared` — jobs the schedule enqueued in the window (provenance `metadata cron_schedule_id`) and how many of those are terminalised. Clearance lags fires at the window's right edge by construction; the ratio is a trend, not an instant.
+* `outstanding` — the schedule's non-terminal backlog right now, windowless (future-armed fires included, by design).
+* `verdict` — `!! runaway trending` when fires > cleared in BOTH the current and the prior equal window (two consecutive windows is the runaway shape; one is a burst), `ok` otherwise.
+
+Two confounds the verdict's reader must hold: a DST `allof` schedule legitimately doubles a fire in the overlap hour (read the verdict against the schedule's `dst_strategy`), and a budget-deferred fire enqueues NO row, so a deferral reads as zero fires here — its record is the `taskq.cron.budget_deferrals` counter, not this ledger.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Tables printed (or a named nothing-to-report line per empty surface) |
+| `1` | Unknown surface, invalid `--window`, `--actor` outside wait, `--queue` on cron, or an invalid schema name |
 
 ---
 

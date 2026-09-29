@@ -456,6 +456,18 @@ against a 2d archive retention answers over 2d of history. Check
 TimescaleDB guide's monitoring section) when a long window reads shorter
 than it claims.
 
+## The operator's terminal surface
+
+`taskq insights [wait|balance|drain|cron|all]` renders this module's rows
+as terminal tables — no SQL, no notebook. The command is read-only like
+`taskq doctor` (SELECT-only, exit 0 always) and carries every confound
+documented above into its output: the deferred wait segment is labeled
+with the reschedules-excluded caveat, a no-traffic drain renders
+`no traffic in window` (never an eta of 0), over-threshold and starved
+balance rows are marked, and the cron verdict names the runaway trend.
+See [cli.md: taskq insights](cli.md#taskq-insights) for the full column
+reference.
+
 ## Testing
 
 `tests/test_insights.py` runs the same scenario bodies — a balanced
