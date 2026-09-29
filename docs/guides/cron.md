@@ -174,6 +174,18 @@ lapses re-anchors to the next **real** occurrence and consumes it as the immedia
 so a monthly schedule's phase can shift — `0 0 31 * *` can fire its October 31st
 occurrence weeks early as the catch-up, with December 31st the next scheduled fire.
 
+The dropped-slot count is computed by walking the schedule forward one occurrence at a
+time from the owed slot to the re-anchored one, so its cost is the backlog's depth — and
+a fleet that was down for weeks leaves a fine-grained schedule (`* * * * * */5`) owing
+hundreds of thousands of slots. The walk is therefore bounded by a slice of the tick's
+own deadline: a backlog deeper than the budget's reach still fires and re-anchors in one
+tick (a walk that outlived the deadline would cancel the tick, roll it back, and re-walk
+the same backlog every second — a fleet-wide cron livelock), but its count is a FLOOR,
+flagged `skipped_slots_partial=true` on the `cron missed slots skipped` warning, the
+`cron fired` line and the fire span. Every consumer tolerates the floor: the runaway
+predicate compares the depth against the cron period, and a backlog that deep is past any
+period.
+
 A deferred schedule advances `next_fire_at` by one leader tick (~1 second): a retry,
 NOT a skip to the next cron slot, because the owed slot is still perfectly landable;
 only its funding was missing. How long the retry lasts depends entirely on the
