@@ -1102,6 +1102,8 @@ TASKQ_ADMIN_PORT=8001 taskq ui serve
 
 The process blocks until killed. There is no graceful-shutdown option; use a process manager or container lifecycle hook.
 
+The standalone server configures no Backend, so the backend-mediated admin mutations (job cancel, job retry, schedule run-now) answer `503` from `taskq ui serve` even with `TASKQ_ADMIN_ACTIONS_ENABLED=true`; use this CLI's `taskq job cancel` / `taskq job retry` for those, or embed the admin router with an explicit `backend=` (see [admin-ui.md](admin-ui.md)).
+
 ---
 
 ## `taskq workgroup validate`

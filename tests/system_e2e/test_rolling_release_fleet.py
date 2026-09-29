@@ -55,11 +55,15 @@ import pytest
 import pytest_asyncio
 
 from tests.system_e2e._harness import (
+    BOOT_READY_BOUND_S,
+    LOCK_LEASE_S,
+    SWEEP_INTERVAL_S,
+    TERMINATION_GRACE_S,
+    TIER_LOAD_STRETCH,
     WorkerProc,
     graceful_stop,
     reap,
-    spawn_worker,
-    wait_worker_ready,
+    spawn_joined_worker,
 )
 from tests.system_e2e._invariants import (
     assert_balanced,
@@ -95,36 +99,54 @@ _QUEUE_CAP = 2
 #: The per-worker dispatch cap (the harness's TASKQ_MAX_CONCURRENCY).
 _WORKER_CAP = 4
 
-#: The harness knobs the bounds below derive from (tests/system_e2e/
-#: _harness.py _BASE_ENV): the SIGTERM budget per pod, the lock/slot
-#: lease the heartbeat renews, the leader sweep cadence, the poll floor.
-_GRACE = 15.0
-_LOCK_LEASE = 8.0
-_SWEEP_INTERVAL = 1.0
+#: The harness knobs the bounds below derive from — imported, not
+#: duplicated (tests/system_e2e/_harness.py's tier constants are the
+#: single source _BASE_ENV itself derives from), so a cadence move
+#: (the operational-loop family's 2s/24s shape) moves these bounds with
+#: it instead of silently desyncing the file from its own fleet.
+#: `_SWEEP_INTERVAL` is the leader sweep cadence, `_POLL_FLOOR` the poll
+#: floor the scenarios budget; `_LEADER_LEASE` stays local (this module's
+#: scenarios set it explicitly for the SIGKILL failover bounds).
+_GRACE = TERMINATION_GRACE_S
+_LOCK_LEASE = LOCK_LEASE_S
+_SWEEP_INTERVAL = SWEEP_INTERVAL_S
 _POLL_FLOOR = 1.0
 
 #: The keyed cap's slot lease (actors.py _TENANT_SLOT_LEASE).
 _KEYED_LEASE = 8.0
 
-#: The leader lease the scenario workers boot with (settings floor is
-#: 4 heartbeats = 2 s here) and the killed-pod reclaim bounds. The
-#: stale-row wrinkle the churn exposes (the heartbeat renews a slot row
-#: BY JOB, so a reclaimed job's survivor keeps the corpse-named row
-#: live-held until that attempt ends) stretches the corpse's slot
-#: freedom to the re-claimed job's own recovery cycle: lease 8 + leader
-#: failover 4 + sweep tick 1 + poll 1 + run 8 + lease 8 + deferral 5 +
-#: margin 2 <= 37 s, bounded at 45 s; the sweep's nulling additionally
-#: waits out a leader failover plus one tick past re-admission.
-_LEADER_LEASE = 4.0
-_CORPSE_SLOT_BOUND = 45.0
-_SWEEP_BOUND = _LEADER_LEASE + _SWEEP_INTERVAL + _POLL_FLOOR
+#: The leader lease the scenario workers boot with. SIZED FOR THE LOADED
+#: HOST, not the unloaded one: the leader's renew check runs once per
+#: leader-loop iteration, and a loaded iteration serially pays every
+#: sweep's dispatcher budget (~8 x 0.5s) before it renews. A lease under
+#: that bound churns leadership forever - observed at lease 4.0 under
+#: co-tenancy: trust_expired every ~4.2s, 62 demotions in one scenario,
+#: the leader-only scheduled->pending promotion starving the whole time,
+#: rows due 264s never dispatched, the population never settling. 20s =
+#: the loaded iteration bound (~4s) x the tier's load stretch (2) plus
+#: failover headroom; the corpse bounds below derive from this name, so
+#: the failover waits they budget follow it.
+_LEADER_LEASE = 20.0
+_CORPSE_SLOT_BOUND = (
+    _LOCK_LEASE
+    + _LEADER_LEASE
+    + _SWEEP_INTERVAL
+    + _POLL_FLOOR
+    + _LOCK_LEASE
+    + _LOCK_LEASE
+    + 5.0
+    + 2.0
+) * TIER_LOAD_STRETCH
+_SWEEP_BOUND = (_LEADER_LEASE + _SWEEP_INTERVAL + _POLL_FLOOR) * TIER_LOAD_STRETCH
 
 #: The corpse-selection hang guard: one slot turnover (the capped body's
 #: 30s sleep + the claim poll) plus the co-tenancy stretch. This bounds
 #: the WAIT for a survivor to re-acquire cap capacity - a hang guard in
 #: the dd4572ff doctrine, not a bet on the race firing; only a fleet
 #: that NEVER re-acquires (the genuine capacity-leak defect) reds here.
-_CORPSE_PREMISE_BOUND = 45.0
+_CORPSE_PREMISE_BOUND = (
+    30.0 + _POLL_FLOOR + _LOCK_LEASE + _LEADER_LEASE + _SWEEP_INTERVAL
+) * TIER_LOAD_STRETCH
 
 #: The mid-drain probe's co-tenancy margin: one claim cycle (the poll
 #: floor) stretched by the 20x co-tenancy factor these runners measure
@@ -171,24 +193,29 @@ async def roll_capped_queue(
         await conn.close()
 
 
-def _spawn_fleet(pg_dsn: str, schema: str, names: list[str]) -> dict[str, WorkerProc]:
-    """Boot the named pods and gate each on its own health socket."""
+async def _spawn_joined_fleet(
+    conn: asyncpg.Connection, pg_dsn: str, schema: str, names: list[str]
+) -> dict[str, WorkerProc]:
+    """Boot the named pods to the JOINED-fleet standard: every pod's row
+    registered and its heartbeat advancing, ghosts reaped and respawned
+    (``_harness.spawn_joined_worker`` - the operator's restart remedy).
+    The plain ``_spawn_fleet`` stays for the call sites whose scenario
+    owns the fleet's lifecycle afterward; the scenario-opening spawns go
+    through here, so a co-tenancy reaping window (3s at the tier's own
+    beat) can never strand a scenario on a pod that booted green but
+    never joined."""
     fleet: dict[str, WorkerProc] = {}
     for name in names:
-        worker = spawn_worker(
+        fleet[name] = await spawn_joined_worker(
+            conn,
             pg_dsn,
             schema,
             tag=f"roll-{name}",
             extra_env={
                 "TASKQ_QUEUES": _QUEUES,
-                # A short leader lease: the scenarios SIGKILL pods that
-                # may be the maintenance leader, and the sweep-4
-                # bookkeeping bound derives from the failover wait.
                 "TASKQ_LEADER_LEASE": str(_LEADER_LEASE),
             },
         )
-        wait_worker_ready(worker)
-        fleet[name] = worker
     return fleet
 
 
@@ -204,8 +231,11 @@ async def _worker_ids(
 
     Registration lands after the pools open, which can be after the
     health socket answers, so this waits (briefly) for every pod's row.
+    The cap is the harness's own boot-readiness bound: registration is
+    the boot's last DB step past the socket bind, so the same window
+    that bounds readiness bounds the row.
     """
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + BOOT_READY_BOUND_S
     out: dict[str, str] = {}
     while time.monotonic() < deadline:
         mapping = await _pid_to_worker_id(conn, schema)
@@ -458,7 +488,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     """
     conn = sys_ledger
     schema = module_pg_schema.schema_name
-    fleet = _spawn_fleet(pg_dsn, schema, _PODS)
+    fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS)
     sampler = CapSampler(pg_dsn, schema)
     sampler.start()
     drained: set[str] = set()
@@ -576,7 +606,7 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
     running row for the whole release."""
     conn = sys_ledger
     schema = module_pg_schema.schema_name
-    fleet = _spawn_fleet(pg_dsn, schema, _PODS)
+    fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS)
     sampler = CapSampler(pg_dsn, schema)
     sampler.start()
     drained: set[str] = set()
@@ -811,7 +841,7 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
     what the SIGKILL stranded) - each within its derived bound."""
     conn = sys_ledger
     schema = module_pg_schema.schema_name
-    fleet = _spawn_fleet(pg_dsn, schema, _PODS[:4])
+    fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS[:4])
     sampler = CapSampler(pg_dsn, schema)
     sampler.start()
     drained: set[str] = set()
@@ -915,7 +945,7 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         # The release's replacement pod boots into the wounded fleet
         # (the rolling deploy's scale-back-up): the settle below runs on
         # three workers, not two.
-        fleet["w1b"] = _spawn_fleet(pg_dsn, schema, ["w1b"])["w1b"]
+        fleet["w1b"] = (await _spawn_joined_fleet(conn, pg_dsn, schema, ["w1b"]))["w1b"]
 
         # Re-admission: with the backlog still deep, the survivors run
         # the capped queue back up to its cap AND re-fill the keyed
@@ -984,7 +1014,7 @@ async def test_rolling_release_fleet_wide_storm_leaves_a_clean_empty_fleet(
     ledger whole, and the next boot picks the requeues up and conserves."""
     conn = sys_ledger
     schema = module_pg_schema.schema_name
-    fleet = _spawn_fleet(pg_dsn, schema, _PODS)
+    fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS)
     sampler = CapSampler(pg_dsn, schema)
     sampler.start()
     drained: set[str] = set()
@@ -1041,7 +1071,7 @@ async def test_rolling_release_fleet_wide_storm_leaves_a_clean_empty_fleet(
 
         # The next boot: a fresh generation picks the requeues up and
         # the full die-off + restart cycle conserves.
-        fleet2 = _spawn_fleet(pg_dsn, schema, ["n0", "n1"])
+        fleet2 = await _spawn_joined_fleet(conn, pg_dsn, schema, ["n0", "n1"])
         counts = await assert_balanced(conn, schema, _TAG)
         await assert_effects_balance(conn, schema, _TAG)
         assert counts.get("succeeded", 0) >= 10 + 8 + 8, (
@@ -1080,7 +1110,7 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
     schema = module_pg_schema.schema_name
     from tests.system_e2e.actors import sys_defiant
 
-    fleet = _spawn_fleet(pg_dsn, schema, _PODS[:3])
+    fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS[:3])
     sampler = CapSampler(pg_dsn, schema)
     sampler.start()
     drained: set[str] = set()
@@ -1139,7 +1169,7 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
         # nothing in the main path may assume the corpse returns. Two
         # pods boot into the empty fleet and own every row the old
         # generation's die-off left behind.
-        fresh = _spawn_fleet(pg_dsn, schema, ["fresh0", "fresh1"])
+        fresh = await _spawn_joined_fleet(conn, pg_dsn, schema, ["fresh0", "fresh1"])
         fresh_ids = await _worker_ids(conn, schema, fresh)
         assert all(fid != holder_id for fid in fresh_ids.values()), (
             "a new pod reused the corpse's identity"
@@ -1148,9 +1178,11 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
         # The defiant row: released with a hold (or stranded running
         # and locked if the kill beat the drain) - either way the
         # pickup bound is the hold/lease lapse + the drain tail + boot
-        # + poll. The NEW identity must be the claimant: with the old
-        # generation gone, only a fresh pod can hold it.
-        pickup_bound = _LOCK_LEASE + _LEADER_LEASE + _GRACE + 20.0
+        # + poll, stretched by the tier's load factor (the reclaim's
+        # leader-failover hop and the re-claim both pay co-tenancy on
+        # a shared runner). The NEW identity must be the claimant:
+        # with the old generation gone, only a fresh pod can hold it.
+        pickup_bound = (_LOCK_LEASE + _LEADER_LEASE + _GRACE + 20.0) * TIER_LOAD_STRETCH
         deadline = time.monotonic() + pickup_bound
         picked_by: str | None = None
         while time.monotonic() < deadline:

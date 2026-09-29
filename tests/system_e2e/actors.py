@@ -32,7 +32,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq import ActorRef, JobContext, RetryPolicy, actor
-from taskq.ratelimit import KeyedReservationRef
+from taskq.ratelimit import KeyedRateLimitRef, KeyedReservationRef
 
 _QUEUE = "system_e2e"
 
@@ -284,6 +284,67 @@ async def sys_winc(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str
     return {"sleep": payload.sleep}
 
 
+# ── The operational-loop workloads (test_operational_loop.py) ────────────
+# The DEPLOY→OBSERVE→ACT→RECOVER loop drives a fleet an operator would
+# recognise: a rate-limited actor (PG-backed bucket, fleet-shared without
+# Redis), an always-failing single-attempt actor (the admin retry's target),
+# an actor whose queue an operator moves, an actor an operator drains
+# (max_concurrent 0), and a cron-fired actor (the schedule ledger's target).
+
+
+class RatedPayload(SysPayload):
+    """Payload with a tenant id for the PG-backed keyed bucket."""
+
+    tenant: str = "t0"
+
+
+#: One token, half a token per second: the SECOND and THIRD concurrent
+#: enqueue are denied and re-scheduled, the deferral the insights layer's
+#: ``deferred`` wait segment counts.
+_RATED_BUCKET = KeyedRateLimitRef.typed(
+    RatedPayload,
+    base_name="sys-rated",
+    key_fn=lambda p: p.tenant,
+    capacity=1.0,
+    refill_per_second=0.5,
+    backend="postgres",
+)
+
+
+@actor(name="sys_rated", queue=_QUEUE, rate_limits=[_RATED_BUCKET])
+async def sys_rated(payload: RatedPayload, ctx: JobContext[RatedPayload]) -> dict[str, str]:
+    await _record("done", "sys_rated", ctx.job_id, ctx.attempt)
+    return {"tenant": payload.tenant}
+
+
+@actor(name="sys_retry_me", queue=_QUEUE, retry=_NO_RETRY)
+async def sys_retry_me(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
+    """The admin-retry target: every attempt fails, no retry budget, so the
+    row terminalises ``failed`` and stays there until an operator acts."""
+    await _record("run", "sys_retry_me", ctx.job_id, ctx.attempt)
+    raise RuntimeError("retry-me always fails")
+
+
+@actor(name="sys_mover", queue=_QUEUE)
+async def sys_mover(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, int]:
+    await asyncio.sleep(payload.sleep)
+    await _record("done", "sys_mover", ctx.job_id, ctx.attempt)
+    return {"beats": payload.beats}
+
+
+@actor(name="sys_drain", queue=_QUEUE)
+async def sys_drain(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, int]:
+    await asyncio.sleep(payload.sleep)
+    await _record("done", "sys_drain", ctx.job_id, ctx.attempt)
+    return {"beats": payload.beats}
+
+
+@actor(name="sys_cron", queue=_QUEUE)
+async def sys_cron(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, int]:
+    await _record("done", "sys_cron", ctx.job_id, ctx.attempt)
+    return {"beats": payload.beats}
+
+
 # ── The registry the worker subprocess serves ────────────────────────────
 
 ACTORS: dict[str, ActorRef[Any, Any]] = {
@@ -300,4 +361,9 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "sys_keyed": sys_keyed,
     "sys_defiant": sys_defiant,
     "sys_winc": sys_winc,
+    "sys_rated": sys_rated,
+    "sys_retry_me": sys_retry_me,
+    "sys_mover": sys_mover,
+    "sys_drain": sys_drain,
+    "sys_cron": sys_cron,
 }

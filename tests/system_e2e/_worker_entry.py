@@ -17,6 +17,7 @@ harness's stop signal must not erase a drained pod's verdict.
 
 import asyncio
 import contextlib
+import faulthandler
 import signal
 import sys
 
@@ -31,6 +32,10 @@ from tests.system_e2e.actors import ACTORS
 REGISTRY: dict[str, object] = {**ACTORS, **KILL9_ACTORS}
 
 if __name__ == "__main__":
+    # SIGUSR2 dumps every thread's traceback to stderr and continues: the
+    # forensic a wedged-loop scenario needs (the harness pipes stderr and
+    # reads it at exit).
+    faulthandler.register(signal.SIGUSR2, all_threads=True)
     settings = WorkerSettings.load()
     try:
         with asyncio.Runner() as runner:

@@ -38,6 +38,7 @@ from taskq.backend._sweeps import sweep_expired_locks
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.worker._leader_shared import prune_terminal_jobs
 from tests.system_e2e._harness import (
+    TIER_LOAD_STRETCH,
     WorkerProc,
     graceful_stop,
     reap,
@@ -49,7 +50,13 @@ from tests.system_e2e._invariants import (
     assert_effects_balance,
     delete_tagged,
 )
-from tests.system_e2e.actors import FlakyPayload, SysPayload, sys_fast, sys_flaky, sys_slow
+from tests.system_e2e.actors import (
+    FlakyPayload,
+    SysPayload,
+    sys_defiant,
+    sys_fast,
+    sys_flaky,
+)
 
 if TYPE_CHECKING:
     from taskq import TaskQ
@@ -94,14 +101,19 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
     worker_a: WorkerProc | None = None
     worker_b: WorkerProc | None = None
     try:
-        # Generation A boots and fills its slots: slow bodies (the ladder
-        # walks them held: the abandon owns them) and flaky bodies (the
-        # retry write a flag fences out: the walk owns them unheld).
+        # Generation A boots and fills its slots: DEFYING bodies (the
+        # ladder walks them held: the holder honours the request, the
+        # body absorbs every cancel the ladder delivers, the graces
+        # expire, and the abandon owns the row - DETERMINISTICALLY, on
+        # any host speed; a cancellable body would honour instantly and
+        # the abandon would depend on the host stalling the holder
+        # past the graces) and flaky bodies (the retry write a flag
+        # fences out: the walk owns them unheld).
         worker_a = spawn_worker(pg_dsn, schema, tag="s5-a")
         wait_worker_ready(worker_a)
 
         for _ in range(2):
-            await sys_client.enqueue(sys_slow, SysPayload(sleep=6.0), tags=[_TAG])
+            await sys_client.enqueue(sys_defiant, SysPayload(sleep=20.0), tags=[_TAG])
         for _ in range(3):
             await sys_client.enqueue(sys_flaky, FlakyPayload(fail_until_attempt=2), tags=[_TAG])
         for _ in range(2):
@@ -121,21 +133,35 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
         assert running >= 2, f"generation A never filled its slots: {running}"
 
         # The operator arms cancels on EVERYTHING the fleet holds: the
-        # slow (held - the ladder's abandon owns them), the flaky (their
-        # next retry write fences out - the walk owns them unheld), the
-        # fast (whichever way their writes land). A's walk runs its
-        # graces here: escalate at +1s, abandon at +2s, per row.
+        # defying (held - the holder honours the request, the body
+        # absorbs every cancel, and the ladder's own escalation owns
+        # them: phase 2 at +1s grace, the abandon at +2s), the flaky
+        # (their next retry write fences out - the walk owns them
+        # unheld), the fast (whichever way their writes land).
         armed = await _arm_cancels(conn, schema, "deploy-window")
         assert armed >= 4, f"the arming never covered the fleet: {armed}"
-        await asyncio.sleep(5.0)
 
-        # The walk's signature must already be on the ledger: an
-        # 'abandoned' row whose error_class is the abandon's own origin.
-        abandoned_early = await conn.fetchval(
-            f'SELECT count(*)::int FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
-            "AND status = 'abandoned' AND error_class = 'CancelAbandoned'",
-            _TAG,
-        )
+        # The walk's signature must be on the ledger: an 'abandoned' row
+        # whose error_class is the abandon's own origin. The holder-side
+        # ladder's own arithmetic lands the abandon by one observation
+        # interval + the two graces + two tick cadences (the ladder's
+        # documented 3.5s at the tier's pinned settings); the WAIT budgets
+        # that cascade stretched by the tier's load factor - a loaded
+        # runner pays co-tenancy on every heartbeat tick between the
+        # stages - instead of a fixed nap that makes the premise a bet
+        # on the host's weather. The pin itself does not move: the
+        # abandon MUST land.
+        abandon_deadline = time.monotonic() + ((0.5 + 1.0 + 1.0 + 1.0) * TIER_LOAD_STRETCH + 5.0)
+        abandoned_early = 0
+        while time.monotonic() < abandon_deadline:
+            abandoned_early = await conn.fetchval(
+                f'SELECT count(*)::int FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
+                "AND status = 'abandoned' AND error_class = 'CancelAbandoned'",
+                _TAG,
+            )
+            if abandoned_early >= 1:
+                break
+            await asyncio.sleep(0.25)
         assert abandoned_early >= 1, (
             "generation A's ladder never landed an abandon: the walk never fired"
         )
