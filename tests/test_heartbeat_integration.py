@@ -977,7 +977,11 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
     * beats then decay the row past the threshold, and the FIRST beat at
       or under it must RENEW - a fresh full lease stamped while the old
       one is still live (the lease never lapses mid-arc), which an
-      over-aggressive gate (skip past expiry) cannot produce.
+      over-aggressive gate (skip past expiry) cannot produce: the last
+      decay sample read alongside the server clock must still show a
+      future lease, and a gate that let the row lapse would show a lapsed
+      sample at the sampler's 0.25s resolution (the lapsed window before
+      the next beat outlives one sampling cadence);
     """
     stack, deps, schema, obs_conn = await _setup_fast(
         module_pg_schema, LOCK_LEASE="30.0", MAX_HEARTBEAT_FAILURES="2"
@@ -1023,6 +1027,7 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
             first_stamp: datetime | None = None
             last_stamp: datetime | None = None
             pre_renewal_last_seen: datetime | None = None
+            pre_renewal_pg_now: datetime | None = None
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 async with contextlib.nullcontext(obs_conn) as conn:
@@ -1062,6 +1067,7 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
                     break
                 last_stamp = stamp
                 pre_renewal_last_seen = row["last_heartbeat_at"]
+                pre_renewal_pg_now = row["pg_now"]
                 await asyncio.sleep(0.25)
             else:
                 pytest.fail(
@@ -1070,12 +1076,22 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
                 )
 
             # The renewal must land while the old lease is still live: the
-            # last stamp observed before the jump is in the future of the
-            # server clock read alongside it. An over-aggressive gate
-            # (a skip that outlives the lease) fails here.
+            # last decay sample observed before the jump carries the
+            # server clock read alongside it, and its lease stamp must be
+            # in that clock's future. An over-aggressive gate (a skip
+            # that outlives the lease) shows a lapsed sample here at the
+            # sampler's 0.25s resolution - the lapsed window before the
+            # next beat outlives one sampling cadence.
             assert pre_renewal_last_seen is not None
+            assert pre_renewal_pg_now is not None
             assert renewed_at is not None
             assert renewed_at > first_stamp
+            assert last_stamp is not None and last_stamp > pre_renewal_pg_now, (
+                f"the last pre-renewal sample showed lease {last_stamp} against "
+                f"server clock {pre_renewal_pg_now}: the gate held the row past "
+                "its own expiry before renewing it, and a sweep in that window "
+                "reclaims a live worker's job"
+            )
             async with contextlib.nullcontext(obs_conn) as conn:
                 row = await conn.fetchrow(
                     f"SELECT now() AS pg_now, lock_expires_at "
@@ -1084,10 +1100,13 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
                 )
             assert row is not None
             assert row["lock_expires_at"] is not None
+            # Plain freshness: the renewed lease reads in the future of the
+            # clock read alongside it (the lapse check itself lives on the
+            # pre-renewal sample above, where the old lease's decay is
+            # observable).
             assert row["lock_expires_at"] > row["pg_now"], (
-                "the renewal landed on an already-expired lease - the gate "
-                "held the row past its own expiry before renewing it, and a "
-                "sweep in that window reclaims a live worker's job"
+                "the renewal stamped a lease already in the past - the row "
+                "is reclaimable the instant the write lands"
             )
         finally:
             shutdown.set()

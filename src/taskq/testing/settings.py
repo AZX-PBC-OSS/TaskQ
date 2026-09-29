@@ -21,7 +21,8 @@ from taskq.settings import WorkerSettings
 _DEFAULTS: dict[str, str] = {
     "TASKQ_HEARTBEAT_INTERVAL": "0.5",
     # Lease 3.0 + the tiny command timeout satisfy the cascade floor
-    # (max(0.5, 0.1) + 3 * (0.5 + 0.1) = 2.3 <= 3.0) while keeping
+    # (max(0.5, 0.1) + (3 + 1) * (0.5 + 0.1) = 2.9 <= 3.0; the default
+    # max_heartbeat_failures of 3 means FOUR failed cycles) while keeping
     # lease-expiry waits in the seconds range the chaos/fast tiers assume.
     "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
     "TASKQ_LOCK_LEASE": "3.0",

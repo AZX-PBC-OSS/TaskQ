@@ -363,8 +363,10 @@ def _worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        # The tiny command timeout keeps the cascade floor
-        # satisfied for this lease: max(0.5, 0.1) + 3 * (0.5 + 0.1) = 2.3.
+        # The tiny command timeout keeps the cascade floor satisfied for
+        # this lease: max(0.5, 0.1) + (3 + 1) * (0.5 + 0.1) = 2.9 (the
+        # default max_heartbeat_failures of 3 means FOUR failed cycles;
+        # see the TASKQ_MAX_HEARTBEAT_FAILURES note above).
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 10 s, deliberately wider than the fleet's 3.0: this test's purpose
         # is PG-restart isolation and replacement recovery, not lease
