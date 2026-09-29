@@ -207,7 +207,7 @@ class TestTheTeethEverywhere:
     published history as honest provenance, not an error."""
 
     def test_every_discovered_key_refuses_an_unknown_checksum(self) -> None:
-        """All 43 migrations: a ledger checksum nothing bundled produced is
+        """All 44 migrations: a ledger checksum nothing bundled produced is
         drift, for the amended files, the plain files, every key."""
         found = migrate_mod.discover()
         tampered = {m.key: UNKNOWN_CHECKSUM for m in found}
