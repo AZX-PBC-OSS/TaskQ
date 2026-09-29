@@ -26,6 +26,7 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.cancel import ActiveJobRegistry, _CancelController
+from taskq.worker.shutdown import ShutdownPhase
 
 
 class _SeedPayload(BaseModel):
@@ -268,9 +269,14 @@ class TestCancelAbandonSite:
             # in-tx escalation drain), so the stub carries a liveness
             # registry alongside the grace fields.
             liveness=LoopLiveness(),
+            # The drain's shutdown handover reads the orchestration phase
+            # to pick the held abandon's verdict (mark_cancelled under an
+            # active orchestration, mark_abandoned otherwise); NONE keeps
+            # the ladder's own terminal here.
+            shutdown_phase=ShutdownPhase.NONE,
         )
         controller = _CancelController(
-            deps,  # pyright: ignore[reportArgumentType]  # Why: run_post_tx only touches settings' grace fields and active_jobs, all stubbed above
+            deps,  # pyright: ignore[reportArgumentType]  # Why: run_post_tx only touches settings' grace fields, active_jobs, liveness, and the orchestration phase, all stubbed above
             new_uuid(),
             _FailingBackend(),  # pyright: ignore[reportArgumentType]  # Why: only mark_abandoned is called on the abandon path
         )
