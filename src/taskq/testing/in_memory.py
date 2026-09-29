@@ -638,11 +638,19 @@ class InMemoryBackend:
                 row.status == "running"
                 and row.locked_by_worker == worker_id
                 and job_id not in excluded
+                and self._slot_table is not None
             ):
-                if self._slot_table is not None:
-                    count += self._slot_table.extend_leases_for_job(job_id, now, lock_lease)
-                else:
-                    count += 1
+                # The count is SLOT rows renewed, the twin of PG's
+                # UPDATE_RESERVATION_LEASES_SQL_TEMPLATE rowcount: dispatch
+                # never creates a reservation_slots row (the reservation
+                # registry's acquisition does), so a worker holding plain
+                # running jobs extends nothing and answers 0. The mirror's
+                # slot-table-less default models exactly that deployment -
+                # a former `count += 1` fallback here counted every held
+                # running job instead, reporting slot renewals production
+                # never makes (pinned in
+                # tests/test_heartbeat_seam_parity.py).
+                count += self._slot_table.extend_leases_for_job(job_id, now, lock_lease)
         return count
 
     # ── Terminal writes ────────────────────────────────────────────────
