@@ -175,6 +175,7 @@ import asyncio
 import os
 import signal
 import sys
+import urllib.error
 import urllib.request
 from datetime import timedelta
 
@@ -366,8 +367,23 @@ async def _dump(tag: str) -> None:
     if tag == "FOLLOWER":
         # The follower mounts no bridge router: its exposition is its
         # own TASKQ_METRICS_PORT pull listener (the port the parent
-        # probe allocated for it).
-        text = await _fetch_port(int(os.environ["PROBE_FOLLOWER_METRICS_PORT"]))
+        # probe allocated for it). POLL, don't knock once: the fixed
+        # 10s post-spawn sleep raced the follower's own boot (3.14 leg,
+        # run 36629891786 - interpreter start, PG connect and the first
+        # election attempt exceeded the sleep under co-tenancy, the
+        # lone connect got Errno 111, and the missing FOLLOWER file
+        # failed three otherwise-green tests as PROBE_TASK_FAILED).
+        # The follower is terminated only AFTER this dump returns, so
+        # the port answers under the poll or the boot genuinely died.
+        deadline = asyncio.get_running_loop().time() + 45.0
+        while True:
+            try:
+                text = await _fetch_port(int(os.environ["PROBE_FOLLOWER_METRICS_PORT"]))
+                break
+            except (urllib.error.URLError, OSError):
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(0.5)
         with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
             fh.write(text)
         print(f"SCRAPED:{tag}:port={len(text)}", flush=True)
