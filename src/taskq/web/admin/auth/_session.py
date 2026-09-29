@@ -189,7 +189,7 @@ class SessionManager:
         except ImportError as exc:  # pragma: no cover - exercised only without extra
             raise ImportError(
                 "itsdangerous is required for SSO sessions. "
-                "Install it with: pip install 'taskq[oidc]' or 'taskq[saml]'"
+                "Install it with: pip install 'taskq-py[oidc]' or 'taskq-py[saml]'"
             ) from exc
         object.__setattr__(
             self, "_serializer", URLSafeTimedSerializer(self.secret, salt="taskq-session")

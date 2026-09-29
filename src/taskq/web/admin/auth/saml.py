@@ -479,7 +479,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     except ImportError as exc:  # pragma: no cover - exercised only without extra
         raise ImportError(
             "python3-saml is required for the SAML backend and binds to the system "
-            "libxmlsec1 library. Install it with: pip install 'taskq[saml]' "
+            "libxmlsec1 library. Install it with: pip install 'taskq-py[saml]' "
             "(see docs/guides/sso.md for container requirements)"
         ) from exc
 
