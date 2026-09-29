@@ -1094,8 +1094,7 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
             )
             async with contextlib.nullcontext(obs_conn) as conn:
                 row = await conn.fetchrow(
-                    f"SELECT now() AS pg_now, lock_expires_at "
-                    f'FROM "{schema}".jobs WHERE id = $1',
+                    f'SELECT now() AS pg_now, lock_expires_at FROM "{schema}".jobs WHERE id = $1',
                     job_id,
                 )
             assert row is not None
