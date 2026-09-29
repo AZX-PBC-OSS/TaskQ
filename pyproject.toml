@@ -200,7 +200,12 @@ exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false }
 # pip>=26.2 -- PYSEC-2026-3721. pip is not a dependency of TaskQ at all; it
 # arrives in the resolved environment as a build-time tool, which is why a
 # constraint rather than a dependency bump is the lever that moves it.
-constraint-dependencies = ["cryptography>=50.0.0", "pip>=26.2"]
+#
+# pyjwt>=2.14.0 -- CVE-2026-102274 (fixed in 2.14.0); transitive via
+# msal (aad extra) and authlib[crypto] (oidc extra). TaskQ never verifies a
+# JWT itself, so the finding is not reachable from this codebase, but the
+# extras hand pyjwt to callers who might.
+constraint-dependencies = ["cryptography>=50.0.0", "pip>=26.2", "pyjwt>=2.14.0"]
 
 [build-system]
 requires = ["hatchling"]
