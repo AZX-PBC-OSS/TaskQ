@@ -1,0 +1,10 @@
+{
+  "bench": "ab_sweep_sql_render",
+  "calls_per_sample": 2000,
+  "interleaved_batches": 5,
+  "a_direct_format_ns": 1142.5,
+  "b_cached_render_ns": 60.0,
+  "b_over_a_ratio": 0.0525,
+  "byte_equality": "asserted above (cached == template.format for all converted statements)",
+  "note": "A is the per-call render the leader's ~1s scheduled-wake tick paid; B is the memoised render the tick pays now."
+}

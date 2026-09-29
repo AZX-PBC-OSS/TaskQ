@@ -33,12 +33,13 @@ from uuid import UUID
 
 import pytest
 
-from taskq._ids import new_job_id, new_uuid
+from taskq._ids import new_job_id
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import CancelPhase, ErrorInfo, JobId
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.in_memory import InMemoryBackend
+from tests._worker_of import worker_of
 
 pytestmark = pytest.mark.integration
 
@@ -64,27 +65,8 @@ async def _enqueue_and_dispatch(backend: Backend) -> tuple[JobId, UUID]:
             scheduled_at=_START,
         )
     )
-    worker_id = await _worker_of(backend)
+    worker_id = await worker_of(backend)
     return job_id, await _dispatch(backend, job_id, worker_id)
-
-
-async def _worker_of(backend: Backend) -> UUID:
-    """A worker id that exists in the backend's ``workers`` table."""
-    if isinstance(backend, InMemoryBackend):
-        return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_backend_equivalence.py
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_backend_equivalence.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
-    worker_id = new_uuid()
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
-        await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
-            worker_id,
-            "test-host",
-            12345,
-            ["default"],
-        )
-    return worker_id
 
 
 async def _dispatch(backend: Backend, job_id: JobId, worker_id: UUID) -> UUID:

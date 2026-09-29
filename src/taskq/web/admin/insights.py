@@ -44,6 +44,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
+from taskq._humantime import humanize_wait
 from taskq.insights import (
     INSIGHTS_WINDOWS,
     fetch_actor_backlog,
@@ -106,26 +107,6 @@ def _parse_per_actor(raw: str) -> bool:
     )
 
 
-def _humanize_seconds(seconds: float | None) -> str | None:
-    """A human duration for a seconds figure (``800`` → ``13m``); ``None``
-    passes through so the template can render its dash."""
-    if seconds is None:
-        return None
-    s = round(seconds)
-    if s < 1:
-        return "<1s"
-    if s < 60:
-        return f"{s}s"
-    days, rem = divmod(s, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    if days:
-        return f"{days}d {hours}h" if hours else f"{days}d"
-    if hours:
-        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
-    return f"{minutes}m"
-
-
 def register(router: APIRouter) -> None:
     """Attach the insights page to *router*."""
 
@@ -175,9 +156,9 @@ def register(router: APIRouter) -> None:
                 "actor": r.get("actor"),
                 "segment": r["segment"],
                 "count": int(r["count"]),
-                "p50": _humanize_seconds(r["p50_wait_s"]),
-                "p95": _humanize_seconds(r["p95_wait_s"]),
-                "max": _humanize_seconds(r["max_wait_s"]),
+                "p50": humanize_wait(r["p50_wait_s"]),
+                "p95": humanize_wait(r["p95_wait_s"]),
+                "max": humanize_wait(r["max_wait_s"]),
             }
             for r in wait_rows
         ]
@@ -204,7 +185,7 @@ def register(router: APIRouter) -> None:
                     "live_workers": int(r["live_workers"]),
                     "effective_capacity": int(r["effective_capacity"] or 0),
                     "utilization": f"{utilization:.0%}" if utilization is not None else None,
-                    "oldest_due": _humanize_seconds(r["oldest_due_age_s"]),
+                    "oldest_due": humanize_wait(r["oldest_due_age_s"]),
                     "verdict": verdict,
                 }
             )
@@ -245,7 +226,7 @@ def register(router: APIRouter) -> None:
                 "depth": int(r["depth"]),
                 "terminalisations": int(r["terminalisations"]),
                 "has_traffic": bool(r["has_traffic"]),
-                "eta": _humanize_seconds(r["eta_seconds"]) if r["has_traffic"] else None,
+                "eta": humanize_wait(r["eta_seconds"]) if r["has_traffic"] else None,
                 "scheduled_depth": int(r["scheduled_depth"]),
             }
             for r in drain_rows

@@ -1,6 +1,6 @@
 # CLI reference
 
-The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel; environment variables take precedence over `.env` files.
+The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, rendering the operational insights, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel; environment variables take precedence over `.env` files.
 
 ## Installation
 
@@ -549,6 +549,92 @@ in-flight work re-runs); the report names the shortfall and the fix. The
 worker itself cannot see the platform's number, so this is the one check
 that needs the operator to supply it.
 
+### The operational-insight findings
+
+Beyond stored config, doctor reads the live fleet through the
+[operational-insights SQL layer](insights.md) — the same statements the
+insights guide documents, run over the **24h window** (a member of that
+layer's closed window set: 24h spans one full diurnal traffic cycle, the
+shortest window that cannot mistake a nightly lull for a fleet to shrink,
+while staying far inside the default 30-day prune retention). Four
+families, each naming its data and its remedy:
+
+- **STARVED** (queue): the queue's utilization — due depth ÷ effective
+  capacity, where effective capacity is `sum(max_concurrent)` over the
+  actors routed to the queue × live workers — exceeds **2x**, or the
+  oldest due job's age exceeds the queue's own p95 wait by **4x** (with a
+  **60s floor**). Threshold derivations: 2x means a full *second* claim
+  wave of due work survives after the first drains entirely — one wave is
+  a burst the dispatcher absorbs by design, two sustained waves is a
+  fleet too small for its arrival rate, and the remedy's own granularity
+  is one wave (one worker, or one `max_concurrent` step). "Sustained" is
+  load-bearing: the utilization arm only fires when the oldest due job
+  has outlived the 60s floor, because a depth snapshot younger than that
+  is a burst in the act of being absorbed — an arrival-rate claim needs a
+  depth that persisted past the claim-in-flight window. The 4x p95
+  factor survives the burst confound because the p95 is computed over the
+  *same* window the burst inflates; the 60s floor is 2x the 30s
+  worker-liveness window, so a claim already in flight is never reported.
+  The remedy names the only two levers that add dispatch capacity: start
+  another worker serving the queue, or raise the serving actor's
+  `max_concurrent`. `utilization IS NULL` (due work nothing can serve)
+  has two shapes, reported by different lines: no live worker on the
+  queue is the stranded-jobs family's shape; a live worker behind a
+  stored `max_concurrent = 0` is the deliberately-stopped drain mode,
+  named by the stored-capacity line itself — neither is reported twice.
+- **OVERPROVISIONED** (queue): live workers on a queue with zero due
+  depth and fewer terminalisations across the whole window than workers —
+  fewer than one completion per worker (the verdict
+  `fetch_overprovisioning` computes). The remedy is to consolidate the
+  workers serving the queue in the workgroup config — never anything
+  destructive; the finding says explicitly that nothing is deleted.
+- **SLOW DRAIN** (queue): the drain estimate (`fetch_drain_estimates`'s
+  `eta_seconds` — due depth ÷ the window's completions per second)
+  exceeds the **24h observation window itself**, with the due depth
+  having persisted past the **60s persistence floor** (the imbalance
+  read's oldest-due age). Derivation: the eta is a throughput
+  extrapolation whose only honest input is the traffic the window
+  actually carried, so the window is the longest horizon the rate has
+  evidence for — and it is the operator's own "will this be done by
+  tomorrow?" period; an eta beyond it means the depth exceeds everything
+  the entire window completed. The persistence floor is what keeps the
+  claim honest for an idle-capacity fleet, whose observed rate is
+  demand-limited, not capacity-limited: a depth younger than the
+  claim-in-flight window is a burst the idle workers are absorbing, and
+  its "eta" is fiction (a 51-job burst against an idle 32-slot worker
+  read as ~1.0 days without it). The finding states the eta and the
+  confidence caveat: the estimate rests on the window's realised traffic
+  (`has_traffic`), assumes the next window looks like the last one, and
+  does not include the armed wave. A window with **no** traffic renders
+  no estimate at all (`eta_seconds` is NULL — never zero, which would
+  read as "already drained"), so no finding fires there.
+- **CRON LAG** (schedule): a schedule whose fan-out outruns its
+  clearance (`fetch_cron_ledger`) — either `runaway_trending` (fires >
+  cleared in **both** the current and the prior window; one window is a
+  burst, two consecutive is the runaway shape) or an outstanding backlog
+  above **one catch-up window's slot capacity**, defined as the
+  schedule's own demonstrated clearance in its best window
+  (`max(cleared_window, cleared_prior)`, required positive): what the
+  fleet actually cleared, not a theoretical ceiling — and never zero,
+  because a schedule with no demonstrated clearance has nothing to
+  compare against and its in-flight fires are honest work in flight, not
+  a lag (a capacity of zero would read every first in-flight fire as an
+  uncatchable backlog). The best-of-two guards the ledger's
+  right-edge confound (clearance lags fires at the window's edge, so a
+  burst of fresh fires does not read as uncatchable), and the backlog arm
+  requires the schedule to have fired within the two-window horizon — a
+  weekly cron with one long-running fire is work in flight, not a lag.
+  The finding names the schedule id, actor and cron expression, sizes the
+  backlog, and gives the two honest remedies: slow the cron (widen the
+  interval or raise its budget), or add workers for the actor (raise its
+  `max_concurrent` so more fires clear per wave).
+
+These families read, they never write — the same read-only contract as
+the stored-config families above. DST's `allof` double-fire and
+budget-deferred fires are the ledger's documented confounds
+([insights.md](insights.md) carries them per metric); read a CRON LAG
+verdict against the schedule's `dst_strategy` before acting on it.
+
 It issues no writing statement, so it is safe to run against production
 mid-incident. It always exits 0: every condition it reports is one a worker
 keeps running through, and a diagnostic that fails the shell gets wrapped
@@ -838,6 +924,88 @@ There is no 0 state: NULL (via `--clear`) is uncapped, and an emergency drain to
 
 ---
 
+## `taskq insights`
+
+Renders the [`taskq.insights`](insights.md) SQL layer as operator tables: how long work waited, whether the fleet is imbalanced, how long a queue needs to drain, and whether a cron schedule is fanning out faster than it clears. The command is the terminal surface for that module — it writes no SQL of its own, every row comes from the module's statements (over BOTH retention tiers, live `jobs` + `jobs_archive`).
+
+Read-only like `taskq doctor`: SELECT-only statements, exit 0 whether or not there is anything to report. Safe to run against production mid-incident.
+
+```shell
+taskq insights [wait|balance|drain|cron|all]   # default: all
+```
+
+Options: `--window` selects the trailing window for the windowed reads (wait, drain, cron); one of `1h`, `6h`, `24h`, `7d` (the module's `INSIGHTS_WINDOWS`). On hypertables a window older than the archive retention answers over the surviving chunks — the retention floor is the analytics floor. `--actor` is a wait-only grouping switch (see below). `--queue` keeps only that queue's rows on wait, balance, and drain; it is refused on cron, whose ledger is per schedule and has no queue dimension.
+
+### `taskq insights wait`
+
+Per queue, how long terminalised attempts waited before their claim. Wait per attempt is `started_at - scheduled_at` (the dispatch claim latency); the rows are SEGMENTED clean vs deferred:
+
+```
+queue   segment  count    p50    p95   max
+email     clean      4  1m15s  1m55s  2m0s
+email  deferred      1   5.0s   5.0s  5.0s
+```
+
+* `count` — terminalised attempts in the window.
+* `p50` / `p95` / `max` — the wait distribution's percentiles.
+* `segment` — `clean` = first-delivery attempts (`snooze_count = 0` and `rate_limit_blocked_count = 0`), the subset a queue-latency SLO is written against. `deferred` = rows whose `scheduled_at` a snooze or a rate limit moved forward: **reschedules are excluded from the clean percentiles**, and a deferred row's wait measures only the FINAL leg (the deferred time is by construction not in the number). `started_at - created_at` is NOT their wait — it would fold the operator's own snooze choice into the queue's latency.
+
+`--actor ACTOR` switches the statement to the module's per-(actor, queue) grouping and keeps one actor's rows — the plain per-queue read folds every actor's attempts together.
+
+### `taskq insights balance`
+
+Per queue, is the fleet imbalanced:
+
+```
+queue  depth  live  effective_capacity  utilization  oldest_due               flag
+email    122     1                   4        30.50       15m2s  !! over threshold
+idle       1     0                   0            -       10m2s     !! no capacity
+```
+
+* `depth` — pending rows due now (`scheduled_at <= now`): the work a worker could claim this instant.
+* `live` — workers subscribed to the queue and heartbeating in the last 30s.
+* `effective_capacity` — the routed actors' summed `max_concurrent` x live workers: the queue's in-flight ceiling under the current fleet.
+* `utilization` — depth ÷ effective capacity; `-` renders the NULL case.
+* `oldest_due` — age of the oldest due job: a large depth with a tiny age is a burst, a small depth with a large age is a strand.
+* `flag` — over-threshold rows are MARKED: `!! over threshold` when utilization > 1 (more due work than one wave of capacity can absorb), `!! no capacity` when nothing can serve the queue (no live worker or no actor capacity — the starvation shape).
+
+### `taskq insights drain`
+
+Per queue, seconds-to-drain: due depth ÷ completions per second over the window.
+
+```
+queue  depth                   eta
+email    122                  1d0h
+idle       1  no traffic in window
+```
+
+The eta is a THROUGHPUT extrapolation, not a promise: it assumes the next window looks like the last one, that the queue's workers stay up, and that nothing enqueues behind the current depth. The `has_traffic` caveat is rendered honestly: a queue whose window carried no completions has NO estimate — its eta renders `no traffic in window`, never `0`, which would read as "already drained". Widen `--window` (up to the archive retention floor) before trusting anything else.
+
+### `taskq insights cron`
+
+Per schedule, the fan-out ledger:
+
+```
+schedule   actor       cron  fires  cleared  outstanding  verdict
+ce6f7920  ticker  * * * * *      3        1            2       ok
+```
+
+* `schedule` — the schedule id, shortened to 8 characters.
+* `fires` / `cleared` — jobs the schedule enqueued in the window (provenance `metadata cron_schedule_id`) and how many of those are terminalised. Clearance lags fires at the window's right edge by construction; the ratio is a trend, not an instant.
+* `outstanding` — the schedule's non-terminal backlog right now, windowless (future-armed fires included, by design).
+* `verdict` — `!! runaway trending` when fires > cleared in BOTH the current and the prior equal window (two consecutive windows is the runaway shape; one is a burst), `ok` otherwise.
+
+Two confounds the verdict's reader must hold: a DST `allof` schedule legitimately doubles a fire in the overlap hour (read the verdict against the schedule's `dst_strategy`), and a budget-deferred fire enqueues NO row, so a deferral reads as zero fires here — its record is the `taskq.cron.budget_deferrals` counter, not this ledger.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Tables printed (or a named nothing-to-report line per empty surface) |
+| `1` | Unknown surface, invalid `--window`, `--actor` outside wait, `--queue` on cron, or an invalid schema name |
+
+---
+
 ## `taskq health live`
 
 Probes the worker's liveness endpoint.
@@ -1015,6 +1183,8 @@ TASKQ_ADMIN_PORT=8001 taskq ui serve
 ```
 
 The process blocks until killed. There is no graceful-shutdown option; use a process manager or container lifecycle hook.
+
+The standalone server configures no Backend, so the backend-mediated admin mutations (job cancel, job retry, schedule run-now) answer `503` from `taskq ui serve` even with `TASKQ_ADMIN_ACTIONS_ENABLED=true`; use this CLI's `taskq job cancel` / `taskq job retry` for those, or embed the admin router with an explicit `backend=` (see [admin-ui.md](admin-ui.md)).
 
 ---
 

@@ -381,12 +381,48 @@ A hot-reload rebuilds factory-backed resources; it never re-reads settings. `TAS
 | `TASKQ_WORKER_GROUP` | `str` | `default` | Consumer group name emitted as `messaging.consumer.group.name` on spans. | n/a |
 | `TASKQ_LOG_FORMAT` | `str` | `json` | Log renderer. `json` for production; `console` for human-readable dev output. Only these two values are valid. | Must be `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level. | n/a |
+| `TASKQ_LOG_EVENTS_LEVEL` | `str` | `info` | The operational-event-stream verbosity knob: which structlog event lines the worker emits. `info` (default) is today's stream byte-identical; `warning` emits only the failure/anomaly stream; `off` emits only WARNING-and-above (for deployments consuming OTel spans or tailing `job_events`); `debug` adds the per-tick internals. The `job_events` ledger is untouched at every level — the knob suppresses the streaming duplicate only. See [the semantics table](#the-event-stream-verbosity) below. | Must be `info`, `warning`, `off`, or `debug` (case-insensitive) |
 | `TASKQ_OTEL_AUTOCONFIGURE` | `bool` | `true` | When `true`, the `taskq worker` CLI installs SDK tracer and meter providers from the standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`) and from `TASKQ_METRICS_PORT`, through the same configurator `opentelemetry-instrument` uses; only when the `[otel]` extra is installed and no provider is set yet. Set `false` when the embedding application or a vendor distro configures the SDK itself. `OTEL_SDK_DISABLED=true` is honoured either way. See [observability.md: setup](observability.md#1-opentelemetry-setup). | n/a |
 | `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` | `int` | `2000` | Bound on exception message text on spans and logs, after scrubbing. Matches the admin UI's traceback bound so there is one number for how much error text is kept, not two. Truncation appends the dropped character count, so an operator can see text was cut and raise this. The stack trace is a separate field and is not bounded by this. | Min: 100 |
 | `TASKQ_METRICS_PORT` | `int \| None` | `None` | TCP port for the worker's standalone Prometheus scrape listener, bound on `TASKQ_METRICS_HOST` (falling back to `TASKQ_HEALTH_HOST`). Unset means no listener, so setting a port is the opt-in (the `TASKQ_HEALTH_PORT` shape). Needs the `[prometheus]` extra and `TASKQ_OTEL_AUTOCONFIGURE=true`; the worker then serves every series it records at `http://<host>:<port>/metrics` (see [observability.md: Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint)). A listener that cannot be configured or bound raises `OtelExporterConfigurationError` and the worker **exits 1** rather than start with its scrape silently dead. | Range: 1-65535 |
 | `TASKQ_METRICS_HOST` | `str \| None` | `None` | Bind address for the Prometheus scrape listener alone, overriding `TASKQ_HEALTH_HOST` for that listener, so the scrape and the probes can sit on different interfaces: the loopback sidecar scraper next to a pod-network prober is the shape that needs this. Unset falls back to `TASKQ_HEALTH_HOST`. Only used when `TASKQ_METRICS_PORT` is set. The scrape endpoint is unauthenticated: SECURITY.md and [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) document what it exposes; keep a loopback bind or the pod network. | n/a |
 
 See [observability.md](observability.md) for OTel configuration.
+
+#### The event-stream verbosity
+
+Every state change is durably recorded in the `job_events` ledger inside the
+same transaction as the state itself — the DB ledger **is** the audit trail.
+The per-job JSON log lines are a streaming duplicate of those rows, and the
+hot-path audit measured that duplicate stream at ~23% of the worker's on-CPU
+time. This knob suppresses the streaming duplicate only; `job_events` receives
+every event at every level, guaranteed and pinned by test.
+
+| Value | Per-job happy-path lines (`state-change`, `cancel_phase_change`) | Failure/anomaly stream (`job-failed`, `heartbeat-tick-failure`, `isolate-self-*`, reclaims, `worker-watchdog-trip`, backpressure refusals, sweep/cron failures) | Per-tick internals (`loop-lag`, `poll-cadence`) |
+|---|---|---|---|
+| `info` (default) | emitted (byte-identical to pre-knob behavior) | emitted | suppressed |
+| `warning` | suppressed | emitted (anomaly events survive even when logged at INFO) | suppressed |
+| `off` | suppressed | WARNING-and-above emitted; INFO-level anomaly lines suppressed | suppressed |
+| `debug` | emitted | emitted | emitted |
+
+Key properties:
+
+- **`off` never blinds the operator to failures.** WARNING-and-above anomaly
+  lines (`job-failed`, `terminal-write-failed`, `heartbeat-tick-failure`,
+  `worker-watchdog-trip`) emit at every level. `off` is short for "off for
+  the event stream", never "off for failures".
+- **The call sites are unconditional.** The knob is applied by a structlog
+  processor in the canonical chain (before the serialization cost), not by
+  branching at call sites, so a call site cannot drift from the setting.
+- **Unclassified events fail open.** A future event not in the classification
+  table passes at every level — a new event can never be silently suppressed
+  by a stale table.
+- **The ledger is untouchable.** With `off`, `job_events` still receives every
+  event (asserted end-to-end in the system tier).
+
+With OTel configured, the spans carry the same events (see
+[observability.md](observability.md#4-structured-logging)): `warning`/`off`
+keeps the traces while cutting the duplicate log stream.
 
 ### Actor Config
 
@@ -469,7 +505,7 @@ These control how long a terminal job stays in the `jobs` table before being mov
 | `TASKQ_PRUNE_RETENTION_CANCELLED` | `timedelta` | `30d` | Retention for `cancelled` jobs. |
 | `TASKQ_PRUNE_RETENTION_ABANDONED` | `timedelta` | `90d` | Retention for `abandoned` and `crashed` jobs. |
 
-Per-actor retention overrides can be set in `actor_config.metadata` as `retention_days` (an integer). When set, an actor's jobs are pruned at `min(retention_days, global_per_status_retention)`. This allows short-lived high-volume actors (e.g. ping jobs) to be pruned faster without affecting the global defaults.
+Per-actor retention overrides can be set in `actor_config.metadata` as `retention_days`. It accepts an integer or ASCII digit string from `0` through `999999999` days, the range supported by Python's `timedelta`; `0` archives terminal jobs on the next prune sweep. Invalid declarations raise immediately. Invalid legacy or manually edited database values are ignored with a warning, so the actor falls back to global retention without stopping the fleet-wide prune. When valid, an actor's jobs are pruned at `min(retention_days, global_per_status_retention)`. This allows short-lived high-volume actors (e.g. ping jobs) to be pruned faster without affecting the global defaults.
 
 #### Archive retention and expiry schedule
 
@@ -580,6 +616,15 @@ log_format in {"json", "console"}
 ```
 
 Error pattern: `log_format must be one of ['console', 'json'], got <value>`
+
+### Log events level
+
+```
+log_events_level.lower() in {"info", "warning", "off", "debug"}
+```
+
+Case-insensitive (`WARNING` loads as `warning`). Error pattern:
+`log_events_level must be one of ['debug', 'info', 'off', 'warning'], got <value>`
 
 ---
 

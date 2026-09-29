@@ -1,0 +1,132 @@
+{
+  "jobs_measured": 5000,
+  "bytes_per_job": 77.1,
+  "objects_per_job": 1.0,
+  "top_diffs": [
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/tracemalloc.py:115: size=156 KiB (+156 KiB), count=1994 (+1994), average=80 B",
+      "size_diff": 159504,
+      "count_diff": 1994
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/tracemalloc.py:193: size=92.2 KiB (+92.2 KiB), count=1966 (+1966), average=48 B",
+      "size_diff": 94368,
+      "count_diff": 1966
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/backend/_sweeps.py:184: size=42.8 KiB (+41.4 KiB), count=11 (+9), average=3982 B",
+      "size_diff": 42395,
+      "count_diff": 9
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/_di/scopes.py:775: size=10.3 KiB (-28.4 KiB), count=73 (-412), average=144 B",
+      "size_diff": -29120,
+      "count_diff": -412
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/tracemalloc.py:558: size=21.5 KiB (+21.2 KiB), count=358 (+353), average=62 B",
+      "size_diff": 21716,
+      "count_diff": 353
+    },
+    {
+      "lineno": "<frozen abc>:123: size=77.5 KiB (+18.5 KiB), count=787 (+131), average=101 B",
+      "size_diff": 18981,
+      "count_diff": 131
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/selector_events.py:1025: size=199 KiB (+16.3 KiB), count=3380 (+253), average=60 B",
+      "size_diff": 16727,
+      "count_diff": 253
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/asyncpg/connection.py:481: size=129 KiB (+8678 B), count=1968 (+177), average=67 B",
+      "size_diff": 8678,
+      "count_diff": 177
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/backend/_sweeps.py:199: size=8037 B (+8037 B), count=2 (+2), average=4018 B",
+      "size_diff": 8037,
+      "count_diff": 2
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:109: size=12.2 KiB (-6408 B), count=178 (-70), average=70 B",
+      "size_diff": -6408,
+      "count_diff": -70
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/_di/scopes.py:766: size=13.6 KiB (-5824 B), count=124 (-52), average=112 B",
+      "size_diff": -5824,
+      "count_diff": -52
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:817: size=16.4 KiB (-4920 B), count=140 (-42), average=120 B",
+      "size_diff": -4920,
+      "count_diff": -42
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: size=18.1 KiB (+4864 B), count=117 (+31), average=159 B",
+      "size_diff": 4864,
+      "count_diff": 31
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/events.py:38: size=18.7 KiB (+4608 B), count=299 (+72), average=64 B",
+      "size_diff": 4608,
+      "count_diff": 72
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/worker/dispatch.py:778: size=28.3 KiB (+4284 B), count=460 (+68), average=63 B",
+      "size_diff": 4284,
+      "count_diff": 68
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/opentelemetry/context/__init__.py:100: size=3920 B (-3680 B), count=39 (-37), average=101 B",
+      "size_diff": -3680,
+      "count_diff": -37
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/src/taskq/_di/scopes.py:743: size=7936 B (-3328 B), count=62 (-26), average=128 B",
+      "size_diff": -3328,
+      "count_diff": -26
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:476: size=24.0 KiB (+3264 B), count=244 (+30), average=101 B",
+      "size_diff": 3264,
+      "count_diff": 30
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py:297: size=6080 B (-3040 B), count=16 (-8), average=380 B",
+      "size_diff": -3040,
+      "count_diff": -8
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:460: size=7616 B (+2992 B), count=56 (+22), average=136 B",
+      "size_diff": 2992,
+      "count_diff": 22
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/benchmarks/hotpath_load.py:178: size=2880 B (+2880 B), count=24 (+24), average=120 B",
+      "size_diff": 2880,
+      "count_diff": 24
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/opentelemetry/context/contextvars_context.py:30: size=2912 B (-2832 B), count=39 (-39), average=75 B",
+      "size_diff": -2832,
+      "count_diff": -39
+    },
+    {
+      "lineno": "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:451: size=4560 B (+2736 B), count=50 (+30), average=91 B",
+      "size_diff": 2736,
+      "count_diff": 30
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/asyncpg/connection.py:2036: size=2680 B (-2224 B), count=11 (-3), average=244 B",
+      "size_diff": -2224,
+      "count_diff": -3
+    },
+    {
+      "lineno": "/tmp/opencode/audit-perf/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py:1078: size=35.8 KiB (+2216 B), count=243 (+15), average=151 B",
+      "size_diff": 2216,
+      "count_diff": 15
+    }
+  ]
+}
