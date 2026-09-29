@@ -826,6 +826,73 @@ def test_warn_once_stamp_reset_restores_the_global_stamps() -> None:
     # docstring promises value-importing callers.
 
 
+def test_every_module_level_warn_once_stamp_is_covered_by_the_reset() -> None:
+    """A fourth ``_*_warned`` stamp dict must not rely on human memory to
+    join the reset. The hand-listed pin above can only red when one of the
+    three KNOWN stamps survives the reset; a NEW module growing its own
+    log-once stamp (``_foo_warned: dict[str, float] = {}`` beside a
+    window constant) reopens the order-dependence class silently - the
+    reset never hears about it. This pin discovers the stamp population
+    from the source tree and behaviorally proves the reset clears each
+    one, so the fixture's coverage grows when the production pattern does.
+
+    Discovery shape: a module-level annotated assignment named
+    ``_*_warned`` bound to an empty dict literal - the exact form the three
+    window-gated warn sites share. A non-stamp that matches the name shape
+    is cleared harmlessly (a fresh empty dict is the stamp dict's own
+    reset semantics); if that is wrong for a future name, the failure
+    message says exactly which candidate to rename or allowlist.
+    """
+    import importlib
+
+    import taskq
+
+    pkg_dir = Path(taskq.__file__).resolve().parent
+    candidates: list[tuple[str, str]] = []
+    for path in sorted(pkg_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            target: ast.expr | None = None
+            if isinstance(node, ast.AnnAssign):
+                target = node.target
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            name = target.id
+            if not (name.startswith("_") and name.endswith("_warned")):
+                continue
+            if not isinstance(node, ast.AnnAssign | ast.Assign):
+                continue
+            value = node.value
+            if isinstance(value, ast.Dict) and not value.keys:
+                module_parts = path.relative_to(pkg_dir).with_suffix("").parts
+                candidates.append((".".join(module_parts), name))
+
+    discovered = [f"taskq.{module}.{name}" for module, name in candidates]
+    assert len(discovered) >= 3, (
+        f"only {discovered} module-level _*_warned stamps discovered (floor 3): "
+        "the discovery walk has degraded and this pin proves nothing"
+    )
+    for module_name, attr in candidates:
+        module = importlib.import_module(f"taskq.{module_name}")
+        stamp = getattr(module, attr)
+        assert isinstance(stamp, dict), f"taskq.{module_name}.{attr} is not a dict"
+        stamp["probe-kind"] = 123.0
+    _reset_warn_once_stamps_reset()
+    survivors = []
+    for module_name, attr in candidates:
+        module = importlib.import_module(f"taskq.{module_name}")
+        if getattr(module, attr).get("probe-kind") is not None:
+            survivors.append(f"taskq.{module_name}.{attr}")
+    assert not survivors, (
+        f"module-level warn-once stamp(s) the reset never clears: {survivors} - a "
+        "warning-existence pin against them is order-dependent again. Add them to "
+        "_reset_warn_once_stamps_reset, or rename if the _*_warned shape is not a "
+        "window-gated stamp."
+    )
+
+
 async def _hygiene_leak_probe_coro() -> None:
     await asyncio.Event().wait()
 

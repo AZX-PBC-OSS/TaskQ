@@ -354,11 +354,16 @@ def _reset_warn_once_stamps() -> Iterator[None]:  # pyright: ignore[reportUnused
     ``progress/_publish._publish_failure_warned`` (the publish-failure
     warning). A test that drives the warned path leaves a stamp; any
     LATER test in the same xdist worker that drives the same warning
-    class within 60s of wall time and asserts on its emission (the
-    warning-existence pin in test_dispatch_error_reporter.py, the
-    publish-failure pins in test_progress_publish.py) finds it silently
-    suppressed - a failure that depends on which tests ran before it in
-    the same process, i.e. on pytest-randomly's shuffle. The
+    class within 60s of wall time and asserts on its emission finds it
+    silently suppressed - a failure that depends on which tests ran
+    before it in the same process, i.e. on pytest-randomly's shuffle.
+    The red this fixture answers was observed on the publish half (the
+    pins in test_progress_publish.py, cured file-locally in 865565b1
+    when the window gate shipped); the dispatch and _consumer stamps
+    have the same shape and the same 60s windows but no reset and, so
+    far, no second warning-existence pin to suppress - the fixture
+    closes the CLASS for every current and future pin instead of each
+    new pin rediscovering the file-local cure. The
     ``_publish_failure_warned`` half was cured file-locally
     (monkeypatching a fresh dict per test); this fixture promotes the
     reset to every test, the same promotion ``_reset_notify_module_globals``
