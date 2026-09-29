@@ -294,7 +294,7 @@ async def test_with_pg_fallback_without_redis_extra_raises_import_error(
     missing module."""
     monkeypatch.setitem(__import__("sys").modules, "redis", None)
     monkeypatch.setitem(__import__("sys").modules, "redis.exceptions", None)
-    with pytest.raises(ImportError, match=r"Install it with: pip install 'taskq\[redis\]'"):
+    with pytest.raises(ImportError, match=r"Install it with: pip install 'taskq-py\[redis\]'"):
         await with_pg_fallback(
             AsyncMock(),  # type: ignore[arg-type]
             AsyncMock(),  # type: ignore[arg-type]

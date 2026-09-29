@@ -795,7 +795,7 @@ async def test_bootstrap_clear_error_when_redis_extra_missing(
 
     monkeypatch.setitem(sys.modules, "redis", None)
 
-    with pytest.raises(RuntimeError, match=r"taskq\[redis\]"):
+    with pytest.raises(RuntimeError, match=r"taskq-py\[redis\]"):
         await _run_main_with_mocked_deps(
             _settings(redis_url="redis://localhost:6379/0"),
             actor_registry={served_actor.name: served_actor},

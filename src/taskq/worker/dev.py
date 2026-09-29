@@ -66,7 +66,7 @@ async def _start_worker(module_attr: str) -> asyncio.subprocess.Process:
     if taskq_exe is None:
         msg = (
             "Could not find the 'taskq' executable on PATH. "
-            "Ensure taskq is installed (e.g. with uv tool install taskq)."
+            "Ensure taskq is installed (e.g. with uv tool install taskq-py)."
         )
         raise RuntimeError(msg)
     proc = await asyncio.create_subprocess_exec(

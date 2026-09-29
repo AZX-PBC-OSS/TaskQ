@@ -2744,8 +2744,14 @@ def _ui_serve(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import APIRouter, Depends, FastAPI, Response
-    from fastapi.responses import RedirectResponse
+    try:
+        from fastapi import APIRouter, Depends, FastAPI, Response
+        from fastapi.responses import RedirectResponse
+    except ImportError as exc:
+        raise ImportError(
+            "the admin UI requires the [fastapi] extra. "
+            "Install it with: pip install 'taskq-py[fastapi]'"
+        ) from exc
 
     from taskq.web.admin import create_router, setup_admin_state
 
@@ -2855,7 +2861,7 @@ def _ui_serve(
                 except ImportError as exc:
                     raise ImportError(
                         "redis_url is configured but the [redis] extra is not installed. "
-                        "Install it with: pip install 'taskq[redis]'"
+                        "Install it with: pip install 'taskq-py[redis]'"
                     ) from exc
 
                 if redis_factory is not None:

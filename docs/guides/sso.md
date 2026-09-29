@@ -25,7 +25,7 @@ works against any OIDC provider. Reserve SAML for IdPs that genuinely require it
 ## Quick start: OIDC with `taskq ui serve`
 
 ```sh
-pip install 'taskq[fastapi]' 'taskq[oidc]'
+pip install 'taskq-py[fastapi]' 'taskq-py[oidc]'
 
 export TASKQ_SSO_BACKEND=oidc
 export TASKQ_OIDC_ISSUER='https://login.microsoftonline.com/{tenant}/v2.0'
@@ -204,13 +204,13 @@ native dependencies internally, confirmed via `ldd` against the installed
 extension module, which links only against base glibc (`libc`, `libm`,
 `libpthread`, `librt`), nothing `libxmlsec1`/`libxml2`/`libssl`-related.
 **No system package installation is required** to install or run
-`taskq[saml]` on any of these platforms: a plain `uv add "taskq[saml]"`
+`taskq-py[saml]` on any of these platforms: a plain `uv add "taskq-py[saml]"`
 (or `pip install`) into your application environment is sufficient, no
 system packages and no base-image rebuild needed.
 
 > **Container installs**: the production image ships **no pip and no uv**
 > (both are removed at build time — see the Dockerfile's runtime stage), so
-> `pip install taskq[saml]` inside a `taskq-worker`-based container fails
+> `pip install taskq-py[saml]` inside a `taskq-worker`-based container fails
 > with `pip: not found`. Extras must be added by your extending Dockerfile.
 > Note the build inherits the image's non-root `USER`, so the install step
 > needs `USER root` and an out-of-`$HOME` uv cache (`/app` is root-owned):
@@ -240,7 +240,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ```
 
 Check which case applies to your deployment target by running
-`uv add "taskq[saml]"` (or `pip install taskq[saml]`) directly; if it
+`uv add "taskq-py[saml]"` (or `pip install "taskq-py[saml]"`) directly; if it
 resolves a wheel (no compilation step in the install output), no system
 packages are needed.
 
