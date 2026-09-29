@@ -5,18 +5,23 @@ classification table is TOTAL for the failure families it names — the
 shutdown orchestrator's last-resort durability failures are the exact
 class the ``off`` level must never blind an operator to. Today they are
 all emitted at WARNING method, so they survive at every level by the
-WARNING-and-above rule alone; classification is what keeps that true if
-a call site is ever re-levelled to INFO/DEBUG (an unclassified anomaly
-re-levelled to INFO would silently vanish at ``warning``/``off`` — the
-fail-open pass is the happy-path leak the ``warning`` level promises
-never to serve).
+WARNING-and-above rule alone; classification is what keeps their
+treatment deliberate if a call site is ever re-levelled to INFO/DEBUG
+(at ``off`` a CLASSIFIED INFO-method anomaly line is suppressed — the
+ledger keeps it — while an UNCLASSIFIED event fails OPEN and passes at
+every level, so classification is also what stops an anomaly's INFO line
+from slipping into the ``off`` stream by the fail-open back door).
 
 The family: every ``*-pg-write-failed`` event in ``worker/shutdown.py``
 — the cancel request, force-cancel escalation, and release writes whose
-failure leaves a job to lease-expiry reclaim. The rename
-``abandon-pg-write-failed`` → ``cancel-pg-write-failed`` (#596) is what
-let the family drift out of the table unnoticed: no pin looked at the
-emitted names.
+failure leaves a job to lease-expiry reclaim. The family was never
+classified — no pin looked at the emitted names, so the gap survived
+#596's ``abandon-pg-write-failed`` → ``cancel-pg-write-failed`` rename
+unnoticed. The classification is what makes a re-levelled call site
+DELIBERATE at ``off`` (classified INFO-method anomaly lines are the ones
+``off`` suppresses; unclassified events fail OPEN and pass at every
+level — the fail-open rule, not classification, is what carries an
+unclassified anomaly through).
 """
 
 from __future__ import annotations

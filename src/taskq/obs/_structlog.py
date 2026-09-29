@@ -151,13 +151,13 @@ lifecycle INFO lines                   HAPPY       Once per process, not per
                                                    the stdlib level staying
                                                    WARNING. Classified so the
                                                    table stays total over the
-                                                   family through renames
-                                                   (#596's
-                                                   ``abandon-pg-write-failed``
-                                                   → ``cancel-pg-write-failed``
-                                                   drifted it out; pinned by
-                                                   tests/test_obs_pg_write_
-                                                   failure_classification.py).
+                                                   family (it was never
+                                                   classified — no rename
+                                                   dropped it, the gap is
+                                                   just as old as the table;
+                                                   pinned by tests/test_obs_
+                                                   pg_write_failure_
+                                                   classification.py).
 ``pool-release-failed``,               ANOMALY     Pool/conn anomalies
 ``pool-conn-dead-on-acquire``,                     (WARNING/ERROR: survive
 ``slot-pool-acquire-failed``,                      everywhere by the stdlib
