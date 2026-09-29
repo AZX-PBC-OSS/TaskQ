@@ -1,0 +1,37 @@
+[
+  {
+    "window_jobs": 1000,
+    "bytes_per_job": 82.6,
+    "objects_per_job": 0.8
+  },
+  {
+    "window_jobs": 2000,
+    "bytes_per_job": 201.0,
+    "objects_per_job": 2.8
+  },
+  {
+    "window_jobs": 3000,
+    "bytes_per_job": 164.0,
+    "objects_per_job": 1.8
+  },
+  {
+    "window_jobs": 4000,
+    "bytes_per_job": 106.6,
+    "objects_per_job": 1.4
+  },
+  {
+    "window_jobs": 5000,
+    "bytes_per_job": 83.0,
+    "objects_per_job": 1.1
+  },
+  {
+    "window_jobs": 6000,
+    "bytes_per_job": 78.9,
+    "objects_per_job": 1.0
+  },
+  {
+    "window_jobs": 7000,
+    "bytes_per_job": 65.4,
+    "objects_per_job": 0.8
+  }
+]
