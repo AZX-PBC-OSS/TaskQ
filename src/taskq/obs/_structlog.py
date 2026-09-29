@@ -140,6 +140,24 @@ lifecycle INFO lines                   HAPPY       Once per process, not per
                                                    noop is stdlib DEBUG, the
                                                    root level gates it
                                                    before this filter).
+``*-pg-write-failed``                  ANOMALY     The shutdown paths'
+                                                   durability failures (the
+                                                   cancel-request, the
+                                                   force-cancel escalation,
+                                                   the release write): left
+                                                   to lease-expiry reclaim,
+                                                   the operator's sight of
+                                                   them must not depend on
+                                                   the stdlib level staying
+                                                   WARNING. Classified so the
+                                                   table stays total over the
+                                                   family through renames
+                                                   (#596's
+                                                   ``abandon-pg-write-failed``
+                                                   → ``cancel-pg-write-failed``
+                                                   drifted it out; pinned by
+                                                   tests/test_obs_pg_write_
+                                                   failure_classification.py).
 ``pool-release-failed``,               ANOMALY     Pool/conn anomalies
 ``pool-conn-dead-on-acquire``,                     (WARNING/ERROR: survive
 ``slot-pool-acquire-failed``,                      everywhere by the stdlib
@@ -344,6 +362,9 @@ _ANOMALY_EVENTS: frozenset[str] = frozenset(
         "job_exception",
         "rate-limit-dependency-failure",
         "consume-rate-limit-denied-noop",
+        "force-cancel-pg-write-failed",
+        "cancel-pg-write-failed",
+        "release-pg-write-failed",
         "isolate-self-actor-join-timeout",
         "isolate-self-failure",
         "isolate-self-complete",
