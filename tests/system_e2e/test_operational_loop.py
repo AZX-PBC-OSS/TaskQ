@@ -86,6 +86,7 @@ from taskq.insights import (
     fetch_queue_imbalance,
     fetch_wait_distribution,
 )
+from taskq.testing.assertions import plain_cli_output
 from taskq.web.admin import create_router, setup_admin_state
 from tests.system_e2e._harness import (
     DEPLOYMENT_CANCELLATION_GRACE_S,
@@ -572,9 +573,12 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             f"taskq migrate status failed: {status.stderr.decode(errors='replace')}"
         )
         status_out = status.stdout.decode(errors="replace")
-        assert f"schema: {schema}" in status_out, status_out
-        assert "applied:" in status_out, status_out
-        assert "[ ]" not in status_out, (
+        # The subprocess inherits the runner env (GITHUB_ACTIONS et al.
+        # colorize typer's rich-rendered surfaces); match the plain bytes.
+        plain_status = plain_cli_output(status_out)
+        assert f"schema: {schema}" in plain_status, status_out
+        assert "applied:" in plain_status, status_out
+        assert "[ ]" not in plain_status, (
             f"the schema has unapplied migrations at deploy time:\n{status_out}"
         )
 
@@ -775,7 +779,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
 
             depth = await asyncio.to_thread(run_cli, ["queues", "depth"], cli_env)
             assert depth.returncode == 0
-            assert "system_e2e" in depth.stdout.decode(errors="replace"), (
+            assert "system_e2e" in plain_cli_output(depth.stdout.decode(errors="replace")), (
                 "the queues depth command does not list the fleet's own queue"
             )
 

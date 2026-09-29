@@ -42,6 +42,7 @@ from taskq.actor import ActorRef, actor
 from taskq.cli import app
 from taskq.migrate import apply_pending
 from taskq.testing._shared_containers import skip_test_without_docker
+from taskq.testing.assertions import plain_cli_output
 
 pytestmark = pytest.mark.integration
 
@@ -142,7 +143,10 @@ async def _run_doctor(monkeypatch: pytest.MonkeyPatch, pg_dsn: str, schema: str)
         # bare exit code: the exception (if any) and the full report.
         detail = repr(result.exception) if result.exception else "(no exception)"
         return result.exit_code, f"{result.output}\n[{detail}]"
-    return result.exit_code, result.output
+    # CI's runner env force-colorizes typer's rich-rendered surfaces (the
+    # run-36369327985 class); the report's markers must be matched against
+    # the plain bytes, never the colored ones.
+    return result.exit_code, plain_cli_output(result.output)
 
 
 # ── Seeding helpers (the test_insights.py shapes, trimmed to doctor's) ──

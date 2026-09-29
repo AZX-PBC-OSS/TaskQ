@@ -40,6 +40,7 @@ from taskq._ids import new_uuid
 from taskq.cli import app
 from taskq.migrate import apply_pending
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -217,7 +218,7 @@ def test_wait_renders_each_segment_labeled(monkeypatch: pytest.MonkeyPatch) -> N
     result = runner.invoke(app, ["insights", "wait"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "email" in plain
     assert "clean" in plain
     assert "deferred" in plain
@@ -231,7 +232,7 @@ def test_wait_help_says_reschedules_are_excluded_from_clean() -> None:
     result = runner.invoke(app, ["insights", "--help"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split()).lower()
+    plain = plain_cli_output(result.output).lower()
     assert "deferred" in plain
     assert "clean" in plain
     assert "reschedule" in plain, (
@@ -264,7 +265,7 @@ def test_wait_actor_flag_switches_to_the_per_actor_grouping(
         "the --actor read must run the module's per-(actor, queue) grouping, "
         "not a hand-rolled query"
     )
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "mailer" in plain
     assert "other" not in plain, "rows for other actors must be filtered out"
 
@@ -279,7 +280,7 @@ def test_wait_empty_window_reports_nothing_to_report(
     result = runner.invoke(app, ["insights", "wait"])
 
     assert result.exit_code == 0
-    assert "nothing to report" in result.output
+    assert "nothing to report" in plain_cli_output(result.output)
 
 
 # ── balance ──────────────────────────────────────────────────────────────
@@ -306,7 +307,7 @@ def test_balance_over_threshold_row_renders_a_marker(
     result = runner.invoke(app, ["insights", "balance"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "!!" in plain, "an over-threshold row must render a visible marker"
     # The marker rides the offending row, not the healthy one: the marked
     # line names the starved queue.
@@ -331,7 +332,7 @@ def test_balance_starved_row_renders_the_no_capacity_marker(
     result = runner.invoke(app, ["insights", "balance"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "!!" in plain
     assert "capacity" in plain
 
@@ -351,7 +352,7 @@ def test_balance_healthy_row_renders_no_marker(monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["insights", "balance"])
 
     assert result.exit_code == 0
-    assert "!!" not in result.output
+    assert "!!" not in plain_cli_output(result.output)
 
 
 def test_balance_renders_the_utilization_and_capacity_columns(
@@ -376,7 +377,7 @@ def test_balance_renders_the_utilization_and_capacity_columns(
     result = runner.invoke(app, ["insights", "balance"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     for column_value in ("25", "2", "10", "2.50"):
         assert column_value in plain, f"column value {column_value!r} must render"
 
@@ -398,7 +399,7 @@ def test_drain_no_traffic_renders_the_honest_string_never_eta_zero(
     result = runner.invoke(app, ["insights", "drain"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "no traffic in window" in plain
     assert "0s" not in plain, "a no-traffic queue must never render an eta of 0"
 
@@ -413,7 +414,7 @@ def test_drain_with_traffic_renders_a_human_eta(monkeypatch: pytest.MonkeyPatch)
     result = runner.invoke(app, ["insights", "drain"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "4m0s" in plain
     assert "240.0" not in plain and "240s" not in plain
 
@@ -427,7 +428,7 @@ def test_cron_runaway_renders_the_trending_verdict(monkeypatch: pytest.MonkeyPat
     result = runner.invoke(app, ["insights", "cron"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "runaway" in plain
     assert "!!" in plain
 
@@ -452,7 +453,7 @@ def test_cron_healthy_schedule_renders_no_runaway(monkeypatch: pytest.MonkeyPatc
     result = runner.invoke(app, ["insights", "cron"])
 
     assert result.exit_code == 0
-    assert "runaway" not in result.output
+    assert "runaway" not in plain_cli_output(result.output)
 
 
 def test_cron_renders_fires_cleared_and_outstanding(
@@ -470,7 +471,7 @@ def test_cron_renders_fires_cleared_and_outstanding(
     result = runner.invoke(app, ["insights", "cron"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "ticker" in plain
     for value in ("6", "1"):
         assert value in plain
@@ -493,7 +494,7 @@ def test_default_surface_is_all_and_renders_every_section(
     result = runner.invoke(app, ["insights"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     for section in ("wait", "balance", "drain", "cron"):
         assert section in plain, f"the default surface must render the {section} section"
     # One connection, four module reads: every surface's statement ran.
@@ -522,7 +523,7 @@ def test_invalid_surface_exits_1() -> None:
     result = runner.invoke(app, ["insights", "extrapolate"])
 
     assert result.exit_code == 1
-    assert "wait" in result.output, "the refusal must name the valid surfaces"
+    assert "wait" in plain_cli_output(result.output), "the refusal must name the valid surfaces"
 
 
 def test_invalid_window_exits_1_naming_the_closed_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -532,7 +533,7 @@ def test_invalid_window_exits_1_naming_the_closed_set(monkeypatch: pytest.Monkey
     result = runner.invoke(app, ["insights", "wait", "--window", "30d"])
 
     assert result.exit_code == 1
-    assert "1h" in result.output, "the refusal must name the valid windows"
+    assert "1h" in plain_cli_output(result.output), "the refusal must name the valid windows"
     assert conn.executed == [], "the guard must fire before any statement is issued"
 
 
@@ -572,7 +573,7 @@ def test_queue_flag_filters_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["insights", "wait", "--queue", "email"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "email" in plain
     assert "batch" not in plain
 
@@ -583,7 +584,7 @@ def test_help_documents_every_column() -> None:
     result = runner.invoke(app, ["insights", "--help"])
 
     assert result.exit_code == 0
-    plain = " ".join(result.output.split()).lower()
+    plain = plain_cli_output(result.output).lower()
     for phrase in (
         # wait columns
         "count",
@@ -706,7 +707,7 @@ def test_guards_fire_before_any_connection_is_opened(
     ):
         result = runner.invoke(app, argv)
         assert result.exit_code == 1, f"{argv} must be refused"
-        assert refusal in result.output, (
+        assert refusal in plain_cli_output(result.output), (
             f"{argv} must be refused by its own guard, not by a later crash"
         )
         assert connects == [], f"{argv} must refuse before opening a connection"
@@ -724,7 +725,7 @@ def test_invalid_window_is_refused_not_coerced(monkeypatch: pytest.MonkeyPatch) 
         result = runner.invoke(app, ["insights", "wait", "--window", window])
 
         assert result.exit_code == 1, f"--window {window!r} must be refused"
-        assert "expected one of" in result.output
+        assert "expected one of" in plain_cli_output(result.output)
         assert conn.executed == []
 
 
@@ -758,7 +759,7 @@ def test_schema_guard_fires_before_the_connection(
     result = runner.invoke(app, ["insights", "wait"])
 
     assert result.exit_code == 1
-    assert "invalid schema name" in result.output
+    assert "invalid schema name" in plain_cli_output(result.output)
     assert connects == [], "the schema re-check must fire before the connection is opened"
 
 
@@ -900,7 +901,7 @@ def test_cron_one_window_burst_is_not_the_runaway_verdict(
     assert result.exit_code == 0
     line = next(line for line in result.output.splitlines() if "ticker" in line)
     assert line.split()[-1] == "ok"
-    assert "runaway" not in result.output
+    assert "runaway" not in plain_cli_output(result.output)
 
 
 def test_cron_schedule_id_renders_shortened_not_mangled(
@@ -917,8 +918,8 @@ def test_cron_schedule_id_renders_shortened_not_mangled(
     result = runner.invoke(app, ["insights", "cron"])
 
     assert result.exit_code == 0
-    assert str(schedule_id)[:8] in result.output
-    assert str(schedule_id) not in result.output
+    assert str(schedule_id)[:8] in plain_cli_output(result.output)
+    assert str(schedule_id) not in plain_cli_output(result.output)
 
 
 def test_balance_flag_column_renders_each_label_exactly(
@@ -964,7 +965,7 @@ def test_unicode_and_long_names_stay_readable(monkeypatch: pytest.MonkeyPatch) -
     result = runner.invoke(app, ["insights", "wait", "--actor", unicode_actor])
 
     assert result.exit_code == 0
-    assert long_queue in result.output, "the queue name must render verbatim"
+    assert long_queue in plain_cli_output(result.output), "the queue name must render verbatim"
     table_lines = [
         line for line in result.output.splitlines() if line.startswith(("queue", long_queue))
     ]
@@ -1015,12 +1016,10 @@ def test_help_contract_covers_every_rendered_column_and_marker(
     # CI's environment makes rich colorize the help even without a TTY
     # (the run-36369327985 lesson: the words arrive interleaved with
     # \x1b[..m escapes, and a whitespace-only normalization still misses
-    # every marker). Presentation is not contract: strip the escapes
-    # before matching.
-    import re as _re
-
-    ansi_free = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-    plain = " ".join(ansi_free.sub("", help_result.output).split()).lower()
+    # every marker). Presentation is not contract: strip the FULL escape
+    # grammar (SGR, private-mode CSI, two-byte escapes, OSC) through the
+    # shared idiom before matching.
+    plain = plain_cli_output(help_result.output).lower()
     for headers in captured:
         for header in headers:
             for token in header.lower().split("_"):
@@ -1168,7 +1167,7 @@ def test_insights_all_against_real_pg(
     result = runner.invoke(app, ["insights"])
 
     assert result.exit_code == 0, result.output
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     # wait: both segments render, labeled.
     assert "clean" in plain and "deferred" in plain
     # balance: the idle queue is the starvation shape, marked.
@@ -1189,7 +1188,7 @@ def test_insights_drain_busy_queue_renders_an_eta_not_the_caveat(
     result = runner.invoke(app, ["insights", "drain"])
 
     assert result.exit_code == 0, result.output
-    plain = " ".join(result.output.split())
+    plain = plain_cli_output(result.output)
     assert "email" in plain
     assert "no traffic in window" in plain, "the idle queue's row must carry the caveat"
     # The busy queue's row renders a humanized eta (never a bare 0s).

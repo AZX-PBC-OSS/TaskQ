@@ -20,6 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 from taskq.worker.queue_ops import set_queue_max_concurrent, set_queue_mode
 
 runner = CliRunner()
@@ -177,12 +178,12 @@ def test_cli_ops_value_error_exits_cleanly(monkeypatch: pytest.MonkeyPatch) -> N
 
     result = runner.invoke(app, ["queues", "set-max-concurrent", "q", "--max-concurrent", "5"])
     assert result.exit_code == 1
-    assert "max_concurrent must be >= 1" in result.stderr
+    assert "max_concurrent must be >= 1" in plain_cli_output(result.stderr)
     # The clean path: click/typer convert the handled exit to SystemExit. If
     # the ops ValueError escaped instead, result.exception would BE that
     # ValueError - the traceback-to-operator failure mode.
     assert isinstance(result.exception, SystemExit)
-    assert "Traceback" not in result.output
+    assert "Traceback" not in plain_cli_output(result.output)
 
 
 class _ClosableRecordingConn(_RecordingConn):
@@ -211,8 +212,8 @@ def test_cli_set_mode_rejects_a_colon_queue_name_actionably(
 
     assert result.exit_code == 1, f"output: {result.output}"
     assert conn.statements == [], "an invalid queue name must not reach the UPSERT"
-    assert "invalid queue name" in result.stderr
-    assert "':'" in result.stderr, result.stderr
-    assert "A-Za-z0-9_.-" in result.stderr, result.stderr
+    assert "invalid queue name" in plain_cli_output(result.stderr)
+    assert "':'" in plain_cli_output(result.stderr), result.stderr
+    assert "A-Za-z0-9_.-" in plain_cli_output(result.stderr), result.stderr
     assert isinstance(result.exception, SystemExit)
-    assert "Traceback" not in result.output
+    assert "Traceback" not in plain_cli_output(result.output)

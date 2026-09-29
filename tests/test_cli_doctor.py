@@ -34,6 +34,7 @@ from typer.testing import CliRunner
 from taskq.actor import ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.cli import app
+from taskq.testing.assertions import plain_cli_output
 from taskq.timescale import StorageMode
 from taskq.worker.queue_ops import QueueRow
 
@@ -259,8 +260,8 @@ def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
 
     result = _invoke()
 
-    assert "doctor_beta" in result.output
-    assert "never dispatches" in result.output.lower()
+    assert "doctor_beta" in plain_cli_output(result.output)
+    assert "never dispatches" in plain_cli_output(result.output).lower()
 
 
 def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,8 +285,8 @@ def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> 
 
     result = _invoke()
 
-    assert "retired_tier" in result.output
-    assert "stale" in result.output.lower()
+    assert "retired_tier" in plain_cli_output(result.output)
+    assert "stale" in plain_cli_output(result.output).lower()
 
 
 def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,7 +305,7 @@ def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) ->
 
     result = _invoke()
 
-    assert "drain" in result.output.lower(), (
+    assert "drain" in plain_cli_output(result.output).lower(), (
         "a zero stored cap must be labelled drain mode, not printed as a bare 0"
     )
 
@@ -323,7 +324,7 @@ def test_doctor_labels_stored_null_capacity_as_uncapped(
 
     result = _invoke()
 
-    assert "uncapped" in result.output.lower()
+    assert "uncapped" in plain_cli_output(result.output).lower()
 
 
 def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
@@ -341,8 +342,8 @@ def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
 
     result = _invoke()
 
-    assert "doctor_alpha" in result.output
-    assert "max_pending" in result.output
+    assert "doctor_alpha" in plain_cli_output(result.output)
+    assert "max_pending" in plain_cli_output(result.output)
 
 
 def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
@@ -359,8 +360,8 @@ def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
 
     result = _invoke()
 
-    assert "doctor_alpha" in result.output
-    assert "default" in result.output
+    assert "doctor_alpha" in plain_cli_output(result.output)
+    assert "default" in plain_cli_output(result.output)
 
 
 def test_doctor_never_exits_non_zero_on_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -430,7 +431,7 @@ def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
     result = _invoke()
 
     assert result.exit_code == 0
-    lowered = result.output.lower()
+    lowered = plain_cli_output(result.output).lower()
     assert "never dispatches" not in lowered
     assert "stale" not in lowered
     assert "drain" not in lowered
@@ -531,7 +532,7 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
 
     result = _invoke()
 
-    output = result.output.lower()
+    output = plain_cli_output(result.output).lower()
     assert "ghost_actor_not_registered" not in output or "no findings" not in output, (
         "if doctor is ever fed the stranded actor name it must not still "
         "print 'no findings' - that combination means the report and the "
@@ -578,13 +579,13 @@ def test_doctor_reports_attributed_stalls_from_worker_metadata(
 
     result = _invoke()
 
-    assert "send_email" in result.output
-    assert "gil_held" in result.output
-    assert "worker 11111111-1111-1111-1111-111111111111" in result.output
+    assert "send_email" in plain_cli_output(result.output)
+    assert "gil_held" in plain_cli_output(result.output)
+    assert "worker 11111111-1111-1111-1111-111111111111" in plain_cli_output(result.output)
     # gil_held dominates (12 against 3), so the finding's remedy is the
     # GIL one.
-    assert "chunk" in result.output
-    assert "event-loop-stall-attributed" in result.output
+    assert "chunk" in plain_cli_output(result.output)
+    assert "event-loop-stall-attributed" in plain_cli_output(result.output)
 
 
 def test_doctor_is_silent_when_no_worker_attributed_stalls(
@@ -606,8 +607,8 @@ def test_doctor_is_silent_when_no_worker_attributed_stalls(
 
     result = _invoke()
 
-    assert "send_email" not in result.output
-    assert "stalled the event loop" not in result.output
+    assert "send_email" not in plain_cli_output(result.output)
+    assert "stalled the event loop" not in plain_cli_output(result.output)
 
 
 def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
@@ -621,9 +622,9 @@ def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
 
     result = _invoke("--platform-grace-seconds", "30")
 
-    assert "below the worker's modelled worst-case shutdown" in result.output
-    assert "crash reclaim" in result.output
-    assert "SIGKILL" in result.output
+    assert "below the worker's modelled worst-case shutdown" in plain_cli_output(result.output)
+    assert "crash reclaim" in plain_cli_output(result.output)
+    assert "SIGKILL" in plain_cli_output(result.output)
 
 
 def test_doctor_platform_grace_above_worst_case_confirms_coverage(
@@ -633,8 +634,8 @@ def test_doctor_platform_grace_above_worst_case_confirms_coverage(
 
     result = _invoke("--platform-grace-seconds", "600")
 
-    assert "covers the worker's modelled worst-case shutdown" in result.output
-    assert "SIGKILL" not in result.output
+    assert "covers the worker's modelled worst-case shutdown" in plain_cli_output(result.output)
+    assert "SIGKILL" not in plain_cli_output(result.output)
 
 
 # ── Unknown TASKQ_ environment variables (the config-drift family) ────
@@ -672,11 +673,13 @@ def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
 
     result = _invoke()
 
-    assert "unknown TASKQ_ setting: TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS" in result.output
-    assert "did you mean TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS?" in result.output
+    assert "unknown TASKQ_ setting: TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS" in plain_cli_output(
+        result.output
+    )
+    assert "did you mean TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS?" in plain_cli_output(result.output)
     # The consequence is stated, not just the name: the report must tell
     # the operator WHY an unknown variable is worth acting on.
-    assert "a typo applies defaults silently" in result.output
+    assert "a typo applies defaults silently" in plain_cli_output(result.output)
 
 
 def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
@@ -699,7 +702,7 @@ def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
 
     result = _invoke()
 
-    assert "unknown TASKQ_ setting" not in result.output
+    assert "unknown TASKQ_ setting" not in plain_cli_output(result.output)
 
 
 def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resembles(
@@ -719,9 +722,9 @@ def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resemble
 
     result = _invoke()
 
-    assert "unknown TASKQ_ setting: TASKQ_FLEET_ENCHILADA_MODE" in result.output
-    assert "no similar setting name exists" in result.output
-    assert "docs/guides/configuration.md" in result.output
+    assert "unknown TASKQ_ setting: TASKQ_FLEET_ENCHILADA_MODE" in plain_cli_output(result.output)
+    assert "no similar setting name exists" in plain_cli_output(result.output)
+    assert "docs/guides/configuration.md" in plain_cli_output(result.output)
 
 
 def test_unknown_env_scan_ignores_non_taskq_names() -> None:

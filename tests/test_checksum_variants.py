@@ -32,6 +32,7 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq.settings import TaskQSettings
+from taskq.testing.assertions import plain_cli_output
 
 #: The ledger checksums a live production database recorded for the two
 #: amended files (schema ``taskq``), supplied by the operator during the
@@ -153,9 +154,9 @@ class TestPublishedHistoryIsAccepted:
         # names it, and a checked row proves a POPULATED ledger was read (a
         # subprocess pointed elsewhere would also print no drift — over an
         # empty ledger, vacuously).
-        assert f"schema: {settings.schema_name}" in result.stdout, result.stdout
-        assert "[✔]" in result.stdout, result.stdout
-        assert "drift" not in result.stdout.lower(), (
+        assert f"schema: {settings.schema_name}" in plain_cli_output(result.stdout), result.stdout
+        assert "[✔]" in plain_cli_output(result.stdout), result.stdout
+        assert "drift" not in plain_cli_output(result.stdout).lower(), (
             f"migrate status must not report drift for a published vintage: {result.stdout}"
         )
 
@@ -210,15 +211,15 @@ class TestTheGuardKeepsItsTeeth:
             UNKNOWN_CHECKSUM,
         )
         result = _migrate_status(settings)
-        assert "drift" in result.stdout.lower(), (
+        assert "drift" in plain_cli_output(result.stdout).lower(), (
             f"migrate status must surface the unknown checksum as drift: {result.stdout}"
         )
         # The subprocess saw THIS database's ledger, not some other schema's:
         # the tampered row's key and the distinctive d-digest must both be
         # named in the drift section (nothing published produces d*12).
-        assert f"schema: {settings.schema_name}" in result.stdout, result.stdout
-        assert UNKNOWN_CHECKSUM[:12] in result.stdout, result.stdout
-        assert "01.00.13_03:pre" in result.stdout, result.stdout
+        assert f"schema: {settings.schema_name}" in plain_cli_output(result.stdout), result.stdout
+        assert UNKNOWN_CHECKSUM[:12] in plain_cli_output(result.stdout), result.stdout
+        assert "01.00.13_03:pre" in plain_cli_output(result.stdout), result.stdout
 
     async def test_a_migration_without_published_history_behaves_as_before(
         self,

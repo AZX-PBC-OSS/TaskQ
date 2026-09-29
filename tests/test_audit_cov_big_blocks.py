@@ -39,6 +39,7 @@ from taskq.client._jobs import (  # pyright: ignore[reportPrivateUsage]  # Why: 
     _nul_rejected_field,
 )
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.jobs import make_enqueue_args
 from tests._di_scopes import make_scopes
 
@@ -187,10 +188,10 @@ def test_disable_hypertables_prints_the_success_report(
         env={"TASKQ_TIMESCALEDB_HYPERTABLES": "false", "TASKQ_PG_DSN": "postgresql://u:p@h/d"},
     )
     assert result.exit_code == 0, result.output
-    assert "disabled hypertables on 1 table(s):" in result.output
-    assert "restored to plain: job_events" in result.output
-    assert "removed retention policy: job_events:30 days" in result.output
-    assert "removed compression policy: attempts:7 days" in result.output
+    assert "disabled hypertables on 1 table(s):" in plain_cli_output(result.output)
+    assert "restored to plain: job_events" in plain_cli_output(result.output)
+    assert "removed retention policy: job_events:30 days" in plain_cli_output(result.output)
+    assert "removed compression policy: attempts:7 days" in plain_cli_output(result.output)
 
 
 def test_disable_hypertables_no_work_re_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,7 +205,7 @@ def test_disable_hypertables_no_work_re_run(monkeypatch: pytest.MonkeyPatch) -> 
         env={"TASKQ_TIMESCALEDB_HYPERTABLES": "false", "TASKQ_PG_DSN": "postgresql://u:p@h/d"},
     )
     assert result.exit_code == 0, result.output
-    assert "no hypertables to disable" in result.output
+    assert "no hypertables to disable" in plain_cli_output(result.output)
 
 
 # ── the shared-container reuse decision ─────────────────────────────────

@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import _CONNECT_TIMEOUT_S, app
+from taskq.testing.assertions import plain_cli_output
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import HealthServer
 from taskq.worker.shutdown import ShutdownPhase
@@ -254,7 +255,7 @@ def test_cli_socket_absent_fail_fast_wall_clock() -> None:
     # for scheduler contention under parallel test load (pytest -n 4).
     assert elapsed < 5.0, f"elapsed={elapsed:.3f}s - expected < 5.0s"
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "unreachable" in result.stderr.lower()
+    assert "unreachable" in plain_cli_output(result.stderr).lower()
 
 
 def test_cli_ready_socket_absent_in_process() -> None:
@@ -269,7 +270,7 @@ def test_cli_ready_socket_absent_in_process() -> None:
         env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_ready.sock"},  # noqa: S108 # Why: test fixture - deliberately uses non-existent path for negative test.
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "unreachable" in result.stderr.lower()
+    assert "unreachable" in plain_cli_output(result.stderr).lower()
 
 
 def test_cli_metrics_socket_absent_in_process() -> None:
@@ -284,7 +285,7 @@ def test_cli_metrics_socket_absent_in_process() -> None:
         env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_metrics.sock"},  # noqa: S108 # Why: test fixture - deliberately uses non-existent path for negative test.
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
-    assert "unreachable" in result.stderr.lower()
+    assert "unreachable" in plain_cli_output(result.stderr).lower()
 
 
 # ── Metrics ────────────────────────────────────────────────────────────

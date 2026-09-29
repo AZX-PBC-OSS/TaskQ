@@ -37,6 +37,7 @@ from typer.testing import CliRunner
 from taskq import migrate as migrate_mod
 from taskq.cli import app
 from taskq.settings import TaskQSettings
+from taskq.testing.assertions import plain_cli_output
 
 #: The sha256 of the git blob each bundled variant file must equal. These
 #: literals were reproduced by an independent audit via
@@ -300,7 +301,7 @@ class TestTheTeethEverywhere:
         runner = CliRunner()
         result = runner.invoke(app, ["migrate", "status"])
         assert result.exit_code == 0, result.output
-        assert "drift" not in result.output.lower(), result.output
+        assert "drift" not in plain_cli_output(result.output).lower(), result.output
         up = runner.invoke(app, ["migrate", "up"])
         assert up.exit_code == 0, up.output
 
@@ -314,7 +315,9 @@ class TestTheTeethEverywhere:
         asyncio.run(_set_ledger_checksum(settings, "01.00.13_03:pre", UNKNOWN_CHECKSUM))
         result = CliRunner().invoke(app, ["migrate", "up"])
         assert result.exit_code != 0, "a tampered ledger must not upgrade cleanly"
-        assert "drift" in result.output.lower() or UNKNOWN_CHECKSUM[:12] in result.output
+        assert "drift" in plain_cli_output(result.output).lower() or UNKNOWN_CHECKSUM[
+            :12
+        ] in plain_cli_output(result.output)
 
 
 class TestTheAnchorsReproducedFromTheVariantFiles:

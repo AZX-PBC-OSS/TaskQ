@@ -49,6 +49,7 @@ from taskq.progress._flush import _flush_buffer, progress_flush_loop
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit.decision import RateLimitDecision
 from taskq.retry import RetryPolicy
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema, _open_pg_backend_on_schema
 from taskq.testing.in_memory import InMemoryBackend
@@ -279,7 +280,7 @@ class TestActorRegistryFromOneShotIterator:
         monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
         result = runner.invoke(app, ["worker", "--actors", _EMPTY_LIST_PATH])
         assert result.exit_code == 1, f"stderr: {result.stderr}"
-        assert "empty" in result.stderr.lower()
+        assert "empty" in plain_cli_output(result.stderr).lower()
 
 
 # ── DEFECT 3: enqueue dedup onto a TERMINAL job is silent ─────────────────

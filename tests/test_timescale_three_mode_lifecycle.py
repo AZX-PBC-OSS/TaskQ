@@ -76,6 +76,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq.actor import actor
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
+from taskq.testing.assertions import plain_cli_output
 from taskq.testing.pg import create_running_job
 from taskq.timescale import StorageMode, detect_storage_mode
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
@@ -844,7 +845,7 @@ async def test_doctor_reports_the_detected_mode_on_real_containers(
 
     result = _invoke_doctor(mode_dsn, schema, flag=flag_on)
     assert result.returncode == 0, f"doctor failed on {mode.value}: {result.stderr}"
-    assert f"storage mode: {mode.value} - " in result.stdout, result.stdout
+    assert f"storage mode: {mode.value} - " in plain_cli_output(result.stdout), result.stdout
 
     # The vanilla leg's red arm: run it again with the flag ON (the env
     # contradicting the server) — the drift finding names the refusal.
@@ -853,13 +854,13 @@ async def test_doctor_reports_the_detected_mode_on_real_containers(
         assert drifted.returncode == 0  # doctor never fails the shell
         assert (
             "storage mode drift: TASKQ_TIMESCALEDB_HYPERTABLES=true but this "
-            "server detects vanilla" in drifted.stdout
+            "server detects vanilla" in plain_cli_output(drifted.stdout)
         ), drifted.stdout
-        assert "TimescaleDBUnavailableError" in drifted.stdout
+        assert "TimescaleDBUnavailableError" in plain_cli_output(drifted.stdout)
     else:
         # The aligned arms stay green: no drift finding on either
         # Timescale mode with the flag on.
-        assert "storage mode drift" not in result.stdout
+        assert "storage mode drift" not in plain_cli_output(result.stdout)
 
 
 # ── The attack legs: mode flips, the TSL-call census, doctor-vs-reality ──
@@ -1009,10 +1010,12 @@ async def test_downgrade_strands_aged_rows_and_doctor_names_it(
         assert (
             "storage mode drift: this server's timescaledb.license is 'apache' but 5 "
             "TimescaleDB policy job(s) from an earlier timescale-license deployment are "
-            "still registered" in result.stdout
+            "still registered" in plain_cli_output(result.stdout)
         ), result.stdout
-        assert "strand" in result.stdout, result.stdout
-        assert "ALTER SYSTEM SET timescaledb.license = 'timescale'" in result.stdout
+        assert "strand" in plain_cli_output(result.stdout), result.stdout
+        assert "ALTER SYSTEM SET timescaledb.license = 'timescale'" in plain_cli_output(
+            result.stdout
+        )
     finally:
         await _set_license(timescale_tsl_dsn, "timescale")
         assert await _live_license(timescale_tsl_dsn) == "timescale"
