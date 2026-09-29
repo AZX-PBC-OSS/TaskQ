@@ -104,6 +104,111 @@ async def test_mark_retry_after_consume_budget_true_snoozed(
     assert attempts[0]["worker_id"] == worker_id
 
 
+async def test_mark_retry_after_consume_budget_true_zero_delay_goes_pending(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """snoozed branch with a ZERO delay: consuming RetryAfter(0) is the
+    documented exemption to MIN_DEFERRAL_INTERVAL (constants.py: a
+    consuming retry is a real execution bounded by the budget it spends,
+    not a deferral competing for the head of the dispatch order), so the
+    arm maps it to status 'pending' claimable at clock_timestamp(), the
+    ``ELSE 'pending'`` half of the CASE. The non-consuming arm floors the
+    same delay (pinned in test_mark_snoozed_boundary.py); this pin holds
+    the consuming arm's exemption open so a future floor cannot silently
+    close it, and the twin's matching behaviour
+    (testing/_terminal.py: 0 → pending at now) stays honest."""
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            retry_kind="transient",
+            attempt=1,
+        )
+
+    before = datetime.now(UTC)
+    result = await backend.mark_retry_after(
+        JobId(job_id),
+        worker_id,
+        timedelta(0),
+        consume_budget=True,
+        attempt=1,
+        claim_epoch=1,
+    )
+    assert result == "scheduled"
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, attempt, scheduled_at, locked_by_worker FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["status"] == "pending"
+    # Zero delay: claimable from `now`, the monopolisation exemption the
+    # budget's consumption pays for. (The row is not floorable here: a
+    # 'pending' row has no scheduled_at deferral to read.)
+    assert row["attempt"] == 1  # consuming: the claim's increment stands
+    assert row["locked_by_worker"] is None
+    assert (
+        before - timedelta(seconds=5)
+        <= row["scheduled_at"].replace(tzinfo=UTC)
+        <= datetime.now(UTC) + timedelta(seconds=5)
+    )
+
+
+async def test_mark_retry_after_consume_budget_true_zero_delay_at_budget_fails(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The zero-delay exemption does not bypass the budget: a consuming
+    RetryAfter(0) on a transient job at attempt >= max_attempts still
+    takes the max_attempts_failed arm, it never reschedules."""
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            retry_kind="transient",
+            attempt=3,
+        )
+
+    result = await backend.mark_retry_after(
+        JobId(job_id),
+        worker_id,
+        timedelta(0),
+        consume_budget=True,
+        attempt=3,
+        claim_epoch=3,
+    )
+    assert result == "failed:MaxAttemptsExceeded"
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["error_class"] == "MaxAttemptsExceeded"
+
+
 async def test_mark_retry_after_consume_budget_true_max_attempts_failed(
     clean_jobs_app: JobsApp,
     module_pg_schema: ModulePgSchema,
@@ -245,6 +350,56 @@ async def test_mark_retry_after_consume_budget_true_deadline_failed(
     assert detail["from_state"] == "running"
     assert detail["to_state"] == "failed"
     assert detail["error_class"] == "DeadlineExceeded"
+
+
+async def test_mark_retry_after_consume_budget_true_deadline_wins_over_budget(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Arm arbitration when BOTH gates lapse at once: a consuming
+    RetryAfter whose delay lands past schedule_to_close on a job whose
+    attempt is already at max_attempts. The max_attempts arm's own
+    deadline conjunct (delay <= schedule_to_close) refuses it first, so
+    the deadline arm owns the row: the stamp is DeadlineExceeded, never
+    MaxAttemptsExceeded. Pins the arm ORDER - a reorder silently flips
+    the terminal taxonomy and the hook exception the job's consumers
+    see."""
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            retry_kind="transient",
+            attempt=3,
+            schedule_to_close=datetime.now(UTC) + timedelta(seconds=30),
+        )
+
+    result = await backend.mark_retry_after(
+        JobId(job_id),
+        worker_id,
+        timedelta(hours=1),  # lands past schedule_to_close
+        consume_budget=True,
+        attempt=3,
+        claim_epoch=3,
+    )
+    assert result == "failed:DeadlineExceeded"
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["error_class"] == "DeadlineExceeded"
 
 
 async def test_mark_retry_after_consume_budget_true_noop(

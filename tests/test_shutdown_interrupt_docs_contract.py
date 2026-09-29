@@ -54,6 +54,49 @@ def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
     )
 
 
+def test_cancellation_guide_abandoned_row_carries_the_operator_verdict_contract() -> None:
+    text = _normalized(_DOCS / "guides" / "cancellation.md")
+    assert "Shutdown never writes `abandoned`" in text, (
+        "cancellation.md must state the ownership contract flatly: shutdown "
+        "never writes `abandoned` - an operator-cancelled row the process dies "
+        "with is terminalised with the operator's OWN verdict (mark_cancelled, "
+        "forced), the same fenced write the unwinding consumer races"
+    )
+    assert "is abandoned during release" not in text, (
+        "cancellation.md's §8 `abandoned` status row still teaches the "
+        "PRE-#596 contract (a row whose operator cancel was in flight when "
+        "the process died 'is abandoned during release'). The shipped code "
+        "writes mark_cancelled at RELEASING (the operator's own verdict, the "
+        "same fenced write the unwinding consumer races), so the row reads "
+        "`cancelled` - a doc edit that resurrects the old mark_abandoned-at-"
+        "release story contradicts both the code and this guide's own "
+        "'Shutdown never writes abandoned' paragraph and must red here"
+    )
+    assert "run_post_tx()` drains the queue: for each entry it writes" in text and (
+        "a held entry while the shutdown orchestration is active gets "
+        "`backend.mark_cancelled()`" in text
+    ), (
+        "cancellation.md's phase-3 drain paragraph must carry the #596 "
+        "handover: the drain writes mark_abandoned for the UNHELD orphan "
+        "class and for held entries while the worker runs normally, but "
+        "mark_cancelled (the operator's own verdict) for a held entry while "
+        "the shutdown orchestration is active"
+    )
+    workers_text = _normalized(_DOCS / "guides" / "workers.md")
+    assert "jobs under an operator cancel reach `abandoned` here instead" not in workers_text, (
+        "workers.md's RELEASING phase-table row still teaches the PRE-#596 "
+        "contract (operator-cancelled jobs reach `abandoned` at RELEASING). "
+        "The shipped code writes mark_cancelled there (the operator's own "
+        "verdict, the same fenced write the unwinding consumer races); the "
+        "matching row in architecture.md's phase table was already corrected"
+    )
+    assert "never `abandoned`" in workers_text, (
+        "workers.md's RELEASING row must carry the ownership contract's "
+        "verdict: operator-cancelled jobs are terminalised with "
+        "mark_cancelled, never abandoned"
+    )
+
+
 def test_ops_guide_abandoned_definition_excludes_shutdown() -> None:
     text = _normalized(_DOCS / "guides" / "ops.md")
     assert "shutdown never produces it either" in text, (
