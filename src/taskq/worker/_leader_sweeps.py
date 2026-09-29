@@ -926,6 +926,21 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
     The drain is bounded well above any count TaskQ's own protocol can
     stack (one acquire per attempt); exhausting it is logged as an error,
     not trusted as released.
+
+    The zero-confirmation is what the terminal drain round is FOR, and it
+    has a visible cost an operator must be able to explain:
+    ``pg_advisory_unlock`` on a lock the session does not hold answers
+    False AND raises a server-side ``WARNING: you don't own a lock of type
+    ExclusiveLock`` — so every release whose drain reaches zero writes
+    that one line to the PostgreSQL server log (asyncpg drops the notice;
+    the server log is the surface it reaches). This is expected, once per
+    release, benign — the price of confirming zero instead of trusting a
+    pop — and there is no warning-free way to confirm zero (probing the
+    hold count through ``pg_locks`` fails on 64-bit advisory keys, whose
+    ``objid`` column cannot represent them; ``pg_try_advisory_lock`` as a
+    probe would itself re-acquire, reentrant). A steady pile of that exact
+    line from the sweep pools is this drain working, not a locking fault;
+    a DIFFERENT lock name or an unfamiliar key in the same warning is.
     """
     try:
         await conn.execute(_ADVISORY_UNLOCK_SQL, lock_name)
@@ -965,7 +980,10 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
             )
             return
         if released is False:
-            # The session holds nothing: the release is total.
+            # The session holds nothing: the release is total. The server
+            # raises its benign "you don't own a lock" WARNING for this
+            # exact round (see the docstring: the unavoidable cost of
+            # confirming zero).
             return
         log.info(
             "advisory-unlock-recovered",
