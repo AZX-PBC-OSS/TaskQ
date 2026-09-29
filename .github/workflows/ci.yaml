@@ -379,8 +379,14 @@ jobs:
     # is the same test set with the same gate (--cov-fail-under=90 is
     # untouched and the measured 95% has room); the price is wall time,
     # ~2x the -n 4 median (est. ~37min), priced into the timeout below.
+    # The cap needs headroom over the estimate, not parity with it: run
+    # 36600780724's coverage job saw the pytest step finish GREEN
+    # (12039 passed, gate 95.90%) in 44:44 and the 45-minute cap fire in
+    # the step's own teardown - a green leg killed by a cap that prices
+    # the median where the weather lands. 60 gives the measured 38-45
+    # band its headroom.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
       # own commits against the base (git log <base>..HEAD). A shallow PR
