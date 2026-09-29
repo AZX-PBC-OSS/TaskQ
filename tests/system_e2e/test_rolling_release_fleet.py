@@ -606,7 +606,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
         # The slots-surface twin is deliberately NOT pinned: its peak is
         # diagnostic only (the CapSampler docstring carries the doctrine
         # - a 100ms instantaneous max misses the slot turnover gaps
-        # under load and reded `1 >= 2` on a healthy fleet), and its
+        # under load and read `1 >= 2` on a healthy fleet), and its
         # intent - the cap was exercised, the never-exceed pin is not
         # vacuous - is subsumed by the durable jobs-surface pin above.
         for label, measured, bound in measurements:
