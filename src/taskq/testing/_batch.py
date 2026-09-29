@@ -141,6 +141,11 @@ def _reset_batch_failures(
         return 0
     if row.status != "active":
         return 0
+    # The PG statement's consecutive_failures <> 0 guard, mirrored: a
+    # zero counter has nothing to reset, so the write is skipped and the
+    # skipped shape (0) is returned, not the member count.
+    if row.consecutive_failures == 0:
+        return 0
 
     backend._batches[batch_id] = replace(row, consecutive_failures=0)
     return _count_batch_non_terminal(backend, batch_id)

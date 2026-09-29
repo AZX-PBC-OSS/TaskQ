@@ -104,6 +104,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import NamedTuple
 from uuid import UUID
 
@@ -162,6 +163,43 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # Schema identifier is interpolated at call time after validation against
 # _IDENT_RE.  Prepared-statement cache is not preserved across calls, but
 # sweep frequency is low (every 5 s on the leader).
+
+
+#: Render-validated-SQL cache.  The sweep statements are large constant
+#: templates whose only caller-supplied interpolation is the (validated)
+#: schema identifier, and several run on the leader's fixed cadences
+#: (``sweep_scheduled_to_pending`` every ``scheduled_wake`` tick, ~1 s,
+#: plus the sweep loop's ``sweep_interval`` cadence), so re-running
+#: ``str.format`` over a ~20 KB template per tick is per-tick allocation
+#: churn with a byte-identical result.  The render is memoised per
+#: (template, schema): the schema still passes ``_IDENT_RE`` validation
+#: before any interpolation (an invalid identifier raises here on EVERY
+#: call, the cache never masks it), and the returned string is
+#: byte-identical to ``template.format(schema=schema)`` - the
+#: byte-equality discipline the SQL constants are pinned to.
+@lru_cache(maxsize=64)
+def _render_sweep_sql(template: str, schema: str) -> str:
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    return template.format(schema=schema)
+
+
+@lru_cache(maxsize=64)
+def _render_event_ttl_base_sql(schema: str) -> str:
+    """The event-TTL statement's render, cached per schema: its second
+    interpolated value is the module constant
+    ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER``, so the (schema) key covers the
+    whole parameter space and the rendered text stays byte-identical to
+    ``_SWEEP_EVENT_TTL_SQL.format(schema=schema,
+    outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER)``. The schema
+    still passes ``_IDENT_RE`` validation before any interpolation, the
+    same ValueError per call as the direct render raised."""
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    return _SWEEP_EVENT_TTL_SQL.format(
+        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    )
+
 
 # Recovery sweep transitions: running->scheduled when retries remain;
 # running->crashed when exhausted.  The SQL serialises the read+write
@@ -1084,9 +1122,7 @@ def _render_event_ttl_sql(schema: str, floor: datetime | None) -> str:
     template that silently invalidates this composition fails here
     instead of mis-conjuncting the executed SQL.
     """
-    sql = _SWEEP_EVENT_TTL_SQL.format(
-        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
-    )
+    sql = _render_event_ttl_base_sql(schema)
     if floor is None:
         return sql
     outbox_anchor = _EVENT_TTL_OUTBOX_ARM_ANCHOR + str(RECLAIM_OUTBOX_RETENTION_MULTIPLIER)
@@ -1538,9 +1574,9 @@ async def sweep_expired_locks(
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
-    sql = _SWEEP_1_SQL.format(schema=schema)
-    attempt_sql = _SWEEP_1_ATTEMPTS_BATCH_SQL.format(schema=schema)
-    event_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
+    sql = _render_sweep_sql(_SWEEP_1_SQL, schema)
+    attempt_sql = _render_sweep_sql(_SWEEP_1_ATTEMPTS_BATCH_SQL, schema)
+    event_sql = _render_sweep_sql(INSERT_EVENTS_DETAIL_BATCH_SQL, schema)
 
     reclaimed: list[_ReclaimedRow] = []
     # (actor, disposition) -> rows this call reclaimed, for the
@@ -1708,9 +1744,9 @@ async def sweep_deadline_exceeded(
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
-    sql = _SWEEP_2_SQL.format(schema=schema)
-    attempt_sql = _SWEEP_2_ATTEMPTS_BATCH_SQL.format(schema=schema)
-    event_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
+    sql = _render_sweep_sql(_SWEEP_2_SQL, schema)
+    attempt_sql = _render_sweep_sql(_SWEEP_2_ATTEMPTS_BATCH_SQL, schema)
+    event_sql = _render_sweep_sql(INSERT_EVENTS_DETAIL_BATCH_SQL, schema)
 
     swept: list[_DeadlineRow] = []
     actor_counts: Counter[str] = Counter()
@@ -1832,7 +1868,7 @@ async def sweep_scheduled_to_pending(
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
-    sql = _SWEEP_3_SQL.format(schema=schema)
+    sql = _render_sweep_sql(_SWEEP_3_SQL, schema)
 
     promoted: list[_PromotedRow] = []
 
@@ -1904,7 +1940,7 @@ async def sweep_leaked_reservation_slots(
         raise ValueError(f"invalid schema identifier: {schema!r}")
     _validate_positive("batch_size", batch_size)
 
-    sql = _SWEEP_4_SQL.format(schema=schema)
+    sql = _render_sweep_sql(_SWEEP_4_SQL, schema)
     tag = await conn.execute(sql, batch_size)
     count = parse_rowcount(tag)
     if count > 0:
@@ -1956,7 +1992,7 @@ async def sweep_expired_results(
         raise ValueError(f"invalid schema identifier: {schema!r}")
     _validate_positive("batch_size", batch_size)
 
-    sql = _SWEEP_RESULT_TTL_SQL.format(schema=schema)
+    sql = _render_sweep_sql(_SWEEP_RESULT_TTL_SQL, schema)
     tag = await conn.execute(sql, batch_size)
     count = parse_rowcount(tag)
     if count > 0:
@@ -2369,10 +2405,10 @@ async def sweep_idle_keyed_rows(
         )
 
     buckets_tag = await conn.execute(
-        _SWEEP_IDLE_KEYED_BUCKETS_SQL.format(schema=schema), horizon, batch_size
+        _render_sweep_sql(_SWEEP_IDLE_KEYED_BUCKETS_SQL, schema), horizon, batch_size
     )
     slots_tag = await conn.execute(
-        _SWEEP_IDLE_KEYED_SLOTS_SQL.format(schema=schema), horizon, batch_size
+        _render_sweep_sql(_SWEEP_IDLE_KEYED_SLOTS_SQL, schema), horizon, batch_size
     )
     count = parse_rowcount(buckets_tag) + parse_rowcount(slots_tag)
     if count > 0:

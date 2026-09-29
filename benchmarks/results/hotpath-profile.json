@@ -1,0 +1,108 @@
+{
+  "what": "the worker's hot paths profiled under real load: a real worker_main process (8 actors, one queue, max_concurrency=8) draining continuously-enqueued non-batch jobs, sampled in-process (cProfile, tracemalloc) and from outside (py-spy, pg_stat_statements, pg_locks)",
+  "harness": "benchmarks/hotpath_load.py (roles: worker / client / orchestrate; --slot-pool for the transactional shape)",
+  "generated_at": "2026-09-28",
+  "workload": {
+    "jobs": 6000,
+    "actors": 8,
+    "max_concurrency": 8,
+    "queue": "hotpath",
+    "shape": "autonomous consume (no LOOP-connection registration), non-batch enqueue",
+    "sustained_throughput_jps": {"base_median": 298, "base_runs": [482, 298, 281], "note": "interleaved 3x3 vs the fixed tree; medians within run noise, see fixes[0].throughput_note"}
+  },
+  "py_spy_during_drain": {
+    "samples": 745,
+    "file": "benchmarks/results/hotpath-pyspy-base.json",
+    "top_inclusive": [
+      {"pct": 22.7, "frame": "structlog/stdlib.py:286 _proxy_to_logger (the logging path: log_state_change 19.7%, 2 state-change INFO lines/job + dispatch lines)"},
+      {"pct": 22.6, "frame": "worker/_bootstrap.py:2604 _guarded (the sibling-lifetime wrapper; inclusive = the loops' own time)"},
+      {"pct": 21.9, "frame": "structlog/stdlib.py:222 info"},
+      {"pct": 21.3, "frame": "backend/postgres.py:551 mark_succeeded"},
+      {"pct": 18.1, "frame": "worker/dispatch.py:437 dispatch_one_job"},
+      {"pct": 16.6, "frame": "backend/_terminal.py:461 _mark_succeeded"},
+      {"pct": 12.8, "frame": "worker/run.py:205 producer_loop"},
+      {"pct": 12.8, "frame": "backend/postgres.py:460 dispatch_batch"},
+      {"pct": 12.1, "frame": "backend/_terminal.py:425 _mark_succeeded_on_conn"},
+      {"pct": 7.9, "frame": "worker/_consumer.py:635 consume_one_job"}
+    ],
+    "top_exclusive": [
+      {"pct": 3.1, "frame": "asyncio/events.py:89 _run"},
+      {"pct": 3.1, "frame": "asyncio/selector_events.py:1025 _read_ready__data_received"},
+      {"pct": 2.7, "frame": "asyncio/selector_events.py:1073 write"},
+      {"pct": 1.9, "frame": "asyncio/base_events.py:476 create_task (the two loops' wait-racing task churn)"},
+      {"pct": 1.2, "frame": "asyncio/selector_events.py:1011 _read_ready__data_received"},
+      {"pct": 1.1, "frame": "asyncpg/connection.py:2033 _do_execute"},
+      {"pct": 1.1, "frame": "asyncio/base_events.py:857 _call_soon"},
+      {"pct": 0.9, "frame": "asyncpg/connection.py:481 _get_statement (statement-cache lookup)"}
+    ],
+    "verdict": "on-CPU under load is dominated by the logging pipeline (~23%, a byte-contract, not touched), the asyncio event loop, and asyncpg; taskq's own per-job code is thin (dispatch_one_job self ~84 us/job)"
+  },
+  "cprofile": {
+    "file": "benchmarks/results/hotpath-worker-base.pstats",
+    "note": "CPython 3.13's profiler double-counts coroutine ncalls (verified: exactly 1 dispatch_one_job per job by a runtime counter); relative self-times hold",
+    "top_taskq_self_per_job": {
+      "dispatch_one_job_us": 84.0,
+      "_job_row_from_record_us": 65.0,
+      "consume_one_job_us": 45.0
+    }
+  },
+  "statements_per_job": {
+    "source": "pg_stat_statements over the 6000-job drain",
+    "terminal_update": 1.0,
+    "terminal_update_ms_total": 2025.7,
+    "dispatch_cte_rounds": 0.259,
+    "dispatch_cte_ms_per_round": 0.53,
+    "pool_release_reset_rounds": 1.30,
+    "pool_release_reset_statements": "CLOSE ALL; pg_advisory_unlock_all(); UNLISTEN *; RESET ALL (one round trip, 4 statements counted)",
+    "amplification_statements_per_job": 6.5,
+    "round_trips_per_job": 3.3,
+    "verdict": "the single biggest statement family is asyncpg's pool-release reset (library behavior; removing it would drop the release-reset safety net - a behavior change, documented not fixed). taskq's own writes are 1.26 statements/job."
+  },
+  "slot_pool_shape": {
+    "transactions_per_job": 1.02,
+    "savepoint_release_per_job": 1.0,
+    "verdict": "the SAVEPOINT _tq_actor pair is the transactional path's deliberate per-job integrity machinery (a mid-body failure rolls to savepoint, the tx survives), not a redundancy"
+  },
+  "per_tick_allocations": {
+    "method": "tracemalloc snapshots 4000 jobs apart inside the real worker process",
+    "bytes_per_job": 52.7,
+    "objects_per_job": 0.9,
+    "file": "benchmarks/results/hotpath-tracemalloc.json",
+    "verdict": "the per-job path is allocation-neutral: no leak, the per-claim dicts are freed within the cycle"
+  },
+  "lock_contention": {
+    "method": "pg_locks (NOT granted) + pg_stat_activity wait_event sampling at 250 ms during the drain",
+    "ungranted_locks_max": 0,
+    "wait_events": "Client:ClientRead only",
+    "verdict": "no DB-side contention in the dispatch path at this scale"
+  },
+  "idle_polling": {
+    "idle_worker_statements_per_second": 18.27,
+    "top": [
+      "BEGIN/COMMIT 2.1/s", "set_config(statement_timeout) 2/s", "CLOSE ALL/UNLISTEN/RESET ALL/pg_advisory_unlock_all 1.5/s",
+      "cron schedule read 1/s", "scheduled_to_pending snap 1/s"
+    ],
+    "verdict": "an idle leader worker is NOT silent: the leader loops' 1 s cadences are settings-driven defaults (behavior), but the per-tick SQL re-render INSIDE them was code - fixed (see fixes[0])"
+  },
+  "insights_n_plus_1": {
+    "page_sequential_ms": 13.7,
+    "six_round_trips_ms": 0.6,
+    "round_trip_share_pct": 4.4,
+    "verdict": "NOT fixed: the six aggregates dominate the page cost; asyncpg cannot pipeline distinct parameterized statements on one connection (InterfaceError), and gathering across pool connections would break the route's one-checkout snapshot discipline. Pipelining would be a speculative optimization."
+  },
+  "fixes": [
+    {
+      "name": "the sweep statements' per-call SQL re-render",
+      "where": "src/taskq/backend/_sweeps.py (_render_sweep_sql + _render_event_ttl_base_sql, lru_cache 64), src/taskq/backend/postgres.py (heartbeat SQL rendered at backend init)",
+      "why": "sweep_scheduled_to_pending runs on the leader's ~1 s scheduled-wake tick and re-rendered a 19,793-char template (plus 2 more) per call, byte-identical every time",
+      "red_green": "benchmarks/ab_sweep_sql_render.py + benchmarks/results/hotpath-fix-sweep-render.json: direct render 1242 ns/call vs cached 70 ns/call (17.8x), byte-equality asserted per (template, schema), invalid-identifier ValueError unchanged per call",
+      "throughput_note": "the e2e drain is unchanged within run noise (base median 298 vs after 287 jps, interleaved 3x3) - expected: the fix removes the leader's per-tick render churn, not per-job work; the conservation pins (statement shape per job) are identical before/after"
+    }
+  ],
+  "gates": {
+    "pure_unit_tier": "pytest -m 'not integration': 8457 passed x3",
+    "touched_families": "sweeps + heartbeat + postgres backend + validation: 247 passed x3",
+    "ruff": "check + format --check clean (repo-wide)",
+    "pyright": "src/taskq + tests: 0 errors"
+  }
+}
