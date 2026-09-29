@@ -38,16 +38,19 @@ def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
         "refunded; the attempt started executing, so it is spent"
     )
     assert "never fabricates" in text and (
-        "The one abandon shutdown can write is an operator's own verdict landing" in text
+        "The one terminal write shutdown adds for a cancelled row is the operator's OWN verdict landing"
+        in text
     ), (
         "cancellation.md must teach the reconciled shutdown rule, not the old "
         "absolutes: shutdown never fabricates a verdict (an interruption with no "
         "operator cancel behind it is released back to the fleet, never written "
-        "cancelled or abandoned), and the ONE abandon it writes is an operator's "
-        "own verdict landing (a row already carrying an operator's cancel when the "
-        "process dies is handed to mark_abandoned at release time). A regression "
-        "that resurrects the absolute 'shutdown never writes abandoned' claims — "
-        "wrong: shutdown DOES land that abandon — or drops the reconciliation must red here"
+        "cancelled or abandoned), and the one terminal write it adds for a "
+        "cancelled row is the operator's OWN verdict (a row already carrying an "
+        "operator's cancel when the process dies is handed to mark_cancelled at "
+        "release time - the same fenced write the unwinding consumer races - so "
+        "the row reads cancelled, never abandoned). A regression that resurrects "
+        "the RELEASING mark_abandoned verdict (an operator's cancelled job could "
+        "show `abandoned`) or drops the reconciliation must red here"
     )
 
 

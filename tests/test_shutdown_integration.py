@@ -63,6 +63,12 @@ async def _mark_jobs_running(
     ``cancel_phase`` defaults to 1 (an operator cancel in flight, the shape
     the shutdown-cancel tests need); pass 0 for a row the production claim
     CTE leaves alone, where the drain's cancel fence must not refuse it.
+
+    The UPDATE also stamps the claimed shape the registered ctx carries
+    (``_fake_active_job``'s attempt=1 / claim_epoch=1, the comment there):
+    dispatch advances both at claim, so a running row's fence fields must
+    match its consumer's context for the worker+attempt-fenced terminal
+    writes (mark_cancelled, mark_interrupted) to land.
     """
     schema = deps.settings.schema_name
     async with deps.worker_pool.acquire() as conn:
@@ -72,7 +78,7 @@ async def _mark_jobs_running(
         )
         for jid in job_ids:
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = $3 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = $3, attempt = 1, claim_epoch = 1 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
                 worker_id,
                 jid,
                 cancel_phase,
@@ -678,13 +684,14 @@ async def test_ti6_cancel_poll_loop(
 async def test_tc1_forcing_recovery(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Chaos: job stuck in FORCING under an operator cancel is marked abandoned.
+    """Chaos: job stuck in FORCING under an operator cancel is terminalised
+    with the operator's own verdict.
 
     Register a job with NONE cancel_phase; simulate a stuck task
     by making the task.cancel() a no-op (the real path would be
     the consumer stub catching CancelledError). Oracle: FORCING
-    escalates; RELEASING marks abandoned (the operator ladder's
-    terminal); job not running.
+    escalates; RELEASING writes mark_cancelled (the operator's
+    own verdict, never an abandon); job not running.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -923,8 +930,9 @@ async def test_tc5_actor_swallows_cancelled_error(
     """Actor swallows CancelledError.
 
     Register a job; the orchestrator escalates through FORCING →
-    RELEASING. Oracle: job marked abandoned (operator ladder); shutdown
-    completes; the registered task is no longer in active_jobs.
+    RELEASING. Oracle: job terminalised with the operator's own verdict
+    (mark_cancelled at RELEASING); shutdown completes; the registered
+    task is no longer in active_jobs.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
