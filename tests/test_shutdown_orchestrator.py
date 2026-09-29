@@ -1125,6 +1125,79 @@ async def test_forcing_escalation_probe_stamps_and_warns_by_row_origin(
     )
 
 
+# ── DRAINING failure must not collapse the later phases ──────────
+
+
+async def test_draining_failure_does_not_skip_cancelling_forcing_releasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-transient DRAINING failure is contained; the phases still run.
+
+    ``drain_local_queue_to_pending`` contains the transient-PG shapes
+    itself (log + return 0), but a non-transient one - a data error, a
+    dropped table, the schema's own ``ValueError`` contract - escapes the
+    helper. Uncontained in the orchestrator, the exception collapses the
+    phase train: CANCELLING never stamps the in-flight jobs' cancel
+    origins, FORCING never delivers ``task.cancel()``, RELEASING never
+    releases - every job's recovery is thrown to the watchdog's
+    ``os._exit`` and the lease-expiry sweep, and the orchestrator's
+    exception sits unretrieved in ``orchestrator_holder`` until _main
+    joins it after the whole worker has exited. A drain failure is a
+    fleet-level backstop situation (the helper's own doctrine: "the
+    recovery sweep acts as the backstop rather than a deadlocked
+    shutdown"), not a reason to skip the cancels the in-flight jobs are
+    owed. The phase must be contained (loud, error-level) and the train
+    must continue: the cooperative stamp lands, the forced cancel is
+    delivered, the release write runs, and the orchestration exits 0.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    job = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
+    registry = FakeActiveJobRegistry([job])
+    settings = _worker_settings(cancellation_grace=0.1, cleanup_grace=0.1)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    async def _non_transient_drain_failure(d: WorkerDeps, w: UUID) -> int:
+        raise RuntimeError("schema dropped mid-drain")
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _non_transient_drain_failure)
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        result = await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    assert result == 0, "a contained drain failure must not fail the orchestration"
+    assert shut_event.is_set()
+    # The phases after DRAINING still ran: the cooperative cancel was
+    # stamped, the forced cancel delivered, and the release written.
+    assert job.ctx.cancel_event.is_set()
+    assert job.cancel_origin is CancelOrigin.SHUTDOWN
+    assert job.cancel_phase == CancelPhase.FORCED
+    backend.mark_interrupted.assert_awaited_once()
+    backend.mark_abandoned.assert_not_called()
+    # The failure is loud, once, distinct from the helper's transient WARN.
+    failures = [e for e in captured if e.get("event") == "drain-phase-failed"]
+    assert len(failures) == 1, f"expected one drain-phase-failed record, got {failures!r}"
+    assert "schema dropped mid-drain" in failures[0]["error"]
+
+
 # ── Empty active jobs ────────────────────────────────────────────
 
 
@@ -1960,10 +2033,11 @@ async def test_adversarial_actor_invariant(
     The invariant a deploy owes the fleet: whatever the actor did -
     unwound cooperatively, ignored the cancel, or swallowed it - the
     shutdown accounts for the row exactly once. Jobs still registered at
-    RELEASING are interrupted (released back to the fleet with the attempt
-    refunded); jobs that deregistered mid-flight are their consumers' own
-    outcomes. Nothing is abandoned: abandonment belongs to the operator
-    ladder, and no operator cancel is in flight anywhere here.
+    RELEASING are interrupted (released back to the fleet, the spent
+    attempt standing); jobs that deregistered mid-flight are their
+    consumers' own outcomes. Nothing is abandoned: abandonment belongs to
+    the operator ladder, and no operator cancel is in flight anywhere
+    here.
     """
     active_jobs: list[_ActiveJob] = []
     for job_id, _behaviour in setups:
