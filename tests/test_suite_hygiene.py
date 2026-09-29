@@ -101,6 +101,7 @@ from tests.conftest import (
     _fail_on_leaked_asyncio_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the autouse guard fixture under test; its raw async-gen function is driven manually below (a fixture cannot be re-entered through the real request).
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
+    _reset_warn_once_stamps_reset,  # pyright: ignore[reportPrivateUsage]  # Why: the warn-once stamp reset under test; see the pin below.
     pytest_runtest_call,  # pyright: ignore[reportPrivateUsage]  # Why: the call-end snapshot hook under test; driven manually below.
 )
 from tests.test_rt_lost_job_soak import (
@@ -789,6 +790,40 @@ def test_session_publishes_run_isolation_token(
 # task advances at every later test's await points). This pin holds the
 # guard's classification to its contract: leaks are NAMED (task name and
 # coroutine), completed tasks and inherited baselines are not leaks.
+
+
+def test_warn_once_stamp_reset_restores_the_global_stamps() -> None:
+    """The ``_reset_warn_once_stamps`` autouse fixture's reset must clear
+    every module's log-once stamps IN PLACE (importers may hold the dict
+    by value) and must be idempotent across calls.
+
+    The pollution class it closes: a test that drives a warned path
+    stamps the process-global dict; a later warning-existence pin in the
+    same worker finds its warning suppressed inside the 60s log window -
+    an order-dependent red under pytest-randomly. If a fourth module
+    grows a log-once stamp, add it to the fixture's reset and extend this
+    pin; a stamp the reset misses reopens the class.
+    """
+    import taskq.progress._publish as publish_mod
+    import taskq.worker._consumer as consumer_mod
+    import taskq.worker.dispatch as dispatch_mod
+
+    stamps = [
+        dispatch_mod._reporter_defect_warned,  # pyright: ignore[reportPrivateUsage]  # Why: the module-global stamp under test; private prefix scopes it to the worker module.
+        consumer_mod._dependency_failure_warned,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+        publish_mod._publish_failure_warned,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    ]
+    for stamp in stamps:
+        stamp["probe-kind"] = 123.0
+    _reset_warn_once_stamps_reset()
+    for stamp in stamps:
+        assert stamp.get("probe-kind") is None, (
+            "the warn-once stamp reset left a stale stamp behind - the "
+            "warning-existence pins are order-dependent again"
+        )
+    # In-place: the list above already holds the ORIGINAL dict objects
+    # (no rebinding happened), which is the contract the fixture's
+    # docstring promises value-importing callers.
 
 
 async def _hygiene_leak_probe_coro() -> None:

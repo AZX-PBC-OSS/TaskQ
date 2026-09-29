@@ -132,6 +132,7 @@ async def _applied_schema(pg_conn: asyncpg.Connection, settings: TaskQSettings) 
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
 
+@pytest.mark.integration
 class TestPublishedHistoryIsAccepted:
     """The behavioral contract: every published vintage upgrades cleanly,
     through the operator's surfaces."""
@@ -182,6 +183,7 @@ class TestPublishedHistoryIsAccepted:
         )
 
 
+@pytest.mark.integration
 class TestTheGuardKeepsItsTeeth:
     """Accepting published history must not mean accepting everything."""
 

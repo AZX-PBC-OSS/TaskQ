@@ -75,6 +75,7 @@ class TestShippedFilesAreImmutable:
         )
 
 
+@pytest.mark.integration
 class TestUpgradeFromTheProdLedger:
     """The prod repro, at its REAL shape: the released 01.00.05_01 rewrite
     AND the originals of the three restored files, in one ledger."""
@@ -142,6 +143,7 @@ class TestUpgradeFromTheProdLedger:
         assert indexdef is not None and "(locked_by_worker, id)" in indexdef
 
 
+@pytest.mark.integration
 class TestBatchesCheckConstraintsEnforce:
     """The released 01.00.05_01's CHECK constraints are live law."""
 

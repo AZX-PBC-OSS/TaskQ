@@ -201,6 +201,7 @@ class TestDiscoverHygiene:
             )
 
 
+@pytest.mark.integration
 class TestTheTeethEverywhere:
     """Accepting published history must not mean accepting everything: an
     unknown checksum refuses for EVERY migration key, and the CLI treats

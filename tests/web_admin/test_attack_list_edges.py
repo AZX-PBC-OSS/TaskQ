@@ -89,6 +89,7 @@ _JUNK: list[tuple[str, str]] = [
 ]
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("param,value", _JUNK)
 async def test_junk_jobs_list_params_are_never_a_500(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
@@ -109,6 +110,7 @@ async def test_junk_jobs_list_params_are_never_a_500(
     )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("param,value", _JUNK)
 async def test_junk_jobs_count_params_are_never_a_500(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
@@ -123,6 +125,7 @@ async def test_junk_jobs_count_params_are_never_a_500(
     assert response.status_code < 500, f"/jobs/count?{param}={value!r} -> {response.status_code}"
 
 
+@pytest.mark.integration
 async def test_out_of_range_int_cursor_returns_the_first_page(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
@@ -154,6 +157,7 @@ async def test_out_of_range_int_cursor_returns_the_first_page(
     )
 
 
+@pytest.mark.integration
 async def test_rows_vanishing_between_page_turns_do_not_500_or_replay_the_page(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:

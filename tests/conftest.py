@@ -342,6 +342,54 @@ def _reset_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportU
         _connected_lookup.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
 
 
+@pytest.fixture(autouse=True)
+def _reset_warn_once_stamps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Reset the log-once warning stamps around every test.
+
+    Three production modules gate a WARNING to at most once per 60s
+    window through process-global monotonic stamps:
+    ``worker/dispatch._reporter_defect_warned`` (the error-reporter-defect
+    warning), ``worker/_consumer._dependency_failure_warned`` (the
+    rate-limit-dependency-failure warning) and
+    ``progress/_publish._publish_failure_warned`` (the publish-failure
+    warning). A test that drives the warned path leaves a stamp; any
+    LATER test in the same xdist worker that drives the same warning
+    class within 60s of wall time and asserts on its emission (the
+    warning-existence pin in test_dispatch_error_reporter.py, the
+    publish-failure pins in test_progress_publish.py) finds it silently
+    suppressed - a failure that depends on which tests ran before it in
+    the same process, i.e. on pytest-randomly's shuffle. The
+    ``_publish_failure_warned`` half was cured file-locally
+    (monkeypatching a fresh dict per test); this fixture promotes the
+    reset to every test, the same promotion ``_reset_notify_module_globals``
+    made from five file-local copies.
+
+    Cleared IN PLACE, never rebound: the one file-local cure rebinds the
+    module attribute by monkeypatch, but importers that read the dict by
+    value (``from module import _x_warned``) would be left holding a
+    stale object - the same in-place discipline
+    ``_reset_notify_module_globals`` documents.
+    """
+    _reset_warn_once_stamps_reset()
+    try:
+        yield
+    finally:
+        _reset_warn_once_stamps_reset()
+
+
+def _reset_warn_once_stamps_reset() -> None:
+    """The reset body of :func:`_reset_warn_once_stamps`, module-level so
+    the suite-hygiene pin can exercise it directly (a fixture cannot be
+    re-entered through the real request)."""
+    import taskq.progress._publish as publish_mod
+    import taskq.worker._consumer as consumer_mod
+    import taskq.worker.dispatch as dispatch_mod
+
+    dispatch_mod._reporter_defect_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global log-once stamps with no other reset surface.
+    consumer_mod._dependency_failure_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    publish_mod._publish_failure_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+
 def _leaked_pending_task_report(
     before: set[asyncio.Task[object]], after: set[asyncio.Task[object]]
 ) -> str | None:
