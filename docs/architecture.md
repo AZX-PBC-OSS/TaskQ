@@ -433,7 +433,8 @@ extends the active filter without a second edit.
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, retries exhausted) |
-| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
+| running → cancelled | Shutdown RELEASING phase (operator cancel in flight: `mark_cancelled`, the operator's own verdict, the same fenced write the unwinding consumer races) |
+| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3: the holder-ignored expiry, and the unheld orphan class) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
 | running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase); the attempt is NOT refunded (it started executing), `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done; the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
@@ -930,7 +931,13 @@ After `cancellation_grace_period + cleanup_grace_period` elapses:
 
 `CancelController.run_post_tx()` runs after the heartbeat transaction commits:
 - Drains `_pending_abandons`.
-- Calls `mark_abandoned(job_id)` (gated on `cancel_phase = 2`).
+- Calls `mark_abandoned(job_id)` (gated on `cancel_phase = 2`) for the UNHELD
+  class, and for held entries while the worker runs normally - the
+  holder-ignored expiry.
+- While the shutdown orchestration is active, a HELD entry drains as the
+  operator's own verdict instead (`mark_cancelled`, the same fenced write
+  the unwinding consumer and the orchestrator's RELEASING phase race):
+  the row reads `cancelled` whichever writer commits, never `abandoned`.
 - Calls `active_jobs.deregister(job_id)`.
 
 ### Consumer skip guard
@@ -1277,7 +1284,7 @@ begins, so health endpoints and consumers can observe the current phase:
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
 | `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails; the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
-| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (the spent attempt stands, no refund; held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline; the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs still reach `abandoned` |
+| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (the spent attempt stands, no refund; held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline; the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs are terminalised with the operator's own verdict (`mark_cancelled`, forced - the same fenced write the unwinding consumer races), never `abandoned` |
 
 Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
 
