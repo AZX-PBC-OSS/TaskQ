@@ -329,6 +329,25 @@ async def _page_rows(
     return await conn.fetch(sql, *args)
 
 
+def _archive_prev_sql(schema: str, cursor: tuple[str, str] | None) -> tuple[str, list[Any]]:
+    """The archive tab's PREV-page statement, from the admin's own builders."""
+    terminal = sorted({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
+    where, params = _build_where(terminal, None, None, None, None, None, None, None)
+    return _build_paginated_sql(
+        schema,
+        "jobs_archive",
+        _ARCHIVE_COLS,
+        _SORTABLE_ARCHIVE,
+        where,
+        list(params),
+        cursor[0] if cursor else None,
+        cursor[1] if cursor else None,
+        "prev",
+        "finished_at",
+        "desc",
+    )
+
+
 async def test_archive_first_page_is_index_served(
     pg_dsn: str, scan_schema: str, archive_seeded: None
 ) -> None:
@@ -410,6 +429,86 @@ async def test_archive_cursor_page_seeks_not_filters(
         assert removed <= _PAGE_FILTER_BOUND, (
             f"the cursor page filtered {removed} rows at a {_ARCHIVE_ROWS:,}-row archive — "
             f"a filter scan, not a seek (bound {_PAGE_FILTER_BOUND})"
+        )
+    finally:
+        await conn.close()
+
+
+async def test_archive_prev_page_seeks_not_filters(
+    pg_dsn: str, scan_schema: str, archive_seeded: None
+) -> None:
+    """A deep PREV-page fetch (both cursor seams) seeks the page index too.
+
+    The backward fetch runs the ordering reversed (``finished_at ASC
+    NULLS FIRST, id ASC``) — exactly what a backward scan of
+    ``jobs_archive_page_idx`` yields — and the bounded outer Sort re-sorts
+    only the fetch's rows into forward display order. The regression this
+    pins: the backward predicate losing the index (a seq scan or a
+    filter-only walk of the archive's depth per prev page — the
+    pre-01.00.21_01 pathology in the other direction). Pinned from a
+    VALUE cursor deep in the walk and from a NULL-seam cursor (the
+    backward predicate's ``OR finished_at IS NOT NULL`` arm, whose filter
+    removals are bounded by the seed's NULL tail, not the archive's
+    depth).
+    """
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        null_count = int(
+            await conn.fetchval(
+                f'SELECT count(*) FROM "{scan_schema}".jobs_archive WHERE finished_at IS NULL'
+            )
+        )
+        assert null_count > 0, "seed lost its NULL tail"
+
+        def _prev_bound(nulls: int) -> int:
+            # The value-cursor prev filter removes nothing meaningful; the
+            # NULL-seam prev walks the index's NULL range past the cursor,
+            # bounded by the NULL population, plus the fetch's headroom.
+            return nulls + _PAGE_FILTER_BOUND
+
+        # A VALUE cursor ~half the archive deep.
+        first = await _page_rows(conn, scan_schema, None)
+        assert len(first) == _FETCH_SIZE
+        deep = first[len(first) // 2]
+        sql, args = _archive_prev_sql(
+            scan_schema, (deep["finished_at"].isoformat(), str(deep["id"]))
+        )
+        plan = await _explain(conn, sql, *args)
+        _assert_no_scan_on(plan, "jobs_archive")
+        removed = sum(int(n.get("Rows Removed by Filter", 0) or 0) for n in _walk(plan))
+        index_names = [
+            n.get("Index Name", "") for n in _walk(plan) if "Index" in n.get("Node Type", "")
+        ]
+        assert "jobs_archive_page_idx" in index_names, (
+            f"the archive tab's prev page does not run on jobs_archive_page_idx: {index_names}"
+        )
+        assert removed <= _PAGE_FILTER_BOUND, (
+            f"the prev page from a value cursor filtered {removed} rows at a "
+            f"{_ARCHIVE_ROWS:,}-row archive — a filter scan, not a seek "
+            f"(bound {_PAGE_FILTER_BOUND})"
+        )
+
+        # A NULL-seam cursor (inside the archive's NULL tail).
+        first_null = await conn.fetchrow(
+            f'SELECT id FROM "{scan_schema}".jobs_archive WHERE finished_at IS NULL '
+            "ORDER BY finished_at DESC NULLS LAST, id DESC OFFSET 10 LIMIT 1"
+        )
+        assert first_null is not None
+        sql, args = _archive_prev_sql(scan_schema, ("", str(first_null["id"])))
+        plan = await _explain(conn, sql, *args)
+        _assert_no_scan_on(plan, "jobs_archive")
+        removed = sum(int(n.get("Rows Removed by Filter", 0) or 0) for n in _walk(plan))
+        index_names = [
+            n.get("Index Name", "") for n in _walk(plan) if "Index" in n.get("Node Type", "")
+        ]
+        assert "jobs_archive_page_idx" in index_names, (
+            f"the prev page from a NULL-seam cursor does not run on "
+            f"jobs_archive_page_idx: {index_names}"
+        )
+        assert removed <= _prev_bound(null_count), (
+            f"the prev page from a NULL-seam cursor filtered {removed} rows at a "
+            f"{_ARCHIVE_ROWS:,}-row archive with a {null_count}-row NULL tail — "
+            f"a depth-proportional filter scan (bound {_prev_bound(null_count)})"
         )
     finally:
         await conn.close()
