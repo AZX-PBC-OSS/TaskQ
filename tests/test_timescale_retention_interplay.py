@@ -1546,13 +1546,9 @@ async def test_paused_policy_job_owns_nothing_and_both_sweeps_run_full_range(
     deleted = await sweep_expired_events(
         ts_conn, schema=ts_schema, retention=_TEST_EVENT_RETENTION, batch_size=100
     )
-    assert deleted == 1, (
-        "the paused policy must not strand the aged event row either: full-range"
-    )
+    assert deleted == 1, "the paused policy must not strand the aged event row either: full-range"
 
-    archive_ids = {
-        r["id"] for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")
-    }
+    archive_ids = {r["id"] for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")}
     event_ids = {
         int(r["id"]) for r in await ts_conn.fetch(f"SELECT id FROM {ts_schema}.job_events")
     }

@@ -266,9 +266,10 @@ async def call_partner_api(payload: Payload) -> Result: ...
 ```
 
 **Precedence: the hook is not always consulted.** `non_retryable_exceptions` and TaskQ's
-internal `PayloadValidationError` handling are checked *before* the hook and always win: if
-either matches, the job fails immediately and `retry_classifier` is never called for that
-exception.
+built-in unconditional-failure classes — `PayloadValidationError`, a pydantic
+`ValidationError` from payload decoding, `ResultTooLarge`, and `UnencodableValue` — are
+checked *before* the hook and always win: if any matches, the job fails immediately and
+`retry_classifier` is never called for that exception.
 
 !!! note "A broken hook can never crash the retry pipeline"
     If `retry_classifier` itself raises, the exception is caught and logged at `WARNING` by

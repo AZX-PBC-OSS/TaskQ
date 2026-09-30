@@ -22,6 +22,7 @@ through the guard's own internals.
 """
 
 import hashlib
+import inspect
 import os
 import subprocess
 from importlib import resources
@@ -237,3 +238,22 @@ class TestTheGuardKeepsItsTeeth:
         )
         with pytest.raises(migrate_mod.ChecksumDriftError):
             await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+
+def test_the_historical_file_not_found_error_is_dead() -> None:
+    """The docstring promise above, pinned: an earlier shape of this
+    mechanism raised FileNotFoundError (for a missing variant directory or
+    file); the shipped shape degrades a missing variant dir to "no
+    variants" and fails closed at the drift COMPARISON instead, never as
+    an OSError. No function of the migration runner may raise
+    FileNotFoundError as its own failure mode, and a stem with no variant
+    directory answers empty."""
+    members = [getattr(migrate_mod, name) for name in dir(migrate_mod)]
+    assert not any(
+        inspect.isfunction(fn)
+        and getattr(fn, "__module__", None) == migrate_mod.__name__
+        and "FileNotFoundError" in inspect.getsource(fn)
+        for fn in members
+    ), "a migration-runner function still raises FileNotFoundError as its failure mode"
+    # The degrade path itself: no variant directory, empty answer, no raise.
+    assert migrate_mod._variant_templates("01.00.00_01_pre_initial.sql") == []  # pyright: ignore[reportPrivateUsage]  # Why: the death pin exercises the private lookup directly.

@@ -10,6 +10,21 @@ Forward-only by design. The runner:
 
 There is no ``down`` operation. To revert, restore from a database backup.
 
+Published variants
+------------------
+
+An applied migration's ledger checksum must match the bundled file or the
+runner refuses (checksum drift, fail-closed). The one exception: a file
+whose bytes were amended after first shipping may exist in more than one
+*published* version, and databases that applied the earlier bytes keep
+that checksum forever. The ``_variants/`` directory inside
+:mod:`taskq.migrations` carries the published history (one file per
+vintage, named for the commit that published it); the drift check accepts
+a ledger checksum matching the current file OR any bundled variant, each
+rendered with the checking database's own schema. A checksum nothing
+bundled produced is still drift. Variants are code: reviewed, bundled,
+versioned — adding one is a PR, never a runtime knob.
+
 Non-transactional migrations
 ----------------------------
 
@@ -53,6 +68,7 @@ use, so pre-upgrade ledgers need no dedicated migration.
 import asyncio
 import contextlib
 import hashlib
+import math
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -275,6 +291,34 @@ class ChecksumDriftError(RuntimeError):
         )
 
 
+def _validate_timeout_bound(value: float, name: str) -> None:
+    """The checks every timeout bound must survive before it becomes a
+    ``lock_timeout`` value.
+
+    Three refusals, each for the same reason the bounds exist: a bound the
+    caller asked for that silently does the OPPOSITE.
+
+    * Non-finite values (``nan``, ``inf``): ``nan`` fails every ``> 0``
+      gate downstream and would silently set NO bound at all (an unbounded
+      wait, the exact inversion the sub-millisecond rule refuses), and an
+      infinity dies later as ``OverflowError`` from ``int(inf * 1000)``
+      mid-run, after earlier migrations of the same run already applied.
+    * Negatives: meaningless as a wait bound.
+    * Sub-millisecond positives: ``lock_timeout`` is an integer number of
+      milliseconds, so a bound below one millisecond truncates to ``0``,
+      which Postgres reads as "wait indefinitely" -- the opposite of the
+      bound the caller asked for, silently.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number of seconds, got {value}")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+    if 0 < value < 0.001:
+        raise ValueError(
+            f"{name} must be 0 (wait indefinitely) or at least one millisecond, got {value}s"
+        )
+
+
 @contextlib.asynccontextmanager
 async def _lock_bounded_transaction(
     conn: asyncpg.Connection, ddl_lock_timeout: float
@@ -284,11 +328,13 @@ async def _lock_bounded_transaction(
     ``SET LOCAL`` scopes the bound to this transaction, so the session's
     own ``lock_timeout`` (reset to unlimited by
     :func:`migration_advisory_lock` for the no-transaction files) is
-    untouched; ``0`` sets no bound and waits indefinitely.
+    untouched. ``0`` is stated explicitly (``SET LOCAL lock_timeout = 0``):
+    skipping the SET would let a session-level ``lock_timeout`` (a role
+    default, a DSN options clause) bound the wait after all, silently
+    inverting 0's documented "wait indefinitely".
     """
     async with conn.transaction():
-        if ddl_lock_timeout > 0:
-            await conn.execute(f"SET LOCAL lock_timeout = {int(ddl_lock_timeout * 1000)}")
+        await conn.execute(f"SET LOCAL lock_timeout = {int(ddl_lock_timeout * 1000)}")
         yield
 
 
@@ -804,7 +850,10 @@ async def apply_pending(
         transaction, so it never outlives the migration, and never applied
         to ``-- taskq:no-transaction`` files, whose ``CONCURRENTLY`` waits
         are heavyweight-lock waits by design. A wait that outlives it
-        raises :class:`MigrationLockTimeoutError`; ``0`` waits indefinitely.
+        raises :class:`MigrationLockTimeoutError`; ``0`` waits indefinitely
+        (stated explicitly, so a session-level ``lock_timeout`` default
+        cannot bound the wait either); negative, non-finite, and
+        sub-millisecond values are refused with ``ValueError``.
     :param allow_checksum_drift: proceed past :class:`ChecksumDriftError`
         when an APPLIED migration's ledger checksum differs from the
         bundled file. The drift is still logged as a warning. NOT-YET-
@@ -818,16 +867,7 @@ async def apply_pending(
         the files means the schema's provenance is unverified, and further
         migrations must not build on it.
     """
-    if ddl_lock_timeout < 0:
-        raise ValueError(f"ddl_lock_timeout must be >= 0, got {ddl_lock_timeout}")
-    if 0 < ddl_lock_timeout < 0.001:
-        # A wait below one millisecond truncates to lock_timeout = 0, which
-        # Postgres reads as "wait indefinitely": the opposite of the bound
-        # the caller asked for, silently. Refuse it instead.
-        raise ValueError(
-            f"ddl_lock_timeout must be 0 (wait indefinitely) or at least one "
-            f"millisecond, got {ddl_lock_timeout}s"
-        )
+    _validate_timeout_bound(ddl_lock_timeout, "ddl_lock_timeout")
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
 
@@ -1312,7 +1352,10 @@ async def migration_advisory_lock(
     ``SET LOCAL`` (see :func:`apply_pending`'s ``ddl_lock_timeout``). Neither
     bound can interrupt a statement that already holds its lock, a long
     index build is governed by ``statement_timeout``, widened below. ``0``
-    waits indefinitely, the pre-existing behaviour. If the reset fails (a
+    waits indefinitely (stated explicitly, so a session-level
+    ``lock_timeout`` default cannot bound the acquire either); negative,
+    non-finite, and sub-millisecond values are refused with ``ValueError``,
+    the same rule ``ddl_lock_timeout`` follows. If the reset fails (a
     wedged caller-owned connection), the failure is logged as a warning
     naming the connection and the lock flow proceeds, that connection keeps
     the wait bound as its session-wide ``lock_timeout`` until it is closed.
@@ -1337,9 +1380,17 @@ async def migration_advisory_lock(
     container platform kills the process.
     """
     lock_name = migration_lock_name(schema)
+    _validate_timeout_bound(lock_timeout, "lock_timeout")
     if lock_timeout > 0:
         # Milliseconds; applies to the advisory-lock acquire below.
         await conn.execute(f"SET lock_timeout = {int(lock_timeout * 1000)}")
+    else:
+        # 0 promises an indefinite wait; a session whose role default, DSN
+        # options clause or server_settings bounds lock_timeout would bound
+        # the acquire after all unless the unlimited value is stated
+        # explicitly. The bounded path's reset below leaves the session at
+        # 0 too, so both paths end with the same session state.
+        await conn.execute("SET lock_timeout = 0")
     try:
         await conn.execute(_MIGRATION_LOCK_SQL, lock_name)
     except asyncpg.LockNotAvailableError as exc:

@@ -30,6 +30,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, CancelPhase, EnqueueArgs, JobId, parse_cancel_phase
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._jobs import JobsClient
+from taskq.context import CancelOrigin
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import JobsApp
@@ -687,11 +688,15 @@ async def test_tc1_forcing_recovery(
     """Chaos: job stuck in FORCING under an operator cancel is terminalised
     with the operator's own verdict.
 
-    Register a job with NONE cancel_phase; simulate a stuck task
-    by making the task.cancel() a no-op (the real path would be
-    the consumer stub catching CancelledError). Oracle: FORCING
-    escalates; RELEASING writes mark_cancelled (the operator's
-    own verdict, never an abandon); job not running.
+    Register a job with an operator cancel in flight (the row at
+    cancel_phase = 1, the poll-unobserved shape the FORCING probe
+    exists for); simulate a stuck task by making the task.cancel() a
+    no-op (the real path would be the consumer stub catching
+    CancelledError). Oracle: FORCING escalates the row to phase 2 and
+    re-stamps the entry OPERATOR; RELEASING writes mark_cancelled (the
+    operator's own verdict, #596's contract - NEVER an abandon, which is
+    the pre-fix verdict this assertion refuses to tolerate); job not
+    running.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -729,7 +734,115 @@ async def test_tc1_forcing_recovery(
     row = await backend.get(JobId(jid))
     assert row is not None
     assert row.status != "running", f"job {jid} is still running after forced shutdown"
-    assert row.status in {"cancelled", "abandoned"}
+    assert row.status == "cancelled", (
+        f"an operator-cancelled row must terminalise with the operator's "
+        f"own verdict, got {row.status!r} - 'abandoned' here is the "
+        f"competing-verdict race #596 fixed"
+    )
+
+
+async def test_noop_release_writes_the_operators_verdict_on_a_real_row(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The RELEASING noop fence routes to mark_cancelled on REAL PG (#596).
+
+    The unit suite pins the noop arm with backend mocks; this pins the
+    row-side half end-to-end: an operator cancel lands on the row AFTER
+    the FORCING probe's snapshot (the poll had not seen it), so
+    ``mark_interrupted``'s ``cancel_phase = 0`` fence declines the release
+    (noop) and the noop arm must fire the operator's OWN verdict through
+    the real fenced write. On real PG the race must dissolve: the row
+    reads ``cancelled`` - never released back to the fleet (resurrecting
+    the execution the operator killed) and never ``abandoned`` (the
+    pre-#596 competing verdict).
+
+    The cancel's arrival is simulated deterministically in the probe's
+    wake: a shim around ``write_cancel_escalation`` lets the real probe
+    miss (the row is still at cancel_phase = 0) and stamps the operator's
+    cancel request immediately after, exactly the between-phases window
+    the fence arbitrates.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    jid = new_uuid()
+    _active = _fake_active_job(job_id=jid)
+    # The CANCELLING stamp must not overwrite this: the entry already
+    # carries the shutdown origin and the phase's stamping loop only
+    # fills NONE, so the orchestration preserves it.
+    _active.cancel_origin = CancelOrigin.SHUTDOWN
+
+    await deps.active_jobs.register(_active.job_id, _active.task, _active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
+    await backend.enqueue(
+        EnqueueArgs(
+            id=JobId(jid),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_immediate(),
+        )
+    )
+
+    shutdown_worker_id = new_uuid()
+    # cancel_phase=0: the row carries no cancel when the orchestration
+    # starts - the operator's request lands between the phases.
+    await _mark_jobs_running(deps, [jid], shutdown_worker_id, cancel_phase=0)
+
+    real_escalation = backend.write_cancel_escalation
+
+    async def _cancel_lands_after_the_probe(job_id: JobId, worker_id: UUID, phase: int) -> bool:
+        landed = await real_escalation(job_id, worker_id, phase)
+        if not landed:
+            # The probe missed (the row was still clean): NOW the
+            # operator's cancel request lands on the row, the window
+            # between FORCING's snapshot and RELEASING's release.
+            conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
+            try:
+                await conn.execute(
+                    f'UPDATE "{schema}".jobs SET cancel_phase = 1, '  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                    "cancel_requested_at = clock_timestamp() "
+                    "WHERE id = $1 AND status = 'running'",
+                    job_id,
+                )
+            finally:
+                await conn.close()
+        return landed
+
+    backend.write_cancel_escalation = _cancel_lands_after_the_probe  # type: ignore[method-assign] # Why: the real PostgresBackend method is replaced by the test's probe shim for this one orchestration.
+
+    shutdown_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            shutdown_worker_id,
+            shutdown_event,
+            None,
+            backend=backend,
+        )
+
+    row = await backend.get(JobId(jid))
+    assert row is not None
+    assert row.status == "cancelled", (
+        f"the noop fence must route to the operator's own verdict, got "
+        f"{row.status!r} - 'pending' would resurrect the execution the "
+        f"operator killed, 'abandoned' is the competing verdict #596 fixed"
+    )
+    # The RELEASING summary reports the row where the audit reconciles:
+    # the fence declined (noop) and the operator verdict tallied.
+    summaries = [
+        e
+        for e in captured
+        if e.get("event") == "shutdown-phase" and e.get("phase") == "RELEASING" and "cancelled" in e
+    ]
+    assert len(summaries) == 1
+    assert summaries[0]["noop"] == 1
+    assert summaries[0]["cancelled"] == 1
+    assert summaries[0]["released"] == 0
 
 
 async def test_tc2_pg_unavailable_drain(

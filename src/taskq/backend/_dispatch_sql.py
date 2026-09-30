@@ -971,10 +971,7 @@ eligible_candidates AS (
       PARTITION BY l.actor
       ORDER BY __ELIGIBLE_CANDIDATES_ORDER_BY__
     ) AS actor_rank,
-    r.in_flight,
-    CASE WHEN ac.max_concurrent IS NOT NULL
-         AND r.in_flight >= ac.max_concurrent
-         THEN FALSE ELSE TRUE END AS boolean_gate
+    r.in_flight
   FROM claimed l
   -- Same correlated pkey LATERAL as capped_ranked: one probe per
   -- claimed row (at most limit_n + the capped window), never a hash
@@ -1004,8 +1001,7 @@ eligible_candidates AS (
   -- doctrine the ac probe above relies on: without it a projection-only
   -- lateral can be flattened into the outer query, and the gated count
   -- would then be re-evaluated at every reference site (the in_flight
-  -- column, the boolean_gate, and the WHERE) instead of once per
-  -- claimed row.
+  -- column and the WHERE) instead of once per claimed row.
   CROSS JOIN LATERAL (
     SELECT CASE WHEN ac.max_concurrent IS NULL THEN 0
                 ELSE COALESCE((SELECT crc.in_flight FROM capped_running crc
