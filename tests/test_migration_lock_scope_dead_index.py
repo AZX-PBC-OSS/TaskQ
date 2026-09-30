@@ -624,8 +624,24 @@ async def test_round_robin_lateral_probe_rides_the_unrouted_index(
     pg_dsn: str, mixed_population_schema: str
 ) -> None:
     """Same oracle for the round-robin candidates lateral (rr_keys
-    literalized to the one seeded cohort): the probe must ride
-    jobs_unrouted_round_robin_probe_idx and visit zero re-pended rows."""
+    literalized to the one seeded cohort): the probe must ride an
+    UNROUTED marker-partial index and visit zero re-pended rows.
+
+    Which of the two unrouted marker indexes carries the probe is the
+    planner's estimate comparison, not a contract: the cohort-equality
+    qual (``COALESCE(fairness_key, '__null__') = <key>``) is an Index
+    Cond on jobs_unrouted_round_robin_probe_idx and a post-scan Filter on
+    jobs_unrouted_actor_dispatch_idx, and migration 01.00.22_01's
+    expression statistics - the fixture's ANALYZE populates them with a
+    single all-NULL cohort, honestly pricing the equality at selectivity
+    1.0 - legitimately re-price that comparison at this population. What
+    is a contract is the PARTIAL-index predicate: either marker index
+    contains unrouted rows only, so the probe visits zero re-pended rows
+    (asserted below via the Rows-Removed oracle). The deep regime's
+    bounded-walk contract is pinned separately by
+    tests/test_dispatch_backlog_depth_bound.py, whose re-pended pins red
+    without the statistics object - the mutation proof that the depth
+    contract and this toy-scale index choice are different claims."""
     conn = await asyncpg.connect(pg_dsn)
     try:
         plan = await _explain_analyze(
@@ -637,9 +653,10 @@ async def test_round_robin_lateral_probe_rides_the_unrouted_index(
             timedelta(seconds=30),
             2,
         )
-        assert "jobs_unrouted_round_robin_probe_idx" in plan, (
-            f"the round-robin probe must ride the marker-partial index:\n{plan}"
-        )
+        assert (
+            "jobs_unrouted_round_robin_probe_idx" in plan
+            or "jobs_unrouted_actor_dispatch_idx" in plan
+        ), f"the round-robin probe must ride an unrouted marker-partial index:\n{plan}"
         assert "Rows Removed by Filter" not in plan, (
             "the probe walked rows it cannot admit: the NOT assignment_routed "
             "conjunct must be the index predicate, not a post-scan Filter:\n"
