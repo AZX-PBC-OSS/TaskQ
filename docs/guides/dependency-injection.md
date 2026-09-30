@@ -47,7 +47,7 @@ Create a `ProviderRegistry`, register your providers, then pass it to the
 worker. The worker validates it internally as part of its bootstrap sequence
 (see below).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.di import ProviderRegistry, Scope
 
 registry = ProviderRegistry()
@@ -90,7 +90,7 @@ auto-registers `WorkerSettings` and `Clock` at `Scope.PROCESS` and the
 
 ### `register_value`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 registry.register_value(T, Scope.PROCESS, instance)
 ```
 
@@ -99,7 +99,7 @@ read-only shared state, or any value that does not require cleanup.
 
 ### `register_factory`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 registry.register_factory(T, Scope.LOOP, factory)
 ```
 
@@ -128,7 +128,7 @@ no cleanup requirements.
 
 ### `register_class`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 registry.register_class(MyService, Scope.LOOP)
 ```
 
@@ -142,7 +142,7 @@ automatically. Priority order:
 | 3 | `SyncCloseable` | has `close` | `obj.close()` (wrapped in thread) |
 | 4 | `Plain` | none of the above | no teardown |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Shape 1: AsyncContextManager
 class RedisClient:
     async def __aenter__(self) -> "RedisClient":
@@ -178,7 +178,7 @@ first.
 Actors declare DI dependencies as keyword-only parameters. The worker resolves them from a
 `ProviderRegistry` at dispatch time.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from typing import Annotated
 from taskq import actor
 from taskq.context import JobContext
