@@ -1665,7 +1665,8 @@ class MaintenanceLeader:
                     # which the transient-PG branch below already handles.
                     async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
                         # No `now` argument, the sweep's server-side
-                        # predicate (scheduled_at <= clock_timestamp()) is
+                        # predicate (scheduled_at <= statement_timestamp(),
+                        # the STABLE bound the partial index serves) is
                         # the single arbiter.
                         rows = await self._backend.scheduled_to_pending()
                         if rows > 0:
