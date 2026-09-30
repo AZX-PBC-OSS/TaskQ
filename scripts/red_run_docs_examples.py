@@ -83,7 +83,31 @@ def main() -> None:
     results = [run_one(e) for e in examples]
     passed = sum(1 for r in results if r["outcome"] == "pass")
     print(f"pass {passed}/{len(examples)}", flush=True)
+    _drop_schemas([schema_name(e.example_id) for e in examples])
     Path(sys.argv[1]).write_text(json.dumps(results, indent=1), encoding="utf-8")
+
+
+def _drop_schemas(schemas: list[str]) -> None:
+    """Drop every schema the red pass may have created.
+
+    Without this, each red run leaves one migrated schema per passing example
+    in the target database forever (found in the wild: a
+    ``docs_jobs_clients_*`` schema with 18 tables survived on the shared
+    ``taskq`` database after the original red run).
+    """
+    import asyncio
+
+    import asyncpg
+
+    async def _go() -> None:
+        conn = await asyncpg.connect(PG_DSN)
+        try:
+            for schema in schemas:
+                await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await conn.close()
+
+    asyncio.run(_go())
 
 
 if __name__ == "__main__":
