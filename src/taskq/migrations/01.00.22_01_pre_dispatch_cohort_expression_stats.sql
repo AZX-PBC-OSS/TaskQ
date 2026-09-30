@@ -1,0 +1,96 @@
+-- Expression statistics for the dispatch claim's cohort-key expression.
+-- Forward-only; there is no down migration. To revert, drop the statistics
+-- object by hand:
+--
+--   DROP STATISTICS "{schema}".jobs_dispatch_cohort_stats;
+--
+-- ── Why this statistics object exists ─────────────────────────────────
+-- The dispatch claim's candidates laterals probe their per-cohort
+-- populations with an ORDER BY + LIMIT walk over the dispatch partial
+-- indexes (backend/_dispatch_sql.py: the strict-FIFO lateral rides
+-- jobs_unrouted_actor_dispatch_idx, the round-robin and re-pended
+-- laterals ride jobs_unrouted_round_robin_probe_idx /
+-- jobs_assignment_routed_probe_idx). Both re-pended arms and the
+-- round-robin label-routed arm constrain their probe with the cohort
+-- equality `COALESCE(fairness_key, '__null__') = <key>` — the VERBATIM
+-- expression of the index's second key column, so the qual is an Index
+-- Cond and the probe is an index-ordered walk that stops at its LIMIT.
+--
+-- Whether the walk stays a walk is the planner's per-path cost
+-- comparison, and the comparison runs on estimates: the ordered walk is
+-- priced at the probe window (limit_n * oversample heap fetches), while
+-- the bitmap+sort alternative is priced at the probe's index RANGE — a
+-- range whose row estimate is dominated by the selectivity of the
+-- COALESCE expression. A bare column has column statistics; an
+-- expression has NONE until a statistics object names it, and the
+-- planner then prices the expression equality at the default eqsel
+-- (0.005). On a deep re-pended backlog that under-prices the bitmap by
+-- three orders of magnitude, and the bounded walk loses to a plan that
+-- visits the whole cohort range:
+--
+--   Bitmap Heap Scan on jobs: est=49 cost=222 act=17,820 loops=5
+--     Filter=(schedule_to_close IS NULL OR schedule_to_close > now())
+--     Bitmap Index Scan: est=51 cost=27 act=18,764 loops=5
+--       IndexCond=(actor = tk.actor AND COALESCE(fairness_key, '__null__') = tk.fkey
+--                  AND scheduled_at <= statement_timestamp())
+--
+-- measured on PostgreSQL 18.6 (EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON))
+-- against a 94,010-row pending, assignment-routed, NULL-fairness-key
+-- backlog across 5 actors (the deep-backlog audit corpus): the claim
+-- round visited 18,764 index entries + 28,114 heap blocks per probe
+-- (94k row visits, 28k blocks, 57-75 ms) to claim 50 jobs — the
+-- planner believed the range held 51 rows because
+-- sel(COALESCE(...)) collapsed to the 0.005 default, while the honest
+-- walk's estimate (~100 fetches) priced 20x higher. With the expression
+-- statistics collected, the same corpus plans the SAME statement as the
+-- bounded ordered walk: 3.8-4.6 ms per round, index entries visited at
+-- the window bound, buffers at the row count. The estimate is the
+-- defect: the flip is only reachable where the range estimate is
+-- garbage-small, and statistics make it honest.
+--
+-- The same arithmetic protects the many-cohort regime: with per-cohort
+-- MCV/ndistinct statistics the bitmap alternative is priced at the
+-- cohort's REAL range and wins only where the range is genuinely small
+-- (where its full-range visit is bounded anyway), so the depth contract
+-- holds at shallow and deep backlog alike.
+--
+-- ── Why statistics, not a template restructure ───────────────────────
+-- The probe's plan choice is an estimate comparison no SQL shape can
+-- arbitrate from the template alone. Shapes evaluated against the audit
+-- corpus, all preserving the selection semantics exactly:
+--
+-- * rewriting the window qual as
+--   `COALESCE(schedule_to_close, 'infinity') > statement_timestamp()`
+--   (one qual, no OR) — the ordered estimate is unchanged; the flip
+--   persists;
+-- * splitting the probe into per-arm subqueries — the cohort equality
+--   is the index's own key expression; removing it from the Index Cond
+--   degrades every probe to an actor-wide range walk;
+-- * a two-step shape (index-only id walk, then pkey fetches for the
+--   payload columns) — the pkey probes price at 100 x rpc and lose to
+--   the same garbage-small bitmap estimate;
+-- * unfolding the scan LIMIT (subquery bound) — re-opens the
+--   depth-proportional estimate cascade the shipped folded bound exists
+--   to close (docs/design/sql-hotpath-followups.md §1, the JIT oracle).
+--
+-- The ordered walk's estimate (~window fetches) and the bitmap's
+-- estimate (range x selectivity) can only meet honestly when the
+-- expression's selectivity is measured. This file is that measurement.
+--
+-- ── Why the ANALYZE runs in this migration ────────────────────────────
+-- A statistics object is inert until collected: without a populated
+-- entry the planner keeps the default eqsel and the flip persists until
+-- autovacuum's next ANALYZE happens to run. The migration therefore
+-- collects it. ANALYZE takes ShareUpdateExclusiveLock on jobs (blocks
+-- other maintenance, never reads or writes), is sampling-bounded (~300
+-- x statistics target rows, not table-size-linear), and its lock
+-- acquisition is bounded by the runner's ddl_lock_timeout like every
+-- other statement in the file. On a busy table autovacuum may already
+-- hold the lock: the migration fails cleanly and re-runs, the same
+-- doctrine as every sibling file's lock caveat.
+
+CREATE STATISTICS IF NOT EXISTS "{schema}".jobs_dispatch_cohort_stats
+    ON (COALESCE(fairness_key, '__null__'))
+    FROM "{schema}".jobs;
+
+ANALYZE "{schema}".jobs;
