@@ -386,6 +386,12 @@ jobs:
     # the median where the weather lands. 60 gives the measured 38-45
     # band its headroom.
     runs-on: ubuntu-latest
+    # 60, not 45: the cap priced "~37min" median, but the #606 head's green
+    # run was killed at 45m04s - the suite itself had already PASSED
+    # (12036 passed, 95.87% >= 90%) four seconds earlier, and the job's
+    # CANCELLED verdict was pure wall-clock, not a test failure. The head
+    # room a lane needs is measured from its worst observed run plus the
+    # report steps, not its median.
     timeout-minutes: 60
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
@@ -560,6 +566,11 @@ jobs:
           listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
           echo "$listing" | grep -q "taskq/py.typed"
           echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep -q "taskq/migrations/_variants/"
+          # ^ migrate.py's checksum-drift check reads the published variant
+          # history from the installed package (importlib.resources); a wheel
+          # without it silently narrows every accepted-checksum set to the
+          # current file only.
           echo "$listing" | grep -q "taskq/web/templates/"
 
       - name: Test installation from wheel

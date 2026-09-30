@@ -1837,7 +1837,8 @@ async def sweep_scheduled_to_pending(
     """Sweep 3: promote due scheduled jobs, one bounded batch per call.
 
     One call transitions at most ``batch_size`` rows with
-    ``status='scheduled'`` and ``scheduled_at <= clock_timestamp()`` to
+    ``status='scheduled'`` and ``scheduled_at <= statement_timestamp()``
+    (the STABLE bound the partial index serves as an index condition) to
     ``status='pending'``, in one short transaction (server-side
     ``statement_timeout`` included); repeated calls drain the eligible
     backlog a batch at a time.

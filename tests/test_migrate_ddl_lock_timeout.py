@@ -157,14 +157,99 @@ async def test_bounds_of_a_millisecond_or_more_render_a_nonzero_wait(
     assert f"SET LOCAL lock_timeout = {rendered}" in conn.executed
 
 
-async def test_zero_means_wait_indefinitely_and_sets_no_bound(monkeypatch: Any) -> None:
+async def test_zero_means_wait_indefinitely_and_is_stated_explicitly(monkeypatch: Any) -> None:
     migration = _migration("SELECT 1;", use_transaction=True)
     monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
     conn = _RecordingConn()
 
     await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=0)  # type: ignore[arg-type]
 
-    assert not any("lock_timeout" in sql for sql in conn.executed)
+    # 0 promises "wait indefinitely": the transaction must say so EXPLICITLY
+    # (SET LOCAL lock_timeout = 0). Skipping the SET would let a session-level
+    # lock_timeout (a role default, a DSN options clause, server_settings) --
+    # which SET LOCAL would otherwise override -- bound the wait after all,
+    # silently inverting the documented meaning of 0.
+    assert "SET LOCAL lock_timeout = 0" in conn.executed
+
+
+@pytest.mark.parametrize("bound", [float("nan"), float("inf"), float("-inf")])
+async def test_non_finite_bounds_are_refused(monkeypatch: Any, bound: float) -> None:
+    """NaN sails past both ``< 0`` and ``0 < x < 0.001`` and then fails the
+    ``> 0`` gate, silently setting NO bound -- the exact inversion the
+    sub-millisecond guard refuses, reached by ``--ddl-lock-timeout nan`` (the
+    CLI's typer parses it) or ``ddl_lock_timeout=float('nan')``. Infinities
+    die later, as an OverflowError from ``int(inf * 1000)`` mid-run after
+    earlier migrations of the same run already applied. Both refuse up
+    front, before anything runs."""
+    migration = _migration("SELECT 1;", use_transaction=True)
+    monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
+    conn = _RecordingConn()
+
+    with pytest.raises(ValueError, match="finite"):
+        await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=bound)  # type: ignore[arg-type]
+
+    assert conn.executed == [], "a refused bound must run nothing"
+
+
+# ── the advisory-lock WAIT bound (lock_timeout) gets the same checks ──────
+
+
+class _AdvisoryConn:
+    """Minimal conn for migration_advisory_lock: records every statement,
+    "acquires" the advisory lock instantly."""
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.executed.append(sql)
+        return "OK"
+
+
+async def test_advisory_wait_sub_millisecond_bound_is_refused() -> None:
+    """The advisory lock's wait bound has the same integer-millisecond
+    rendering as the DDL bound, so a sub-millisecond ``lock_timeout`` would
+    render as ``SET lock_timeout = 0`` -- wait indefinitely, the inverse of
+    the bounded wait the caller asked for, silently. Refused, same rule as
+    ``ddl_lock_timeout``."""
+    conn = _AdvisoryConn()
+    with pytest.raises(ValueError, match="at least one millisecond"):
+        async with migrate_mod.migration_advisory_lock(conn, 0.0005, schema="taskq"):
+            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+    assert conn.executed == [], "a refused bound must run nothing"
+
+
+@pytest.mark.parametrize("bound", [float("nan"), float("-inf")])
+async def test_advisory_wait_non_finite_bound_is_refused(bound: float) -> None:
+    """NaN and -inf fail every ``> 0`` gate in the acquire path, silently
+    leaving the session's own (often unlimited) lock_timeout to govern the
+    wait; +inf dies as an OverflowError at the SET. All refuse up front."""
+    conn = _AdvisoryConn()
+    with pytest.raises(ValueError, match="finite"):
+        async with migrate_mod.migration_advisory_lock(conn, bound, schema="taskq"):
+            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+    assert conn.executed == [], "a refused bound must run nothing"
+
+
+async def test_advisory_wait_negative_bound_is_refused() -> None:
+    """A negative wait bound skips the SET entirely and waits on the
+    session's own lock_timeout -- unbounded on the common session. Refused,
+    mirroring apply_pending's ddl_lock_timeout >= 0 rule."""
+    conn = _AdvisoryConn()
+    with pytest.raises(ValueError, match=">= 0"):
+        async with migrate_mod.migration_advisory_lock(conn, -1.0, schema="taskq"):
+            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+    assert conn.executed == [], "a refused bound must run nothing"
+
+
+async def test_advisory_wait_zero_sets_the_bound_explicitly() -> None:
+    """``lock_timeout=0`` promises an indefinite wait; delivering it on a
+    session whose role default / DSN options clause bounds ``lock_timeout``
+    requires saying so explicitly, not merely skipping the SET. The bounded
+    path's reset leaves the session at 0 too, so both paths end alike."""
+    conn = _AdvisoryConn()
+    async with migrate_mod.migration_advisory_lock(conn, 0, schema="taskq"):
+        assert "SET lock_timeout = 0" in conn.executed
 
 
 _LEDGER_UPGRADE = "ADD COLUMN IF NOT EXISTS use_transaction"

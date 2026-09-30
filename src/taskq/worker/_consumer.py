@@ -468,7 +468,14 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         )
         _disown_job(disowned_jobs, job)
         return outcome
-    if progress_buffers is not None:
+    if progress_buffers is not None and handler_result != "noop":
+        # The dirty clear is gated on the write landing, the same gate the
+        # autonomous and transactional success paths apply (they clear only
+        # after the fence confirmed the row): a "noop" means the row moved
+        # underneath this attempt — a same-worker reclaim installed the LIVE
+        # attempt's buffer at this key — and clearing it would hide the live
+        # attempt's unflushed progress delta from the flush tick (the
+        # identity-scoping rule the buffer's exits apply).
         _buf = progress_buffers.get(job.id)
         if _buf is not None:
             _buf.dirty = False
@@ -1089,11 +1096,8 @@ async def consume_one_job(
             _pending_publish_tasks=_pending_publish_tasks,
         )
 
-        if active_jobs is not None:
-            task = asyncio.current_task()
-            assert task is not None
-            _active_entry = await active_jobs.register(job.id, task, ctx)
-
+        # THE WINDOW GUARD comment lives at the try below; these are the
+        # no-await computations the guard does not need to cover.
         _completion: object = None
 
         _effective_start_to_close = (
@@ -1112,16 +1116,39 @@ async def consume_one_job(
             attributes={"from_state": "pending", "to_state": "running"},
         )
 
-        if _effective_redis is not None and _effective_settings is not None:
-            await _publish_state_change_event(
-                _effective_redis,
-                _effective_settings,
-                job.id,
-                job.actor,
-                _progress_buffers,
-                status="running",
-                terminal=False,
-            )
+        # THE WINDOW GUARD (the issue-461 map hygiene, second exit). Between
+        # the buffer's install above and the attempt ``try`` below sit two
+        # awaits: the active-jobs registration and the running publish. A
+        # cancellation delivered at either leaves this frame WITHOUT running
+        # the attempt try's ``finally`` — the buffer's only removal and the
+        # registry entry's — exactly the leak the shutdown-seam guard above
+        # closed for its own exit. The guard applies the same identity-scoped
+        # cleanup (the key may already hold a re-claim's live buffer; only
+        # THIS attempt's is removed) and re-raises: the row is still this
+        # attempt's to terminalise, and the cancel arms below are its
+        # writers, so the guard only cleans the maps, never the row.
+        try:
+            if active_jobs is not None:
+                task = asyncio.current_task()
+                assert task is not None
+                _active_entry = await active_jobs.register(job.id, task, ctx)
+
+            if _effective_redis is not None and _effective_settings is not None:
+                await _publish_state_change_event(
+                    _effective_redis,
+                    _effective_settings,
+                    job.id,
+                    job.actor,
+                    _progress_buffers,
+                    status="running",
+                    terminal=False,
+                )
+        except BaseException:
+            if _progress_buffers is not None and _progress_buffers.get(job.id) is _buf:
+                del _progress_buffers[job.id]
+            if active_jobs is not None and _active_entry is not None:
+                await active_jobs.deregister(job.id, _active_entry)
+            raise
 
         # The attempt span's rendering of the failure, carried across the
         # re-raise to the terminal handler below so the traceback is rendered

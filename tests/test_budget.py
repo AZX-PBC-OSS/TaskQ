@@ -1,5 +1,7 @@
 """Unit tests for connection-budget arithmetic (no PG required)."""
 
+from pathlib import Path
+
 import pytest
 
 from taskq.settings import WorkerSettings
@@ -154,3 +156,41 @@ def test_budget_is_frozen() -> None:
     budget = compute_connection_budget(s, num_worker_pods=1)
     with pytest.raises(AttributeError):
         budget.total_pg = 999  # type: ignore[misc]
+
+
+# ── deployment.md's published budget table ────────────────────────────────
+
+
+def test_deployment_guide_budget_table_matches_compute_connection_budget() -> None:
+    """docs/guides/deployment.md publishes a connection-budget table and says
+    its "worked profiles ... are computed by
+    ``taskq.worker.budget.compute_connection_budget``". The table is
+    hand-maintained prose, so it can drift from the function it cites; parse
+    every row back out of the page and assert it against the function's real
+    output at the shipped pool-size defaults, one leader, no web pods (the
+    exact shape the table's caption declares).
+    """
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "guides" / "deployment.md").read_text()
+    section = doc.split("Connection-ceiling honesty", 1)
+    assert len(section) == 2, "deployment.md lost the connection-budget table section"
+    lines = section[1].splitlines()
+    header = next(i for i, line in enumerate(lines) if "total_direct" in line)
+    # The table ends at the first line that is not a row: the rows collected
+    # here are exactly the documented profiles, never a later section's table.
+    rows: list[str] = []
+    for line in lines[header + 1 :]:
+        if not line.startswith("|"):
+            break
+        if set(line) <= set("|- "):
+            continue  # the |---| separator row
+        rows.append(line)
+    assert len(rows) == 3, f"expected 3 documented profiles, found {len(rows)}"
+    for row in rows:
+        cells = [c.strip().strip("`") for c in row.strip().strip("|").split("|")]
+        _name, workers, max_conc, direct, pooled, total_pg, recommended = cells
+        s = _settings(TASKQ_MAX_CONCURRENCY=max_conc)
+        budget = compute_connection_budget(s, num_worker_pods=int(workers))
+        assert budget.total_direct == int(direct), row
+        assert budget.total_pooled == int(pooled), row
+        assert budget.total_pg == float(total_pg), row
+        assert budget.pgbouncer_recommended == (recommended == "True"), row

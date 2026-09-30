@@ -463,8 +463,8 @@ for tests and simulators.
 | `metadata` | `dict[str, object]` | Actor-level metadata. |
 | `unique_for` | `timedelta \| None` | Deduplication window. |
 | `unique_states` | `tuple[JobStatus, ...]` | Active statuses for dedup. |
-| `rate_limits` | `list[str]` | Rate-limit bucket names. |
-| `reservations` | `list[str]` | Concurrency reservation names. |
+| `rate_limits` | `list` | Rate-limit bucket names or bucket/ref objects. |
+| `reservations` | `list` | Concurrency reservation names or reservation objects. |
 | `wants_ctx` | `bool` | Whether the handler declared a `JobContext` parameter. |
 | `is_sync` | `bool` | `True` when the handler is a plain `def` (not `async def`). Sync actors run via `asyncio.to_thread()`. |
 | `dependencies` | `dict[str, type[object]]` | DI parameter names mapped to their annotated types. |
@@ -646,9 +646,10 @@ async def sync_account(payload: SyncPayload) -> None: ...
   because they mean the work did *not* happen; matching them would let one transient failure
   suppress every later attempt for the rest of the window. To block only concurrent execution,
   pass `unique_states=("pending", "scheduled", "running")` explicitly.
-- A dedup onto a job that is already finished is reported: the enqueue logs a `WARN`-level
-  `enqueue-dedup` line naming the matched status, and `JobHandle.deduplicated_onto_terminal` is
-  `True` so the caller can branch without re-reading the row.
+- A dedup onto a job that is already finished is reported: the enqueue logs a
+  `WARN`-level `enqueue_deduplicated` line naming the matched status, and
+  `JobHandle.deduplicated_onto_terminal` is `True` so the caller can branch
+  without re-reading the row.
 
 ```python
 handle = await client.enqueue(
@@ -660,8 +661,10 @@ if handle.was_existing:
     print("deduped: returning existing job handle")
 ```
 
-The `identity_key` and `unique_for` window can be overridden per-enqueue via
-[`JobsClient.enqueue`](jobs-clients.md#enqueue).
+The `identity_key` can be passed per-enqueue via
+[`JobsClient.enqueue`](jobs-clients.md#enqueue). (A per-call `unique_for`
+override exists only on `SubJobEnqueuer.enqueue`, inside an actor body;
+`JobsClient.enqueue` always uses the actor-declared window.)
 
 ---
 

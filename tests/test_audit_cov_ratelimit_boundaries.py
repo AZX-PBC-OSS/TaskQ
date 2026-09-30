@@ -12,6 +12,24 @@ Closed arms:
     pins before).
   - ``_sliding_window_redis._peek_redis_log``: the negative-ZCARD lie.
   - ``_sliding_window_redis._peek_redis_gcra``: the non-finite TAT lie.
+  - The PG state boundary (the row IS the reply — every value the PG paths
+    read from the jsonb ``state`` document, where the redis twins validate
+    the identical shapes): ``token_bucket._peek_pg`` and
+    ``token_bucket._refund_pg`` reject a stored token count that is
+    non-numeric, non-finite, or outside ``[0, capacity]`` (NaN collapsed
+    the refund's ``min`` cap to capacity, restoring a spent fixed quota);
+    ``_sliding_window_pg._peek_pg_gcra`` and ``_acquire_pg_gcra``'s deny
+    branch reject a standing TAT that is non-numeric or non-finite and
+    clamp the advisory retry hint through ``_retry_after`` (a
+    huge-but-finite TAT overflowed ``timedelta`` out of the peek and out
+    of the outage-fallback acquire). The deny read carries the TAT as
+    TEXT so the guarded Python conversion family sees the lie instead of
+    a server-side ``::float8`` cast crashing with
+    ``NumericValueOutOfRangeError``. Residual, accepted: the fused
+    upsert's conflict arm still casts the stored TAT/tokens server-side —
+    the statement aborts atomically there (nothing admitted, nothing
+    written), the same shipped posture as the token-bucket fused
+    acquire's own cast.
   - ``token_bucket._retry_after``: the non-finite and non-positive clamp
     arms; the refund script's client-swap rebinding arm.
   - ``_lock_budget.resolve_token_bucket_lock_timeout_ms``: the no-settings
@@ -501,6 +519,298 @@ def test_concurrency_reservation_keyed_property() -> None:
     assert reservation.keyed is True
     reservation._keyed = False
     assert reservation.keyed is False
+
+
+# ── the PG state boundary (the row IS the reply) ────────────────────────
+#
+# The redis paths validate every value they read from the store at the
+# trust boundary (the sentinel for lie shapes, _retry_after for advisory
+# hints). The PG paths read the jsonb ``state`` document raw — but the row
+# is the reply: an operator edit, a migration, an interop writer or a
+# drifted future writer can leave values in it that no honest TaskQ write
+# could have produced, and the same lie shapes the redis boundary rejects
+# must fail closed there too, never crash the caller with a
+# ValueError/OverflowError no fallback handler recognises and never be
+# trusted into a decision. The pins below replay the exact poison shapes
+# the live-PG attack surfaced, through a fake pool whose canned record
+# stands in for the poisoned row.
+
+
+class _PoisonStateConn:
+    """Fake connection: fetchrow answers each call with the next canned record."""
+
+    def __init__(self, results: list[object]) -> None:
+        self._results = results
+
+    async def fetchrow(self, *args: object, **kwargs: object) -> object:
+        if self._results:
+            return self._results.pop(0)
+        return None
+
+    async def execute(self, *args: object, **kwargs: object) -> str:
+        return "UPDATE 0"
+
+    def transaction(self) -> Any:
+        return self
+
+    async def __aenter__(self) -> "_PoisonStateConn":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _PoisonStatePool:
+    """Fake pool: one shared connection, the audit-cov _FakePool shape."""
+
+    def __init__(self, conn: _PoisonStateConn) -> None:
+        self._conn = conn
+
+    def acquire(self, timeout: float | None = None) -> Any:
+        conn = self._conn
+
+        class _ACM:
+            async def __aenter__(self) -> _PoisonStateConn:
+                return conn
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        return _ACM()
+
+
+def _pool_with(results: list[object]) -> _PoisonStatePool:
+    return _PoisonStatePool(_PoisonStateConn(results))
+
+
+async def test_tb_pg_peek_phantom_balance_raises_the_sentinel() -> None:
+    """A stored token count above capacity (a phantom-balance lie no honest
+    writer can produce — the spend floors at 0, the refill's min caps at
+    capacity) fails closed with the sentinel, the same verdict
+    ``_peek_redis`` hands the identical shape."""
+    tb = TokenBucket(name="pg_boundary_huge", capacity=10, refill_per_second=1, backend="postgres")
+    with pytest.raises(RateLimitStoreCorrupt, match="outside"):
+        await tb.peek(
+            pg_pool=_pool_with([{"state": '{"tokens": "1e300"}'}]),  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+
+
+async def test_tb_pg_peek_nan_tokens_raise_the_sentinel() -> None:
+    """A NaN token count is not a count; the sentinel, never a trusted
+    ``tokens_remaining=nan`` with ``is_exhausted=False``."""
+    tb = TokenBucket(name="pg_boundary_nan", capacity=10, refill_per_second=1, backend="postgres")
+    with pytest.raises(RateLimitStoreCorrupt, match=r"non-numeric|non-finite|outside"):
+        await tb.peek(
+            pg_pool=_pool_with([{"state": '{"tokens": "NaN"}'}]),  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+
+
+async def test_tb_pg_peek_negative_tokens_raise_the_sentinel() -> None:
+    """A negative token count is a permanent-denial lie; the sentinel."""
+    tb = TokenBucket(name="pg_boundary_neg", capacity=10, refill_per_second=1, backend="postgres")
+    with pytest.raises(RateLimitStoreCorrupt, match="outside"):
+        await tb.peek(
+            pg_pool=_pool_with([{"state": '{"tokens": "-5"}'}]),  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+
+
+async def test_tb_pg_peek_non_numeric_tokens_raise_the_sentinel() -> None:
+    """A non-numeric token value must not escape the peek as a bare
+    ``ValueError`` — the crash class no fallback handler recognises."""
+    tb = TokenBucket(name="pg_boundary_junk", capacity=10, refill_per_second=1, backend="postgres")
+    with pytest.raises(RateLimitStoreCorrupt, match="non-numeric"):
+        await tb.peek(
+            pg_pool=_pool_with([{"state": '{"tokens": "banana"}'}]),  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+
+
+async def test_tb_pg_peek_honest_reads_pass() -> None:
+    """Control pin: an honest stored count inside [0, capacity] reads
+    normally through the same boundary."""
+    tb = TokenBucket(name="pg_boundary_ok", capacity=10, refill_per_second=1, backend="postgres")
+    state = await tb.peek(
+        pg_pool=_pool_with([{"state": '{"tokens": "5.0", "ts": "0"}'}]),  # type: ignore[arg-type]
+        settings=_settings(),
+    )
+    assert state.tokens_remaining == 5.0
+    assert state.is_exhausted is False
+
+
+async def test_tb_pg_refund_poisoned_tokens_raise_the_sentinel() -> None:
+    """A refund reads the row's token count and WRITES a new one, so a lie
+    in it is trusted into state: NaN collapses ``min`` to capacity (a spent
+    fixed quota restored — over-refund), a negative count is preserved
+    (permanent denial), a non-numeric one crashes the release path with a
+    bare ValueError. All three fail closed with the sentinel: the refund
+    does not happen, the release path reports a refund failure."""
+    for poisoned in ("NaN", "-5", "banana"):
+        tb = TokenBucket(
+            name=f"pg_boundary_refund_{poisoned}",
+            capacity=10,
+            refill_per_second=0,
+            backend="postgres",
+        )
+        pool = _pool_with(
+            [{"state": f'{{"tokens": "{poisoned}", "ts": "0"}}', "now_s": 1767225600.0}]
+        )
+        with pytest.raises(RateLimitStoreCorrupt):
+            await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]
+                1.0,
+                pool,  # type: ignore[arg-type]
+                _settings(),
+                lock_timeout_ms=0,
+            )
+
+
+async def test_tb_pg_refund_honest_state_passes() -> None:
+    """Control pin: an honest refund through the same boundary refunds."""
+    tb = TokenBucket(
+        name="pg_boundary_refund_ok", capacity=10, refill_per_second=0, backend="postgres"
+    )
+    pool = _pool_with([{"state": '{"tokens": "5.0", "ts": "0"}', "now_s": 1767225600.0}])
+    await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]
+        1.0,
+        pool,  # type: ignore[arg-type]
+        _settings(),
+        lock_timeout_ms=0,
+    )
+
+
+async def test_gcra_pg_peek_infinite_tat_raises_the_sentinel() -> None:
+    """A stored TAT castable to Infinity ('1e999' survives jsonb as text or
+    numeric) is not a clock; the sentinel, never ``int(-inf)``."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_inf",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    with pytest.raises(RateLimitStoreCorrupt, match="non-finite TAT"):
+        await sw.peek(
+            pg_pool=_pool_with([{"state": '{"tat": "1e999"}', "now_s": 1767225600.0}]),  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+
+
+async def test_gcra_pg_peek_huge_tat_clamps_the_hint() -> None:
+    """A huge-but-finite TAT makes the denial stand with the hint clamped
+    to the max TTL — the exact two-layer verdict ``_peek_redis_gcra``
+    applies (finite check for the TAT, _retry_after for the advisory
+    hint); the raw shape overflowed ``timedelta`` out of the peek."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_huge",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    state = await sw.peek(
+        pg_pool=_pool_with([{"state": '{"tat": "1e300"}', "now_s": 1767225600.0}]),  # type: ignore[arg-type]
+        settings=_settings(),
+    )
+    assert state.is_exhausted is True
+    assert state.retry_after == timedelta(days=365)
+
+
+async def test_gcra_pg_acquire_deny_huge_tat_clamps_the_hint() -> None:
+    """The deny branch of the fused GCRA acquire reads the standing TAT for
+    the retry hint: a huge-but-finite lie must leave the denial standing
+    with the hint clamped, not crash the acquire (the outage-fallback
+    admission path) with a timedelta OverflowError."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_deny",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    pool = _pool_with(
+        [
+            None,  # the fused upsert: the WHERE refuses -> denial, no row
+            {"kind": "gcra", "tat": "1e300", "now_s": 1767225600.0},
+        ]
+    )
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+
+    result = await _acquire_pg_gcra(sw, pool, _settings(), lock_timeout_ms=0)  # type: ignore[arg-type]
+    assert result.allowed is False
+    assert result.retry_after == timedelta(days=365)
+
+
+async def test_gcra_pg_acquire_deny_non_numeric_tat_raises_the_sentinel() -> None:
+    """A non-numeric standing TAT in the deny read fails closed with the
+    sentinel — never a bare ValueError out of the acquire."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_junk",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    pool = _pool_with(
+        [
+            None,
+            {"kind": "gcra", "tat": "banana", "now_s": 1767225600.0},
+        ]
+    )
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+
+    with pytest.raises(RateLimitStoreCorrupt, match="non-numeric TAT"):
+        await _acquire_pg_gcra(sw, pool, _settings(), lock_timeout_ms=0)  # type: ignore[arg-type]
+
+
+async def test_gcra_pg_acquire_deny_infinite_tat_raises_the_sentinel() -> None:
+    """A standing TAT castable to Infinity fails closed with the sentinel
+    (the deny read carries the TAT as TEXT so the guarded Python conversion
+    family sees the lie — a server-side float8 cast would crash the read
+    with NumericValueOutOfRangeError, a class no handler recognises)."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_inf_deny",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    pool = _pool_with(
+        [
+            None,
+            {"kind": "gcra", "tat": "1e999", "now_s": 1767225600.0},
+        ]
+    )
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+
+    with pytest.raises(RateLimitStoreCorrupt, match="non-finite TAT"):
+        await _acquire_pg_gcra(sw, pool, _settings(), lock_timeout_ms=0)  # type: ignore[arg-type]
+
+
+async def test_gcra_pg_acquire_deny_honest_hint_passes() -> None:
+    """Control pin: an honest standing TAT produces the ordinary bounded
+    denial hint through the same boundary."""
+    sw = SlidingWindow(
+        name="pg_boundary_gcra_ok",
+        limit=5,
+        window=timedelta(seconds=10),
+        style="gcra",
+        backend="postgres",
+    )
+    now_s = 1767225600.0
+    pool = _pool_with(
+        [
+            None,
+            {"kind": "gcra", "tat": str(now_s + 20.0), "now_s": now_s},
+        ]
+    )
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+
+    result = await _acquire_pg_gcra(sw, pool, _settings(), lock_timeout_ms=0)  # type: ignore[arg-type]
+    assert result.allowed is False
+    assert result.retry_after is not None
+    assert 0 < result.retry_after.total_seconds() <= 60
 
 
 # import last: the uuid7 seam the repo mandates

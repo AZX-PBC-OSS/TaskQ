@@ -240,13 +240,16 @@ def _validate_int_field(name: str, value: int | Unset | None) -> None:
 
 
 def _validate_result_ttl(value: float | Unset | None) -> None:
-    """Reject bool, negative, and non-finite ``result_ttl``.
+    """Reject bool, negative, non-finite, and non-numeric ``result_ttl``.
 
     NaN sails through ``value < 0`` (NaN compares False) and then breaks
     every completion for the actor, ``clock_timestamp() + NaN * interval
     '1 second'`` raises ``interval out of range`` in the terminal-write
     UPDATE. ±inf is rejected on the same grounds (``interval out of range``
-    / meaningless expiry)."""
+    / meaningless expiry). A non-numeric value (a str that crossed an
+    untyped CLI/env boundary) is rejected here rather than at the driver:
+    asyncpg's ``DataError`` names the argument position ($7), not the
+    operator's mistake."""
     if isinstance(value, bool):
         raise ValueError(
             f"result_ttl must be a non-negative number of seconds; got {value!r} (bool)"
@@ -256,6 +259,8 @@ def _validate_result_ttl(value: float | Unset | None) -> None:
             raise ValueError(f"result_ttl must be finite; got {value!r}")
         if value < 0:
             raise ValueError(f"result_ttl must be a non-negative number of seconds; got {value!r}")
+    elif not isinstance(value, Unset) and value is not None:
+        raise ValueError(f"result_ttl must be a number of seconds; got {type(value).__name__!r}")
 
 
 async def set_actor_config_capacity(

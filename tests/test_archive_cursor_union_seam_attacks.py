@@ -60,6 +60,7 @@ from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why
     _build_paginated_sql,
     _build_where,
     _cursor_field,
+    _display_slice,
 )
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifier (built from new_base62, validated by the migration runner's _IDENT_RE) or renders the admin builders' own SQL; all values are $n-bound.
@@ -182,7 +183,10 @@ async def _reference_ids(conn: asyncpg.Connection, schema: str) -> list[UUID]:
 async def _walk_forward(conn: asyncpg.Connection, schema: str) -> tuple[list[UUID], list[int]]:
     """The operator's forward walk, the admin's exact page semantics:
     fetch, show the first _PAGE_SIZE rows, cursor from the last SHOWN row.
-    Returns (ordered ids seen, per-page shown counts)."""
+    The shown rows are the admin's own display truncation
+    (:func:`_display_slice`), so a future direction-blindness there cannot
+    pass a harness that re-implements the slice by hand. Returns (ordered
+    ids seen, per-page shown counts)."""
     seen: list[UUID] = []
     page_sizes: list[int] = []
     cursor: tuple[str, str] | None = None
@@ -191,7 +195,7 @@ async def _walk_forward(conn: asyncpg.Connection, schema: str) -> tuple[list[UUI
         if not rows:
             break
         assert len(rows) <= FETCH, f"fetch returned {len(rows)} rows (bound {FETCH})"
-        shown = rows[:_PAGE_SIZE]
+        shown = _display_slice(rows, forward=True)
         page_sizes.append(len(shown))
         seen.extend(r["id"] for r in shown)
         last = shown[-1]
@@ -203,16 +207,20 @@ async def _walk_backward_from(
     conn: asyncpg.Connection, schema: str, start: tuple[str, str]
 ) -> list[UUID]:
     """The operator's backward walk from *start*: prev pages until the
-    walk runs dry, each page shown in forward order. Returns the ids in
-    FORWARD (display) order — for a seam-correct shape this is exactly
-    the reference order's prefix strictly before the start cursor."""
+    walk runs dry, each page shown in forward order. The shown rows are
+    the admin's own display truncation (:func:`_display_slice` with
+    ``forward=False`` -- the LAST _PAGE_SIZE rows of the re-sorted fetch,
+    the #568 direction-aware slice), so the harness attacks the shipped
+    truncation, not a hand-copied one. Returns the ids in FORWARD
+    (display) order -- for a seam-correct shape this is exactly the
+    reference order's prefix strictly before the start cursor."""
     seen: list[UUID] = []
     cursor = start
     while True:
         rows = await _fetch_page(conn, schema, cursor, "prev")
         if not rows:
             break
-        shown = rows[:_PAGE_SIZE]
+        shown = _display_slice(rows, forward=False)
         seen[:0] = [r["id"] for r in shown]  # pages arrive latest-first
         first = shown[0]
         cursor = (_cursor_field(first["finished_at"]), str(first["id"]))
@@ -445,7 +453,7 @@ async def test_backward_walk_row_exact_within_one_page(
     # prev pages must rebuild the whole valued prefix — the OR arm's job.
     # Small population: 40 valued + 10 NULL, so the 40 rows before the
     # seam cursor fit one fetch — this isolates the backward NULL-seam
-    # PREDICATE from the display-truncation defect pinned below.
+    # PREDICATE from the multi-page truncation seam the next test walks.
     small = [base - timedelta(days=i % 9, seconds=i) for i in range(40)]
     small += [None] * 10
     await seam_conn.execute(f'TRUNCATE TABLE "{seam_schema}".jobs_archive CASCADE')
@@ -461,28 +469,22 @@ async def test_backward_walk_row_exact_within_one_page(
     _assert_row_exact(walked, small_reference[:40], "backward-from-NULL-cursor walk")
 
 
-@pytest.mark.xfail(
-    reason="PRE-EXISTING (not this branch's regression): the admin's prev-page "
-    "display truncation is direction-blind. _build_paginated_sql's backward "
-    "fetch returns the _FETCH_SIZE rows nearest the cursor, re-sorted into "
-    "forward display order - so rows[:_PAGE_SIZE] truncates the FARTHEST-"
-    "from-cursor end, dropping the row NEAREST the cursor from display. "
-    "Every full prev page turn (51 rows available) silently drops exactly "
-    "one row: backward from reference[95], the fetch is reference[44:95], "
-    "display shows reference[44:94], and reference[94] is never served. The "
-    "forward walk truncates the correct end (the farthest row is the "
-    "overfetch marker there); prev needs rows[-_PAGE_SIZE:]. The shipped "
-    "prev tests (test_web_admin_pagination_order.py) seed under one page, "
-    "so the truncation never bites them. Fixing this is a src/jobs.py "
-    "change with its own red proof - this pin holds the seat.",
-    strict=True,
-)
 async def test_backward_walk_row_exact_across_multiple_pages(
     seam_conn: asyncpg.Connection, seam_schema: str
 ) -> None:
     """The multi-page backward walk is row-exact: backward from a value
     cursor 95 rows deep must rebuild reference[:95] exactly - and from a
-    NULL-seam cursor, the full valued prefix reference[:100]."""
+    NULL-seam cursor, the full valued prefix reference[:100].
+
+    This is the pin for the prev-page display truncation: the backward
+    fetch returns _FETCH_SIZE rows nearest the cursor re-sorted into
+    forward display order, so the page is its LAST _PAGE_SIZE rows (the
+    row nearest the cursor is the overfetch marker's neighbor, not the
+    head). The direction-blind rows[:_PAGE_SIZE] slice stranded exactly
+    one row per full prev-page turn (backward from reference[95] served
+    reference[44:94], never reference[94]); :func:`_display_slice` is
+    direction-aware, and this walk proves the fix at multi-page scale on
+    both seams - a value cursor mid-page and a NULL-seam cursor."""
     base = datetime.now(UTC) - timedelta(days=10)
     rows = [base - timedelta(days=i % 9, seconds=i) for i in range(2 * _PAGE_SIZE)]
     rows += [None] * _PAGE_SIZE

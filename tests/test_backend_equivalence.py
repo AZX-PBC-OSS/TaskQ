@@ -354,17 +354,6 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
     # Invariant: within each actor, dispatched jobs maintain priority DESC order
     id_to_pri = {ids[i]: priorities[i] for i in range(50)}
     id_to_actor = {ids[i]: _ACTORS[i % len(_ACTORS)] for i in range(50)}
-    per_actor: dict[str, list[int]] = {}
-    for did in dispatched_ids:
-        per_actor.setdefault(id_to_actor[did], []).append(id_to_pri[did])
-    for actor, pris in per_actor.items():
-        for i in range(len(pris) - 1):
-            assert pris[i] >= pris[i + 1], (
-                f"Actor {actor}: priority {pris[i]} before {pris[i + 1]} violates DESC order"
-            )
-            break  # Only need to check first rank-2
-
-    # Invariant: within same actor, priority DESC
     per_actor_dispatched: dict[str, list[int]] = {}
     for did in dispatched_ids:
         actor = id_to_actor[did]
