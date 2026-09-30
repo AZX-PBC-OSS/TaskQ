@@ -138,6 +138,7 @@ def _post_response(client: TestClient, response_b64: str) -> Any:
 # ── The two-bundle repro: cross-replica replay must be refused ────────────
 
 
+@pytest.mark.integration
 def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     migrated_dsn: str,
     saml_schema: str,
@@ -183,6 +184,7 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     )
 
 
+@pytest.mark.integration
 def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibling(
     migrated_dsn: str,
     saml_schema: str,
@@ -231,6 +233,7 @@ def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibli
 # ── Flood eviction is structurally impossible on the shared store ─────────
 
 
+@pytest.mark.integration
 def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
     migrated_dsn: str,
     saml_schema: str,
@@ -289,6 +292,7 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
 # ── Expiry: a past-NotOnOrAfter row neither blocks nor lingers ────────────
 
 
+@pytest.mark.integration
 def test_an_expired_replay_row_neither_blocks_nor_lingers(
     migrated_dsn: str, saml_schema: str
 ) -> None:
