@@ -2595,3 +2595,26 @@ practical; otherwise run `taskq migrate up --allow-checksum-drift` on it
 and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
+
+### Published variants: the one exception to immutability
+
+Restoring a byte-exact file fixes the guard going forward, but databases
+that applied the PREVIOUS published bytes of an amended file carry that
+older checksum in their ledgers permanently — and no single file can
+render to two checksums. The `_variants/` directory inside
+`taskq.migrations` carries the published history: for each amended file,
+the exact bytes of the version that shipped first (one `.sql` file per
+vintage, named for the commit that published it). The drift guard accepts
+a ledger checksum when it matches the current file OR any bundled
+variant's, each rendered with the checking database's own schema — so an
+accepted checksum is schema-agnostic by construction, and a checksum
+rendered under a different schema is still drift.
+
+A ledger checksum nothing bundled produced — current file or variant — is
+drift exactly as before; the variants widen what counts as *published
+history*, never what counts as *legitimate SQL*. Variants are code:
+reviewed, bundled, and versioned with the package (the wheel ships them,
+and the guard degrades to fail-closed refusal if an install loses them) —
+adding one is a PR, never a runtime knob. Never add a variant for a file
+that has not actually shipped amended bytes: a variant legitimises a
+checksum forever.
