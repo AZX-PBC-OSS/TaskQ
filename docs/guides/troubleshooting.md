@@ -532,7 +532,7 @@ LIMIT 50;
 - **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `scheduled` (no retry budget consumed: a denied job is rescheduled until capacity frees or its `schedule_to_close` deadline expires through the ordinary deadline path; no denial terminalises a job on its own); monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
 - **One job is slow while the fleet looks healthy:** a denial writes no `job_events` and no `job_attempts` row, so the aggregated `rate_limit_blocked_count` column on the job row is the per-job record of how much contention that job absorbed. Order by it to find the starving job; the fleet-wide OTel denial counters only tell you the fleet is shedding admissions.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.ratelimit import sync_slots
 
 result = await sync_slots([my_reservation], pool=pg_pool)

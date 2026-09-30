@@ -290,7 +290,7 @@ process to share a trace context in-band.
 
 `ctx.span` is the live consumer span, or `None` when OTel is disabled:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.context import JobContext
 
@@ -344,7 +344,7 @@ before anything else.
   alert set references those series and can never fire in this state; add
   the reader yourself:
 
-  ```python
+  ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
   from opentelemetry import metrics
   from opentelemetry.exporter.prometheus import PrometheusMetricReader
   from opentelemetry.sdk.metrics import MeterProvider
@@ -967,7 +967,7 @@ SHA-256 digest of the JSON-serialized payload. Raw payload content is never
 written to logs. Use this when you want to correlate log lines with a specific
 payload without exposing its contents:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 ctx.log.info(
     "state_change",
     kind="state_change",
@@ -1022,7 +1022,7 @@ set) and password-family query parameters (`?password=***`).
 `actor`, `queue`, `attempt`, and `trace_id`. `worker_id` arrives via
 contextvars. You do not need to add these fields manually.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.context import JobContext
 
@@ -1108,7 +1108,7 @@ async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
 `taskq.testing.otel.setup_meter` creates a per-test `MeterProvider` backed by
 `InMemoryMetricReader` and patches the four core dispatch-path instruments:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.otel import setup_meter, counter_value, histogram_points
 
 
@@ -1151,7 +1151,7 @@ end-to-end pattern: enqueue, manually advance the job to `running`, call
 `dispatch_one_job`, then assert that the consumer span carries a link whose
 `trace_id` and `span_id` match the producer span:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 producer = exporter.span_named("enqueue _integration_test_actor")
 consumer = exporter.span_named("process _integration_test_actor")
 
