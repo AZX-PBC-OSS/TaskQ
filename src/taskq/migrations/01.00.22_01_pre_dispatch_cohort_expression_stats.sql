@@ -54,6 +54,10 @@
 -- (where its full-range visit is bounded anyway), so the depth contract
 -- holds at shallow and deep backlog alike.
 --
+-- Out of scope: the sliding_locked re-join rides the materialized
+-- `ranked` window via the one-shot id array + pkey probes and carries
+-- no cohort-equality probe, so this flip mechanism doesn't reach it.
+--
 -- ── Why statistics, not a template restructure ───────────────────────
 -- The probe's plan choice is an estimate comparison no SQL shape can
 -- arbitrate from the template alone. Shapes evaluated against the audit
