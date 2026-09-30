@@ -77,7 +77,7 @@ Each fire resolves the payload through one of two mechanisms:
 
 Pass `static_payload={"key": "value"}` to include a fixed dict with every fire:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 cron(
     "0 * * * *",
     "hourly_sync",
@@ -105,7 +105,7 @@ is below the minimum fundable grant), a factory-backed schedule is **deferred** 
 than struck. See [Tick budget and deferral](#tick-budget-and-deferral) below for the
 boundary, the retry semantics, and the fairness lever.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # myapp/payloads.py
 from pydantic import BaseModel
 
@@ -275,7 +275,7 @@ earlier occurrence jumped straight to the following year: the naive wall-clock w
 distinguish the two occurrences, so the later one was silently lost; reachable after any
 leader outage spanning a fall-back.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Fire at 02:30 every day in a timezone with DST transitions.
 # "allof" means the job fires twice during fall-back overlap.
 cron("30 2 * * *", "dst_aware_job", timezone="Europe/Amsterdam", dst_strategy="allof")
@@ -317,7 +317,7 @@ fire. When the actor has `unique_for` configured, this enables deduplication
 between cron-fired jobs and ad-hoc on-demand enqueues for the same logical
 entity:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 
@@ -338,7 +338,7 @@ cron(
 
 If an operator triggers an on-demand sync via:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 await client.enqueue(
     sync_tenant,
     TenantPayload(tenant_id="acme"),
@@ -411,7 +411,7 @@ spec = CronScheduleSpec(
 When a schedule is created in the database, a `ScheduleHandle` is returned by
 `JobsClient` methods. The handle provides async methods for runtime management:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 schedules = await client.list_schedules()
 # Find the schedule by actor name or inspect schedule_id
 handle = await client.create_schedule("daily_report", "0 3 * * *")

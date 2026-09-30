@@ -19,7 +19,7 @@ remedies documented in
 [cli.md: The operational-insight findings](cli.md#the-operational-insight-findings)
 (and the troubleshooting entry, §16).
 
-```python
+```python no-exec — not executed: placeholder connection string in the fence
 import asyncpg
 from datetime import timedelta
 from taskq.insights import fetch_queue_imbalance
@@ -86,7 +86,7 @@ on hypertables chunk pruning bounds it).
 
 ## 1. Wait distributions — `fetch_wait_distribution`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 rows = await fetch_wait_distribution(conn, schema="taskq", window=timedelta(hours=1))
 rows = await fetch_wait_distribution(
     conn, schema="taskq", window=timedelta(hours=6), per_actor=True
@@ -126,7 +126,7 @@ that jobs got slower.
 
 ## 2. Imbalance ratios — `fetch_queue_imbalance`, `fetch_actor_backlog`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 rows = await fetch_queue_imbalance(conn, schema="taskq")
 rows = await fetch_actor_backlog(conn, schema="taskq")
 ```
@@ -171,7 +171,7 @@ the stranded-jobs detector reads.
 
 ## 3. Overprovisioning — `fetch_overprovisioning`, `fetch_worker_busy_ratio`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 rows = await fetch_overprovisioning(conn, schema="taskq", window=timedelta(hours=24))
 rows = await fetch_worker_busy_ratio(conn, schema="taskq", window=timedelta(hours=24))
 one = await fetch_worker_busy_ratio(conn, schema="taskq", window=timedelta(hours=24), worker_id=w)
@@ -204,7 +204,7 @@ bounded by `started_at` (live btree index; hypertable chunk pruning).
 
 ## 4. Drain estimation — `fetch_drain_estimates`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 rows = await fetch_drain_estimates(conn, schema="taskq", window=timedelta(hours=1))
 ```
 
@@ -229,7 +229,7 @@ re-arming wave, so read the two together.
 
 ## 5. Cron fan-out ledger — `fetch_cron_ledger`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 rows = await fetch_cron_ledger(conn, schema="taskq", window=timedelta(hours=1))
 ```
 

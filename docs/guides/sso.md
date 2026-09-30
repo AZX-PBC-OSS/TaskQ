@@ -546,7 +546,7 @@ kubelet probes, CI scripts) an interactive OIDC/SAML redirect isn't practical.
 `token_auth` provides a lightweight bearer-token dependency with no extra
 dependencies:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.web.admin.auth import token_auth
 
 health_dependency = token_auth("your-secret-token")

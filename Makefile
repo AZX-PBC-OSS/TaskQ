@@ -113,6 +113,14 @@ test-otel: env
 test-system: env
 	$(UVRUN) pytest --system-e2e -m system tests/system_e2e
 
+# The docs-example tier: every ```python fence in docs/** (and README) that
+# is not tagged `no-exec` runs in its own subprocess against the real
+# package, a per-example PG schema, and the shared Redis container. Opt-in
+# via the env var the module gates on (TASKQ_DOCS_EXAMPLES=1), Docker
+# required. See tests/test_docs_examples.py for the fence-tag convention.
+test-docs-examples: env
+	$(UVRUN) pytest -m docs_examples
+
 # Manual cleanup of the e2e tier's machine-level strays: worker images the
 # tier built (pid-owned ones whose owner is dead, plus legacy
 # `taskq-e2e-worker:sha-*` tags from before session teardown removed images),

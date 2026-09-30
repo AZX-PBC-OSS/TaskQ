@@ -102,7 +102,7 @@ free: no third-party dependencies required.
 
 ### Protocols
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.auth import PgCredential, PgCredentialProvider, RedisCredential, RedisCredentialProvider
 
 
@@ -122,7 +122,7 @@ username providers (Vault) set both. `enrich_pg_dsn` handles either case.
 
 ### Factory builders
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import make_pg_pool_factory, make_dedicated_conn_factory, make_redis_client_factory
 # (also importable from taskq.auth)
 
@@ -271,7 +271,7 @@ one-shot and takes no schedule.
 **Embedding.** The builder behind the worker option is public: use it
 when you have a custom entrypoint and want the same full wiring:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.auth import build_worker_connections
 
 connections = build_worker_connections(settings, pg_provider=provider, redis_provider=provider)
@@ -448,7 +448,7 @@ lifecycle. Only factory-backed resources are hot-reloaded.
 `reload_credentials` can also be called programmatically (also
 re-exported from `taskq.worker`):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.worker.deps import reload_credentials
 
 await reload_credentials(deps, drain_timeout=10.0, factory_timeout=30.0)
@@ -467,7 +467,7 @@ pip install 'taskq-py[aad]'
 The extra includes `azure-identity` **and `aiohttp`** (required by the
 `azure.identity.aio` async credentials).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from azure.identity.aio import DefaultAzureCredential
 from taskq import make_pg_pool_factory, make_dedicated_conn_factory, make_redis_client_factory
 from taskq.aad import EntraIdProvider
@@ -524,7 +524,7 @@ sslmode (see *sslmode* under Factory builders); Azure requires TLS.
 pip install 'taskq-py[aws]'
 ```
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import make_pg_pool_factory, make_dedicated_conn_factory
 from taskq.aws import RdsIamProvider
 
@@ -562,7 +562,7 @@ IAM-mapped DB user.
 pip install 'taskq-py[vault]'
 ```
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 import hvac
 from taskq import make_pg_pool_factory
 from taskq.vault import VaultDynamicDbProvider
@@ -622,7 +622,7 @@ and pass it to `asyncpg.create_pool` via the **`connect=` keyword**. All
 of these calls are already async, so the factory awaits them directly,
 with no `asyncio.to_thread` offload:
 
-```python
+```python no-exec — not executed: requires external cloud credentials/services
 from contextlib import asynccontextmanager
 
 import asyncpg
@@ -667,7 +667,7 @@ async def lifespan(app):
 
 Pass an `ssl.SSLContext` via a factory: no credential provider needed:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 import ssl
 
 sslctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
@@ -736,7 +736,7 @@ class OAuthTokenProvider:
 `connections: WorkerConnections` dataclass. Any field left `None` falls
 back to the existing DSN construction, so the change is purely additive.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import WorkerConnections
 from taskq.worker.run import worker_main
 
@@ -770,7 +770,7 @@ so it must be created on the loop the worker will run on, so await
 `worker_main_async` from your own coroutine instead. Same parameters, same
 exit codes; `worker_main` is the thin sync wrapper over it.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 import asyncio, asyncpg
 from taskq.worker import worker_main_async
 
@@ -793,7 +793,7 @@ raise SystemExit(asyncio.run(main()))
 `TASKQ_PG_DSN`. If your application already knows where TaskQ's tables live,
 pass that in rather than restating it in a second config system:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 connections = build_worker_connections(
     worker_settings,
     pg_provider=provider,
@@ -850,7 +850,7 @@ rebuilt by itself). A rebuild that fails leaves the live pool serving and
 is retried on the next tick; `reload_credentials()` remains the on-demand
 path and is serialized with the scheduled one.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import TaskQ
 from taskq.aad import EntraIdProvider
 
@@ -868,7 +868,7 @@ await tq.reload_credentials()
 Use `pool_factory=` directly when you need the factory's other hooks
 (`init=`, `server_settings=`, `command_timeout=`):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import make_pg_pool_factory
 
 tq = TaskQ(pool_factory=make_pg_pool_factory(dsn, provider, max_size=5, init=register_vector))
@@ -894,7 +894,7 @@ pair it was built with), scheduled for you as described above.
 close the remaining DSN-only gaps for the LISTEN/NOTIFY transport in
 `watch_reclaims()`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import make_dedicated_conn_factory
 
 tq = TaskQ(
@@ -920,7 +920,7 @@ Every factory in `taskq.auth` applies this before connecting. Call it yourself
 on the DSN paths they do not cover: a raw `asyncpg.connect`, a migration
 connection, a DSN handed to another library:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import ensure_sslmode_require
 
 conn = await asyncpg.connect(ensure_sslmode_require(dsn), password=token)
@@ -941,7 +941,7 @@ missing `sslmode`; it does not, and should not, supply a CA bundle.
 
 ## Migrate
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.migrate import apply_pending_locked
 
 await apply_pending_locked(conn_factory=lambda: build_conn(token), schema="taskq")

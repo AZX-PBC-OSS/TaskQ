@@ -138,7 +138,7 @@ not need to test enqueue/dispatch behaviour. See
 When using `JobsClient` with `InMemoryBackend`, register actor configs so the
 backend knows each actor's `max_concurrent`, `queue`, and `metadata`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.pg import DEFAULT_ACTORS
 
 backend = InMemoryBackend(clock=clock)
@@ -153,7 +153,7 @@ The `memory_jobs` fixture (below) does this automatically.
 `InMemoryBackend` exposes synchronous archive/expiry methods that mirror the
 maintenance leader's prune (Sweep 5) and archive-expiry (Sweep 6) sweeps:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 
 result = backend.archive_terminal_jobs(
@@ -209,7 +209,7 @@ dispatch-then-execute loop to completion. The loop:
    and success.
 5. Terminates when no jobs are pending, running, or scheduled.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 await backend.run_until_drained()
 ```
 
@@ -234,7 +234,7 @@ drives the cancel poller itself (see [Testing cancellation](#testing-cancellatio
 the default keeps the historical behaviour, the drain never ticks cancel
 polling and tests drive cancellation by hand.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 await backend.run_until_drained(cancel_polling=True)
 ```
 
@@ -359,7 +359,7 @@ re-exported from `taskq.testing.__init__` to avoid importing `pytest` and
 | `memory_jobs` | function | `InMemoryBackend` | Fresh backend with a `FakeClock` at `2025-01-01 UTC`. Default actors pre-registered. |
 | `actor_runner` | function | `ActorRunnerCallable` | Callable that builds a synthetic `JobContext` and invokes the handler, omitting `ctx` when the handler (or `ActorRef`) declares none. Forwards declared `**deps` as DI kwargs. |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
     # the ActorRef, not a bare name
     memory_jobs.register_stub(my_actor, lambda p, ctx: {"ok": True})
@@ -425,7 +425,7 @@ additional fixtures: they are repo-private, not published:
 | `settings` | function | `TaskQSettings` | Per-test env via `monkeypatch`, then `TaskQSettings.load()`. |
 | `pg_conn` | function | `asyncpg.Connection` | Drops schema before each test. Prefer `clean_pg_conn`. |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 import pytest
 
 
@@ -446,7 +446,7 @@ pytest-xdist) lose with `EADDRINUSE` or silently steal each other's socket.
 Mint a unique path per test with `taskq.testing.health.unique_health_sock_path`
 and pass it at settings construction time:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.health import unique_health_sock_path
 from taskq.testing.settings import make_integration_settings
 
@@ -498,7 +498,7 @@ async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
 `setup_meter` creates a per-test `MeterProvider` backed by
 `InMemoryMetricReader` and patches the four core dispatch-path instruments:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.otel import setup_meter, counter_value, histogram_points
 
 
@@ -544,7 +544,7 @@ details.
 
 ### Job-status assertions
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.assertions import (
     assert_job_status,
     assert_job_terminal,
@@ -568,7 +568,7 @@ row = await wait_for_job_status(backend, job_id, "succeeded", timeout=2.0)
 
 ### Event assertions
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.assertions import (
     assert_has_event,
     assert_transition_sequence,
@@ -590,7 +590,7 @@ assert_transition_sequence(
 
 ### OTel span assertions
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.assertions import assert_has_span, assert_has_otel_event
 
 # Find a span by name; assert kind/status if provided.
@@ -627,7 +627,7 @@ statements inside a transaction.
 
 ### ChaosConnection
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosException
 
 # Wrap a real connection; raise on the 3rd query call.
@@ -655,7 +655,7 @@ works correctly when `ChaosException` propagates through
 `acquire()`. Temporarily replace `backend._worker_pool` to test mid-transaction
 failures in backend methods:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.asyncpg_chaos import ChaosPool
 
 chaos_conn = ChaosConnection(real_conn, fail_on_call=5)
@@ -678,7 +678,7 @@ finally:
 `shorten_chaos_settings` temporarily reduces heartbeat/lock-lease/grace timing
 on `WorkerDeps` so chaos scenarios trigger sweeps quickly:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.settings import shorten_chaos_settings
 
 with shorten_chaos_settings(deps_a, deps_b):
@@ -799,7 +799,7 @@ invocation,
 one pair shared by every xdist worker of that invocation, and visible to no
 other invocation (of this repo or any other):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 import pytest
 
 
@@ -813,7 +813,7 @@ async def test_real_pg(clean_jobs_app: JobsApp) -> None:
 The `clean_jobs_app` fixture truncates and re-seeds the module's PG schema
 before each test, then opens `WorkerDeps` + `PostgresBackend`. For Redis:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @pytest.mark.integration
 async def test_real_redis(clean_redis_client) -> None:
     # clean_redis_client is a fresh redis.asyncio.Redis on a clean DB
@@ -828,7 +828,7 @@ schema name defaults to a **per-call unique** `tq_<token>` so concurrent
 callers on a shared database can never clobber each other; pass an explicit
 `schema_name=` when you need a deterministic name:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.testing.settings import make_integration_settings
 
 settings = make_integration_settings(pg_dsn, schema_name="tq_test")

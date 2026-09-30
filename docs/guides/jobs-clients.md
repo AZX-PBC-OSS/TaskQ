@@ -87,7 +87,7 @@ crash-vs-shutdown accounting.
 
 ## `JobsClient`
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq import TaskQ
 from taskq.settings import TaskQSettings
 
@@ -103,7 +103,7 @@ not provide isolation benefits.
 
 ### Constructor
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 JobsClient(
     backend: Backend,
     *,
@@ -122,7 +122,7 @@ JobsClient(
 
 ### `backend` property
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @property
 def backend(self) -> Backend: ...
 ```
@@ -134,7 +134,7 @@ accessing the private `_backend` attribute.
 
 ## `enqueue()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue(
     self,
     ref: ActorRef[P, R],
@@ -369,7 +369,7 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 the key string to work around global uniqueness, move it to the scope and keep the key as the
 pure business key:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Before: run id baked into the key string
 await client.enqueue(
     sync_actor,
@@ -422,7 +422,7 @@ step 3 fires and may raise `SingletonCollisionError`.
 `idempotency_key` upsert (step 5) matched an existing job row. Use this instead of comparing
 `created_at` timestamps to detect a deduplicated return:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(my_actor, payload, idempotency_key="order-123")
 if handle.was_existing:
     print("job already enqueued, reusing:", handle.job_id)
@@ -430,7 +430,7 @@ if handle.was_existing:
 
 The same field is set for `unique_for` dedup:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(
     sync_account,
     SyncPayload(account_id="acct_123"),
@@ -449,7 +449,7 @@ When an active OTel span is valid, `trace_id` and `span_id` are extracted automa
 
 ## `enqueue_batch()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue_batch(
     self,
     items: list[EnqueueItem],
@@ -479,7 +479,7 @@ Supply `batch_id` to set it explicitly; omit it and a UUIDv7 is generated automa
 
 ### `EnqueueItem`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import EnqueueItem
 
 EnqueueItem(
@@ -555,7 +555,7 @@ dispatched**. If you batch future-scheduled jobs with deadlines, size
 
 #### `BatchHandle.status()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def status(
     self,
     db: asyncpg.Connection,
@@ -578,7 +578,7 @@ containment filter) and returns aggregated counts:
 | `abandoned` | `int` | Jobs abandoned after an operator cancel outlasted the grace periods. |
 | `is_complete` | `bool` (computed) | `True` when `pending == 0`. |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 status = await batch_handle.status(db_connection)
 if status.is_complete:
     print(f"batch done: {status.succeeded} succeeded, {status.failed} failed")
@@ -599,7 +599,7 @@ example](#batch-enqueue-example)); use `BatchHandle.status()` everywhere else.
 
 ## `enqueue_batch_fast()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue_batch_fast(
     self,
     items: list[EnqueueItem],
@@ -649,7 +649,7 @@ A `BatchFailurePolicy` decides whether a batch should be aborted after observing
 a run of consecutive job failures. Pass it to `enqueue_batch()` or
 `enqueue_batch_streaming()` via the `failure_policy` parameter.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import AbortBatchAfter
 
 batch = await client.enqueue_batch(
@@ -695,7 +695,7 @@ AbortBatchAfter(consecutive_failures=5)  # abort after 5 consecutive failures
 Raised by `wait_for_batch()` when the batch row has `status = 'aborted'` and
 all child jobs are terminal.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import BatchAbortedError
 
 try:
@@ -714,7 +714,7 @@ A **finalizer** is a job enqueued alongside the batch that is dispatched
 immediately; the in-actor `wait_for_batch` snooze pattern gates on
 child-job completion. Pass an `EnqueueItem` to the `finalizer` parameter:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import EnqueueItem, AbortBatchAfter
 
 finalizer = EnqueueItem(
@@ -754,7 +754,7 @@ Inside the finalizer actor, call `wait_for_batch()` to block until all child
 jobs are terminal. The snooze pattern uses `Snooze` exceptions so the actor's
 own retry/snooze loop drives the wait without consuming retry budget:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import wait_for_batch
 from taskq.context import JobContext
 import asyncpg
@@ -793,7 +793,7 @@ scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
 
 ## `enqueue_batch_streaming()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue_batch_streaming(
     self,
     items: Iterable[EnqueueItem],
@@ -811,7 +811,7 @@ chunks of `chunk_size` (1-1000). All items share the same `batch_id`. Useful
 for unbounded iterables where materialising the full list in memory is
 undesirable.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import EnqueueItem
 
 
@@ -857,7 +857,7 @@ or by resuming from the refused items.
 
 ## `wait_for_batch()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import wait_for_batch
 
 
@@ -894,7 +894,7 @@ by `batch_id` using the GIN-indexed `WHERE metadata @> $1::jsonb` predicate.
 jobs. If fewer jobs are present and none are in flight, `EmptyBatchError` is
 raised:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 status = await wait_for_batch(
     db,
     batch_id,
@@ -906,7 +906,7 @@ status = await wait_for_batch(
 `batches` row exists (e.g. the batch was never created, or all jobs were
 pruned):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 status = await wait_for_batch(
     db,
     batch_id,
@@ -921,7 +921,7 @@ for the full decision table.
 
 ## `list_batches()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import BatchFilter
 
 
@@ -936,7 +936,7 @@ counts.
 
 ### `BatchFilter`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import BatchFilter
 
 BatchFilter(
@@ -987,7 +987,7 @@ from taskq import BatchSummary
 Returned by `enqueue()`, `enqueue_batch()`, and `get()`. The type parameter `R` flows from the actor's declared return
 type.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle: JobHandle[OrderResult] = await client.enqueue(process_order, payload)
 ```
 
@@ -1005,7 +1005,7 @@ handle: JobHandle[OrderResult] = await client.enqueue(process_order, payload)
 
 #### `wait()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def wait(self, *, timeout: float | None = None) -> R: ...
 ```
 
@@ -1029,7 +1029,7 @@ property to the fetched row; on return, `row` is the terminal row the result was
 
 #### `status()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def status(self) -> JobStatus: ...
 ```
 
@@ -1039,7 +1039,7 @@ handle's `row` property to the fetched row. Raises `RuntimeError` if the handle 
 
 #### `refresh()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def refresh(self) -> JobRow: ...
 ```
 
@@ -1053,7 +1053,7 @@ no second fetch; `get()` already read the row.
 
 #### `attempts()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def attempts(self) -> list[AttemptRow]: ...
 ```
 
@@ -1062,7 +1062,7 @@ without a client.
 
 #### `cancel()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def cancel(self, reason: str | None = None) -> CancelResult: ...
 ```
 
@@ -1070,7 +1070,7 @@ Delegates to `JobsClient.cancel()`. Raises `RuntimeError` without a client.
 
 #### `progress_stream()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def progress_stream(self) -> AsyncIterator[ProgressEvent]: ...
 ```
 
@@ -1098,7 +1098,7 @@ rows, and advancing only on the PG fallback would make the semantics backend-dep
 | `data` | `dict[str, object] \| None` | Custom progress data, if reported. |
 | `terminal` | `bool` | `True` when the job has reached a terminal state. |
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 async for event in handle.progress_stream():
     if event.percent is not None:
         print(f"{event.percent:.0f}%: {event.detail}")
@@ -1120,7 +1120,7 @@ For the HTTP SSE endpoint that browser clients can subscribe to, see
 
 ## `get()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def get(
     self,
     job_id: JobId,
@@ -1133,7 +1133,7 @@ Look up a job by ID. Returns `None` when the job does not exist. `result_adapter
 because a lookup by ID does not carry actor identity; when omitted it defaults to
 `TypeAdapter(type(None))`, which is suitable for status-only lookups. Typical sources:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # When you know the actor:
 handle = await client.get(job_id, result_adapter=process_order.result_adapter)
 
@@ -1147,7 +1147,7 @@ handle = await client.get(job_id, result_adapter=TypeAdapter(type(None)))
 
 ## `get_row()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def get_row(self, job_id: JobId) -> JobRow | None: ...
 ```
 
@@ -1155,7 +1155,7 @@ Looks up a job by ID and returns the raw `JobRow`: no `JobHandle`, no result ada
 `get()`'s contract: a single backend read, `None` when the job does not exist. This is the direct
 form for callers that never need the typed-result machinery:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 row = await client.get_row(job_id)
 if row is not None:
     print(row.status, row.attempt, row.error_class)
@@ -1164,7 +1164,7 @@ if row is not None:
 When you *do* want a handle, `get()` plus the handle's `row` property is still one round trip:
 `get()` already fetched the row, and `handle.row` exposes it without re-reading:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.get(job_id)
 if handle is not None:
     row = handle.row  # the row get() just fetched; no second backend read
@@ -1174,7 +1174,7 @@ if handle is not None:
 
 ## `cancel()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def cancel(
     self,
     job_id: JobId,
@@ -1203,7 +1203,7 @@ Frozen Pydantic model returned by `cancel()`.
 | `new_status` | `JobStatus` | Status after the cancel write. |
 | `cancellation_initiated` | `bool` | `True` when the cancel write transitioned the job to `"cancelled"`. `False` when the job was already in a terminal state and no transition occurred. |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 result = await client.cancel(handle.job_id, reason="user_requested")
 if result.cancellation_initiated:
     print(f"job {result.job_id} cancelled (was {result.previous_status})")
@@ -1215,7 +1215,7 @@ else:
 
 ## `cancel_where()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def cancel_where(
     self,
     filter: JobFilter,
@@ -1245,7 +1245,7 @@ issue a follow-up call; the returned counts make non-convergence detectable. A
 mid-operation failure leaves the batches that already committed as durable partial
 progress, and a re-run continues where it stopped; already-cancelled rows are skipped.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 result = await client.cancel_where(
     JobFilter(tags=("tenant-acme",), unfinished=True),
     reason="tenant offboarded",
@@ -1281,7 +1281,7 @@ and issue follow-up calls for remaining partitions.
 
 ## `list()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def list(self, filter: JobFilter) -> JobPage: ...
 ```
 
@@ -1304,7 +1304,7 @@ Frozen dataclass. All fields are optional.
 | `limit` | `int` | `100` | Maximum number of rows to return: one page. `JobsClient.list()` rejects a limit above `10_000` (`taskq.backend._protocol.MAX_JOB_LIST_LIMIT`; a page materialises every row it returns, so a larger result set is paged with `cursor`). Ignored by `cancel_where`. |
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # "Everything still in flight": pending + scheduled + running:
 page = await client.list(JobFilter(queue="payments", unfinished=True, limit=50))
 
@@ -1347,7 +1347,7 @@ from taskq.backend._protocol import JobSortField
 Combine `identity_key` filtering with `FINISHED_AT_DESC` to find the most
 recent completed run of a logical entity:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.backend._protocol import JobFilter, JobSortField
 
 page = await client.list(
@@ -1366,7 +1366,7 @@ if page.jobs:
 For "most recently enqueued" (regardless of completion), use
 `CREATED_AT_DESC`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 page = await client.list(
     JobFilter(
         actor="sync_tenant",
@@ -1386,7 +1386,7 @@ Frozen dataclass.
 | `jobs` | `list[JobRow]` | The matched job rows. |
 | `next_cursor` | `str \| None` | Pagination token for the next page. `None` exactly when no more rows exist: the client looks one row past `limit`, so a last page that happens to fill the limit still ends the walk without an empty trailing page (at the `10_000` ceiling there is no room to look past it, and a full page there may lead to one empty page). |
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 page = await client.list(JobFilter(queue="payments", status="pending", limit=50))
 for job in page.jobs:
     print(job.id, job.actor, job.status)
@@ -1429,7 +1429,7 @@ Handles returned by `ctx.jobs.enqueue()` do **not** have a client bound to them.
 `.wait()` works because it reads through the backend directly. To poll a sub-job's result from
 outside the actor body, pass its `job_id` to a full `JobsClient` instance:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 sub_handle = await ctx.jobs.enqueue(process_item, ItemPayload(item_id=item_id))
 sub_job_id = sub_handle.job_id  # safe: job_id is always available
 
@@ -1439,7 +1439,7 @@ result_handle = await client.get(sub_job_id, result_adapter=process_item.result_
 
 ### `enqueue()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue(
     self,
     actor_ref: ActorRef[P, R],
@@ -1513,7 +1513,7 @@ operator's cap. With nothing stored, the per-call argument wins outright over th
 
 ### `enqueue_batch()`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def enqueue_batch(
     self,
     items: Sequence[EnqueueItem[Any, Any]],
@@ -1531,7 +1531,7 @@ All items share a single `batch_id` UUID written into each job's `metadata.batch
 `batch_id` is omitted a UUIDv7 is auto-generated; pass it explicitly to correlate the sub-jobs
 with a finalizer job enqueued separately.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import EnqueueItem
 
 await ctx.jobs.enqueue_batch(
@@ -1583,7 +1583,7 @@ stream whose cursor the event-prune watermark passed): recovery after a crash-be
 to recreate the watcher fresh (`watch_reclaims(after_id=0)`), accepting the loss the error
 reported, the deleted events cannot be refilled.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import JobFailed, ResultUnavailable
 
 try:
@@ -1627,6 +1627,18 @@ async def main() -> None:
     from taskq.settings import TaskQSettings
 
     settings = TaskQSettings.load()
+
+    # First run on a fresh database: apply the schema migrations
+    # (`taskq migrate up` does the same from the CLI).
+    import asyncpg
+    from taskq.migrate import apply_pending_locked
+
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        await apply_pending_locked(conn=conn, schema=str(settings.schema_name))
+    finally:
+        await conn.close()
+
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
         try:
             handle = await tq.enqueue(
@@ -1640,7 +1652,7 @@ async def main() -> None:
         print(f"enqueued job {handle.job_id}, was_existing={handle.was_existing}")
 
         try:
-            result: TranscribeResult = await handle.wait(timeout=120.0)
+            result: TranscribeResult = await handle.wait(timeout=30.0)
             print(f"transcript: {result.transcript} (confidence {result.confidence:.0%})")
         except JobFailed as exc:
             print(f"failed: {exc.row.error_class}: {exc.row.error_message}")
@@ -1664,7 +1676,7 @@ asyncio.run(main())
 Use `idempotency_key` to prevent duplicate execution when a caller may retry the enqueue call
 (e.g. after a network error):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def send_order_confirmation(client: JobsClient, order_id: str) -> str:
     """Enqueue a confirmation email, safe to call multiple times for the same order."""
     handle = await client.enqueue(
@@ -1757,7 +1769,7 @@ Tags are user-defined keyword labels stored in `jobs.tags text[]`. They have no 
 
 ### Adding tags at enqueue
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(
     send_email,
     EmailPayload(to="user@example.com"),
@@ -1767,7 +1779,7 @@ handle = await client.enqueue(
 
 Tags can also be set per-item in batch enqueues:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 items = [
     EnqueueItem(actor_ref=process, payload=p, tags=["batch-abc", "chunk-1"]),
     EnqueueItem(actor_ref=process, payload=q, tags=["batch-abc", "chunk-2"]),
@@ -1789,7 +1801,7 @@ Tags must match `\A\w(?:[\w\-]*\w)?\Z`:
 
 Use `JobFilter.tags` with array-overlap semantics (matches jobs that have **any** of the given tags):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 page = await client.list(
     JobFilter(
         actor="send_email",

@@ -181,7 +181,7 @@ registry = [send_email]
 
 ### Enqueue a job
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 import asyncio
 
 from taskq import TaskQ

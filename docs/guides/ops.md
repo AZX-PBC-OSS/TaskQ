@@ -111,7 +111,7 @@ Set a fleet-wide safety net and override per actor:
 export TASKQ_DEFAULT_START_TO_CLOSE=5m
 ```
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(start_to_close=timedelta(hours=1))  # opts this actor up
 async def reindex_bucket(payload: Payload) -> None: ...
 ```
@@ -637,7 +637,7 @@ Enqueue up to 1,000 children in one `enqueue_batch(...)` call (or stream chunks 
 gate completion with a finalizer that snoozes until all children are terminal. From inside an
 actor, pass an explicit `batch_id` and enqueue the finalizer as its own job:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from uuid import NAMESPACE_URL, uuid5
 
 from taskq.batch import EnqueueItem
@@ -887,7 +887,7 @@ only terminal exit is its own `schedule_to_close` deadline, reached through the 
 deadline path. To find jobs starving for admission rather than progressing, sort by
 `rate_limit_blocked_count`.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
 
 # Downstream allows 50 req/s fleet-wide (`capacity` is the burst allowance,
@@ -903,7 +903,7 @@ async def call_partner(payload: Payload) -> Result: ...
 
 Per-tenant / per-entity quotas use keyed refs; the bucket name is derived per payload key:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.ratelimit import KeyedRateLimitRef
 
 
@@ -1000,7 +1000,7 @@ exception class and **is** clamped by `max_retry_backoff`; `RetryAfter`'s delay 
 TaskQ does **not** automatically honor any HTTP header; there is no setting or integration that
 does this. The supported pattern is to read the header yourself and translate it into a signal:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(retry=RetryPolicy(kind="transient", max_attempts=8))
 async def call_api(payload: Payload) -> Result:
     resp = await http_post(payload.url)

@@ -181,7 +181,7 @@ Two layers, both cheap to keep around:
    post-hoc dump prints `<no running loop on this thread>`), so the
    dump must run AT the hang instant. The executed source shape:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call():
     original = signal.getsignal(signal.SIGALRM)
@@ -424,7 +424,7 @@ caller at an exact point. Executed file pointers:
   `execute()` on an `asyncio.Event` and NEVER returns, which is the
   black-hole variant only a client-side budget can bound:
 
-  ```python
+  ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
   async def execute(self, sql: str, *params: object) -> str:
       if "pg_advisory_xact_lock" in sql and "pg_try" not in sql:
           self.blocking_lock_calls += 1
@@ -476,7 +476,7 @@ interleaving certain. Executed example:
 (actor A floods 500 jobs enqueued strictly before B's one job; repeated
 limit-10 dispatch rounds run sequentially):
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 assert first_batch_size == _BATCH_LIMIT, (
     f"first batch dispatched {first_batch_size}, not a full {_BATCH_LIMIT} - "
     "the test only means something when the batch is full yet still carries B"
@@ -518,7 +518,7 @@ cancellation racing the body. The suite's own doctrine is the
 `test_leader_sweeps_coverage.py` and the soak's
 `tests/test_rt_lost_job_soak.py`):
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 finally:
     if not worker_task.done():
         worker_task.cancel()

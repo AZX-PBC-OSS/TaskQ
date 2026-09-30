@@ -299,7 +299,7 @@ taskq worker --actors myapp.actors:registry
 
 **Example: mapping form**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # myapp/actors.py
 registry = {"send_email": send_email, "resize_image": resize_image}
 ```

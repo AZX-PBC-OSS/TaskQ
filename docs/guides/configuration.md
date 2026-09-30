@@ -634,7 +634,7 @@ These values are computed from settings rather than set directly.
 
 ### `worker_pool_size`
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 worker_pool_size = int(max_concurrency * 1.5)
 ```
 
