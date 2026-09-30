@@ -55,7 +55,7 @@ from taskq.backend._sql import (
 )
 from taskq.backend._sql_fragments import ATTEMPT_REFUND_SQL
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
+    require_schema,
 )
 from taskq.context import CancelOrigin
 from taskq.obs import get_logger
@@ -191,8 +191,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
            Number of rows updated, or 0 on timeout / connection error.
     """
     schema = deps.settings.schema_name
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,

@@ -67,8 +67,8 @@ from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.client._taskq import orjson_response_class
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
     progress_channel,
+    require_schema,
 )
 from taskq.obs import get_meter
 from taskq.settings import TaskQSettings
@@ -572,8 +572,7 @@ def create_router(
         one-per-router ``progress-stream-no-session-verifier`` warning and
         the streams authenticate once, with no per-frame re-check.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     settings = TaskQSettings.load()
 

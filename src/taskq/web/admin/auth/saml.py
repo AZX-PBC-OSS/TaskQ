@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for the schema name interpolated into the store's SQL, exactly as migrate.py does.
+    require_schema,
 )
 from taskq.web.admin.auth._session import (
     AuthBundle,
@@ -342,8 +342,7 @@ class _PostgresSamlReplayStore:
         # The schema is interpolated into SQL (asyncpg cannot bind
         # identifiers); validate rather than trust app.state. The admin
         # factory already validated it, this repeats at the last writer.
-        if not _IDENT_RE.match(schema):
-            raise ValueError(f"invalid schema identifier: {schema!r}")
+        require_schema(schema)
         self._pool = pool
         self._schema = schema
 

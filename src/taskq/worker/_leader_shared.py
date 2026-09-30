@@ -38,6 +38,7 @@ from taskq.constants import (
     DEFAULT_PRUNE_BATCH_SIZE,
     DEFAULT_PRUNE_RETENTION,
     DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS,
+    require_schema,
 )
 from taskq.obs import (
     get_logger,
@@ -231,8 +232,7 @@ async def cleanup_stale_workers(
     transaction: a whole-fleet crash drains in committed batches instead
     of one transaction rewriting every stale worker's attempt history.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     sql = _CLEANUP_STALE_WORKERS_SQL.format(schema=schema)
     tag = await conn.execute(sql, staleness, worker_id, batch_size)
     return int(tag.rsplit(" ", 1)[-1]) if tag else 0
@@ -776,8 +776,7 @@ async def prune_terminal_jobs(
     anchored to a database-side ``clock_timestamp()`` read, see the
     "Anchored to the database clock" comment in the body below.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
     if sizer is None:
         _validate_positive("batch_size", batch_size)
@@ -939,8 +938,7 @@ async def archive_expiry_sweep(
     to None and this sweep runs full-range, byte-identical to the
     no-floor behavior.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
     if sizer is None:
         _validate_positive("batch_size", batch_size)
@@ -1042,8 +1040,7 @@ def complete_stale_batches_sql(schema: str) -> str:
     """The sweep's statement for *schema*; the member probe is the same
     index-served open-member predicate every terminal write's completion
     probe uses (``open_member_where``), correlated on the candidate row."""
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return _COMPLETE_STALE_BATCHES_SQL.format(
         schema=schema, open_member=open_member_where("b.id::text")
     )

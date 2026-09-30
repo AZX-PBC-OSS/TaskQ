@@ -82,6 +82,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
+    require_schema,
     schema_lock_name,
 )
 
@@ -1108,8 +1109,7 @@ def migration_lock_name(schema: str) -> str:
     release rather than rolling it; the window is the deploy, not the
     steady state. (Same caveat as the schema-qualified leader locks.)
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return schema_lock_name("migrate", schema)
 
 

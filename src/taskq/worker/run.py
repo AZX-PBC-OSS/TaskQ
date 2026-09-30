@@ -53,7 +53,7 @@ from taskq.backend._records import jsonb_param
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer, parent_tags
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
+    require_schema,
 )
 from taskq.context import JobContext
 from taskq.exceptions import MissingProvider
@@ -1117,8 +1117,7 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     """
     worker_id = new_uuid()
     schema = settings.schema_name
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     hostname = socket.gethostname()
     pid = os.getpid()
     queues = settings.queues
@@ -1176,8 +1175,7 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
     livelock the backstop while logging like a blip.
     """
     schema = settings.schema_name
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     sql = f'DELETE FROM "{schema}".workers WHERE id = $1'  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg cannot bind identifiers as parameters.
 
