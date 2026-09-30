@@ -298,11 +298,15 @@ WHERE id = $1 AND status = 'active'
 RETURNING id"""
 
 # The completion handshake's seat-taking statement: complete_batch holds
-# the batches row from this grant to the caller's commit, so the
-# completion write (_COMPLETE_BATCH_SQL, run right after the grant on a
-# fresh READ COMMITTED snapshot) is sequenced after every earlier
-# holder's commit -- the property the guarded counter reset's queue used
-# to provide for free (see _COMPLETE_BATCH_SQL's comment).
+# the batches row from this grant through the completion write's OWN
+# commit -- the grant and _COMPLETE_BATCH_SQL run inside ONE transaction
+# (the caller's on the transactional-caller shape, the bounded wait's on
+# the autonomous shape), so the write's READ COMMITTED statement
+# snapshot postdates the grant AND no appender can take the row between
+# the two statements -- the property the guarded counter reset's queue
+# used to provide for free (see _COMPLETE_BATCH_SQL's and
+# complete_batch's docstrings for the gap the split-transaction shape
+# re-opened).
 _LOCK_BATCH_ROW_SQL = """\
 SELECT id FROM "{schema}".batches
 WHERE id = $1
@@ -850,9 +854,22 @@ async def complete_batch(
     re-arbitrates against the now-visible membership. Nothing raises, so
     the handshake is safe inside a caller's open transaction: a lock
     refusal that raised would leave that transaction aborted and roll
-    back the terminal write beside it. The lock is held to the caller's
-    commit, so an appender arriving after the grant serializes behind
-    the completion instead of racing it.
+    back the terminal write beside it. The lock is held to the
+    completion write's OWN commit -- the lock and the write run inside
+    one transaction (the caller's own on the transactional-caller
+    shape, the bounded wait's on the autonomous shape), so an appender
+    arriving after the grant serializes behind the completion instead
+    of racing it. Running the write OUTSIDE the wait's transaction (the
+    autonomous shape's former shape: the handshake's commit released
+    the row before the write ran) re-opens the premature completion the
+    handshake exists to close -- an appender that takes the row in the
+    gap holds it past the write's snapshot, and the post-wait EPQ
+    re-check re-evaluates the guard against that original snapshot, so
+    the just-committed member is invisible and the batch flips
+    'complete' holding a pending member (pinned red-then-green by
+    test_review_terminal_batches_pg.py's grant-gap test). It also parks
+    the write unbounded behind exactly the holder class the bounded
+    wait exists for.
 
     Returns ``True`` when the attempt ARBITRATED -- it sought the row and
     ran (or was granted/delayed on) the completion write -- and ``False``
@@ -873,10 +890,21 @@ async def complete_batch(
     open_members: int | None = await conn.fetchval(sql.count_batch_non_terminal, str(batch_id))
     if open_members is None or open_members > _COMPLETE_TAIL_RECHECK_MAX_OPEN:
         return False
+
+    async def _lock_then_complete() -> asyncpg.Record | None:
+        # The seat-taking grant and the guarded completion write in the
+        # wait's own transaction: the row lock spans both statements, so
+        # the write's snapshot postdates the grant AND no appender can
+        # take the row between them (see the docstring's gap paragraph).
+        locked: asyncpg.Record | None = await conn.fetchrow(sql.lock_batch_row, batch_id)
+        if locked is None:
+            return None
+        return await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
+
     try:
         locked = await _bounded_batches_row_wait(
             conn,
-            lambda: conn.fetchrow(sql.lock_batch_row, batch_id),
+            _lock_then_complete,
         )
     except LockNotAvailableError:
         # Debug, not warning: the same optimistic-CAS miss class as the
@@ -892,10 +920,11 @@ async def complete_batch(
         )
         return True
     if locked is None:
-        # The row vanished between the probe and the grant (pruned); the
-        # completion write would no-op anyway.
+        # Either the row vanished between the probe and the grant (pruned)
+        # or the completion write's own guard vetoed on an open member.
+        # Both wrote nothing; the attempt still arbitrated (True), and the
+        # remaining members' hooks or the stale-batch sweep re-arbitrate.
         return True
-    await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
     return True
 
 

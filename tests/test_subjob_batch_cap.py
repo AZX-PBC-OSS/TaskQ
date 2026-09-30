@@ -3,7 +3,7 @@
 `JobsClient.enqueue_batch` has capped batches at 1000 since it was written.
 `SubJobEnqueuer.enqueue_batch` is the same operation reached from inside an actor
 body and had no cap at all, so a job could fan out without bound by going one
-layer down. The backend binds every item as 21 parallel array parameters to a
+layer down. The backend binds every item as 26 parallel array parameters to a
 single `unnest` INSERT in one transaction, so the cap is what keeps that
 statement a bounded size.
 

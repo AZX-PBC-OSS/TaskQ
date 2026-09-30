@@ -547,7 +547,7 @@ async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
             "deny_read": [_Record({"kind": "gcra", "tat": 100.0, "now_s": 50.0})],
         }
     )
-    conn._responders["SELECT kind, (state->>'tat')"] = [  # pyright: ignore[reportPrivateUsage]  # Why: seeding the denial follow-up read's responder on the recording double.
+    conn._responders["SELECT kind, state->>'tat'"] = [  # pyright: ignore[reportPrivateUsage]  # Why: seeding the denial follow-up read's responder on the recording double.
         _Record({"kind": "gcra", "tat": 100.0, "now_s": 50.0})
     ]
     decision = await _acquire_pg_gcra(
@@ -563,5 +563,9 @@ async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
         "SELECT set_config('lock_timeout', $1, tr",
         'INSERT INTO "taskq_fake".rate_limit_buck',
         "COMMIT",
-        "SELECT kind, (state->>'tat')::float8 AS ",
+        # The deny read carries the standing TAT as TEXT: the guarded
+        # Python conversion family (the PG state boundary) converts it, a
+        # server-side ::float8 cast would crash the read with
+        # NumericValueOutOfRangeError on a poisoned value.
+        "SELECT kind, state->>'tat' AS tat, EXTRA",
     ], shapes

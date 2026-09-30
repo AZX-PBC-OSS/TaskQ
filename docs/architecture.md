@@ -432,7 +432,7 @@ extends the active filter without a second edit.
 | running → failed | Consumer after error / deadline |
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
-| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, retries exhausted) |
+| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, ANY retry budget -- operator intent outranks the budget once the grace ladder lapses; see [Crash-reclaim interaction](#crash-reclaim-interaction)) |
 | running → cancelled | Shutdown RELEASING phase (operator cancel in flight: `mark_cancelled`, the operator's own verdict, the same fenced write the unwinding consumer races) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3: the holder-ignored expiry, and the unheld orphan class) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
@@ -449,7 +449,8 @@ without enumerating every `job_id`.
 Coverage note: the feed carries both reclaim writers.  The leader's sweep
 rows name the deadline that fired (`lock_expired` / `heartbeat_timeout`);
 `isolate_self` (worker heartbeat loss) performs the same `running →
-pending` / `running → crashed` transitions and writes the same
+pending` / `running → crashed` transitions -- and, like the sweep, its own
+`running → cancelled` when a cancel was in flight -- and writes the same
 `reason='lock_expired'` event with `cause='isolate_self'` (see the isolate
 asymmetries under
 [Crash-reclaim interaction](#crash-reclaim-interaction)).  The attempt row
