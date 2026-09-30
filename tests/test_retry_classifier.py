@@ -201,8 +201,13 @@ def test_indefinite_backoff_capped() -> None:
         max_retry_backoff=timedelta(hours=24),
     )
     assert isinstance(decision, Retry)
-    max_delta = cap.total_seconds() * (1 + policy.jitter)
-    assert decision.retry_delay.total_seconds() <= max_delta
+    # The band is FITTED under the cap (_capped_jitter_band): the upper
+    # edge is clamped to the cap itself, so the drawn delay never exceeds
+    # it. (The historical bound here, cap * (1 + jitter), was weaker than
+    # the invariant - a regression leaking the band 20% past the cap
+    # passed.)
+    assert decision.retry_delay <= cap
+    assert decision.retry_delay >= cap * (1 - policy.jitter)
 
 
 # ── subclass of non_retryable matched ─────────────────────────────

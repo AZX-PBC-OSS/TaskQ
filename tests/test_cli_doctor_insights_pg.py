@@ -53,6 +53,20 @@ runner = CliRunner()
 # matched: a read selecting `updated_at` is not an UPDATE.
 _WRITE_VERBS = re.compile(r"\b(insert|update|delete|truncate|drop|alter|create)\b", re.IGNORECASE)
 
+# The findings list's no-destruction pin, STATEMENT-shaped like the
+# statement scan above: the defect class is a remedy that hands the
+# operator a destructive COMMAND (drop the table, truncate it, delete
+# from it) - descriptive prose is not a remedy.  The storage-mode
+# family's TSL line honestly names Timescale's own policy-driven
+# "chunk-drop retention", a noun phrase for the SERVER's mechanism, so a
+# bare substring ban on "drop" outlaws true prose while catching no
+# defect the statement scan and this pattern miss.  Word-boundary
+# matched on the command shapes.
+_DESTRUCTIVE_REMEDY_COMMAND = re.compile(
+    r"\b(?:drop\s+(?:table|schema|database|index)|truncate(?:\s+table)?|delete\s+from)\b",
+    re.IGNORECASE,
+)
+
 
 class _Payload(BaseModel):
     value: int
@@ -410,7 +424,12 @@ async def test_doctor_renders_every_insight_finding_for_the_pathological_fleet(
     assert "workgroup" in output.lower()
     assert "nothing is deleted" in output.lower()
     assert "purge" not in output.lower()
-    assert "drop" not in output.lower()
+    # No destructive remedy-as-COMMAND (statement-shaped, module head) -
+    # not a substring ban: the TSL storage-mode line's "chunk-drop
+    # retention" is prose about the server's own mechanism, and the
+    # no-write-statements half of this contract is the recording-proxy
+    # pin below.
+    assert not _DESTRUCTIVE_REMEDY_COMMAND.search(output), output
     # DRAIN — the eta and its confidence caveat.
     assert "q_drain" in output
     assert "SLOW DRAIN" in output

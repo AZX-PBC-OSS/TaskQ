@@ -386,7 +386,7 @@ class SubJobEnqueuer:
         identical operation one layer up. Without the empty check the
         no-connection fallback loop would iterate zero items and return
         ``[]`` silently. The backend binds every item
-        as 21 parallel array parameters to a single ``unnest`` INSERT in one
+        as 26 parallel array parameters to a single ``unnest`` INSERT in one
         transaction, so an uncapped batch enqueued from inside a job body is
         unbounded fan-out that bypasses the client-side guardrail.
 
