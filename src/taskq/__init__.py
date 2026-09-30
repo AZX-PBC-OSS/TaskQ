@@ -66,6 +66,7 @@ from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
 from taskq.client import BulkCancelResult, CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.clock import FakeClock
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.context import JobContext
 from taskq.cron import CronScheduleSpec, ScheduleHandle, cron
@@ -125,7 +126,6 @@ from taskq.retry import (
 )
 from taskq.scheduler import register_cron
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
-from taskq.testing.clock import FakeClock
 
 __all__ = [
     "TERMINAL_STATUSES",
