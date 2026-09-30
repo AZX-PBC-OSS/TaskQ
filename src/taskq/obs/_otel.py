@@ -2145,6 +2145,17 @@ def record_cron_skipped_slots(actor: str, count: int) -> None:
     rate, the runaway PREDICATE -- lives in ``taskq.insights``; this
     counter is one of the producer-side facts it reads.
 
+    A floor, not always the depth: the count walk is bounded by a slice
+    of the tick's own deadline (``cron_loop._SKIP_WALK_BUDGET_FRACTION``)
+    so a fleet-down backlog cannot outlive the tick and livelock the
+    fleet. A walk its budget cut short reports the count it reached and
+    flags it ``skipped_slots_partial=True`` on the ``cron missed slots
+    skipped`` warning, the ``cron fired`` line and the fire span; the
+    counter and the depth gauge then read that lower bound. Every
+    consumer tolerates it -- the runaway predicate compares the depth
+    against the cron period, and a backlog deeper than the budget's
+    reach is deeper than any period.
+
     Labeled by ``actor``, admitted through the same cap as
     :func:`record_cron_failure` (schedule rows accept any string at
     creation time, so the label is bounded). Per-schedule attribution
@@ -2172,7 +2183,11 @@ def record_cron_skipped_slots(actor: str, count: int) -> None:
             "schedule's real delivery time. Delayed-not-lost does not "
             "apply: skipped slots are never replayed (the recompute lands "
             "next_fire_at in the future), the count IS the record of what "
-            "was dropped. Read beside taskq.cron.slots_behind (the "
+            "was dropped -- except when the count walk's tick-budget slice "
+            "expired mid-backlog, which the cron missed slots skipped "
+            "warning flags as skipped_slots_partial: the count is then a "
+            "floor (a backlog that deep is past any runaway predicate "
+            "anyway). Read beside taskq.cron.slots_behind (the "
             "per-attempt depth) and taskq.cron.budget_deferrals (a "
             "different, budget-shaped lag). The actor label is capped like "
             "taskq.cron.consecutive_failures (first 100 distinct names, "
