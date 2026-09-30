@@ -64,6 +64,32 @@ The geometry below pins each stage to the round's own constants:
   later rounds, the depth contract's standing rule). The rank cut sits
   BEFORE identity_dedup deliberately: the shipped window counted
   identity-duplicate rows, so a post-dedup cut would silently widen it.
+* the per-cohort probes' ordered-walk-vs-bitmap choice is an ESTIMATE
+  comparison, and it stays honest only while the cohort-key expression
+  has statistics. The round-robin and re-pended arms constrain their
+  probes with ``COALESCE(fairness_key, '__null__') = <key>`` (the
+  index's own second key expression, verbatim, or the qual stops being
+  an Index Cond); without a statistics object naming that expression
+  the planner prices its selectivity at the default eqsel (0.005), the
+  bitmap+sort alternative's range estimate collapses
+  (measured est=51 rows for an 18,764-row range on the 94,010-row
+  re-pended deep-backlog audit corpus), and the bounded walk loses to
+  a plan that bitmap-visits the whole cohort range: 94k index entries +
+  28k heap blocks per round to claim 50 jobs, 57-75 ms, where the
+  ordered walk costs 3.8-4.6 ms. Migration 01.00.22_01 ships
+  ``CREATE STATISTICS ... ON (COALESCE(fairness_key, '__null__'))`` on
+  jobs (and the ANALYZE that collects it); with the expression's
+  selectivity measured, the bitmap alternative is priced at the
+  cohort's REAL range and is chosen only where that range is genuinely
+  small (where its full-range visit is bounded anyway), so the depth
+  contract holds at shallow and deep backlog alike. Template shapes
+  cannot arbitrate this comparison (the ordered estimate is the window
+  x random_page_cost whatever the shape; evaluated and rejected: the
+  COALESCE window-qual rewrite, per-arm probe splits, the two-step
+  id-array shape, and the unfoldable scan bound, which re-opens the
+  JIT cascade above), which is why the fix ships as statistics rather
+  than as SQL. Pinned by
+  tests/test_dispatch_backlog_depth_bound.py's re-pended regime oracle.
 * ``top_ids`` finalizes the LIMIT-ed id set BEFORE the statement
   touches the heap a second time, and ``locked`` then drives ``jobs``
   by primary key through a correlated LATERAL, a materialized CTE is an
