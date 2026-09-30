@@ -531,6 +531,7 @@ async def test_failed_tick_keeps_the_idle_drain_metrics_only(
     _ = saved  # monkeypatch restores the module global
 
 
+@pytest.mark.integration
 async def test_concurrent_metadata_merges_on_one_workers_row_no_lost_update(
     pg_dsn: str,
 ) -> None:
@@ -615,6 +616,7 @@ async def _create_worker_with_actor(conn: Any, schema: str) -> Any:
     return worker_id
 
 
+@pytest.mark.integration
 async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
     clean_jobs_app: JobsApp,
 ) -> None:
@@ -766,6 +768,7 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
 # ── Part 4: the migration's checksum honesty ─────────────────────────
 
 
+@pytest.mark.integration
 async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
     pg_dsn: str,
 ) -> None:

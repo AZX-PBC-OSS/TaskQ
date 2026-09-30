@@ -101,6 +101,7 @@ from tests.conftest import (
     _fail_on_leaked_asyncio_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the autouse guard fixture under test; its raw async-gen function is driven manually below (a fixture cannot be re-entered through the real request).
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
+    _reset_warn_once_stamps_reset,  # pyright: ignore[reportPrivateUsage]  # Why: the warn-once stamp reset under test; see the pin below.
     pytest_runtest_call,  # pyright: ignore[reportPrivateUsage]  # Why: the call-end snapshot hook under test; driven manually below.
 )
 from tests.test_rt_lost_job_soak import (
@@ -789,6 +790,107 @@ def test_session_publishes_run_isolation_token(
 # task advances at every later test's await points). This pin holds the
 # guard's classification to its contract: leaks are NAMED (task name and
 # coroutine), completed tasks and inherited baselines are not leaks.
+
+
+def test_warn_once_stamp_reset_restores_the_global_stamps() -> None:
+    """The ``_reset_warn_once_stamps`` autouse fixture's reset must clear
+    every module's log-once stamps IN PLACE (importers may hold the dict
+    by value) and must be idempotent across calls.
+
+    The pollution class it closes: a test that drives a warned path
+    stamps the process-global dict; a later warning-existence pin in the
+    same worker finds its warning suppressed inside the 60s log window -
+    an order-dependent red under pytest-randomly. If a fourth module
+    grows a log-once stamp, add it to the fixture's reset and extend this
+    pin; a stamp the reset misses reopens the class.
+    """
+    import taskq.progress._publish as publish_mod
+    import taskq.worker._consumer as consumer_mod
+    import taskq.worker.dispatch as dispatch_mod
+
+    stamps = [
+        dispatch_mod._reporter_defect_warned,  # pyright: ignore[reportPrivateUsage]  # Why: the module-global stamp under test; private prefix scopes it to the worker module.
+        consumer_mod._dependency_failure_warned,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+        publish_mod._publish_failure_warned,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    ]
+    for stamp in stamps:
+        stamp["probe-kind"] = 123.0
+    _reset_warn_once_stamps_reset()
+    for stamp in stamps:
+        assert stamp.get("probe-kind") is None, (
+            "the warn-once stamp reset left a stale stamp behind - the "
+            "warning-existence pins are order-dependent again"
+        )
+    # In-place: the list above already holds the ORIGINAL dict objects
+    # (no rebinding happened), which is the contract the fixture's
+    # docstring promises value-importing callers.
+
+
+def test_every_module_level_warn_once_stamp_is_covered_by_the_reset() -> None:
+    """A fourth ``_*_warned`` stamp dict must not rely on human memory to
+    join the reset. The hand-listed pin above can only red when one of the
+    three KNOWN stamps survives the reset; a NEW module growing its own
+    log-once stamp (``_foo_warned: dict[str, float] = {}`` beside a
+    window constant) reopens the order-dependence class silently - the
+    reset never hears about it. This pin discovers the stamp population
+    from the source tree and behaviorally proves the reset clears each
+    one, so the fixture's coverage grows when the production pattern does.
+
+    Discovery shape: a module-level annotated assignment named
+    ``_*_warned`` bound to an empty dict literal - the exact form the three
+    window-gated warn sites share. A non-stamp that matches the name shape
+    is cleared harmlessly (a fresh empty dict is the stamp dict's own
+    reset semantics); if that is wrong for a future name, the failure
+    message says exactly which candidate to rename or allowlist.
+    """
+    import importlib
+
+    import taskq
+
+    pkg_dir = Path(taskq.__file__).resolve().parent
+    candidates: list[tuple[str, str]] = []
+    for path in sorted(pkg_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            target: ast.expr | None = None
+            if isinstance(node, ast.AnnAssign):
+                target = node.target
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            name = target.id
+            if not (name.startswith("_") and name.endswith("_warned")):
+                continue
+            if not isinstance(node, ast.AnnAssign | ast.Assign):
+                continue
+            value = node.value
+            if isinstance(value, ast.Dict) and not value.keys:
+                module_parts = path.relative_to(pkg_dir).with_suffix("").parts
+                candidates.append((".".join(module_parts), name))
+
+    discovered = [f"taskq.{module}.{name}" for module, name in candidates]
+    assert len(discovered) >= 3, (
+        f"only {discovered} module-level _*_warned stamps discovered (floor 3): "
+        "the discovery walk has degraded and this pin proves nothing"
+    )
+    for module_name, attr in candidates:
+        module = importlib.import_module(f"taskq.{module_name}")
+        stamp = getattr(module, attr)
+        assert isinstance(stamp, dict), f"taskq.{module_name}.{attr} is not a dict"
+        stamp["probe-kind"] = 123.0
+    _reset_warn_once_stamps_reset()
+    survivors = []
+    for module_name, attr in candidates:
+        module = importlib.import_module(f"taskq.{module_name}")
+        if getattr(module, attr).get("probe-kind") is not None:
+            survivors.append(f"taskq.{module_name}.{attr}")
+    assert not survivors, (
+        f"module-level warn-once stamp(s) the reset never clears: {survivors} - a "
+        "warning-existence pin against them is order-dependent again. Add them to "
+        "_reset_warn_once_stamps_reset, or rename if the _*_warned shape is not a "
+        "window-gated stamp."
+    )
 
 
 async def _hygiene_leak_probe_coro() -> None:

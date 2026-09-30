@@ -1489,7 +1489,12 @@ modes, so treat a count anomaly there with suspicion, not as an engine cost.
   registered. A policy that stops firing shows up as **chunk counts growing without bound on the
   aged end** — alert on chunk-count growth per hypertable
   (`timescaledb_catalog.chunk` joined on `hypertable_id`, or the friendlier
-  `timescaledb_information.hypertables` view).
+  `timescaledb_information.hypertables` view). Note the two failure shapes differ: a policy
+  that is **paused** (`scheduled = false`) owns nothing — the row-level sweeps resume the
+  aged end (row-exact, bounded batch deletes) instead of deferring to it — while a policy
+  that is registered, scheduled, and failing on every run (the license-downgrade shape,
+  `taskq doctor`'s storage-mode drift arm names it) still holds the floor and strands the
+  aged end.
 - **The sweeps' baseline changes shape after the policy-floor fix — read it as health, not
   breakage.** Above the floor the aged end belongs to the policy (silent, chunk-granular), so the
   event-TTL and archive-expiry sweeps' aged-end deleted counts fall toward zero and their
