@@ -62,6 +62,19 @@ async def test_rejects_non_finite_result_ttl_without_writing(bad: float) -> None
     assert conn.statements == []
 
 
+@pytest.mark.parametrize("bad", ["3600", "  ", [], object()])
+async def test_rejects_non_numeric_result_ttl_without_writing(bad: object) -> None:
+    """A non-numeric ``result_ttl`` (a str the shell passed unquoted, say)
+    is rejected with a clean ValueError naming the field, before anything
+    reaches the connection: the asyncpg driver would otherwise fail the
+    statement with a raw ``DataError`` (``must be real number, not str``)
+    that names the argument position, not the operator's mistake."""
+    conn = _RecordingConn()
+    with pytest.raises(ValueError, match="result_ttl must be a number"):
+        await set_actor_config_capacity(conn, "a", result_ttl=bad)  # type: ignore[arg-type]  # Why: the runtime guard exists precisely because a str slips past the typed float annotation (a CLI/env boundary passes it through as text).
+    assert conn.statements == []
+
+
 async def test_rejects_negative_values_without_writing() -> None:
     conn = _RecordingConn()
     with pytest.raises(ValueError, match="max_concurrent"):

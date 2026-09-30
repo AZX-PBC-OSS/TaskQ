@@ -551,9 +551,9 @@ def bench_cron() -> list[ABResult]:
 # ── Bench 5: JobRow decode ───────────────────────────────────────────
 
 
-class FakeRecord(dict):
-    def __getitem__(self, key: str) -> object:
-        return dict.__getitem__(self, key)
+class FakeRecord(dict[str, Any]):
+    def __getitem__(self, key: str) -> Any:  # type: ignore[override]  # Why: models asyncpg.Record, whose lookups are Any
+        return super().__getitem__(key)
 
 
 def bench_job_row_decode() -> list[ABResult]:
@@ -582,6 +582,11 @@ def bench_job_row_decode() -> list[ABResult]:
             status="running",
             priority=5,
             attempt=1,
+            # The row is mid-claim (status running, attempt 1): the fence
+            # epoch the dispatch claim just bumped to (migration
+            # 01.00.18_02_pre_claim_epoch.sql), which _job_row_from_record
+            # binds into every JobRow.
+            claim_epoch=1,
             max_attempts=3,
             retry_kind="transient",
             schedule_to_close=timedelta(hours=1),
@@ -673,6 +678,7 @@ def bench_job_row_decode() -> list[ABResult]:
             span_id=rec["span_id"],
             metadata=jsonb_to_dict(meta) or {},
             tags=tuple(tags) if tags else (),
+            claim_epoch=rec["claim_epoch"],
         )
 
     rows = [make_record(i) for i in range(1000)]
@@ -684,6 +690,7 @@ def bench_job_row_decode() -> list[ABResult]:
         and a.metadata == b.metadata
         and a.tags == b.tags
         and a.progress_state == b.progress_state
+        and a.claim_epoch == b.claim_epoch
         for a, b in zip(a_out, b_out, strict=False)
     )
 
