@@ -502,8 +502,20 @@ async def _enqueue_batch(
     # backends. A per-item loop discovers the collision at
     # the poisoned item's index and leaves the good prefix stored ,
     # certifying code that leaves phantom rows behind on PG.
-    _check_batch_job_ids(self, admitted_args)
-    _check_batch_singletons(self, admitted_args)
+    #
+    # Which family's error a multi-defect batch raises is decided by ROW
+    # order on PG (the statement aborts at the first row that violates
+    # anything it enforces), not by the order these preflights would
+    # check families in - so the scan picks the family and the helper
+    # raises it (see _first_row_violation). With no row-order violation
+    # the cross-actor mismatch check still runs: the mismatch is not a
+    # statement abort on PG (the arbiter skips the row; the assembly
+    # raises), so it is exactly the error a clean-statement batch raises.
+    violation = _first_row_violation(self, admitted_args, pairs_raise=False)
+    if violation == "pkey":
+        _check_batch_job_ids(self, admitted_args)
+    if violation == "singleton":
+        _check_batch_singletons(self, admitted_args)
     _check_batch_idempotency_actors(self, admitted_args)
     # Why a function-level import: the dedup WARNING budget lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
@@ -608,6 +620,91 @@ def _rollback_inserted_rows(
         self._jobs.pop(job_id, None)
         if pair is not None and self._idempotency_index.get(pair) == job_id:
             self._idempotency_index.pop(pair, None)
+
+
+def _first_row_violation(
+    self: "InMemoryBackend",
+    admitted_args: list[EnqueueArgs],
+    *,
+    pairs_raise: bool,
+) -> str | None:
+    """The first row-order violation the PG bulk statement would abort on,
+    as one of ``"pkey"``, ``"singleton"``, ``"duplicate"``, or ``None``.
+
+    A bulk write (the unnest INSERT, the COPY) visits items in batch order
+    and aborts at the FIRST row that violates an index it enforces; no
+    later row's defect can preempt it. The mirror's whole-call family
+    preflights (``_check_batch_*``) run in a fixed family order instead of
+    row order, so a batch carrying SEVERAL defects would raise a typed
+    error chosen by check order, not by position - diverging from
+    production exactly when a caller has two bugs in one batch. This scan
+    finds which violation the statement reaches first so the tier can
+    raise that family's error (the ``_check_batch_*`` helpers still raise
+    it, keeping the error shapes single-sourced).
+
+    Per-row precedence, verified against live PG (18.6):
+
+    - On the unnest tier the pair arbiter's ``DO NOTHING`` suppresses the
+      ROW entirely: a row whose pair is already stored dedupes even when
+      its id collides (the exact-same-args re-run dedupes cleanly), so
+      the pair check precedes the pkey check there, and a deduped row
+      registers nothing (its id and singleton flag enter no index).
+    - On the COPY tier there is no arbiter, and ``jobs_pkey`` wins a
+      row's report over the composite idempotency index: a fast-tier
+      re-run of the exact same args raises the raw pkey violation, not
+      the typed duplicate. So the pair check runs LAST on a row there.
+    - A singleton collision on an earlier row beats anything on a later
+      row - the statement never reaches the later row (the batch-order
+      pins in ``test_batch_singleton_first_collision_attribution.py``).
+
+    *pairs_raise*: True on the COPY tier, whose arbiter-less rows violate
+    the composite index (error family ``"duplicate"``); False on the
+    unnest tier, whose arbiter dedupes those rows (no violation).
+    """
+    seen_ids: set[UUID] = set()
+    seen_pairs: set[tuple[str, str]] = set()
+    seen_singleton_actors: set[str] = set()
+    live_singleton_actors = {
+        row.actor
+        for row in self._jobs.values()
+        if row.status in ("pending", "scheduled", "running")
+        and row.metadata.get("singleton") is True
+    }
+    for args in admitted_args:
+        pair = (
+            (args.idempotency_scope, args.idempotency_key)
+            if args.idempotency_key is not None
+            else None
+        )
+        pair_conflict = pair is not None and (pair in self._idempotency_index or pair in seen_pairs)
+        if pair_conflict and not pairs_raise:
+            # The unnest arbiter dedupes the row: it writes nothing, so
+            # its id and singleton flag never reach the indexes a later
+            # row could collide with.
+            continue
+        id_conflict = args.id in self._jobs or args.id in seen_ids
+        singleton = args.metadata.get("singleton") is True
+        singleton_conflict = singleton and (
+            args.actor in live_singleton_actors or args.actor in seen_singleton_actors
+        )
+        if pair_conflict:
+            # The COPY's arbiter-less row violates every index it touches;
+            # the pkey wins the row's report over the composite index.
+            if id_conflict:
+                return "pkey"
+            if singleton_conflict:
+                return "singleton"
+            return "duplicate"
+        if id_conflict:
+            return "pkey"
+        if singleton_conflict:
+            return "singleton"
+        seen_ids.add(args.id)
+        if pair is not None:
+            seen_pairs.add(pair)
+        if singleton:
+            seen_singleton_actors.add(args.actor)
+    return None
 
 
 def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
@@ -840,10 +937,10 @@ async def _enqueue_batch_fast(
     from taskq.exceptions import DuplicateIdempotencyKeyError
 
     # Why this check ORDER: PG's fast path surfaces defects build-loop
-    # NUL guard → pre-COPY cap count → COPY duplicate violation, so a
-    # multi-defect batch raises PayloadValidationError (or the cap
-    # refusal) there, the duplicate is never reached. The mirror checks
-    # in the same order so the same batch raises the same typed error on
+    # NUL guard → pre-COPY cap count → COPY violation, so a multi-defect
+    # batch raises PayloadValidationError (or the cap refusal) there, the
+    # row-order violations below are never reached. The mirror checks in
+    # the same order so the same batch raises the same typed error on
     # both backends; checking duplicates first made a NUL+duplicate
     # batch raise DuplicateIdempotencyKeyError in memory while PG raised
     # PayloadValidationError.
@@ -868,9 +965,26 @@ async def _enqueue_batch_fast(
             admitted_args = [a for a in args_list if a.actor not in refused_names]
     # Only the ADMITTED items' pairs can violate: the PG COPY contains
     # only admitted records, so an in-batch or stored duplicate among
-    # refused items never aborts it.
-    duplicate_pair = first_duplicate_idempotency_pair(admitted_args, self._idempotency_index.keys())
-    if duplicate_pair is not None:
+    # refused items never aborts it. WHICH defect a multi-defect batch
+    # raises is decided by ROW order on PG (the COPY aborts at the first
+    # row that violates any index it enforces, and jobs_pkey wins a
+    # row's report over the composite index), so the scan picks the
+    # family and the helpers raise it - the duplicate-pair block below
+    # only runs when the duplicate row is the one the COPY reaches
+    # first (see _first_row_violation).
+    violation = _first_row_violation(self, admitted_args, pairs_raise=True)
+    if violation == "pkey":
+        _check_batch_job_ids(self, admitted_args)
+    if violation == "singleton":
+        _check_batch_singletons(self, admitted_args)
+    if violation == "duplicate":
+        duplicate_pair = first_duplicate_idempotency_pair(
+            admitted_args, self._idempotency_index.keys()
+        )
+        # The scan just found a duplicate family violation; the shared rule
+        # resolves the pair (pyright cannot carry that implication, hence
+        # the assert).
+        assert duplicate_pair is not None
         # A pair held by ANOTHER actor is the cross-actor misuse the single
         # and batch tiers refuse, classified by the same shared rule the
         # COPY tier applies (duplicate_pair_actor_mismatch) so both

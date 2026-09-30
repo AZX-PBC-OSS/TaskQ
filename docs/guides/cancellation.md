@@ -96,9 +96,9 @@ When `asyncio.CancelledError` propagates out of the actor, the consumer catches 
 
 This is an in-process sentinel. It is never persisted to Postgres (the `cancel_phase` column has a `CHECK (cancel_phase BETWEEN 0 AND 2)` constraint).
 
-If `loop.time() - cancel_observed_at >= cancellation_grace_period + cleanup_grace_period` (defaults: 30 s + 10 s = 40 s), the job is queued into `_pending_abandons`. After the heartbeat transaction commits and its row lock is released, `run_post_tx()` drains the queue: for each entry it calls `backend.mark_abandoned()` under `asyncio.shield`, then deregisters the job from `ActiveJobRegistry`.
+If `loop.time() - cancel_observed_at >= cancellation_grace_period + cleanup_grace_period` (defaults: 30 s + 10 s = 40 s), the job is queued into `_pending_abandons`. After the heartbeat transaction commits and its row lock is released, `run_post_tx()` drains the queue: for each entry it writes the entry's terminal verdict under `shield_with_retrieval`, then deregisters the job from `ActiveJobRegistry`. The verdict follows the cancel's ownership: an UNHELD entry (no registry entry - the unheld walk's orphan) and a held entry while the worker runs normally (the holder-ignored-the-cancel expiry) get `backend.mark_abandoned()`; a held entry while the shutdown orchestration is active gets `backend.mark_cancelled()` - the operator's OWN verdict, the same fenced write the unwinding consumer and the orchestrator's RELEASING phase race, so the row reads `cancelled` whichever of the two commits. See [Shutdown is not an operator cancel](#shutdown-is-not-an-operator-cancel-ctxcancel_origin).
 
-`mark_abandoned` uses a separate pool connection, which is why it cannot run inside the heartbeat transaction (doing so would self-deadlock on the row lock).
+`mark_abandoned`/`mark_cancelled` use a separate pool connection, which is why neither can run inside the heartbeat transaction (doing so would self-deadlock on the row lock).
 
 When the consumer's `asyncio.CancelledError` handler fires after phase 3 is queued, it checks `entry.cancel_phase >= CancelPhase.ABANDON_PENDING` and re-raises without calling `mark_cancelled`. The `run_post_tx` path owns the terminal write.
 
@@ -257,7 +257,7 @@ except JobFailed as exc:
 | Status | Meaning in cancellation context |
 |---|---|
 | `cancelled` | The job was cancelled successfully via the cooperative or forced path. |
-| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period` after an *operator's* cancel request; the worker wrote `abandoned` via `mark_abandoned`. Shutdown can also land a row here, but only by completing an operator's verdict: a row whose operator cancel was already in flight when the process died is abandoned during release rather than released back to the fleet (releasing it would resurrect the execution the operator asked to kill). What shutdown never does is fabricate the verdict: an interruption with no operator cancel behind it is always released, never abandoned. |
+| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period` after an *operator's* cancel request; the worker wrote `abandoned` via `mark_abandoned` (the holder-ignored expiry, and the unheld orphan class whose body exited before the ladder terminalised the row). Shutdown never writes `abandoned`: an operator-cancelled row the process dies with is terminalised at release with the operator's OWN verdict (`mark_cancelled`, forced - the same fenced write the unwinding consumer races), and an interruption with no operator cancel behind it is always released, never abandoned. |
 | `failed` | The job failed before the cancel request was processed. A `cancel()` call on a `failed` job returns `cancellation_initiated=False`. |
 | `crashed` | The worker's lock expired and the recovery sweep reclaimed the job. The cancel request, if any, was not processed. |
 

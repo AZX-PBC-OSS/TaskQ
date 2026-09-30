@@ -937,7 +937,7 @@ through anyway, and the filters' whole job is to be the cheapest gate.
 
 | Event | Level | Kind | Key fields | When |
 |---|---|---|---|---|
-| `state_change` | info | `state_change` | `from_state`, `to_state` | Any job status transition |
+| `state-change` | info | `state_change` | `from_state`, `to_state` | Any job status transition (the event name is hyphenated, the `kind` is the snake_case ledger value) |
 | `cancel_phase_change` | info | `cancel_phase_change` | `from_phase`, `to_phase` | Cancel phase escalation |
 | `heartbeat-tick-success` | debug | n/a | `worker_id`, `tick_duration_ms`, `jobs_extended`, `is_leader` | Each successful heartbeat tick |
 | `heartbeat-tick-failure` | warning | n/a | `worker_id`, `consecutive_failures`, `error_class`, `error` | Each failed heartbeat tick |
@@ -954,8 +954,8 @@ through anyway, and the filters' whole job is to be the cheapest gate.
 | `slot-pool-release-skipped-pool-closed` | warning | `slot_pool_release_skipped_pool_closed` | `job_id`, `error_class`, `error_message` | The slot pool was closed underneath the job (credential-rotation drain or teardown); release is refused or the proxy was already released back: the connection is already gone and the job's real outcome is preserved |
 | `slot-pool-release-skipped-conn-dead` | warning | `slot_pool_release_skipped_conn_dead` | `job_id`, `error_class`, `error_message` | The slot connection was terminated underneath the job (credential-rotation drain or teardown close-timeout): even the transaction probe cannot run on it; the terminator owns its disposal and the job's real outcome is preserved |
 | `consume-rate-limit-denied-noop` | debug | n/a | `from_state`, `to_state`, `cause` | Reservation denied but no state transition occurred |
-| `prune` | info | `prune` | `status`, `count`, `cutoff_time`, `duration_ms` | Per-status batch result from the prune sweep (Sweep 5) |
-| `archive_expiry` | info | `archive_expiry` | `status`, `count`, `expire_before`, `duration_ms` | Per-status batch result from the archive expiry sweep (Sweep 6) |
+| `prune-completed` | info | `prune` | `status`, `count`, `cutoff`, `duration_ms` | Per-status completion line from the prune sweep (Sweep 5); its failures are `prune-failed` (error) and the batch rows it removed are `batches pruned` (info) |
+| `archive-expiry-completed` | info | `archive_expiry` | `status`, `count`, `expire_before`, `duration_ms` | Per-status completion line from the archive expiry sweep (Sweep 6); its failures are `archive-expiry-failed` (error) |
 
 `state_change` events also carry `cause`, `bucket_name`, `delay_seconds`, and
 similar context fields depending on the transition.
