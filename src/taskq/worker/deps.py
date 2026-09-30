@@ -1459,24 +1459,19 @@ async def reload_credentials(
 def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:
     """Close an old pool in the background with a bounded drain timeout.
 
-    On timeout the pool is *terminated*, ``close()`` waits for checked-out
-    connections to be released, which a stuck holder can delay indefinitely,
-    keeping old-credential sessions alive past the rotation point.
-    ``terminate()`` kills them immediately.
+    Delegates to :func:`taskq._close.close_pool_bounded` with
+    ``family="drain"`` (the ``pool-drain-*`` event family) rather than
+    hand-rolling a close - the pre-delegation twin of that helper drifted
+    exactly the way hand-rolled copies do, and the redis drain's unbounded
+    retry leak (see :func:`_drain_old_redis`) is what that drift class
+    looks like when it bites. On timeout the pool is *terminated*:
+    ``close()`` waits for checked-out connections to be released, which a
+    stuck holder can delay indefinitely, keeping old-credential sessions
+    alive past the rotation point; ``terminate()`` kills them immediately.
     """
 
     async def _close() -> None:
-        logger.info("pool-draining", pool=label, drain_timeout=drain_timeout)
-        try:
-            await asyncio.wait_for(pool.close(), timeout=drain_timeout)
-        except TimeoutError:
-            logger.warning(
-                "pool-drain-timeout-terminating", pool=label, drain_timeout=drain_timeout
-            )
-            with suppress(Exception):
-                pool.terminate()
-        except Exception as exc:
-            logger.warning("pool-drain-error", pool=label, error=repr(exc))
+        await close_pool_bounded(pool, label, drain_timeout, family="drain")
 
     _t = asyncio.create_task(_close())
     _drain_tasks.add(_t)
@@ -1484,19 +1479,16 @@ def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> Non
 
 
 def _drain_old_conn(conn: asyncpg.Connection, label: str, drain_timeout: float) -> None:
-    """Close an old dedicated connection in the background; terminate on timeout."""
+    """Close an old dedicated connection in the background; terminate on timeout.
+
+    Delegates to :func:`taskq._close.close_conn_bounded` with
+    ``family="drain"`` (the ``conn-drain-*`` event family), mirroring
+    :func:`_drain_old_pool` and :func:`_drain_old_redis` - all three drains
+    share one bounded-close implementation in ``taskq._close``.
+    """
 
     async def _close() -> None:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=drain_timeout)
-        except TimeoutError:
-            logger.warning(
-                "conn-drain-timeout-terminating", label=label, drain_timeout=drain_timeout
-            )
-            with suppress(Exception):
-                conn.terminate()
-        except Exception as exc:
-            logger.warning("conn-drain-error", label=label, error=repr(exc))
+        await close_conn_bounded(conn, label, drain_timeout, family="drain")
 
     _t = asyncio.create_task(_close())
     _drain_tasks.add(_t)
@@ -1536,11 +1528,12 @@ def _drain_old_redis(client: object, drain_timeout: float) -> None:
     process. A slow leak rather than a hang: it never blocked the reload or
     shutdown, which is what kept it invisible.
 
-    The two sibling drains, ``_drain_old_pool`` and ``_drain_old_conn``, are
-    also hand-rolled but call ``terminate()`` on timeout, which is bounded and
-    non-blocking. Redis has no ``terminate()`` equivalent, which is why a retry
-    was reached for here; the correct answer is to give up, which is what
-    ``close_redis_bounded`` does.
+    The pool and conn sibling drains now delegate to
+    ``taskq._close.close_pool_bounded`` / ``close_conn_bounded`` the same
+    way (``family="drain"``); they call ``terminate()`` on timeout, which is
+    bounded and non-blocking. Redis has no ``terminate()`` equivalent, which
+    is why a retry was reached for here; the correct answer is to give up,
+    which is what ``close_redis_bounded`` does.
     """
 
     async def _close() -> None:

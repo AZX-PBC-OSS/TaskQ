@@ -603,7 +603,7 @@ class MaintenanceLeader:
                     conn,
                     attr.removeprefix("_"),
                     CLOSE_TIMEOUT_SECS,
-                    mid_run=mid_run,
+                    family="mid_run" if mid_run else "teardown",
                 )
             # Identity guard: the await above suspends, and the election loop
             # can run a full cycle during that suspension, creating fresh
@@ -633,7 +633,7 @@ class MaintenanceLeader:
                 # election drop path. The helper never raises, so
                 # leader_conn is always nulled below and the loop can
                 # rebuild even on a wedged conn.
-                await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS, mid_run=True)
+                await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS, family="mid_run")
         else:
             log.warning(
                 "leader-conn-abandoned-caller-owned",

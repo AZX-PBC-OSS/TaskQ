@@ -1976,7 +1976,7 @@ async def _watch_reclaims_pg(
                                 new_conn,
                                 "watch-reclaims-reconnect",
                                 CLOSE_TIMEOUT_SECS,
-                                mid_run=True,
+                                family="mid_run",
                             )
                         failed_attempts += 1
                         if failed_attempts == 1 or failed_attempts % 10 == 0:
@@ -1996,7 +1996,7 @@ async def _watch_reclaims_pg(
                     # Same mid-run class as the failed-reconnect close above
                     # and the notify.py old-conn close this PR converted.
                     await close_conn_bounded(
-                        conn, "watch-reclaims-reconnect", CLOSE_TIMEOUT_SECS, mid_run=True
+                        conn, "watch-reclaims-reconnect", CLOSE_TIMEOUT_SECS, family="mid_run"
                     )
                     conn = new_conn
                     wake = asyncio.Event()

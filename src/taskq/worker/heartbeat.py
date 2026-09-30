@@ -778,7 +778,7 @@ async def heartbeat_loop(
                                 conn,  # type: ignore[arg-type]  # Why: PoolConnectionProxy delegates close()/terminate() to the underlying Connection at runtime; pyright's stubs model the proxy as unrelated, the same delegation the run_in_tx call below relies on.
                                 "heartbeat-tick-budget",
                                 max(0.0, budget_deadline - time.monotonic()),
-                                mid_run=True,
+                                family="mid_run",
                             )
                         # Re-raise the tick's ORIGINAL exception (a bare
                         # raise re-raises it identically): a teardown
@@ -1458,7 +1458,7 @@ async def isolate_self(
             # wedge shutdown.set() below. The helper never raises, so a
             # close error cannot mask an in-flight exception or be
             # misreported as an isolate-self failure.
-            await close_conn_bounded(conn, "isolate-self", CLOSE_TIMEOUT_SECS, mid_run=True)
+            await close_conn_bounded(conn, "isolate-self", CLOSE_TIMEOUT_SECS, family="mid_run")
     except Exception as exc:
         logger.warning(
             "isolate-self-failure",

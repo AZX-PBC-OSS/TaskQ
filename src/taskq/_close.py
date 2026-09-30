@@ -9,7 +9,7 @@ and without a deps↔shutdown module cycle.
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from taskq.obs import get_logger
 
@@ -29,6 +29,13 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+
+# Which structlog event family a bounded close logs. ``teardown`` marks final
+# teardown (default); ``mid_run`` marks an alive-worker emergency close
+# (conn only); ``drain`` marks the credential-reload drain path (the
+# background-task wrappers in ``taskq.worker.deps``). Event names are kept as
+# literals in every branch so they remain grep-able by log alerts.
+type CloseEventFamily = Literal["teardown", "mid_run", "drain"]
 
 # Bounds every TaskQ-initiated graceful close (pools, dedicated conns,
 # redis) on teardown AND mid-run error paths. The bound is PER-RESOURCE and
@@ -106,7 +113,9 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
     return _SEQUENTIAL_BOUNDED_CLOSES * close_timeout + PUBLISH_DRAIN_TIMEOUT_SECS
 
 
-async def close_pool_bounded(pool: "asyncpg.Pool", label: str, close_timeout: float) -> None:
+async def close_pool_bounded(
+    pool: "asyncpg.Pool", label: str, close_timeout: float, *, family: CloseEventFamily = "teardown"
+) -> None:
     """Close a pool during final teardown, bounded by ``close_timeout``.
 
     NEVER raises: on timeout the pool is *terminated*, ``close()`` waits
@@ -115,44 +124,71 @@ async def close_pool_bounded(pool: "asyncpg.Pool", label: str, close_timeout: fl
     ``terminate()`` kills them immediately. Any other error is logged and
     swallowed so teardown keeps unwinding. ``CancelledError`` (a
     ``BaseException``) is deliberately not caught, so outer cancellation
-    still unwinds promptly. Mirrors the reload path's ``_drain_old_pool``
-    in ``taskq.worker.deps``.
+    still unwinds promptly. The reload path's ``_drain_old_pool`` in
+    ``taskq.worker.deps`` delegates here with ``family="drain"``.
+
+    ``family`` selects the structlog event family: the default
+    ``pool-teardown-close-*`` marks final teardown and carries the
+    ``close_timeout=`` field; ``family="drain"`` emits the reload path's
+    ``pool-drain-*`` family (announced by ``pool-draining`` first) with the
+    ``drain_timeout=`` field, so the teardown close bound stays
+    distinguishable from the reload drain bound in log alerts. Event names
+    are kept as literals in both branches so they remain grep-able.
     """
+    if family == "drain":
+        logger.info("pool-draining", pool=label, drain_timeout=close_timeout)
     try:
         await asyncio.wait_for(pool.close(), timeout=close_timeout)
     except TimeoutError:
-        logger.warning(
-            "pool-teardown-close-timeout-terminating", pool=label, close_timeout=close_timeout
-        )
+        if family == "drain":
+            logger.warning(
+                "pool-drain-timeout-terminating", pool=label, drain_timeout=close_timeout
+            )
+        else:
+            logger.warning(
+                "pool-teardown-close-timeout-terminating", pool=label, close_timeout=close_timeout
+            )
         with suppress(Exception):
             pool.terminate()
     except Exception as exc:
-        logger.warning("pool-teardown-close-error", pool=label, error=repr(exc))
+        if family == "drain":
+            logger.warning("pool-drain-error", pool=label, error=repr(exc))
+        else:
+            logger.warning("pool-teardown-close-error", pool=label, error=repr(exc))
 
 
 async def close_conn_bounded(
-    conn: "asyncpg.Connection", label: str, close_timeout: float, *, mid_run: bool = False
+    conn: "asyncpg.Connection",
+    label: str,
+    close_timeout: float,
+    *,
+    family: CloseEventFamily = "teardown",
 ) -> None:
     """Close a dedicated connection, bounded by ``close_timeout``.
 
     Same never-raise contract as :func:`close_pool_bounded`: timeout →
     warning log + ``terminate()``; any other error → warning log only.
-    ``CancelledError`` propagates. Mirrors the reload path's
-    ``_drain_old_conn`` in ``taskq.worker.deps``.
+    ``CancelledError`` propagates. The reload path's ``_drain_old_conn``
+    in ``taskq.worker.deps`` delegates here with ``family="drain"``.
 
-    ``mid_run`` selects the structlog event family: the default
+    ``family`` selects the structlog event family: the default
     ``conn-teardown-close-*`` family marks final teardown (where a dead PG
-    at shutdown is expected-ish); mid-run callers (leader watchdog/
-    election, notify reconnect, isolate-self) pass ``mid_run=True`` for
-    the ``conn-close-*`` family so an unexpected mid-run close timeout ,
-    worker alive, conn so dead that even close() hung, stays
-    distinguishable in log alerts. Event names are kept as literals in
-    both branches so they remain grep-able.
+    at shutdown is expected-ish); ``family="mid_run"`` (leader watchdog/
+    election, notify reconnect, isolate-self) emits the ``conn-close-*``
+    family so an unexpected mid-run close timeout , worker alive, conn so
+    dead that even close() hung, stays distinguishable in log alerts;
+    ``family="drain"`` emits the reload path's ``conn-drain-*`` family with
+    the ``drain_timeout=`` field. Event names are kept as literals in every
+    branch so they remain grep-able.
     """
     try:
         await asyncio.wait_for(conn.close(), timeout=close_timeout)
     except TimeoutError:
-        if mid_run:
+        if family == "drain":
+            logger.warning(
+                "conn-drain-timeout-terminating", label=label, drain_timeout=close_timeout
+            )
+        elif family == "mid_run":
             logger.warning(
                 "conn-close-timeout-terminating", label=label, close_timeout=close_timeout
             )
@@ -165,7 +201,9 @@ async def close_conn_bounded(
         with suppress(Exception):
             conn.terminate()
     except Exception as exc:
-        if mid_run:
+        if family == "drain":
+            logger.warning("conn-drain-error", label=label, error=repr(exc))
+        elif family == "mid_run":
             logger.warning("conn-close-error", label=label, error=repr(exc))
         else:
             logger.warning("conn-teardown-close-error", label=label, error=repr(exc))
