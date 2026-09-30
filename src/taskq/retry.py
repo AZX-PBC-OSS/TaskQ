@@ -514,8 +514,11 @@ and use a bounded transient budget on a 5xx, or a server-provided
 ``Retry-After`` value that should drive the actual backoff delay. Register
 one via ``@actor(retry_classifier=...)``.
 
-Invoked with ``(exception, attempt)`` for every exception that survives the
-``non_retryable_exceptions``/``PayloadValidationError`` checks. Return
+Invoked with ``(exception, attempt)`` for every exception that survives
+the adapter's unconditional-Fail checks: the actor's
+``non_retryable_exceptions`` and the built-in ``PayloadValidationError``,
+pydantic ``ValidationError``, ``ResultTooLarge``, and
+``UnencodableValue`` classes. Return
 ``None`` to fall back to the actor's static ``RetryPolicy`` unchanged, or a
 :class:`RetryOverride` to refine ``kind`` and/or ``delay`` for this specific
 occurrence. Exceptions raised by the hook itself are caught and logged by
@@ -797,6 +800,7 @@ def decide_after_failure(
             PayloadValidationError,
             ValidationError,
             ResultTooLarge,
+            UnencodableValue,
         ),
     ):
         try:
