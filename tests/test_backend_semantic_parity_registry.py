@@ -70,6 +70,8 @@ from taskq.testing.in_memory import InMemoryBackend
 _SEMANTIC_SEAMS: dict[str, str] = {
     "dispatch_batch": "tests/test_in_memory_dispatch_parity.py",
     "cancel_where": "tests/test_in_memory_dispatch_parity.py",
+    "heartbeat_jobs": "tests/test_heartbeat_seam_parity.py",
+    "extend_reservation_leases": "tests/test_heartbeat_seam_parity.py",
 }
 
 #: Seams that SELECT or ORDER rows and are NOT yet pinned by a parity test.
@@ -98,8 +100,6 @@ _SEMANTIC_SEAMS_UNPINNED: dict[str, str] = {
     "count_active_jobs": "aggregate over a selected set",
     "count_pending_jobs": "aggregate over a selected set",
     "count_batch_non_terminal": "aggregate over a selected set",
-    "extend_reservation_leases": "selection of the worker's held slots",
-    "heartbeat_jobs": "selection of the worker's running jobs",
     "retry_job": "eligibility predicate",
     "abort_batch": "selection of the batch's non-terminal members",
 }

@@ -346,6 +346,64 @@ _PREFIX_COMPLETIONS: Final[dict[str, tuple[str, str]]] = {
     ),
 }
 
+# Fragments the keyword net cannot see: their bodies carry no statement
+# keyword, so _discover_sql_constants never picks them up and _COVERED_BY's
+# stale-check (which demands its entries stay discovered) cannot hold them.
+# They are interpolated verbatim (or through their own .format binds) into
+# rendered SqlTemplates fields, whose prepare validates them - but unlike a
+# _COVERED_BY registration, nothing asserted the interpolation still happens.
+# A refactor that hand-maintains a copy instead of interpolating one of these
+# breaks the single-source contract backend/_sql_fragments.py documents ("the
+# two backends cannot drift") with nothing failing. Each entry: qualified
+# fragment name -> (list of (rendered-field name, format binds or None),
+# reason). The tripwire below renders the fragment exactly as its consumer
+# does and asserts the rendered text still appears in every named field -
+# _COVERED_BY's containment demand, extended to the shapes the net is blind
+# to. mark_interrupted is deliberately ABSENT from ATTEMPT_REFUND_SQL's
+# products: the interruption charges the attempt it ran (the fragment's own
+# comment), so its statement must not carry the refund.
+_FRAGMENTS_PASSED_INTO_PRODUCTS: Final[
+    dict[str, tuple[list[tuple[str, dict[str, int] | None]], str]]
+] = {
+    "taskq.backend._sql_fragments:LEASE_CLEAR_SQL": (
+        [
+            ("mark_retry", None),
+            ("mark_snoozed", None),
+            ("mark_retry_after_consume_true", None),
+            ("mark_retry_after_consume_false", None),
+            ("mark_interrupted", None),
+        ],
+        "the lease-clear SET trio, interpolated verbatim into every "
+        "deferral/release arm's rendered field",
+    ),
+    "taskq.backend._sql_fragments:ATTEMPT_REFUND_SQL": (
+        [("mark_snoozed", None), ("mark_retry_after_consume_false", None)],
+        "the non-consuming release's attempt refund, interpolated verbatim "
+        "into the two refund arms' rendered fields",
+    ),
+    "taskq.backend._sql_fragments:MIN_DEFERRAL_INTERVAL_SQL": (
+        [
+            ("mark_retry", None),
+            ("mark_snoozed", None),
+            ("mark_retry_after_consume_false", None),
+            ("mark_interrupted", None),
+        ],
+        "the non-consuming deferral floor, interpolated verbatim into the "
+        "four floored arms' rendered fields",
+    ),
+    "taskq.backend._sql_fragments:JOB_FENCE_BOUND_SQL": (
+        [
+            ("mark_succeeded", {"attempt_bind": 8, "epoch_bind": 9}),
+            ("mark_failed", {"attempt_bind": 8, "epoch_bind": 9}),
+            ("mark_cancelled", {"attempt_bind": 5, "epoch_bind": 6}),
+        ],
+        "the bound fence spelling, rendered through its own .format binds "
+        "(the per-statement bind positions the fragment's comment pins: "
+        "$8/$9 on the succeeded/failed pair, $5/$6 on cancelled) into the "
+        "three single-row terminal UPDATEs",
+    ),
+}
+
 # Strings the net catches that are not PostgreSQL at all: qualified name ->
 # (marker that must survive in the body, reason).
 _NOT_PG_SQL: Final[dict[str, tuple[str, str]]] = {
@@ -721,4 +779,47 @@ def test_the_guard_has_no_silent_gaps() -> None:
     assert len(inventory) >= 100, (
         f"only {len(inventory)} distinct rendered statements (floor 100) - "
         "the render path is dropping statements"
+    )
+
+
+def test_the_net_invisible_fragments_still_reach_their_products() -> None:
+    """Every fragment the keyword net cannot see is still interpolated into
+    the rendered products that validate it.
+
+    The four ``backend/_sql_fragments`` constants carry no statement
+    keyword, so the walk never discovers them and the ``stale`` check above
+    cannot demand their liveness. This is the demand, made directly: each
+    fragment is rendered the way its consumer renders it (verbatim, or
+    through its own ``.format`` binds for the bound fence spelling) and must
+    appear, text for text, in every rendered ``SqlTemplates`` field it is
+    registered against. A fragment decoupled from a product - a hand-maintained
+    copy taking its place - fails here instead of eroding the single-source
+    contract silently.
+    """
+    import dataclasses
+
+    bundle = render("fragment_containment_guard")
+    rendered = {
+        field.name: getattr(bundle, field.name)
+        for field in dataclasses.fields(SqlTemplates)
+        if isinstance(getattr(bundle, field.name), str)
+    }
+
+    broken: list[str] = []
+    for qualified, (products, _reason) in _FRAGMENTS_PASSED_INTO_PRODUCTS.items():
+        module_name, attr = qualified.split(":")
+        fragment = getattr(importlib.import_module(module_name), attr)
+        for field_name, binds in products:
+            body = fragment.format(**binds) if binds is not None else fragment
+            if field_name not in rendered:
+                broken.append(f"{qualified}: product field {field_name} no longer renders")
+            elif body not in rendered[field_name]:
+                broken.append(
+                    f"{qualified}: no longer interpolated into {field_name} - "
+                    "the field hand-maintains its copy or the wiring changed; "
+                    "re-review the registration"
+                )
+    assert not broken, (
+        "Net-invisible SQL fragments decoupled from the products that "
+        "validate them:\n  " + "\n  ".join(broken)
     )
