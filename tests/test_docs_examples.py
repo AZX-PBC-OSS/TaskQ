@@ -181,8 +181,17 @@ def test_no_exec_tag_is_deliberate() -> None:
 
 
 def test_every_python_fence_has_a_known_tag() -> None:
-    """Unknown info-string tags fail loudly (see ``_docs_examples._tag``)."""
+    """Unknown info-string tags fail loudly (see ``_docs_examples._tag``).
+
+    Pins ``_tag``'s contract directly rather than re-calling it on the
+    inventory: a regression that made ``_tag`` silently accept an unknown
+    tag (e.g. mapping it to ``no-exec``) would defeat the extraction's own
+    fail-fast too, and this probe is what reds that instead of waving the
+    fence through as a skip.
+    """
     from tests._docs_examples import _tag
 
-    for example in iter_examples():
-        _tag(example.info)  # raises ValueError on an unknown tag
+    assert _tag("python") == "exec"
+    assert _tag("python no-exec — some reason") == "no-exec"
+    with pytest.raises(ValueError, match="unknown docs-example tag"):
+        _tag("python maybe-skippable")  # type: ignore[arg-type]

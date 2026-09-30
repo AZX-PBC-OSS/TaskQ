@@ -199,7 +199,7 @@ the client, CLI, and admin UI, not worker-internal.
 
 **Old (v0.2.0-v0.2.2):**
 
-```python no-exec — not executed: requires external cloud credentials/services
+```python no-exec — not executed: deliberately broken, the old import path raises ImportError
 from taskq.worker.actor_config import ActorConfig
 ```
 
@@ -222,7 +222,7 @@ development, update to the top-level path.
 
 **Old (unreleased branch only):**
 
-```python no-exec — not executed: requires external cloud credentials/services
+```python no-exec — not executed: deliberately broken, the old import path raises ImportError
 from taskq.worker.actor_config_ops import (
     list_actor_configs,
     get_actor_config,
