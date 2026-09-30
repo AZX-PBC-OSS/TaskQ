@@ -21,9 +21,12 @@ clean of this module (its enable/disable paths never call the floor —
 the sweeps do).
 
 The floor itself: is *schema.table* a hypertable whose aged end is
-owned by a registered TimescaleDB retention policy, and where does that
-ownership begin — ``now - drop_after``, parsed from the policy's OWN
-registered config, never re-derived from TaskQ's settings.
+owned by a registered, SCHEDULED TimescaleDB retention policy, and where
+does that ownership begin — ``now - drop_after``, parsed from the
+policy's OWN registered config, never re-derived from TaskQ's settings.
+(A paused job — ``alter_job(job_id, scheduled => FALSE)`` — is
+registered but never runs, so it owns nothing: see the None cases on
+:func:`retention_policy_floor`.)
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ JOIN timescaledb_information.jobs j
 WHERE h.hypertable_schema = $1
   AND h.hypertable_name = $2
   AND j.proc_name = 'policy_retention'
+  AND j.scheduled
   AND EXISTS (
       SELECT 1 FROM timescaledb_information.dimensions d
       WHERE d.hypertable_schema = $1
@@ -71,7 +75,14 @@ WHERE h.hypertable_schema = $1
   )
 -- Aggregates (MIN), not LIMIT 1 without ORDER BY: the single-row answer is
 -- deterministic no matter the catalog's physical order, and the no-policy
--- case still returns exactly one row of NULLs (the caller's None)."""
+-- case still returns exactly one row of NULLs (the caller's None).
+-- ``j.scheduled`` is the ownership claim's teeth: a PAUSED policy job
+-- (``alter_job(job_id, scheduled => FALSE)``) is registered but never
+-- runs, so deferring the sweep's aged end to it strands those rows with
+-- nobody deleting them (the downgrade strand's compound, reachable on a
+-- healthy TSL server by pausing alone). A paused job reads as "no
+-- answer" - the caller's None, the sweep full-range - same polarity as
+-- the no-job case."""
 
 
 async def retention_policy_floor(
@@ -107,6 +118,10 @@ async def retention_policy_floor(
       ``timescaledb_information.hypertables``),
     * the hypertable carries no ``policy_retention`` job (nothing owns
       the aged end; the sweep must not skip a single row),
+    * the hypertable's ``policy_retention`` job is registered but PAUSED
+      (``scheduled = false`` — ``alter_job``'s supported knob): a policy
+      that never runs owns nothing, and deferring to it would strand the
+      aged end with nobody deleting it,
     * the hypertable is partitioned on a column other than
       *partition_col*,
     * the probe or the ROW PARSE fails for ANY reason — vanilla Postgres
