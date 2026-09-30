@@ -91,7 +91,7 @@ Defined in `src/taskq/backend/_protocol.py`.
 
 ### Protocol declaration
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @runtime_checkable
 class Backend(Protocol):
     BACKEND_PROTOCOL_VERSION: ClassVar[int]
@@ -577,7 +577,7 @@ per event can never reach zero -- a fan-out whose jobs all succeed
 delivers no reclaim event at all, and the counter stalls above zero
 while the feed looks healthy:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
     cursor = await load_reclaim_cursor()  # your own durable store
     wake = asyncio.Event()
@@ -996,7 +996,7 @@ stays outstanding on every fan-out that keys on the feed.
 
 ### `CancelController` Protocol
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @runtime_checkable
 class CancelController(Protocol):
     async def run_in_tx(self, conn: asyncpg.Connection) -> None: ...

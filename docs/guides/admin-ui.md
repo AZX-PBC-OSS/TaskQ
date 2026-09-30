@@ -114,7 +114,7 @@ When embedding the admin router in your own FastAPI app, pass an
 `auth_dependency` callable. This is applied as a FastAPI `Depends()` to every
 route in the router:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -853,7 +853,7 @@ unstyled content on page load).
 
 If you have an existing FastAPI application, you can mount the admin router directly instead of running `taskq ui serve`.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.web.admin import create_router
 
 router = create_router(
@@ -917,7 +917,7 @@ app = FastAPI(lifespan=lifespan)
     individually, install the bundle's settings only for the portal's own
     dependency, and skip the collision:
 
-    ```python
+    ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
     for key in ("pg_pool", "schema", "redis_client", "templates", "base_path", "backend"):
         setattr(app.state, key, getattr(bundle, key))
     app.dependency_overrides[get_settings] = lambda: bundle.settings

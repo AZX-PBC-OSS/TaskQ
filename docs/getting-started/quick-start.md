@@ -154,7 +154,7 @@ The `@actor` decorator validates the signature at import time. It rejects unanno
 
 **Tags** can be attached at enqueue time for filtering and categorization:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(
     send_email,
     SendEmailPayload(to="user@example.com", subject="Hello", body="World"),
@@ -174,7 +174,7 @@ The worker needs a reference to your actor registry. The `--actors` flag takes a
 
 Define a registry in your actors module:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # myapp/actors.py  (continued)
 registry = [send_email]
 # or equivalently:
@@ -197,7 +197,7 @@ taskq worker --actors myapp.actors:registry \
 
 To start a worker from Python (e.g., in a process supervisor or test harness):
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import send_email
@@ -219,7 +219,7 @@ See [Worker](../guides/workers.md) for pool sizing, heartbeat configuration, and
 
 **For tests and local demos:**
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 import asyncio
 from datetime import UTC, datetime
 from taskq import JobsClient
@@ -253,14 +253,14 @@ The production path goes through the worker's `open_worker_deps` context manager
 
 `JobHandle.wait()` polls until the job reaches a terminal status and returns the deserialized result:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 result = await handle.wait(timeout=30.0)
 print(result.message_id)  # SendEmailResult.message_id
 ```
 
 `wait()` returns only once a **consumer** has run the job. Nothing executes it until then: in production the worker from the previous section is the consumer; in an in-process demo, register a stub and drain the backend before waiting:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 backend.register_stub(send_email, lambda payload, ctx: SendEmailResult(message_id="msg-123"))
 await backend.run_until_drained()
 result = await handle.wait(timeout=30.0)  # now resolves

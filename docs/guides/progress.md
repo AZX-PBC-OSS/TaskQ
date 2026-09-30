@@ -103,7 +103,7 @@ logged and recorded as a metric, never raised to the caller.
 
 ## Reporting progress from an actor
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.context import JobContext
 
@@ -133,7 +133,7 @@ parameter reference.
 
 Use `JobHandle.progress_stream()` to iterate events in a service or worker process:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(transcode_video, payload)
 
 async for event in handle.progress_stream():
@@ -228,7 +228,7 @@ stream nothing further is published to.
 
 ## Mounting the router
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.web.progress import create_router
 
 progress_router = create_router(

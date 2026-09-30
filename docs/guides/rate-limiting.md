@@ -27,7 +27,7 @@ Implements the token-bucket algorithm. The bucket starts full; tokens drain on e
 
 ### Constructor
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.ratelimit import TokenBucket
 from datetime import timedelta
 
@@ -103,7 +103,7 @@ Implements a sliding-window rate limiter. Two algorithms are available via the `
 
 ### Constructor
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.ratelimit import SlidingWindow
 from datetime import timedelta
 
@@ -171,7 +171,7 @@ print(result.allowed, result.remaining)
 
 ### GCRA example
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 sw_gcra = SlidingWindow(
     name="vendor_y_per_min",
     limit=60,
@@ -192,7 +192,7 @@ Controls how many jobs can hold a resource simultaneously using pre-allocated sl
 
 ### Constructor
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.ratelimit import ConcurrencyReservation
 from datetime import timedelta
 
@@ -230,7 +230,7 @@ Releases a slot. No-op if `worker_id` does not match the held worker (prevents a
 
 Module-level function. Synchronises slot rows in Postgres to match the current `slots` configuration: inserts missing rows, deletes excess free rows, and skips rows held by active jobs. Returns a `SyncResult(inserted, deleted, skipped_held)`. Call this after changing slot counts on a running deployment. The keyword-only `timeout` bounds the whole pass — one connection acquire plus a transaction of statements per reservation, O(reservations) round trips — and raises `TimeoutError` when it fires; a reservation whose transaction already committed stays synced, so the pass is safe to re-run. `None` (the default) keeps the unbounded shape for callers that manage their own deadline.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.ratelimit import sync_slots
 
 result = await sync_slots([gpu_reservation], pool=pg_pool)
@@ -380,7 +380,7 @@ requiring per-actor configuration.
 
 Returned by every `acquire()` call. Frozen dataclass.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @dataclass(frozen=True, slots=True)
 class RateLimitDecision:
     allowed: bool
@@ -410,7 +410,7 @@ class RateLimitDecision:
 
 Returned by `peek()` on all rate-limit primitives. A read-only snapshot of current bucket state; no tokens are consumed.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.ratelimit.decision import RateLimitState
 
 
@@ -431,7 +431,7 @@ class RateLimitState:
 
 ### `peek()` usage
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Read current bucket state without consuming tokens
 state = await bucket.peek(clock=clock)
 print(state.tokens_remaining, state.is_exhausted)
@@ -443,7 +443,7 @@ For Redis backends, pass `redis_client=...` and `settings=...`. For Postgres bac
 
 Reset a bucket to full capacity instantly:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 await bucket.reset()  # or with DI: redis_client=..., pg_pool=..., settings=...
 ```
 
@@ -451,7 +451,7 @@ Redis: single `DEL` call. Postgres: `DELETE FROM rate_limit_buckets`. Memory: re
 
 ### Registry-level peek/reset
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Peek all registered rate limits
 states = await registry.peek_all(clock=clock)
 
@@ -494,7 +494,7 @@ def rl_registry() -> RateLimitRegistry:
   acquisition path's. Filter to instances: mixed lists may also contain
   `str` names and keyed refs, which `register()` does not accept:
 
-  ```python
+  ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
   from taskq.ratelimit import ConcurrencyReservation, SlidingWindow, TokenBucket
 
   for entry in actor_ref.rate_limits:
@@ -547,7 +547,7 @@ The fallback logs a `WARNING` event with `backend="redis"` and `fallback="postgr
 
 The registry holds all registered primitives and exposes AND-composition for actors.
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 class RateLimitRegistry:
     def register(self, primitive: TokenBucket | SlidingWindow | ConcurrencyReservation) -> None: ...
     def get_rate_limit(self, name: str) -> TokenBucket | SlidingWindow: ...
@@ -567,7 +567,7 @@ class RateLimitRegistry:
 - **Declare on the actor (primary).** `@actor(rate_limits=[...], reservations=[...])`
   accepts primitive *instances* alongside names and keyed refs:
 
-  ```python
+  ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
   @actor(
       queue="io",
       rate_limits=[TokenBucket("graph", capacity=300, refill_per_second=5, backend="redis")],
@@ -619,7 +619,7 @@ contamination. The singleton is shared across the entire test process.
 
 For use outside actor dispatch, e.g. in a FastAPI handler that shares a rate limit with job actors:
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 async with registry.acquire(
     "stripe_api",
     count=1.0,
@@ -665,7 +665,7 @@ async def send_email(payload: SendEmailPayload) -> None: ...
 You can also declare the primitive **instances** directly, with no separate
 registration step needed; the worker registers them at bootstrap:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(
     rate_limits=[
         TokenBucket("mailgun_per_minute", capacity=100, refill_per_second=2, backend="redis")
@@ -907,7 +907,7 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
     windows, e.g. a shorter `idle_for` from your own maintenance code (a scheduled task, an
     admin CLI command, whatever fits your deployment):
 
-    ```python
+    ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
     from datetime import timedelta
     from taskq.ratelimit import registry
 
@@ -932,7 +932,7 @@ If you have existing keyed-ref declarations from before 1.0, update them as foll
 
 1. **Add `payload_type`**: pass the actor's payload model class as the first argument to `.typed()`:
 
-   ```python
+   ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
    from datetime import timedelta
    from pydantic import BaseModel
    from taskq.ratelimit import KeyedRateLimitRef
@@ -1218,7 +1218,7 @@ async def charge_card(payload: ChargePayload) -> None:
     ...
 ```
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # worker.py
 from taskq.worker.run import worker_main
 from taskq.settings import WorkerSettings

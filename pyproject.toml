@@ -698,6 +698,7 @@ markers = [
     "integration: marks tests requiring testcontainers",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
+    "docs_examples: executes docs code fences against the real package (requires TASKQ_DOCS_EXAMPLES=1 and Docker; see tests/test_docs_examples.py)",
     "e2e: end-to-end tests with containerized workers (requires --e2e opt-in; CI job 'e2e')",
     "system: system-e2e tier: stateful multi-process lifecycle simulations with worker subprocesses (requires --system-e2e opt-in; CI job 'system-e2e'); every test is also marked integration",
     "otel_validation: OTLP round-trip tests against a collector container (requires --otel-validation opt-in and Docker; see make test-otel)",
