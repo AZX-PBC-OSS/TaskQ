@@ -76,7 +76,7 @@ See [cli.md](cli.md) for the full option reference. The `--actors` argument is r
 
 `worker_main` is the production entry point. It sets up logging, starts an `asyncio.Runner`, and calls `_main` which wires the full TaskGroup.
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import registry
@@ -91,7 +91,7 @@ exit_code = worker_main(settings, actor_registry=registry)
 
 `worker_main` returns an `int` exit code (0 on clean shutdown). In a container entrypoint:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 import contextlib
 import signal
 import sys
@@ -261,7 +261,7 @@ row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
     declaration, so fixing starvation means changing the *producer*, not just
     the queue:
 
-    ```python
+    ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
     # Without fairness_key, set-mode round_robin is inert.
     await client.enqueue(process_doc, payload, fairness_key=payload.tenant_id)
     ```
@@ -409,7 +409,7 @@ Each consumer loop iteration follows this sequence:
 
 Each actor carries a `RetryPolicy`. The default policy is:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 RetryPolicy(
     kind="transient",
     max_attempts=3,
@@ -478,7 +478,7 @@ Cancellation is a three-phase protocol coordinated between the API layer (which 
 
 **Actor-side cooperative cancellation:**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 async def long_running(payload: MyPayload, ctx: JobContext[MyPayload]) -> None:
     for chunk in chunks:
@@ -918,7 +918,7 @@ to `worker_main()`):
 taskq worker --actors myapp.actors:registry --until-idle
 ```
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 exit_code = worker_main(settings, actor_registry=registry, until_idle=True)
 # 0 = all jobs succeeded
 # 3 = some jobs failed
