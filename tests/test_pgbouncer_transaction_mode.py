@@ -64,6 +64,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.settings import make_integration_settings_dict
 from taskq.worker.deps import WorkerDeps, open_worker_deps
+from tests.conftest import interpreter_is_traced
 from tests.system_e2e._harness import graceful_stop, reap, spawn_worker, wait_worker_ready
 from tests.system_e2e.actors import SysPayload, sys_fast, sys_progress
 
@@ -515,10 +516,28 @@ async def test_pooler_with_prepared_statement_tracking_keeps_the_cache(
 
 
 @pytest.mark.timeout(240)
+@pytest.mark.load_sensitive
 async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     pgbouncer_stack: _PgBouncerStack, probe_schema: str
 ) -> None:
     """The full role split, live at once, on the naive pooler + the knob.
+
+    Load-sensitive, deliberately: the integration settings this test rides
+    give the heartbeat pool a 0.1s command budget
+    (``make_integration_settings_dict``'s ``TASKQ_HEARTBEAT_COMMAND_TIMEOUT=0.1``,
+    sized for the chaos tiers' lease-cascade arithmetic, not for wall-clock
+    headroom), and the topology pins read ``pg_stat_activity`` through that
+    same pool. Under parallel-lane neighbors a descheduled loop or a
+    co-tenanted runner lets a healthy ~1ms round trip outlive the 0.1s
+    budget, and asyncpg's protocol timer fires the bare TimeoutError
+    (``protocol.pyx`` ``_on_timeout``) on a healthy run - observed on the
+    coverage/test lanes (run 36768177771: the red landed in
+    ``heartbeat_jobs`` itself). The pin belongs on the quiet serial lane
+    where a budget firing means a real hang and nothing else - the
+    ``test_full_fleet_geometry_saturates_without_livelock`` doctrine. Its
+    own 45s budget probe stays out of the coverage lane with the same
+    ``interpreter_is_traced`` guard the fleet pins use: under tracing, a
+    timing pin measures the tracer, not the code.
 
     One ``open_worker_deps`` under the documented env split: jobs enqueued
     and completed through the pooler, claims + heartbeat renewals through
@@ -531,6 +550,8 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     with every role direct (the fallback topology), same schema, same
     round count — surfaced in the run output for the deployment guide.
     """
+    if interpreter_is_traced():
+        pytest.skip("the heartbeat pool's 0.1s command budget measures the tracer, not the code")
     stack = pgbouncer_stack
     ledger = await _migrated_conn(stack.direct_dsn, probe_schema)
     # The admin lane gets its OWN direct connection: the concurrency this
