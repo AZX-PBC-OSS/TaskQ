@@ -236,6 +236,63 @@ class _TickBudgetExhaustedError(TimeoutError):
         self.skipped_slots = skipped_slots
 
 
+_SKIP_WALK_BUDGET_FRACTION: Final = 0.1
+"""Share of the whole-tick deadline the catch-up skip-count walk may spend.
+
+The beyond-window branch of :func:`_plan_fire` counts the dropped slots by
+hopping the schedule forward one ``compute_next_fire_after`` call per
+missed occurrence, from the owed slot to the recomputed fire.  The hop
+count is the BACKLOG DEPTH, and nothing about it is under the operator's
+control: a fleet down for a week leaves a ``* * * * * */5`` schedule
+(17280 slots a day) owing ~121k hops, and at tens of microseconds a hop
+the walk alone outlives the leader's whole-tick ``asyncio.timeout``.  The
+tick then dies to cancellation every time, its transaction rolls back
+with ``next_fire_at`` unadvanced, and the identical batch -- the overdue
+schedule still first in ``next_fire_at`` order -- is re-selected one
+second later: a permanent, fleet-wide cron livelock with a warning as the
+only symptom.
+
+The walk is TELEMETRY, the fire itself lands at the recomputed slot
+regardless, so the bound costs nothing but counting precision.  The
+budget is a tick-scoped WALK-TIME accumulator (:class:`_SkipWalkBudget`):
+every walk of the tick spends from one slice
+(``_SKIP_WALK_BUDGET_FRACTION`` of ``dispatcher_command_timeout``, 0.5s
+at defaults) measured as the walk's OWN elapsed time, never the tick's.
+Two properties fall out.  Payload-factory time cannot consume it -- a
+factory's grant and a walk's count are different resources, and a
+schedule planned behind a slow factory must still count its own shallow
+backlog exactly (the deferred-overdue pin).  And a batch of
+simultaneously-overdue fine-grained schedules cannot sum past the slice
+the way per-schedule grants would: the first walk spends the budget
+counting its backlog in depth, the rest trip instantly.  A walk the
+budget cuts off reports the count it reached, a FLOOR, and flags it
+``skipped_slots_partial`` on the warning, the ``cron fired`` line and the
+fire span: the counter and the depth gauge then read a lower bound, which
+every consumer tolerates -- the runaway predicate compares the depth
+against the cron period, and any backlog deeper than the cap is deeper
+than any period.  What the bound buys is the fire: the tick commits, the
+schedule advances past the backlog in one hop, and the fleet ticks on.
+"""
+
+
+class _SkipWalkBudget:
+    """The tick's shared walk-time slice, spent only by skip-count walks.
+
+    ``remaining`` is seconds of walk time left this tick; a walk charges
+    its own elapsed time against it when it finishes (or trips).  It is a
+    mutable cell threaded through :func:`_plan_fire` because the budget is
+    the TICK's, not the schedule's: per-schedule slices would let a batch
+    of overdue fine-grained schedules sum past the whole-tick deadline,
+    the exact aggregate hazard the factory grants bound with the same
+    one-pot discipline.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, total: float) -> None:
+        self.remaining = total
+
+
 _TICK_BUDGET_RETRY_DELAY: Final = timedelta(seconds=1.0)
 """How far a budget-deferred schedule's ``next_fire_at`` advances: one
 leader cadence, NOT the schedule's next cron slot.
@@ -650,6 +707,12 @@ class _FireSuccess:
     # fire that owed nothing. The counter and gauge ride the tick's
     # commit-gated emission; the plan merely CARRIES the count here.
     skipped_slots: int = 0
+    # True when the skip-count walk spent its slice of the tick budget
+    # (:data:`_SKIP_WALK_BUDGET_FRACTION`) before reaching the recomputed
+    # fire: the count is then a FLOOR, not the depth, and every surface
+    # that shows the count flags it. Absent-count semantics are unchanged:
+    # the fire lands at the recomputed slot either way.
+    skipped_slots_partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1392,6 +1455,9 @@ async def tick_cron(
     # buffered here and exported ONLY after every statement of the tick
     # has executed, see the emission section at the end of this function.
     failure_telemetry: list[_BufferedFailureTelemetry] = []
+    # The tick's shared walk-time slice for the skip-count walks (see
+    # _SKIP_WALK_BUDGET_FRACTION): one pot for the whole batch.
+    walk_budget = _SkipWalkBudget(settings.dispatcher_command_timeout * _SKIP_WALK_BUDGET_FRACTION)
 
     for row in rows:
         current_span = trace.get_current_span()
@@ -1420,6 +1486,7 @@ async def tick_cron(
                     actor_configs,
                     actor_policies,
                     tick_started=tick_started,
+                    walk_budget=walk_budget,
                 )
                 successes.append(plan)
                 if plan.skipped_slots:
@@ -1430,6 +1497,8 @@ async def tick_cron(
                     # not set -- a clean fire's span says nothing, the
                     # attribute's ABSENCE is the clean reading.
                     fire_span.set_attribute("taskq.cron.skipped_slots", plan.skipped_slots)
+                    if plan.skipped_slots_partial:
+                        fire_span.set_attribute("taskq.cron.skipped_slots_partial", True)
             except _TickBudgetExhaustedError as budget_exc:
                 # Budget deferral, not a failure: ordered BEFORE the
                 # generic except because this exception subclasses
@@ -1643,6 +1712,10 @@ async def tick_cron(
                 # 0 for a fire that owed nothing, so the field's presence
                 # never has to be guessed at on a log dashboard.
                 skipped_slots=plan.skipped_slots,
+                # False means the count above is exact; True means the
+                # walk's tick-budget slice expired mid-backlog and the
+                # count is a floor (see _SKIP_WALK_BUDGET_FRACTION).
+                skipped_slots_partial=plan.skipped_slots_partial,
             )
             if plan.skipped_slots:
                 record_cron_skipped_slots(plan.actor, plan.skipped_slots)
@@ -1930,6 +2003,7 @@ async def _plan_fire(
     actor_policies: Mapping[str, ActorFirePolicy] | None = None,
     *,
     tick_started: float,
+    walk_budget: _SkipWalkBudget,
 ) -> _FireSuccess:
     """Plan one due schedule's fire: resolve the fire time (miss handling),
     payload and enqueue args, and the next ``next_fire_at``, all in memory,
@@ -1944,7 +2018,10 @@ async def _plan_fire(
 
     *tick_started* is the tick's ``time.monotonic()`` origin; the payload
     factory's deadline is clamped against what is left of the leader's
-    whole-tick budget from it (see :func:`_factory_deadline`).  When no
+    whole-tick budget from it (see :func:`_factory_deadline`).
+    *walk_budget* is the tick's shared skip-count walk slice
+    (:class:`_SkipWalkBudget`); a backlog that outlives it counts a
+    flagged floor instead of outliving the tick.  When no
     fundable grant remains, the leftover is spent, or below the minimum
     fundable grant, a factory-backed schedule raises
     :class:`_TickBudgetExhaustedError`, the factory is never called, so
@@ -1984,13 +2061,24 @@ async def _plan_fire(
     # future, so a SUSTAINED drop count means the schedule keeps losing
     # the race, exactly the signal.
     skipped_slots = 0
+    # The walk is bounded by the tick's shared walk-time slice (see
+    # _SKIP_WALK_BUDGET_FRACTION): a deep backlog trips the budget, the
+    # count stops at its floor, and the fire proceeds. The walk charges
+    # its OWN elapsed time, so factory time ahead of it cannot consume the
+    # budget a shallow backlog still needs.
+    skipped_slots_partial = False
     if fire_at < catch_up_cutoff:
         recomputed_fire = compute_next_fire_after(
             row["cron_expr"], row["timezone"], server_now, dst_strategy=dst_strategy
         )[0]
         recomputed_fire_utc = recomputed_fire.astimezone(UTC)
         cursor = fire_at
+        walk_started = time.monotonic()
+        walk_allowance = walk_budget.remaining
         while cursor.astimezone(UTC) < recomputed_fire_utc:
+            if time.monotonic() - walk_started >= walk_allowance:
+                skipped_slots_partial = True
+                break
             nxt = compute_next_fire_after(
                 row["cron_expr"], row["timezone"], cursor, dst_strategy=dst_strategy
             )[0]
@@ -2001,6 +2089,7 @@ async def _plan_fire(
                 break
             skipped_slots += 1
             cursor = nxt
+        walk_budget.remaining -= time.monotonic() - walk_started
         fire_at = recomputed_fire
         log.warning(
             "cron missed slots skipped",
@@ -2008,6 +2097,7 @@ async def _plan_fire(
             actor=row["actor"],
             schedule_id=str(row["id"]),
             skipped_slots=skipped_slots,
+            skipped_slots_partial=skipped_slots_partial,
         )
 
     actor: str = row["actor"]
@@ -2148,4 +2238,5 @@ async def _plan_fire(
         queue=ac.queue,
         prev_consecutive=row["consecutive_failures"] or 0,
         skipped_slots=skipped_slots,
+        skipped_slots_partial=skipped_slots_partial,
     )

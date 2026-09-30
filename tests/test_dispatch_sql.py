@@ -264,12 +264,29 @@ class TestDispatchStrictFifoSql:
         locked_body = _cte_body(rendered, "locked")
         assert "OVER (" not in locked_body
 
-    def test_eligible_candidates_contains_boolean_gate(self) -> None:
-        rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
-        body = _cte_body(rendered, "eligible_candidates")
-        assert "max_concurrent IS NULL" in body
-        assert "r.in_flight" in body
-        assert "< ac.max_concurrent" in body
+    def test_eligible_candidates_gate_is_the_where_not_a_column(self) -> None:
+        """The cap gate lives ONLY in the WHERE clause: an in_flight at or
+        past the cap drops the row, the live actor_rank window re-limits
+        admission in `eligible`.
+
+        The gate must NOT also be projected as a boolean column: the shipped
+        shape carried a dead `boolean_gate` column computing the identical
+        predicate its WHERE already applied, and no downstream CTE read it
+        (the pin below is red on that shape). A second copy of the gate
+        invites exactly the drift JOB_FENCE_SQL's single-fragment doctrine
+        exists to prevent: the column and the WHERE edited apart in one
+        variant silently diverge the cap decision.
+        """
+        for rendered in (DISPATCH_STRICT_FIFO_SQL, DISPATCH_ROUND_ROBIN_SQL):
+            body = _cte_body(rendered, "eligible_candidates")
+            assert "max_concurrent IS NULL" in body
+            assert "r.in_flight" in body
+            assert "< ac.max_concurrent" in body
+            assert "AS boolean_gate" not in body, (
+                "the cap gate must be the WHERE clause alone; a projected "
+                "boolean copy of the same predicate is dead weight in the "
+                "hot claim statement and a drift hazard between the two"
+            )
 
     def test_eligible_candidates_contains_actor_rank_window(self) -> None:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
@@ -330,12 +347,12 @@ class TestDispatchStrictFifoSql:
         eligible_candidates_body = _cte_body(rendered, "eligible_candidates")
         assert "OVER (" in candidates_body or "OVER (" in eligible_candidates_body
 
-    def test_eligible_candidates_contains_boolean_gate_and_actor_rank_columns(self) -> None:
-        """Both boolean_gate and actor_rank columns are critical for
-        concurrency enforcement."""
+    def test_eligible_candidates_contains_actor_rank_columns(self) -> None:
+        """The actor_rank window is critical for concurrency enforcement:
+        it re-limits admission to the capacity remaining after the lock
+        stage (`eligible`'s actor_rank <= max_concurrent - in_flight)."""
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         body = _cte_body(rendered, "eligible_candidates")
-        assert "AS boolean_gate" in body
         assert "AS actor_rank" in body
 
     def test_oversample_parameterized(self) -> None:
@@ -458,7 +475,7 @@ class TestDispatchStrictFifoSql:
         """Verify essential structural patterns are present:
         - FOR UPDATE OF ... SKIP LOCKED for atomic row locking
         - DISTINCT ON for per-identity dedup and serialization
-        - boolean_gate concurrency cap via LEFT JOIN + COUNT
+        - the WHERE-side concurrency gate (max_concurrent vs in_flight)
         - LATERAL per-actor subquery for bounded subset exploration
         - the id set finalized before the heap re-join, bounded by a
           parameterized LIMIT for depth-safe execution
@@ -466,7 +483,7 @@ class TestDispatchStrictFifoSql:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         assert "FOR UPDATE OF j2 SKIP LOCKED" in rendered
         assert "DISTINCT ON" in rendered
-        assert "boolean_gate" in rendered
+        assert "r.in_flight < ac.max_concurrent" in rendered
         assert "CROSS JOIN LATERAL" in rendered
         assert "top_ids AS (" in rendered
         assert "ranked AS MATERIALIZED (" in rendered

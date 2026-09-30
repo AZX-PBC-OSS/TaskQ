@@ -881,9 +881,15 @@ _SESSION_GONE_ERRORS: Final[tuple[type[BaseException], ...]] = (
     OSError,
 )
 
+#: Upper bound on the verdict-reading release drain (see
+#: ``_release_session_lock``). TaskQ's own protocol stacks at most one
+#: hold per attempt on a session, so a handful of rounds is generous;
+#: exhausting the bound is an error, never a silent partial release.
+_RELEASE_DRAIN_ROUNDS: Final[int] = 8
+
 
 async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) -> None:
-    """Release a session-level advisory lock on *conn*, loudly.
+    """Release a session-level advisory lock on *conn*, loudly, TO ZERO.
 
     A session advisory lock outlives transactions and dies only with its
     session, so an unlock failure on a connection that returns to the pool
@@ -891,25 +897,53 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
     attempt on any pod reads as lock-held for the whole retention horizon.
     The release is therefore never a silent suppress: the plain unlock
     statement runs first (one round trip, the pre-existing happy path),
-    and a transient failure of it, a server-side cancel or a client-side
-    command timeout landing mid-unlock, is warned about and recovered by
-    re-issuing the unlock while READING ``pg_advisory_unlock``'s boolean
-    verdict. The verdict is what makes the retry a recovery rather than a
-    second guess: after a canceled or timed-out statement the attempt's
-    effect is unknown (a client-side timeout can race the statement's
-    completion server-side), and only the verdict settles whether the lock
-    is still held, True, the retry released it; False, this session no
-    longer holds it because the raced attempt already had. A retry failing
-    with the connection-gone family resolved itself (the session died with
-    its locks); any other retry failure leaves the release unconfirmed on
-    a live session and is logged as an error naming the strand, an
-    operator-visible condition instead of a silent one. Errors outside the
-    transient set propagate unchanged, the loops' loud-crash doctrine for
-    non-transient surprises.
+    and the verdict-reading drain that follows releases until the session
+    holds nothing. The drain is what makes the release total rather than
+    a single pop: ``pg_try_advisory_lock`` is REENTRANT per session, so a
+    session whose earlier release ended unconfirmed (the raced-attempt
+    shape below) and which then re-acquired carries a hold COUNT above
+    one, and popping one count would report success while the session
+    still holds the lock - every later attempt on any pod reads held
+    forever. Each drained count logs ``advisory-unlock-recovered`` with
+    the verdict, so the stack is visible in the logs as it goes.
+
+    A transient failure of the first attempt, a server-side cancel or a
+    client-side command timeout landing mid-unlock, is warned about and
+    recovered by the same drain while READING ``pg_advisory_unlock``'s
+    boolean verdict. The verdict is what makes the retry a recovery
+    rather than a second guess: after a canceled or timed-out statement
+    the attempt's effect is unknown (a client-side timeout can race the
+    statement's completion server-side), and only the verdict settles
+    whether the lock is still held, True, the retry released it; False,
+    this session no longer holds it because the raced attempt already
+    had. A drain round failing with the connection-gone family resolved
+    itself (the session died with its locks); any other drain failure
+    leaves the release unconfirmed on a live session and is logged as an
+    error naming the strand, an operator-visible condition instead of a
+    silent one. Errors outside the transient set propagate unchanged, the
+    loops' loud-crash doctrine for non-transient surprises.
+
+    The drain is bounded well above any count TaskQ's own protocol can
+    stack (one acquire per attempt); exhausting it is logged as an error,
+    not trusted as released.
+
+    The zero-confirmation is what the terminal drain round is FOR, and it
+    has a visible cost an operator must be able to explain:
+    ``pg_advisory_unlock`` on a lock the session does not hold answers
+    False AND raises a server-side ``WARNING: you don't own a lock of type
+    ExclusiveLock`` — so every release whose drain reaches zero writes
+    that one line to the PostgreSQL server log (asyncpg drops the notice;
+    the server log is the surface it reaches). This is expected, once per
+    release, benign — the price of confirming zero instead of trusting a
+    pop — and there is no warning-free way to confirm zero (probing the
+    hold count through ``pg_locks`` fails on 64-bit advisory keys, whose
+    ``objid`` column cannot represent them; ``pg_try_advisory_lock`` as a
+    probe would itself re-acquire, reentrant). A steady pile of that exact
+    line from the sweep pools is this drain working, not a locking fault;
+    a DIFFERENT lock name or an unfamiliar key in the same warning is.
     """
     try:
         await conn.execute(_ADVISORY_UNLOCK_SQL, lock_name)
-        return
     except TRANSIENT_PG_ERRORS as exc:
         log.warning(
             "advisory-unlock-attempt-failed",
@@ -917,38 +951,52 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
             lock=lock_name,
             error=repr(exc),
         )
-    try:
-        released = await conn.fetchval(_ADVISORY_UNLOCK_SQL, lock_name)
-    except _SESSION_GONE_ERRORS:
-        log.warning(
-            "advisory-unlock-session-gone",
+    for _ in range(_RELEASE_DRAIN_ROUNDS):
+        try:
+            released = await conn.fetchval(_ADVISORY_UNLOCK_SQL, lock_name)
+        except _SESSION_GONE_ERRORS:
+            log.warning(
+                "advisory-unlock-session-gone",
+                kind=kind,
+                lock=lock_name,
+            )
+            return
+        except TRANSIENT_PG_ERRORS as exc:
+            log.error(
+                "advisory-unlock-unconfirmed",
+                kind=kind,
+                lock=lock_name,
+                error=repr(exc),
+            )
+            return
+        if released is None:
+            # No verdict came back (a driver shape that returned no row): the
+            # release is unconfirmed, not recovered.
+            log.error(
+                "advisory-unlock-unconfirmed",
+                kind=kind,
+                lock=lock_name,
+                error="pg_advisory_unlock returned no verdict",
+            )
+            return
+        if released is False:
+            # The session holds nothing: the release is total. The server
+            # raises its benign "you don't own a lock" WARNING for this
+            # exact round (see the docstring: the unavoidable cost of
+            # confirming zero).
+            return
+        log.info(
+            "advisory-unlock-recovered",
             kind=kind,
             lock=lock_name,
+            released_by_retry=True,
         )
-        return
-    except TRANSIENT_PG_ERRORS as exc:
-        log.error(
-            "advisory-unlock-unconfirmed",
-            kind=kind,
-            lock=lock_name,
-            error=repr(exc),
-        )
-        return
-    if released is None:
-        # No verdict came back (a driver shape that returned no row): the
-        # release is unconfirmed, not recovered.
-        log.error(
-            "advisory-unlock-unconfirmed",
-            kind=kind,
-            lock=lock_name,
-            error="pg_advisory_unlock returned no verdict",
-        )
-        return
-    log.info(
-        "advisory-unlock-recovered",
+    log.error(
+        "advisory-unlock-drain-exhausted",
         kind=kind,
         lock=lock_name,
-        released_by_retry=released is True,
+        rounds=_RELEASE_DRAIN_ROUNDS,
+        error="the session still holds the lock after the release drain",
     )
 
 

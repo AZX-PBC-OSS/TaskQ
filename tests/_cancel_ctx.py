@@ -27,13 +27,19 @@ class StubPayload(BaseModel):
     """Minimal payload for a cancel-path JobContext."""
 
 
-def make_ctx(job_id: UUID, worker_id: UUID) -> JobContext[BaseModel]:
+def make_ctx(
+    job_id: UUID,
+    worker_id: UUID,
+    *,
+    attempt: int = 1,
+    claim_epoch: int = 0,
+) -> JobContext[BaseModel]:
     return JobContext(
         job_id=job_id,
         actor="test_actor",
         queue="default",
-        attempt=1,
-        claim_epoch=0,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
         worker_id=worker_id,
         payload=StubPayload(),
         jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),

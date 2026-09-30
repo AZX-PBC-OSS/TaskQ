@@ -440,11 +440,14 @@ default for direct callers and matches the default deployment shape.
 DEFAULT_PRUNE_RETENTION: Final[timedelta] = timedelta(days=30)
 """Fallback retention for a terminal status with no configured period.
 
-The effective value is ``WorkerSettings.prune_retention_period`` (and the
-per-status fields that override it); the sweep uses this constant when
-``retention_per_status`` has no entry for a status, so a status added to
-``TERMINAL_STATUSES`` without a matching setting is retained rather than
-pruned immediately.
+The sweep builds ``retention_per_status`` from the per-status settings
+(``prune_retention_succeeded``/``failed``/``cancelled``/``abandoned``,
+crashed sharing abandoned's field); it uses this constant when that dict
+has no entry for a status, so a status added to ``TERMINAL_STATUSES``
+without a matching setting is retained rather than pruned immediately.
+(``WorkerSettings.prune_retention_period``, the global-fallback field,
+is currently INERT - the per-status fields cover every terminal status,
+see its own description.)
 """
 
 DEFAULT_EVENT_RETENTION_PERIOD: Final[timedelta] = timedelta(days=7)

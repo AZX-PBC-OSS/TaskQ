@@ -543,6 +543,7 @@ async def dispatch_one_job(
     async with AsyncExitStack() as conn_stack:
         job_enqueuer: SubJobEnqueuer = enqueuer
         transaction_conn: ConnLike | None = None
+        batch_reissue_owed = False
         actor_loop_slot_values: Mapping[type, object] | None = None
         if deps.slot_pool is not None:
             slot_pool = deps.slot_pool
@@ -840,11 +841,20 @@ async def dispatch_one_job(
                         # Best-effort: a crash between the terminal write and
                         # the counter increment loses that increment.  See
                         # apply_batch_terminal_outcome docstring for full
-                        # safety-net semantics (M7).
+                        # safety-net semantics (M7). The hook's reissue-owed
+                        # return is captured (batch_reissue_owed below), not
+                        # dropped: on the transactional-caller shape a
+                        # gated-out completion attempt is unordered with this
+                        # dispatch's own commit, and the contract the hook's
+                        # docstring states -- the CALLER honors it with one
+                        # post-commit re-arbitration -- is honored at the
+                        # conn_stack exit below, after every transaction on
+                        # the slot connection has ended.
                         try:
-                            await apply_batch_terminal_outcome(
+                            if await apply_batch_terminal_outcome(
                                 backend, job, outcome, transaction_conn=transaction_conn
-                            )
+                            ):
+                                batch_reissue_owed = True
                         except Exception:
                             logger.exception("batch-policy-hook-failed", job_id=str(job.id))
 
@@ -928,9 +938,10 @@ async def dispatch_one_job(
                         # handler outcomes ("scheduled") return inside the
                         # hook without touching a counter.
                         try:
-                            await apply_batch_terminal_outcome(
+                            if await apply_batch_terminal_outcome(
                                 backend, job, outcome, transaction_conn=transaction_conn
-                            )
+                            ):
+                                batch_reissue_owed = True
                         except Exception:
                             logger.exception("batch-policy-hook-failed", job_id=str(job.id))
         finally:
@@ -944,5 +955,23 @@ async def dispatch_one_job(
                 consumed = _to_consumed_outcome(outcome)
                 record_consumed_message(job.actor, job.queue, outcome=consumed)
                 record_process_duration(job.actor, job.queue, elapsed, outcome=consumed)
+
+    # The transactional-caller reissue (#589's contract): a completion
+    # attempt that gated out while riding this dispatch's transaction was
+    # never ordered against its own commit, so the batch is owed one
+    # re-arbitration AFTER the transaction ends -- this attempt's snapshot
+    # postdates every writer's commit, its probe sees zero open members,
+    # and it lands. Without it, a burst-shaped drain leaves the
+    # all-terminal batch 'active' with no attempt left to land -- the
+    # stuck-batch hole the reissue closes. Best-effort (M7): a failure here
+    # is logged and the leader's stale-batch sweep remains the safety net;
+    # the CancelledError arm above re-raises past this point, where the
+    # sweep covers it. The autonomous shape (no open transaction at hook
+    # time) never sets the flag.
+    if batch_reissue_owed and batch_id:
+        try:
+            await backend.complete_batch(UUID(batch_id))
+        except Exception:
+            logger.exception("batch-policy-reissue-failed", job_id=str(job.id))
 
     return outcome
