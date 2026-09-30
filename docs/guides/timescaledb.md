@@ -53,7 +53,14 @@ states which feature set is in force (`timescale` — older builds spell it
 Apache-2 feature set, whether that is a separate Apache-edition build or a
 TSL-capable build configured down with
 `ALTER SYSTEM SET timescaledb.license = 'apache'`). Nothing in the settings
-influences the verdict. `taskq doctor` renders the detected mode as the
+influences the verdict. One corner older than the GUC itself: a build with
+the extension installed but NO `timescaledb.license` setting at all falls
+back to the compression machinery's presence (`to_regproc('compress_chunk')`
+— defined by TSL-capable builds, absent from Apache-edition ones), the only
+capability the classification exists to distinguish at those ages; an
+unrecognized license spelling takes the same machinery probe (the string is
+never trusted over what the server can actually do).
+`taskq doctor` renders the detected mode as the
 **first finding family** of every report, with the mode's capability
 consequences in one glance — run it on any environment to see which mode
 that database actually presents.
@@ -64,6 +71,7 @@ branches actually implement, not aspiration:
 | Capability | `timescale-tsl` | `timescale-apache` | `vanilla` |
 |---|---|---|---|
 | Detected by | extension installed, license `timescale`/`tsl` | extension installed, license `apache` | no extension installed |
+| Detected by (the GUC-absent corner) | extension installed, no `timescaledb.license` GUC, `to_regproc('compress_chunk')` defined | extension installed, no `timescaledb.license` GUC, `compress_chunk` absent — or any unrecognized license spelling | — |
 | Hypertables (the three retention tables) | **yes** | **yes** (conversion itself is Apache-licensed) | **no** — plain tables |
 | Columnstore (compression) on the archives | **yes** — the two archive tables; `job_events` stays rowstore by measurement | **no** — a Timescale-license feature; the server refuses every compression API (measured on 2.30.1: `FeatureNotSupportedError`) | **no** |
 | Policy-driven chunk-drop retention | **yes** — retention + compression policies registered per deploy | **no** — the policies are *also* Timescale-license features; the server refuses `add_retention_policy` under the license (measured on 2.30.1) | **no** |
@@ -456,6 +464,11 @@ fully passed its retention. Two consequences to know:
   Postgres or any probe error) and bounds its DELETE with it: rows older
   than the floor are the POLICY's — silently, chunk-granular, watermark-blind
   — and the sweep no longer pays the chunk-fan-out tax to re-delete them.
+  The ownership claim requires the policy to actually RUN: a PAUSED job
+  (`alter_job(job_id, scheduled => FALSE)`) is registered but never
+  executes, so it reads as "no floor" — the sweep resumes full-range on
+  the aged end rather than deferring to a policy that will never take it
+  (pinned by the interplay module's paused-policy test).
   Below the floor the sweep owns deletion row-exactly: the event TTL sweep
   honors the reclaim-outbox carve-out there, and the archive expiry sweep
   honors `expire_at` exactly inside chunk lifetime (the policy's clock is

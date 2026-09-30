@@ -667,8 +667,16 @@ outcome:
   is **aborted**: all pending and scheduled jobs are cancelled
   (`pending` / `scheduled` → `cancelled`) and the batch row is set to
   `aborted`. Running jobs continue to completion.
-- **`cancelled`** / **`crashed`** do not touch the failure counter; they count
-  remaining non-terminal jobs and complete the batch if none remain.
+- **`cancelled`** / **`crashed`** do not touch the failure counter; they issue a
+  completion attempt, and the batch completes if no members remain. The
+  attempt is arbitrated server-side against the live member set, so a stale
+  or concurrent attempt can delay completion but never complete a batch that
+  still has non-terminal members. All of these writes are best-effort: a
+  crash (or a bounded lock wait) between a job's terminal write and its
+  counter/abort/complete write loses that one write, and the leader's
+  stale-batch sweep reconciles the batch's status; a lost failure increment
+  delays a threshold abort (it fires on the next failure) rather than
+  preventing it.
 
 ### `AbortBatchAfter`
 
@@ -1642,6 +1650,12 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+!!! note "The worker must consume the actor's queue"
+    This actor is declared on `queue="media"`; a worker started without
+    `--queues media` consumes only `default`, so `handle.wait()` would time
+    out with the job parked and nothing to claim it:
+    `taskq worker --actors myapp.actors:registry --queues media`.
 
 ---
 

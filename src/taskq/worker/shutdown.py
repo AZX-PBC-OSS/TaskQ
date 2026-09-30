@@ -422,7 +422,30 @@ async def orchestrate_shutdown(
             elapsed_seconds=0.0,
         )
         deps.producer_stop_event.set()
-        await drain_local_queue_to_pending(deps, worker_id)
+        # The DRAINING failure containment: the helper contains the
+        # transient-PG shapes itself (log + return 0, its backstop
+        # doctrine), but a NON-transient one - a data error, a dropped
+        # table, the schema-identifier contract - escapes it. Uncontained
+        # here, the exception collapses the phase train: CANCELLING never
+        # stamps the in-flight jobs' origins, FORCING never delivers
+        # task.cancel(), RELEASING never releases, and the jobs the
+        # shutdown owes its writes are thrown to the watchdog's os._exit
+        # and the lease-expiry sweep while the exception sits unretrieved
+        # in the orchestrator task until _main joins it after the whole
+        # worker has exited. One pass, no retry (the watchdog owns the
+        # budget; the sweep is the backstop - the same no-retry doctrine
+        # the release arm carries), the failure loud and the train
+        # continuing.
+        try:
+            await drain_local_queue_to_pending(deps, worker_id)
+        except Exception as exc:
+            _log.error(
+                "drain-phase-failed",
+                kind="drain_phase_failed",
+                worker_id=str(worker_id),
+                error_class=type(exc).__name__,
+                error=str(exc),
+            )
 
         # ── Phase 2: CANCELLING ────────────────────────────────────────
         deps.shutdown_phase = ShutdownPhase.CANCELLING
