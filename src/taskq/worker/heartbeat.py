@@ -193,9 +193,22 @@ def _lease_renewal_threshold(
       harvest.
 
     The comparison itself is server-side (``lock_expires_at <=
-    clock_timestamp() + $4`` in the gated statement), so worker-clock
-    skew cannot move the threshold: the same clock that stamped the
-    lease judges it.
+    statement_timestamp() + $4`` in the gated statement), on the clock
+    that stamped the lease - worker-clock skew cannot move the
+    threshold. ``statement_timestamp()`` rather than
+    ``clock_timestamp()`` is deliberate: the VOLATILE
+    ``clock_timestamp()`` bound cannot be an index condition, and the
+    gated renewal's expiry arm must drive
+    ``jobs_running_lock_expires_idx`` as an Index Cond to stay O(due
+    rows) instead of O(held rows) per beat (see
+    UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE and backend/_sweeps.py's
+    module docstring, whose sweep made the same trade for the same
+    reason). ``statement_timestamp()`` is the same server clock, read
+    at the renewal statement's start - at most the tick's
+    in-transaction elapsed time (bounded by the command budget,
+    milliseconds) earlier than a ``clock_timestamp()`` read, which can
+    only make the gate renew EARLIER, the strictly safe direction of
+    that error.
 
     Pacing correction: a FAILED tick is not a
     beat. After a tick that raised, the loop retries promptly, after

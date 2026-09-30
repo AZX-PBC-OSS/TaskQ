@@ -2020,7 +2020,12 @@ def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
     assert gated_jobs == UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE.format(schema="taskq")
     assert "heartbeat_timeout IS NOT NULL" in gated_jobs
     assert "lock_expires_at IS NULL" in gated_jobs
-    assert "lock_expires_at <= clock_timestamp() + $4::interval" in gated_jobs
+    # statement_timestamp(), not clock_timestamp(): the VOLATILE
+    # clock_timestamp() bound cannot be an index condition, and the
+    # expiry arm must drive jobs_running_lock_expires_idx (see the
+    # template's comment). Both are the server clock that stamped the
+    # lease - skew cannot move the gate.
+    assert "lock_expires_at <= statement_timestamp() + $4::interval" in gated_jobs
     assert "NOT (id = ANY($3::uuid[]))" in gated_jobs
     assert "NOT (id = ANY($3::uuid[]))" in plain_jobs
 
@@ -2037,7 +2042,7 @@ async def test_heartbeat_loop_binds_the_renewal_threshold() -> None:
     jobs_calls = [(sql, args) for sql, args in pool.execute_calls if "lock_expires_at" in sql]
     assert jobs_calls, "the tick must issue the jobs-lock renewal"
     sql, args = jobs_calls[0]
-    assert "clock_timestamp() + $4::interval" in sql
+    assert "lock_expires_at <= statement_timestamp() + $4::interval" in sql
     expected = _lease_renewal_threshold(
         timedelta(seconds=deps.settings.lock_lease),
         deps.settings.heartbeat_interval,

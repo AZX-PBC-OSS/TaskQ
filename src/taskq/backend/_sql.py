@@ -173,7 +173,7 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # tags/metadata), per running row, per beat, fleet-wide. The gate renews
 # only rows whose lease is at or under the threshold ($4, computed by
 # the caller: see _lease_renewal_threshold in taskq.worker.heartbeat for
-# the sizing derivation). At the default settings the threshold (56s)
+# the sizing derivation). At the default settings the threshold (58s)
 # sits under one beat's decay of the 60s lease, so a healthy worker
 # rewrites its leases every beat, byte-identical to the unconditional
 # renewal. The gate defers nothing at the default lease; it only starts
@@ -181,33 +181,92 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # savings begin at leases of about 70s (every second beat, 2x fewer
 # rewrites) and grow with the lease from there.
 #
-# The three OR arms, each essential:
-# * heartbeat_timeout IS NOT NULL, the per-job heartbeat promise: the
-#   reclaim sweep's heartbeat arm reclaims such a row when
-#   last_heartbeat_at + heartbeat_timeout < now while the lease is STILL
-#   valid, so its beats must stay per-tick fresh. Skipping these rows to
-#   save the write would falsely crash-reclaim healthy jobs, the exact
-#   regression a naive "skip while more than half the lease remains"
-#   (the candidate) produces. Their last_heartbeat_at update is
-#   non-HOT anyway (jobs_running_heartbeat_deadline_idx is partial on
-#   heartbeat_timeout IS NOT NULL), so folding the lease extension into
-#   the same statement costs nothing extra for them.
-# * lock_expires_at IS NULL, direct-SQL-reachable shapes; the
-#   unconditional statement always renewed them, and the threshold
-#   comparison alone never would (NULL <= x is NULL).
-# * lock_expires_at <= clock_timestamp() + $4, the renewal threshold
-#   itself. Deliberately compared SERVER-side with the same clock that
-#   stamped lock_expires_at: a worker-clock skew cannot make a fresh
-#   lease look expired (or an expiring one look fresh) to this
-#   comparison, the way a client-side remaining-lease computation would.
-UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE = (
-    'UPDATE "{schema}".jobs '
-    "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
-    + _UPDATE_JOBS_LOCK_WHERE_CORE
-    + " AND (heartbeat_timeout IS NOT NULL"
-    " OR lock_expires_at IS NULL"
-    " OR lock_expires_at <= clock_timestamp() + $4::interval)"
+# The gate is a row-shortlist CTE (``due``) joined back by id, not an
+# OR'd WHERE predicate. The original spelling ANDed the three arms into
+# the searched set as one OR group beside ``locked_by_worker = $1``; an
+# OR group cannot be an index condition, and beside it the holder
+# conjunct made ``jobs_locked_by_worker_running_idx`` the only viable
+# plan - so the statement visited the worker's whole running fleet per
+# beat to decide that most rows need nothing: O(held rows) even when
+# O(1) rows renew. At 10k held rows the visit measured a Seq Scan over
+# the whole jobs table, linear in the fleet (and it rides the tick
+# path). The UNION arms instead give the planner one indexable shape
+# per arm:
+#
+# * the expiry arm (the threshold itself) and the NULL-lease arm carry
+#   NO ``locked_by_worker`` conjunct on purpose: with none, the ONLY
+#   index either arm can use is ``jobs_running_lock_expires_idx``
+#   (partial on status='running', keyed on lock_expires_at) - the range
+#   bound and the IS NULL cond are its Index Conds, so the scan visits
+#   the due set FLEET-WIDE (the due rows that exist, whichever worker
+#   holds them), then the outer UPDATE's WHERE core re-applies the
+#   holder and disowned predicates. In the deferred regime that set is
+#   the handful the beat must actually renew, independent of how many
+#   rows the worker holds; at the defaults it is the whole fleet, but
+#   there every row renews anyway and the non-HOT writes dominate - the
+#   read is no longer the marginal cost.
+# * the expiry bound is ``statement_timestamp()``, not
+#   ``clock_timestamp()``: clock_timestamp() is VOLATILE and cannot be
+#   an index condition at all (measured, see backend/_sweeps.py's
+#   module docstring - the reclaim sweep made the same
+#   statement_timestamp() trade for the same reason), while
+#   statement_timestamp() is STABLE within the statement. Both are the
+#   server clock that stamped lock_expires_at, so worker-clock skew
+#   still cannot move the gate; the bound reads earlier than a
+#   clock_timestamp() one by the tick's in-transaction elapsed time
+#   (bounded by the tick's command budget, milliseconds at the
+#   defaults), which makes the gate RENEW slightly EARLIER - strictly
+#   the safe direction of that error (see _lease_renewal_threshold: a
+#   renewal that lands early only widens the margin the floor sizes).
+# * the heartbeat arm KEEPS ``locked_by_worker = $1``: these rows renew
+#   on every beat regardless of lease - the reclaim sweep's heartbeat
+#   arm reclaims them on a stale last_heartbeat_at while the lease is
+#   STILL valid, so their beats must stay per-tick fresh - and the
+#   holder conjunct lets the planner take whichever of
+#   jobs_locked_by_worker_running_idx (the worker's own set) or
+#   jobs_running_heartbeat_deadline_idx (the heartbeat-configured set,
+#   its predicate verbatim) is smaller, so the arm never amplifies
+#   ACROSS workers: without the conjunct, every worker's beat would
+#   visit every worker's heartbeat set. Visiting this set per beat is
+#   required work, not waste - each row in it is written by this same
+#   statement anyway.
+# * the NULL-lease arm covers the direct-SQL-reachable shapes the
+#   unconditional statement always renewed and the range bound never
+#   selects (NULL <= x is NULL, and the partial index cannot serve a
+#   range that includes NULLs for a bound that excludes them).
+#
+# The arms are UNIONed (deduplicated): a row matching two arms (a
+# heartbeat_timeout row whose lease is also due) must appear once, and
+# the outer statement re-checks the full core either way, so arm
+# membership is a pure over-approximation of the old OR - the renewed
+# row set is provably identical. The join is ``UPDATE ... FROM`` with
+# ``jobs.id = due.id`` so the planner drives it from ``due`` (the
+# shortlist) into PK lookups; an ``id IN (SELECT ...)`` semi-join could
+# instead probe from the worker's fleet side, which reintroduces the
+# O(held rows) visit the CTE exists to remove.
+UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE = """\
+WITH due AS (
+    SELECT id FROM "{schema}".jobs
+    WHERE status = 'running' AND locked_by_worker = $1
+      AND NOT (id = ANY($3::uuid[]))
+      AND heartbeat_timeout IS NOT NULL
+    UNION
+    SELECT id FROM "{schema}".jobs
+    WHERE status = 'running'
+      AND NOT (id = ANY($3::uuid[]))
+      AND lock_expires_at IS NULL
+    UNION
+    SELECT id FROM "{schema}".jobs
+    WHERE status = 'running'
+      AND NOT (id = ANY($3::uuid[]))
+      AND lock_expires_at <= statement_timestamp() + $4::interval
 )
+UPDATE "{schema}".jobs
+SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2
+FROM due
+WHERE locked_by_worker = $1 AND status = 'running'
+  AND NOT (jobs.id = ANY($3::uuid[]))
+  AND jobs.id = due.id"""
 UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     'UPDATE "{schema}".reservation_slots '
     "SET lease_expires_at = clock_timestamp() + $2 "
