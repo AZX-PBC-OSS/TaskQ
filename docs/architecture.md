@@ -1109,7 +1109,8 @@ keeps winning.
 4. **Cron**: fires cron-scheduled actors at their declared cadence, at most
    `cron_tick_limit` schedules per one-second tick under the schema-qualified
    cron advisory lock (`taskq:cron:<schema>`, transaction-scoped).
-5. **Sweep (Sweeps 1, 2, 4)**: **leader-only** (gated on `ctx.deps.is_leader`),
+5. **Sweep (Sweeps 1, 2, 4)**: **leader-only** (gated on `ctx.deps.leading()`,
+   the trust-narrowed gate, not the bare event),
    runs every `sweep_interval` (default 30 s): `reclaim_expired_locks`
    (Sweep 1, uses `FOR UPDATE SKIP LOCKED`), `deadline_sweep` (Sweep 2), and,
    when the backend supports them, `sweep_leaked_reservation_slots` (Sweep 4),

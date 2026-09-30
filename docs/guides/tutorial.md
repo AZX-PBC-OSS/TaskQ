@@ -59,8 +59,16 @@ registry = [compile_digest]
 Start a worker:
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
+
+!!! note "A worker consumes only the `default` queue unless told otherwise"
+    `compile_digest` is declared on `queue="digests"`, and `TASKQ_QUEUES`
+    defaults to `default`, so the `--queues digests` flag above is load-bearing:
+    without it the worker boots healthy, the enqueue succeeds, and
+    `handle.wait()` times out because no consumer will ever claim the job.
+    Every later part reuses the `digests` queue and adds `email` in Part 5,
+    so from there on start the worker with `--queues digests --queues email`.
 
 Enqueue a job from a script using `TaskQ`:
 
@@ -112,7 +120,7 @@ async def compile_digest(payload: DigestPayload) -> DigestResult:
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 Update the enqueue script to wait for the typed result:
@@ -207,7 +215,7 @@ async def compile_digest(payload: DigestPayload) -> DigestResult:
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 `RetryAfter(delay)` reschedules at `now + delay`, bypassing backoff. Pass
@@ -234,7 +242,7 @@ async def compile_digest(payload: DigestPayload) -> DigestResult: ...
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 Enqueue with `identity_key` so `unique_for` can match duplicate requests:
@@ -342,7 +350,7 @@ if __name__ == "__main__":
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 !!! warning "Do not pre-validate the registry"
@@ -409,7 +417,7 @@ registry = [compile_digest, send_digest_email, compile_batch_digest]
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 Enqueue the batch digest from a script:
@@ -477,7 +485,7 @@ cron(
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 The `cron()` call auto-registers at import time. At worker startup the
@@ -518,7 +526,7 @@ existing `items` list comprehension:
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 Cancel a running job from client code:

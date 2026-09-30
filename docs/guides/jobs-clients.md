@@ -1651,6 +1651,12 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+!!! note "The worker must consume the actor's queue"
+    This actor is declared on `queue="media"`; a worker started without
+    `--queues media` consumes only `default`, so `handle.wait()` would time
+    out with the job parked and nothing to claim it:
+    `taskq worker --actors myapp.actors:registry --queues media`.
+
 ---
 
 ## Idempotency example

@@ -379,6 +379,12 @@ jobs:
     # is the same test set with the same gate (--cov-fail-under=90 is
     # untouched and the measured 95% has room); the price is wall time,
     # ~2x the -n 4 median (est. ~37min), priced into the timeout below.
+    # The cap needs headroom over the estimate, not parity with it: run
+    # 36600780724's coverage job saw the pytest step finish GREEN
+    # (12039 passed, gate 95.90%) in 44:44 and the 45-minute cap fire in
+    # the step's own teardown - a green leg killed by a cap that prices
+    # the median where the weather lands. 60 gives the measured 38-45
+    # band its headroom.
     runs-on: ubuntu-latest
     # 60, not 45: the cap priced "~37min" median, but the #606 head's green
     # run was killed at 45m04s - the suite itself had already PASSED
@@ -560,6 +566,11 @@ jobs:
           listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
           echo "$listing" | grep -q "taskq/py.typed"
           echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep -q "taskq/migrations/_variants/"
+          # ^ migrate.py's checksum-drift check reads the published variant
+          # history from the installed package (importlib.resources); a wheel
+          # without it silently narrows every accepted-checksum set to the
+          # current file only.
           echo "$listing" | grep -q "taskq/web/templates/"
 
       - name: Test installation from wheel
