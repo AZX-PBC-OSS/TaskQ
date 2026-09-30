@@ -339,10 +339,15 @@ WHERE {open_member}"""
 # (``metadata->>'batch_id' = b.id::text``), the same member-identity
 # rule the in-memory twin applies (``metadata.get("batch_id") ==
 # str(batch_id)`` in testing/_batch.py) and the batch drilldown's
-# member queries are bound by; the containment form matched a
-# pathological metadata value only when the extracted text could never
-# equal the batch id anyway (a non-string batch_id does not contain a
-# string), so the twin's rule and SQL's now agree by construction.
+# member queries are bound by. Text equality cannot match a member the
+# old containment form matched: ``batches.id`` is a uuid PRIMARY KEY,
+# so ``b.id::text`` is always the canonical 36-char hex+dash form, and
+# no text PostgreSQL extracts from a JSONB value of any other type can
+# equal it -- numbers extract to decimal/exponent notation, booleans to
+# ``true``/``false``, arrays and objects to text with a leading bracket
+# or brace -- only a JSON string holding exactly that batch id joins,
+# which is a genuine member under both forms; the twin's rule and
+# SQL's agree by construction, not by containment.
 _LIST_BATCHES_BASE_SQL = """\
 SELECT b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,
        b.failure_threshold, b.finalizer_job_id, b.originating_actor,
