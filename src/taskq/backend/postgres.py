@@ -172,7 +172,6 @@ from taskq.connections import (
     _bounded_checkout,  # pyright: ignore[reportPrivateUsage] # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises); a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
@@ -182,6 +181,7 @@ from taskq.constants import (
     DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
+    require_schema,
     wake_channel,
     worker_channel,
 )
@@ -291,8 +291,7 @@ class PostgresBackend:
         self._reclaim_event_visibility_delay = reclaim_event_visibility_delay
 
         _schema: str = deps.settings.schema_name
-        if not _IDENT_RE.match(_schema):
-            raise ValueError(f"invalid schema identifier: {_schema!r}")
+        require_schema(_schema)
         self._schema_name: str = _schema
 
         # Pools are accessed dynamically via self._deps so that

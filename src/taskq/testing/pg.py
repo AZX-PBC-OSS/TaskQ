@@ -9,6 +9,7 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_str
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    require_schema,
 )
 from taskq.testing.assertions import parse_detail
 
@@ -486,8 +487,7 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
     the cluster-level duplicate catches the duplicate and reuses the
     winner's role.
     """
-    if not _IDENT_RE.match(schema):  # pragma: no cover - guards a test-only helper
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)  # pragma: no cover - guards a test-only helper
     if not _IDENT_RE.match(table):  # pragma: no cover - guards a test-only helper
         raise ValueError(f"invalid table identifier: {table!r}")
     await conn.execute(f'CREATE SEQUENCE IF NOT EXISTS "{schema}".taskq_rows_visited')

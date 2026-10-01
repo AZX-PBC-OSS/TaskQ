@@ -10,7 +10,7 @@ import structlog
 
 from taskq._json import dumps_jsonb_str, embed_encoded
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
+    require_schema,
 )
 from taskq.obs import record_progress_flush_failure
 from taskq.progress._buffer import _ProgressBuffer
@@ -71,8 +71,7 @@ def _flush_update_sql(schema: str) -> str:
       ``$4::int[]``    per-row attempt epochs (the fence's epoch conjunct)
       ``$5::uuid``     the flushing worker, the loop-wide owner
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return (
         f'UPDATE "{schema}".jobs AS j '  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
         "SET progress_state = COALESCE(j.progress_state, '{}'::jsonb) || f.state_delta, "
@@ -482,8 +481,7 @@ async def progress_flush_loop(
     tick, the remainder dirty for the next tick - the tick's database
     cost is capped regardless of how many jobs are dirty.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     # The unexpected-error backstop, the same one every other long-lived
     # loop carries (worker/_transient.py): the statement and pool failures
