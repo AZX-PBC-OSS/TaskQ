@@ -1904,6 +1904,36 @@ async def sweep_scheduled_to_pending(
     return len(rows)
 
 
+async def _run_single_statement_sweep(
+    conn: ConnLike,
+    *,
+    schema: str,
+    sql_template: str,
+    name: str,
+    batch_size: int,
+) -> int:
+    """Shared body of the single-statement sweeps: validate the schema
+    identifier and the batch size, render the statement (the cached
+    ``_render_sweep_sql`` path), run it bound to ``batch_size``, parse the
+    rowcount, and emit the sweep's debug log when the statement did work.
+    ``name`` is both the log event and its ``kind`` field, the convention
+    both callers pin."""
+    require_schema(schema)
+    _validate_positive("batch_size", batch_size)
+
+    sql = _render_sweep_sql(sql_template, schema)
+    tag = await conn.execute(sql, batch_size)
+    count = parse_rowcount(tag)
+    if count > 0:
+        logger.debug(
+            name,
+            kind=name,
+            count=count,
+            schema=schema,
+        )
+    return count
+
+
 async def sweep_leaked_reservation_slots(
     conn: ConnLike,
     *,
@@ -1932,20 +1962,13 @@ async def sweep_leaked_reservation_slots(
 
     Returns the count of released slots.
     """
-    require_schema(schema)
-    _validate_positive("batch_size", batch_size)
-
-    sql = _render_sweep_sql(_SWEEP_4_SQL, schema)
-    tag = await conn.execute(sql, batch_size)
-    count = parse_rowcount(tag)
-    if count > 0:
-        logger.debug(
-            "sweep_leaked_reservation_slots",
-            kind="sweep_leaked_reservation_slots",
-            count=count,
-            schema=schema,
-        )
-    return count
+    return await _run_single_statement_sweep(
+        conn,
+        schema=schema,
+        sql_template=_SWEEP_4_SQL,
+        name="sweep_leaked_reservation_slots",
+        batch_size=batch_size,
+    )
 
 
 async def sweep_expired_results(
@@ -1983,20 +2006,13 @@ async def sweep_expired_results(
 
     Returns the count of results expired by this call.
     """
-    require_schema(schema)
-    _validate_positive("batch_size", batch_size)
-
-    sql = _render_sweep_sql(_SWEEP_RESULT_TTL_SQL, schema)
-    tag = await conn.execute(sql, batch_size)
-    count = parse_rowcount(tag)
-    if count > 0:
-        logger.debug(
-            "sweep_expired_results",
-            kind="sweep_expired_results",
-            count=count,
-            schema=schema,
-        )
-    return count
+    return await _run_single_statement_sweep(
+        conn,
+        schema=schema,
+        sql_template=_SWEEP_RESULT_TTL_SQL,
+        name="sweep_expired_results",
+        batch_size=batch_size,
+    )
 
 
 async def sweep_expired_events(
