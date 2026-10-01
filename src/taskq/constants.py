@@ -69,6 +69,7 @@ __all__ = [
     "progress_channel",
     "progress_global_channel",
     "quote_ident",
+    "require_schema",
     "schema_lock_name",
     "wake_channel",
     "worker_channel",
@@ -924,6 +925,19 @@ re-implemented by at least one downstream consumer), so it should mean exactly
 what it appears to mean.
 """
 
+
+def require_schema(schema: str) -> str:
+    """Return *schema* after validating it as a SQL identifier.
+
+    The single shared guard behind every schema-identifier check: raises
+    :class:`ValueError` on anything that does not match :data:`_IDENT_RE`,
+    before the name is interpolated into SQL.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    return schema
+
+
 _KEYED_KEY_RE = re.compile(r"\A[A-Za-z0-9_\-:.]+\Z")
 """Character set for keyed-ref name components (``base_name`` and ``key``).
 
@@ -1010,8 +1024,7 @@ def schema_channel_tag(schema: str) -> str:
     Validates *schema* against the same identifier regex used by the
     migration runner. Raises :class:`ValueError` on invalid input.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     # _IDENT_RE admits ASCII only, so the encoding cannot change the digest.
     digest = hashlib.sha224(schema.encode("ascii")).hexdigest()
     return digest[:SCHEMA_CHANNEL_TAG_HEX_LEN]

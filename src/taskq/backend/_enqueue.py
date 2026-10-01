@@ -53,7 +53,7 @@ from taskq.connections import (
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the bulk-cancel drain, a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site, a local copy would drift.
+    require_schema,
     wake_channel,
 )
 from taskq.exceptions import (
@@ -1573,8 +1573,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     ANY-array of this chunk's own batch ids, so the row count cannot grow
     with the jobs backlog.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     lock_sql = f'SELECT id, status FROM "{schema}".batches WHERE id = ANY($1::uuid[]) FOR UPDATE'
     locked = await conn.fetch(lock_sql, batch_ids)
     terminal = [r["id"] for r in locked if r["status"] != "active"]

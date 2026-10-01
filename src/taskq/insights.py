@@ -97,7 +97,7 @@ from taskq.backend.statemachine import (
     TERMINAL_STATUSES,
 )  # Why: the state machine's own closed terminal set — the same encoding the prune sweep archives under — is the authoritative source for every terminal-side UNION arm; the admin constants' twin would be a second hand-maintained copy and drags FastAPI in.
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, single-sourced like _sql_templates.py; the private prefix scopes it to the package that owns it.
+    require_schema,
 )
 
 if TYPE_CHECKING:
@@ -152,8 +152,7 @@ def _require_ident(schema: str) -> str:
     cannot bind identifiers, so the schema is interpolated as a
     validated string constant — never caller data.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return schema
 
 

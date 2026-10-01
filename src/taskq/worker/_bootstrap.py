@@ -57,8 +57,8 @@ from taskq.connections import (
     statement_cache_kwargs,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
     TERMINAL_WRITE_BUDGET_SECS,  # Why: the release write's own budget: one of the two numbers the release-park lease warning's remedy arithmetic names.
+    require_schema,
 )
 from taskq.context import CancelOrigin
 from taskq.cron import (
@@ -1347,8 +1347,7 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
     """
     from taskq.migrate import discover
 
-    if not _IDENT_RE.match(settings.schema_name):
-        raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
+    require_schema(settings.schema_name)
     ledger_probe = (
         "SELECT EXISTS ("
         "SELECT 1 FROM information_schema.tables "
@@ -2007,8 +2006,7 @@ async def _main(
         # ensure_slots, so initial registration works identically.
         from taskq.ratelimit.registry import queue_concurrency_reservation_name
 
-        if not _IDENT_RE.match(settings.schema_name):
-            raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
+        require_schema(settings.schema_name)
         # This query is as hard-required as sync_actor_config / register_worker
         # elsewhere in this same _main function, neither of those is wrapped
         # in a broad try/except. The only exception we catch specifically is

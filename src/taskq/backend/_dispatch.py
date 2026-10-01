@@ -32,7 +32,7 @@ from taskq.backend._records import (
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    require_schema,
 )
 from taskq.exceptions import CorruptJobDataError
 from taskq.obs import (
@@ -502,8 +502,7 @@ async def _resolve_queue_modes_by_queue(
     construction-time validation on the backend instance does not cover
     every reach of this module (architecture.md §Key Invariants 4).
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     if not queues:
         return {}
     rows = await conn.fetch(
@@ -532,8 +531,7 @@ async def _resolve_queue_modes(
     connection, so construction-time validation on the backend instance
     does not cover it (architecture.md §Key Invariants 4).
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     if not queues:
         return {"strict_fifo"}
     modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)

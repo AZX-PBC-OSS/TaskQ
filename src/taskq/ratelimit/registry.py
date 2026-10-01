@@ -70,12 +70,12 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _no_consumed_quota_sql,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
     _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]
     DEFAULT_MAX_KEYED_RESERVATIONS,
     DEFAULT_RESERVATION_BACKOFF,
     QUEUE_CONCURRENCY_PREFIX,
+    require_schema,
 )
 from taskq.exceptions import PayloadValidationError, ReservationUnavailable
 from taskq.obs import (
@@ -2010,8 +2010,7 @@ class RateLimitRegistry:
         try:
             async with pool.acquire(timeout=acquire_timeout) as conn:
                 for schema in list(self._pending_reservation_reclaims):
-                    if not _IDENT_RE.match(schema):
-                        raise ValueError(f"invalid schema identifier: {schema!r}")
+                    require_schema(schema)
                     pending = self._pending_reservation_reclaims.get(schema)
                     if not pending:
                         self._drop_pending_schema_if_empty(
@@ -2061,8 +2060,7 @@ class RateLimitRegistry:
                         pending[name] = None
                     self._drop_pending_schema_if_empty(self._pending_reservation_reclaims, schema)
                 for schema in list(self._pending_rate_limit_reclaims):
-                    if not _IDENT_RE.match(schema):
-                        raise ValueError(f"invalid schema identifier: {schema!r}")
+                    require_schema(schema)
                     pending = self._pending_rate_limit_reclaims.get(schema)
                     if not pending:
                         self._drop_pending_schema_if_empty(
@@ -2205,8 +2203,7 @@ async def _upsert_rate_limit_bucket_row(
      published but never acquired is still reclaimable after the horizon
     , the acquire path's own stamps take over from the first acquire.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     upsert_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608
@@ -2236,8 +2233,7 @@ async def sync_rate_limit_buckets(
     are idempotent.  Only PG-backed primitives are written; memory-only
     and log-style sliding windows (which have no PG backend) are skipped.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     for name, prim in rl_registry.rate_limits.items():
         if isinstance(prim, TokenBucket):

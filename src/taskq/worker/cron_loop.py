@@ -31,9 +31,9 @@ from taskq.backend._sweeps import (
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared by every bounded batch path, a degenerate cap is a caller configuration bug and belongs at the boundary, not inside a tick.
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     cron_commit_gate_channel,
+    require_schema,
     schema_lock_name,
 )
 from taskq.cron import (
@@ -1371,8 +1371,7 @@ async def tick_cron(
     cap (including the stored-0 emergency drain) bounds the tick exactly
     like the same literal cap.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("limit", limit)
 
     tick_started = time.monotonic()

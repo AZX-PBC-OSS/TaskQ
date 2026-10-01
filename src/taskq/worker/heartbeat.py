@@ -47,8 +47,8 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _RECLAIM_HAS_BUDGET_SQL,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     ERROR_CLASS_HEARTBEAT_LOST,
+    require_schema,
 )
 from taskq.context import CancelOrigin
 from taskq.obs import (
@@ -1144,8 +1144,7 @@ async def isolate_self(
     pg_dsn = str(deps.settings.pg_dsn_direct)
     host = dsn_host(pg_dsn)
     schema = deps.settings.schema_name
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     # Stop the claim path FIRST, before any snapshot or join: this worker
     # is walking away, so the producer must start no new claim rounds, and
     # the producer's own exit pass (drain_local_queue_to_pending) hands

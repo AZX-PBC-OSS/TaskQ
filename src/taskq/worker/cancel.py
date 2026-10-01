@@ -58,7 +58,7 @@ from taskq.backend._sql import (
     parse_rowcount,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    require_schema,
 )
 from taskq.context import CancelOrigin, JobContext
 from taskq.obs import get_logger, get_meter, log_cancel_phase_change
@@ -170,8 +170,7 @@ class _CancelController:
         backend: Backend,
     ) -> None:
         schema = deps.settings.schema_name
-        if not _IDENT_RE.match(schema):
-            raise ValueError(f"invalid schema identifier: {schema!r}")
+        require_schema(schema)
 
         self._deps = deps
         self._worker_id = worker_id
