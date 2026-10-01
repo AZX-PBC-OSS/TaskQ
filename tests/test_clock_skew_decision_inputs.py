@@ -201,7 +201,11 @@ async def test_renewal_gate_judged_in_the_lease_domain_under_python_clock_skew(
     # against a bound absolute instant (a Python now) flips every
     # verdict above the moment the host's clocks diverge.
     assert "lock_expires_at = clock_timestamp() + $2" in jobs_lock_sql
-    assert "lock_expires_at <= clock_timestamp() + $4::interval" in jobs_lock_sql
+    # The gate is an INTERVAL bound against the server clock inside the
+    # statement - statement_timestamp() (STABLE, so it can serve the
+    # expiry arm's index condition on jobs_running_lock_expires_idx),
+    # never a bound absolute instant or a Python now.
+    assert "lock_expires_at <= statement_timestamp() + $4::interval" in jobs_lock_sql
     assert "::timestamptz" not in jobs_lock_sql and "$5" not in jobs_lock_sql
     # The heartbeat loop's exact call shape: (worker_id, lease, disowned,
     # threshold). No Python timestamp crosses this boundary - the pin
