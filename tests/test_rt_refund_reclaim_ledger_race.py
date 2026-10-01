@@ -368,9 +368,9 @@ async def _open_isolate_deps(
 
 
 async def _wait_for_lock_waiter(
-    conn: asyncpg.Connection, schema: str, *, timeout_secs: float = 4.0
+    conn: asyncpg.Connection, holder_xid: str, *, timeout_secs: float = 20.0
 ) -> None:
-    """Poll until some session is queued on an ungranted lock: the
+    """Poll until some session is queued on THE holder's row lock: the
     isolate's arbiter UPDATE parked on the holder's FOR UPDATE. Waiting
     on a lock is a state, not a delay - once it is observable, the
     isolate's SELECT (which precedes the arbiter) is guaranteed to have
@@ -379,29 +379,45 @@ async def _wait_for_lock_waiter(
     unreliable under the parallel runner, the ungranted pg_locks row is
     the arbiter's own queue entry and does not lag.
 
-    Scoped to THIS database's SESSIONS: pg_locks is cluster-wide and the
-    xdist invocation shares ONE Postgres container while every module gets
-    its OWN database - the suite's other contention tests deliberately park
-    sessions on ungranted locks for seconds, so an unscoped count sees
-    their queue entries too and trips this guard on timing (observed on
-    the coverage leg, run 36616766673: the arbiter plus ONE waiter from a
-    concurrent worker's database). The scope CANNOT be pg_locks.database:
-    a parked row-lock waiter is a transactionid lock whose database column
-    is NULL (verified on PG18), so the discriminator is the waiting
-    SESSION - pg_stat_activity's datname. Within one database only this
-    module's tests run, so the scoped count is exactly this test's waiter
-    plus nothing."""
-    del schema
+    The poll is KEYED, not counted (the #605 pg_locks scoping precedent,
+    tests/test_testing_pg_role.py's ``_wait_until_blocked_on_the_lock``):
+    the ungranted row must be a ``transactionid`` lock on the HOLDER's
+    own xid, so only the arbiter - the one other session that can touch
+    this row - can satisfy it. The datname-scoped count this replaces
+    still read the suite's OTHER contention tests: they share the one PG
+    container's per-module databases, and a same-database co-tenant (or a
+    worker whose database happens to match) parked on an ungranted lock
+    false-parked the poll before the arbiter reached its UPDATE - the
+    freeze then never happened and the pin ran vacuous - while two of
+    them tripped the ``waiters <= 1`` sanity assert, both load schedules,
+    neither a signal about THIS lock.
+
+    The bound's arithmetic (20.0s): the park's arrival is bounded by the
+    isolate's own production budgets, every one set by this fixture's
+    ``settings_overrides`` - the dedicated connect (5.0s,
+    worker/heartbeat.py's ``timeout=5.0``), the SELECT (5.0s,
+    TASKQ_DISPATCHER_COMMAND_TIMEOUT) and the arbiter UPDATE's start
+    (5.0s, the same per-statement bound) = 15.0s of
+    production-attributable delay - plus one 5.0s allowance for the
+    loaded runner's own scheduling between those segments (the -n 4
+    co-tenancy regime the CI red ran under). The poll returns at the
+    park instant; the bound exists to fail loudly when the park never
+    comes (a broken fixture, e.g. an arbiter that stops reaching its
+    UPDATE), never to tolerate one. It stays under the isolate task's
+    outer 30.0s wait_for: 20.0s to the park + the parked UPDATE's own
+    5.0s command-timeout window (the refund's COMMIT releases it
+    immediately after this poll returns) + the post-commit statements.
+    """
     waited = 0.0
     while waited < timeout_secs:
         waiters = await conn.fetchval(
-            "SELECT count(*) FROM pg_locks l "
-            "JOIN pg_stat_activity a ON a.pid = l.pid "
-            "WHERE l.pid <> pg_backend_pid() AND NOT l.granted "
-            "AND a.datname = current_database()",
+            "SELECT count(*) FROM pg_locks "
+            "WHERE locktype = 'transactionid' AND NOT granted "
+            "AND transactionid::text = $1",
+            holder_xid,
         )
         assert waiters is not None and int(waiters) <= 1, (
-            f"fixture broken: {waiters} unexpected lock waiters in the database"
+            f"fixture broken: {waiters} sessions queued on the holder's xid"
         )
         if int(waiters) == 1:
             return
@@ -575,10 +591,16 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
             #    the stamped row, its arbiter PARKS on the holder's lock.
             await holder.execute("BEGIN")
             await holder.execute(f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', job_id)
+            # The holder's own xid, read INSIDE the locking transaction:
+            # FOR UPDATE stamps the tuple's xmax with it, so the parked
+            # arbiter's queue entry (a transactionid lock on exactly this
+            # xid) is the keyed poll's subject. The read allocates nothing
+            # - the xid exists the moment FOR UPDATE takes the row lock.
+            holder_xid = await holder.fetchval("SELECT pg_current_xact_id()::text")
             shutdown = asyncio.Event()
             isolate_task = asyncio.create_task(isolate_self(deps, worker_id, shutdown))
             try:
-                await _wait_for_lock_waiter(holder, schema)
+                await _wait_for_lock_waiter(conn, holder_xid)
 
                 # 4. THE REFUND, committed INSIDE the SELECT->UPDATE window:
                 #    the counter rolls 1 -> 0 and the stamp is un-stamped
