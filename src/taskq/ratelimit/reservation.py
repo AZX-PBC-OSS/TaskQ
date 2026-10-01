@@ -37,9 +37,9 @@ import structlog
 
 from taskq.backend.clock import Clock
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_RESERVATION_BACKOFF,
     RESERVATION_RETRY_HINT_MARGIN,
+    require_schema,
 )
 from taskq.exceptions import ReservationUnavailable
 
@@ -491,8 +491,7 @@ class _InMemorySlotTable:
 
 
 def _validate_schema(schema: str) -> None:
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
 
 class ConcurrencyReservation:
@@ -854,8 +853,7 @@ class ConcurrencyReservation:
             free, held = self._table.peek_slots(self._name)
             return {"free_count": free, "total_slots": self._slots, "held_count": held}
 
-        if not _IDENT_RE.match(self._schema):
-            raise ValueError(f"invalid schema identifier: {self._schema!r}")
+        require_schema(self._schema)
         schema = self._schema
 
         # Schema-name interpolation ; schema_name is

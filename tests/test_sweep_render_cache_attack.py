@@ -44,6 +44,7 @@ from string import Formatter
 
 import pytest
 
+import taskq.constants as constants
 from taskq.backend import _sweeps as sweeps
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL
 from taskq.backend._sweeps import (
@@ -293,7 +294,10 @@ def test_validation_lives_inside_the_memoised_function(
         def match(self, schema: str) -> None:
             return None
 
-    monkeypatch.setattr(sweeps, "_IDENT_RE", _RejectAll())
+    # require_schema() (taskq.constants) owns the validation now; it reads
+    # _IDENT_RE from the constants module at call time, so the rejecting
+    # regex must be patched THERE, not on _sweeps.
+    monkeypatch.setattr(constants, "_IDENT_RE", _RejectAll())
     with pytest.raises(ValueError, match="invalid schema identifier"):
         _render_sweep_sql(_SWEEP_3_SQL, "tq_fresh_schema")
 

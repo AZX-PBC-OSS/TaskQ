@@ -57,11 +57,11 @@ from taskq.connections import (
     _bounded_checkout,  # pyright: ignore[reportPrivateUsage] # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises); a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ERROR_CLASS_BATCH_ABORTED,
+    require_schema,
 )
 from taskq.obs import get_logger
 
@@ -427,8 +427,7 @@ def render_batch_sql(schema: str) -> BatchSql:
     Validates *schema* against the canonical identifier regex before
     formatting.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return BatchSql(
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),

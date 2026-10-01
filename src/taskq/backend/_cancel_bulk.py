@@ -90,10 +90,10 @@ from taskq.connections import (
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths, a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     CANCEL_ORIGIN_PENDING,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    require_schema,
 )
 
 __all__ = ["_cancel_where"]
@@ -321,8 +321,7 @@ async def _cancel_where(
     # Defence-in-depth: re-validate the schema identifier at the call site
     # (docs/architecture.md §Identifier validation), construction-time
     # validation alone is single-point.
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     # LIMIT 0 is a legal rowless query that would otherwise stall the
     # drain forever (an empty window never falls below it); a zero
     # statement_timeout disables the batch's safety net outright.

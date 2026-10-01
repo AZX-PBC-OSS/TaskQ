@@ -101,9 +101,9 @@ from taskq.backend._protocol import Backend
 from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     LEADER_RESIGNED_EVENT,
     leader_wake_channel,
+    require_schema,
     schema_lock_name,
     wake_channel,
 )
@@ -287,8 +287,7 @@ def build_leader_lease_sql(schema: str) -> tuple[str, str, str]:
     Validates *schema* against the canonical identifier regex before
     formatting; asyncpg cannot bind identifiers as parameters.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return (
         _LEADER_ELECT_SQL_TEMPLATE.format(schema=schema),
         _LEADER_RENEW_SQL_TEMPLATE.format(schema=schema),
@@ -1385,8 +1384,7 @@ class MaintenanceLeader:
         """
         conn = self._deps.leader_conn
         schema_name = self._deps.settings.schema_name
-        if not _IDENT_RE.match(schema_name):
-            raise ValueError(f"invalid schema identifier: {schema_name!r}")
+        require_schema(schema_name)
         holder: asyncpg.Record | None = None
         if conn is not None and not conn.is_closed():
             with contextlib.suppress(Exception):
