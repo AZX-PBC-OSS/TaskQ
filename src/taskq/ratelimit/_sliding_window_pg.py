@@ -25,8 +25,9 @@ from taskq._advisory import (
     acquire_advisory_xact_lock_bounded,
 )
 from taskq.backend._records import jsonb_to_dict
-from taskq.exceptions import RateLimitDependencyUnavailable, RateLimitStoreCorrupt
+from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
+from taskq.ratelimit._dependency_guards import _require_pg
 from taskq.ratelimit._lock_budget import resolve_sliding_window_lock_timeout_ms
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 from taskq.ratelimit.token_bucket import _retry_after
@@ -56,13 +57,9 @@ async def _peek_pg_log(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
 
     window_ms = int(self._window.total_seconds() * 1000)
-    schema = settings.schema_name
 
     # Why clock_timestamp() in the predicates: the window boundary is
     # measured in the same domain as the stored ``ts`` values (both are the
@@ -114,16 +111,12 @@ async def _peek_pg_gcra(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
 
     window_ms = int(self._window.total_seconds() * 1000)
     window_seconds = window_ms / 1000.0
     emission_interval_seconds = window_seconds / self._limit
     delay_tolerance_seconds = window_seconds
-    schema = settings.schema_name
 
     select_sql = (
         f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
@@ -196,12 +189,7 @@ async def _reset_pg_log(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
 ) -> None:
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
-
-    schema = settings.schema_name
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
     delete_sql = (
         f'DELETE FROM "{schema}".rate_limit_window_entries '  # noqa: S608
         f"WHERE bucket_name = $1"
@@ -214,12 +202,7 @@ async def _reset_pg_gcra(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
 ) -> None:
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
-
-    schema = settings.schema_name
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
     delete_sql = (
         f'DELETE FROM "{schema}".rate_limit_buckets '  # noqa: S608
         f"WHERE bucket_name = $1 AND kind = 'gcra'"
@@ -235,12 +218,7 @@ async def _refund_pg_gcra(
 ) -> None:
     if decision.previous_state is None:
         return
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres gcra refund")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres gcra refund")
-
-    schema = settings.schema_name
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres gcra refund")
     pre_acquire_tat = float(decision.previous_state["pre_acquire_tat"])  # type: ignore[arg-type]  # Why: dict[str, object] value is float at runtime; type narrowing not possible from generic dict
     post_acquire_tat = float(decision.previous_state["post_acquire_tat"])  # type: ignore[arg-type]  # Why: dict[str, object] value is float at runtime; type narrowing not possible from generic dict
 
@@ -263,12 +241,7 @@ async def _refund_pg_log(
 ) -> None:
     if decision.request_id is None:
         return
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres log refund")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres log refund")
-
-    schema = settings.schema_name
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres log refund")
     delete_sql = (
         f'DELETE FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name and request_id are $1/$2-bound
         f"WHERE bucket_name = $1 AND request_id = $2::uuid"
@@ -330,10 +303,7 @@ async def _acquire_pg_log(
      never an admission, so a racer that could not check the window can
      never over-admit past the limit.
     """
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
     if request_id is None:
         raise RuntimeError("request_id required for log-style PG acquire")
     lock_timeout_ms = resolve_sliding_window_lock_timeout_ms(
@@ -341,7 +311,6 @@ async def _acquire_pg_log(
     )
 
     window_ms = int(self._window.total_seconds() * 1000)
-    schema = settings.schema_name
 
     # ONE fused statement for the whole locked critical section:
     # the pre-fused shape spent DELETE + INSERT + COUNT (+ retry SELECT on
@@ -546,10 +515,7 @@ async def _acquire_pg_gcra(
     statement, no transaction and no GUC), the ``lock_timeout`` GUC
     convention shared with migrate.py and ``taskq._advisory``.
     """
-    if pg_pool is None:
-        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for postgres backend")
+    pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
     lock_timeout_ms = resolve_sliding_window_lock_timeout_ms(
         lock_timeout_ms, settings, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
     )
@@ -558,7 +524,6 @@ async def _acquire_pg_gcra(
     window_seconds = window_ms / 1000.0
     emission_interval_seconds = window_seconds / self._limit
     delay_tolerance_seconds = window_seconds
-    schema = settings.schema_name
 
     # ONE fused upsert: the pre-fused shape spent preseed + SELECT
     # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them):

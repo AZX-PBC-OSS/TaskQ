@@ -378,10 +378,11 @@ class JobHandle[R: BaseModel | None]:
         diffs; a pool or connection error on a poll is retried on the next
         one.
 
-        Raises :class:`NotImplementedError` when the in-memory backend is
-        detected, the in-memory backend does not support pub/sub, and
-        :class:`~taskq.exceptions.StreamUnavailable` when the Postgres poll
-        could not re-read the row for 30 s straight.
+        Raises :class:`NotImplementedError` when the backend does not
+        support progress streaming (the in-memory backend sets its
+        ``supports_progress_stream`` capability to False, it has no
+        pub/sub), and :class:`~taskq.exceptions.StreamUnavailable` when
+        the Postgres poll could not re-read the row for 30 s straight.
 
         The stream terminates: on the Redis path the job's current row is
         read once before subscribing (an already-terminal job yields its
@@ -401,9 +402,16 @@ class JobHandle[R: BaseModel | None]:
         recording), and advancing only there would make the semantics
         backend-dependent.
         """
-        from taskq.testing.in_memory import InMemoryBackend  # lazy, test-only dep
-
-        if isinstance(self._backend, InMemoryBackend):
+        # getattr with the protocol default (True), not a bare attribute
+        # read: ``Backend`` is a Protocol, so a structural (duck-typed)
+        # backend that predates this capability does not inherit the
+        # ClassVar default, and a bare read would turn the pre-capability
+        # behavior (the stream runs and fails however its transport fails)
+        # into an AttributeError on the flag read itself. The tolerant read
+        # keeps missing-flag == True == exactly the pre-capability
+        # behavior; the subscribe_* wake capabilities in worker/ use the
+        # same pattern for structural backends.
+        if not getattr(self._backend, "supports_progress_stream", True):
             raise NotImplementedError(
                 "progress_stream requires Redis; in-memory backend does not support SSE."
             )
