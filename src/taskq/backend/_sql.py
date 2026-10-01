@@ -173,7 +173,7 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # tags/metadata), per running row, per beat, fleet-wide. The gate renews
 # only rows whose lease is at or under the threshold ($4, computed by
 # the caller: see _lease_renewal_threshold in taskq.worker.heartbeat for
-# the sizing derivation). At the default settings the threshold (56s)
+# the sizing derivation). At the default settings the threshold (58s)
 # sits under one beat's decay of the 60s lease, so a healthy worker
 # rewrites its leases every beat, byte-identical to the unconditional
 # renewal. The gate defers nothing at the default lease; it only starts
