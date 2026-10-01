@@ -423,45 +423,58 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
         day_gate = "if LAST_DONE_DATE == today_utc:"
         assert day_gate in joined, f"{label} lost the once-per-day date gate"
         gate_idx = lines.index(day_gate)
-        assert lines[gate_idx + 1 : gate_idx + 3] == ["retry_backoff = None", "continue"], (
-            f"{label}'s date gate must clear the ladder and skip, it does: "
-            f"{lines[gate_idx + 1 : gate_idx + 3]}"
+        # Invariants, not token shapes: a mirrored edit inside the gate
+        # (a debug line, an extra field) must stay green; what may not
+        # change is clear-the-ladder-then-skip, in that order.
+        gate_clear_idx = lines.index("retry_backoff = None", gate_idx)
+        gate_skip_idx = lines.index("continue", gate_idx)
+        assert gate_clear_idx < gate_skip_idx, (
+            f"{label}'s date gate must clear the ladder and skip, in that "
+            f"order, it does: {lines[gate_idx : gate_skip_idx + 1]}"
         )
-        # The demotion-cut If: ladder arm + drain-cut warn, NO latch stamp.
+        # The demotion-cut If: ladder arm + drain-cut warn, NO latch stamp —
+        # checked over the arm's WHOLE body, not a leading window: the stamp
+        # is the bug wherever in the arm it lands (a mirrored stamp after the
+        # warn line shipped green under the windowed check this replaced).
         cut_idx = lines.index("if not ctx.deps.leading():", gate_idx)
-        cut_block = "\n".join(lines[cut_idx : cut_idx + 3])
-        assert "retry_backoff = _next_retry_backoff(retry_backoff)" in cut_block, (
-            f"{label}'s demotion-cut arm must arm the ladder: {cut_block}"
+        cut_end = lines.index("else:", cut_idx)
+        cut_arm = lines[cut_idx + 1 : cut_end]
+        assert "retry_backoff = _next_retry_backoff(retry_backoff)" in cut_arm, (
+            f"{label}'s demotion-cut arm must arm the ladder: {cut_arm}"
         )
-        assert "EV_DRAIN_CUT" in cut_block, (
-            f"{label}'s demotion-cut arm must log the drain-cut event: {cut_block}"
+        assert any("EV_DRAIN_CUT" in line for line in cut_arm), (
+            f"{label}'s demotion-cut arm must log the drain-cut event: {cut_arm}"
         )
-        assert "LAST_DONE_DATE = today_utc" not in cut_block, (
+        assert "LAST_DONE_DATE = today_utc" not in cut_arm, (
             f"{label} stamps the date latch on a DEMOTION CUT — that turns an "
             "unfinished day into a done one and defers the remainder to the "
             "next cron fire, up to 24h away (pinned by "
             "test_demoted_leader_stops_pruning_mid_drain)"
         )
-        else_idx = lines.index("else:", cut_idx)
-        stamp_idx = lines.index("LAST_DONE_DATE = today_utc", else_idx)
-        assert lines[stamp_idx + 1] == "retry_backoff = None", (
-            f"{label}'s success arm must clear the ladder when it stamps the day"
-        )
-        assert lines[stamp_idx + 2] == "guard.ok()", (
-            f"{label}'s success arm must reset the backstop streak (the "
-            "reset-on-success contract): a skipped or failed day must not buy "
-            "the fault more time"
+        stamp_idx = lines.index("LAST_DONE_DATE = today_utc", cut_end)
+        # The success arm's half: stamp, clear the ladder, reset the backstop
+        # streak — the ORDER is the contract, the neighbouring lines are not
+        # (a mirrored log line between them is parity, not a fork).
+        clear_idx = lines.index("retry_backoff = None", stamp_idx)
+        ok_idx = lines.index("guard.ok()", stamp_idx)
+        assert stamp_idx < clear_idx < ok_idx, (
+            f"{label}'s success arm must stamp the day, clear the ladder, and "
+            f"reset the backstop streak (the reset-on-success contract: a "
+            f"skipped or failed day must not buy the fault more time), in that "
+            f"order: {lines[stamp_idx : ok_idx + 1]}"
         )
 
 
 def test_no_await_between_the_gates_last_false_and_the_leading_read() -> None:
     """The race invariant, structurally: the demotion-cut check is the
-    IMMEDIATE successor of the sweep await, and the cut arm itself runs no
-    await — so no await can run between the gate's last False (inside the
-    drain) and the loop's ``leading()`` read, and a re-election cannot flip
-    leadership in between. Reordering one await here passes every
-    behavioural test and still breaks the contract; that is why the pin is
-    structural."""
+    IMMEDIATE successor of the sweep await, and the cut arm is synchronous
+    UP TO THE LADDER WRITE — so no await can run between the gate's last
+    False (inside the drain) and the loop's ``leading()`` read, and a
+    re-election cannot flip leadership in between. (An await AFTER the
+    ladder write is benign: the arm's only remaining work is the skip, and
+    the armed ladder is already committed.) Reordering one await here
+    passes every behavioural test and still breaks the contract; that is
+    why the pin is structural."""
     prune, arch = _load_loops()
     for label, fn, renames, strings in (
         ("_prune_loop", prune, _PRUNE_RENAMES, _PRUNE_STRINGS),
@@ -497,11 +510,20 @@ def test_no_await_between_the_gates_last_false_and_the_leading_read() -> None:
         )
         cut_arm = inner_try.body[cut_idx]
         assert isinstance(cut_arm, ast.If)  # for pyright: the cut arm is the If above
-        for sub in ast.walk(cut_arm.body[0]):
-            assert not isinstance(sub, ast.Await), (
-                f"{label}'s demotion-cut arm awaits before arming the ladder; "
-                "the arm must be synchronous up to the ladder write"
+        # Synchronous up to the ladder write, wherever the arm's other
+        # statements sit: walk the arm's statements in order, every one
+        # before (and including) the ladder write must be await-free. The
+        # first-statement-only walk this replaced missed an await inserted
+        # after a reordered leading log line.
+        for stmt in cut_arm.body:
+            stmt_txt = _norm(stmt, renames, strings)
+            has_await = any(isinstance(sub, ast.Await) for sub in ast.walk(stmt))
+            assert not has_await, (
+                f"{label}'s demotion-cut arm awaits before arming the ladder "
+                f"({stmt_txt}); the arm must be synchronous up to the ladder write"
             )
+            if stmt_txt.startswith("retry_backoff = _next_retry_backoff("):
+                break
 
 
 def test_both_loops_arm_the_leaderless_miss() -> None:
@@ -518,16 +540,20 @@ def test_both_loops_arm_the_leaderless_miss() -> None:
         lines = _scaffold_lines(fn, renames, strings)
         fire_reset = lines.index("if not woke_for_retry:")
         miss_idx = lines.index("if not ctx.deps.leading():", fire_reset)
-        arm_block = lines[miss_idx : miss_idx + 4]
-        assert arm_block == [
-            "if not ctx.deps.leading():",
-            "retry_backoff = _next_retry_backoff(retry_backoff)",
-            "log.warning('EV_MISSED_LEADERLESS', kind='SWEEP_KIND', "
-            "worker_id=str(ctx.worker_id), retry_in_secs=retry_backoff)",
-            "continue",
-        ], (
-            f"{label} lost (or reshaped) the leaderless-miss arm; the shared "
-            f"policy is: arm the ladder, warn, skip to the next cron compute — got {arm_block}"
+        # Invariants, not token shapes: the arm must arm the ladder, warn
+        # the missed-fire event, stamp NOTHING (a miss is not a done day),
+        # and skip — a mirrored edit to the warn's fields stays green.
+        miss_cont = lines.index("continue", miss_idx)
+        arm = lines[miss_idx + 1 : miss_cont]
+        assert "retry_backoff = _next_retry_backoff(retry_backoff)" in arm, (
+            f"{label}'s leaderless-miss arm must arm the ladder: {arm}"
+        )
+        assert any("EV_MISSED_LEADERLESS" in line for line in arm), (
+            f"{label}'s leaderless-miss arm must warn the missed-fire event: {arm}"
+        )
+        assert not any("LAST_DONE_DATE" in line for line in arm), (
+            f"{label}'s leaderless-miss arm stamps the date latch — a MISSED "
+            f"fire is not a done day: {arm}"
         )
         day_gate = lines.index("if LAST_DONE_DATE == today_utc:", miss_idx)
         assert fire_reset < miss_idx < day_gate, (
