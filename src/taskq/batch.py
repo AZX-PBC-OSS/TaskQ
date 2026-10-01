@@ -40,7 +40,7 @@ from taskq.backend._protocol import (
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    require_schema,
 )
 from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
 
@@ -189,8 +189,7 @@ class BatchHandle(BaseModel):
         ``schema`` must match the schema used when the :class:`PostgresBackend`
         was constructed (default ``"taskq"``).
         """
-        if not _IDENT_RE.match(schema):
-            raise ValueError(f"invalid schema identifier: {schema!r}")
+        require_schema(schema)
 
         containment = dumps_str({"batch_id": str(self.batch_id)})
         records = await db.fetch(
@@ -541,8 +540,7 @@ async def wait_for_batch(
     ``schema`` must match the schema used when the PostgresBackend was
     constructed (default ``"taskq"``).
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     import asyncpg as _asyncpg
 

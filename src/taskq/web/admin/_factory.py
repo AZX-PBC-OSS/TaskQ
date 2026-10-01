@@ -27,6 +27,7 @@ from starlette.types import Receive, Scope, Send
 from taskq.backend._protocol import Backend
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; reusing the shared validation pattern rather than redefining it.
+    require_schema,
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as _rl_singleton
@@ -676,8 +677,7 @@ def create_router(
     once at subscribe with no mid-stream re-check, and a one-per-router
     ``admin-sse-no-session-verifier`` warning fires at startup.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     settings = TaskQSettings.load()
 

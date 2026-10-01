@@ -68,6 +68,9 @@ from taskq.connections import statement_cache_kwargs
 from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
 )
+from taskq.constants import (
+    require_schema,
+)
 from taskq.obs import get_logger
 
 if TYPE_CHECKING:
@@ -652,8 +655,7 @@ def _health_check_sql(schema: str) -> str:
     The *schema* parameter is validated against _IDENT_RE inline (defence-in-depth
     even though WorkerSettings already constrains it via the regex Field).
     """
-    if not _SCHEMA_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return (
         f"SELECT pid, "  # noqa: S608  # Why: schema validated against _SCHEMA_RE immediately above.
         f"(last_seen_at > clock_timestamp() - $3::interval) AS fresh, "

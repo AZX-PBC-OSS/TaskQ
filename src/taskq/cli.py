@@ -83,6 +83,7 @@ from taskq.client import TaskQ
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
+    require_schema,
 )
 from taskq.exceptions import (
     ActorConfigDriftList,
@@ -1555,10 +1556,9 @@ async def _list_stranded_pending_jobs(
     result is per ACTOR, bounded by the distinct-actor count, never by
     backlog depth.
     """
-    if not _IDENT_RE.match(schema):
-        # Defence in depth: TaskQSettings validates schema_name at load;
-        # re-check at the SQL interpolation site (the queue_ops convention).
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    # Defence in depth: TaskQSettings validates schema_name at load;
+    # re-check at the SQL interpolation site (the queue_ops convention).
+    require_schema(schema)
     rows = await conn.fetch(
         f"""\
 SELECT s.actor,
@@ -1626,8 +1626,7 @@ async def _list_worker_stall_tallies(
     skipped rather than raised: a hand-edited or stale row must not stop
     the whole report. Read-only, like every doctor read.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     rows = await conn.fetch(
         f'SELECT id, metadata FROM "{schema}".workers'  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
     )
