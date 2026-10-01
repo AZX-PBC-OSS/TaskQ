@@ -365,6 +365,7 @@ class PostgresBackend:
     # ── Enqueue ────────────────────────────────────────────────────────
 
     supports_transactional_simulation: ClassVar[bool] = False
+    supports_progress_stream: ClassVar[bool] = True
 
     def _enqueue_lock_budgets(self) -> tuple[float, float, float]:
         """The three single-enqueue advisory-lock wait budgets, read off the

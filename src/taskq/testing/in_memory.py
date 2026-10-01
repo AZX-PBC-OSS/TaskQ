@@ -275,6 +275,10 @@ class InMemoryBackend:
         True  # Why: in-memory backend has no real transactions; SubJobEnqueuer buffers and flushes/discards to simulate rollback semantics.
     )
 
+    supports_progress_stream: ClassVar[bool] = (
+        False  # Why: no pub/sub channel and no event table to poll; JobHandle.progress_stream refuses up front (NotImplementedError) instead of naming this class via a client -> testing import.
+    )
+
     def __init__(
         self,
         clock: Clock,
