@@ -20,7 +20,6 @@ from the directory the operator ran the command in.
 import asyncio
 import contextlib
 import importlib
-import json
 import os
 import re
 import signal
@@ -52,6 +51,7 @@ from taskq._doctor import (
 )
 from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
 from taskq._humantime import humanize_age
+from taskq._json import loads as json_loads
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
@@ -1639,7 +1639,10 @@ async def _list_worker_stall_tallies(
             # tally arrives as a JSON string here (measured: the dict
             # check alone silently dropped EVERY live tally).
             try:
-                metadata = json.loads(metadata)
+                # orjson raises JSONDecodeError, a ValueError subclass, so
+                # the except below catches it unchanged. via _json per the
+                # library's orjson-only doctrine (taskq/_json.py).
+                metadata = json_loads(metadata)
             except ValueError:
                 continue
         if not isinstance(metadata, dict):
