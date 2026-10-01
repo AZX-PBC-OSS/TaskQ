@@ -689,10 +689,28 @@ _SHOWING_RE = re.compile(r"Showing (\d+) results")
 # run 36622474331, where instrumentation slows each render to seconds)
 # still disagreed as "4 …" vs "5 …". Strip the quantified phrase whole,
 # past and future; the article forms ("a day ago") too.
+# The relative/absolute timestamps two requests milliseconds apart can
+# disagree on: the humanize prose AND the duration cells. Both are
+# rendered from a clock at request time — ``timestamp_cell``'s time_ago
+# filter (naturaltime) and the job table's duration cell, which renders
+# ``running_for_ms`` — "elapsed since started_at, measured against the
+# database clock at render time" (job_table.html) — through duration_fmt's
+# compact arms ("226h 42m", "3m 42s", "45.0s", "150ms"). The duration cell
+# is the missing form that re-flaked the differentials (run 36658651637:
+# "the engines disagree on served fragment with the new row: 226h 42m vs
+# 226h 41m" — the two engines' sequential fetches straddled a minute
+# tick); _VOLATILE_RE's prose forms never covered duration_fmt's output.
+# Stripped before any differential so the comparison tests structure, not
+# wall-clock prose. The number belongs to the unit: the phrase is
+# stripped whole. The paired forms (d h / h m / m s) are the shared
+# _humantime cascade's shapes (humanize_wait on the insights surfaces);
+# bare "13m"/"45s" are NOT stripped - no diffed surface renders them
+# volatile, and the bare digits are too promiscuous in real prose.
 _VOLATILE_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
     r"|\b(?:a|an|\d+ )?(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?) ago\b"
     r"|\bjust now\b|\bin \d+ (?:seconds?|minutes?|hours?|days?)\b"
+    r"|\b\d+ms\b|\b\d+\.\ds\b|\b\d+m \d+s\b|\b\d+h \d+m\b|\b\d+d \d+h\b"
 )
 
 
@@ -715,6 +733,17 @@ class TestTheVolatileStripStripsWholePhrases:
             "in 3 hours",
             "in 1 minute",
             "in 2 days",
+            # duration_fmt's four arms (job_card.html): the running row's
+            # live "running_for_ms" cell is measured against the database
+            # clock at render time — the forms the two-engine differentials
+            # flaked on (run 36658651637).
+            "150ms",
+            "3.5s",
+            "3m 42s",
+            "226h 42m",
+            # humanize_wait's paired forms (the _humantime cascade, the
+            # insights surfaces' aggregates).
+            "1d 1h",
         ],
     )
     def test_humanize_phrases_strip_whole(self, phrase: str) -> None:

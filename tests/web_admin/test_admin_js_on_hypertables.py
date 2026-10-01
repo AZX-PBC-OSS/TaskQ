@@ -475,19 +475,61 @@ _ROW_RE = re.compile(r'data-job-id="([0-9a-f-]{36})"\s*data-status="([a-z]+)"')
 _NEXT_LINK_RE = re.compile(r'<a href="([^"]+)"[^>]*>\s*Next(?: page)?\s*<')
 _POLL_MS_RE = re.compile(r"const POLL_INTERVAL_MS = (\d+);")
 _BASE_PATH_RE = re.compile(r'window\.TASKQ_BASE_PATH = "([^"]*)"')
-# The relative-time prose two requests milliseconds apart can disagree on at
-# a humanize boundary — stripped before whole-page differentials so the
+# The relative-time prose two requests milliseconds apart can disagree on
+# at a humanize boundary — stripped before whole-page differentials so the
 # comparison tests structure, not wall-clock prose (the sibling module's
-# _stable_html contract, minus the absolute stamps: those stay IN).
+# _stable_html contract, minus the absolute stamps: those stay IN). The
+# duration cell belongs here too: the job table renders `running_for_ms` —
+# "elapsed since started_at, measured against the database clock at render
+# time" (job_table.html) — through duration_fmt's compact arms, and the
+# fragment differentials red on a minute-tick straddling the two engines'
+# sequential fetches (run 36658651637: "226h 42m" vs "226h 41m"). The
+# paired forms are the _humantime cascade's shapes; bare "13m"/"45s" are
+# not stripped — no diffed surface renders them volatile.
 _VOLATILE_PROSE_RE = re.compile(
     r'name="csrf_token"[^>]*value="[^"]*"|value="[^"]*"[^>]*name="csrf_token"'
     r"|\bjust now\b|\b\d+ (?:seconds?|minutes?|hours?|days?) ago\b"
     r"|\bin \d+ (?:seconds?|minutes?|hours?|days?)\b"
+    r"|\b\d+ms\b|\b\d+\.\ds\b|\b\d+m \d+s\b|\b\d+h \d+m\b|\b\d+d \d+h\b"
 )
 
 
 def _stable(html: str) -> str:
     return _VOLATILE_PROSE_RE.sub("…", html)
+
+
+class TestTheVolatileProseStripStripsWholePhrases:
+    """The strip's own contract: every volatile form _VOLATILE_PROSE_RE
+    claims to remove is removed WHOLE (number included) — the sibling
+    module's TestTheVolatileStripStripsWholePhrases contract, mirrored
+    here because this module's regex is its own copy (no absolute-stamp
+    arm). The duration forms are the ones that re-flaked the differentials
+    (run 36658651637); an incomplete strip here is what let them
+    through."""
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "4 days ago",
+            "1 hour ago",
+            "3 minutes ago",
+            "just now",
+            "in 3 hours",
+            "150ms",
+            "3.5s",
+            "3m 42s",
+            "226h 42m",
+            "1d 1h",
+        ],
+    )
+    def test_volatile_phrases_strip_whole(self, phrase: str) -> None:
+        stripped = _VOLATILE_PROSE_RE.sub("\u2026", f"rendered {phrase} tail")
+        assert phrase not in stripped, f"'{phrase}' survived the strip: {stripped!r}"
+        assert stripped == "rendered \u2026 tail", stripped
+
+    def test_real_prose_survives(self) -> None:
+        prose = "the real days word stays"
+        assert _VOLATILE_PROSE_RE.sub("\u2026", prose) == prose
 
 
 def _badge(html: str) -> tuple[str, str]:
@@ -888,9 +930,16 @@ main();
 
 async def _served_jobs_page(app: FastAPI) -> dict[str, Any]:
     """The jobs page's JS inputs, read off the SERVED page: the config
-    script, the badge, and the real HX table fragment the poll fetches."""
+    script, the badge, and the real HX table fragment the poll fetches.
+    The fragment is captured through ``_stable`` — it carries the running
+    row's live ``running_for_ms`` duration cell (a database-clock-at-render
+    value) and time_ago prose, either of which ticks between two engines'
+    sequential captures and reds a differential on wall clock, not
+    structure. Everything downstream (the served-fragment differentials,
+    the swap payloads the Node harness logs and replays) inherits the
+    strip."""
     page_html = await _html(app, "/admin/jobs?tab=live")
-    fragment = await _html(app, "/admin/jobs?tab=live", headers={"HX-Request": "true"})
+    fragment = _stable(await _html(app, "/admin/jobs?tab=live", headers={"HX-Request": "true"}))
     return {
         "configScript": _config_script(page_html),
         "badge": _badge(page_html),

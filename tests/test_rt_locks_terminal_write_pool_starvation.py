@@ -20,7 +20,6 @@ acquires must be bounded (or routed off the heartbeat pool).
 import asyncio
 import contextlib
 import math
-import time
 from uuid import UUID
 
 import pytest
@@ -29,7 +28,11 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._sql_templates import render as render_sql
 from taskq.backend._terminal import _mark_cancelled
 from taskq.settings import WorkerSettings
-from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
+from taskq.testing.asyncpg_chaos import (  # pyright: ignore[reportPrivateUsage]  # Why: the recording pool's ctx subclass must BE the pool's own checkout type for the override to typecheck; same package contract the double documents.
+    ChaosConnection,
+    ChaosPool,
+    _ChaosAcquireCtx,
+)
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import heartbeat_loop
 
@@ -74,17 +77,62 @@ def _starved_pool() -> ChaosPool:
     )
 
 
-#: Elapsed margin (seconds) below which a TimeoutError counts as the
-#: system's DESIGNED bounded failure rather than an unbounded queue -
-#: the discrimination pattern of the sibling deliverable
-#: ``tests/test_rt_locks_sweep_notify_pool_unbounded.py``: fail only when
-#: the call took unboundedly long (nothing internal ended the wait), so
-#: a bounded acquire firing inside the test's window passes. The twin's
-#: own outer bound is 0.5 s, so the margin sits under it: a production
-#: bound that fires before the margin satisfies the contract, and the
-#: unbounded unguarded acquire (ended only by the test's own 0.5 s
-#: wait_for) fails.
-_UNBOUNDED_MARGIN_S = 0.4
+#: The hang guard (seconds) around the probe below, and the ceiling an
+#: accepted acquire bound may carry. Arithmetic: 2 x the shipped default
+#: terminal-write bound (:data:`~taskq.backend._terminal.DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S`
+#: = 0.25) - the guard must outlive any bound the shipped code can pass
+#: (so the bound's own TimeoutError is what the test observes, never the
+#: guard), while any bound at or above the guard is too loose to protect
+#: the heartbeat loop and fails the contract by STATE (the recorded
+#: kwarg), not by wall clock.
+_ACQUIRE_GUARD_S = 0.5
+
+
+class _RecordingStarvedPool(ChaosPool):
+    """The starved pool plus the record the probe's discrimination reads.
+
+    The discrimination this test makes is STATE, not elapsed time: the
+    contract ("terminal-write acquires must be bounded") is proven by
+    (a) the ``timeout=`` kwarg the production code actually passed and
+    (b) WHICH wait ended the probe - the bound's own ``TimeoutError``
+    (the designed failure, raised from the pool's honored bound) or the
+    test's guard (nothing internal ended it). The wall-clock margin
+    dance this replaces (fail when elapsed >= 0.4) raced its own
+    discrimination: any >=150ms event-loop stall between the probe's
+    start and the caught TimeoutError - CI co-tenancy descheduling,
+    coverage tracing - pushed the measured elapsed past the margin on a
+    run whose production bound was honored, red on a healthy system
+    (the recurring flake). Elapsed no longer participates: the pool
+    records what it was handed and which wait fired, and those states
+    decide.
+    """
+
+    def __init__(self, chaos_conn: ChaosConnection) -> None:
+        super().__init__(chaos_conn, acquire_delay=math.inf)
+        self.acquired_with: list[float | None] = []
+        self.bounded_failure = False
+        """True when the pool's OWN honored bound raised the TimeoutError -
+        the designed bounded failure, never the test's guard."""
+
+    def acquire(self, *, timeout: float | None = None) -> _ChaosAcquireCtx:
+        self.acquired_with.append(timeout)
+        pool = self
+
+        class _BoundObservedCtx(_ChaosAcquireCtx):
+            """The checkout, marking the pool when the handed bound's own
+            timeout is what fired: asyncio re-raises the bound's
+            TimeoutError from ``__aenter__`` (the guard, by contrast,
+            CANCELS the probe - a CancelledError, not a TimeoutError - so
+            only a genuinely honored bound can set the flag)."""
+
+            async def __aenter__(self) -> ChaosConnection:
+                try:
+                    return await super().__aenter__()
+                except TimeoutError:
+                    pool.bounded_failure = True
+                    raise
+
+        return _BoundObservedCtx(self._conn, self._acquire_delay, timeout)
 
 
 def _deps(pool: ChaosPool, *, max_heartbeat_failures: int) -> WorkerDeps:
@@ -119,16 +167,17 @@ async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
 
     Contract: terminal-write pool acquires must be bounded (or routed off
     the heartbeat pool) - a cancel storm saturating the heartbeat pool must
-    fail the individual write within a bound, not queue it forever. Today
-    the contract is violated: backend/_terminal.py's ``_mark_cancelled``
-    acquires with ``async with pool.acquire() as conn:`` - NO timeout= -
-    (and backend/postgres.py routes mark_cancelled onto the heartbeat
-    pool), so the write below was still queued at the test's own 0.5 s
-    bound and would never resolve while the pool stays exhausted.
+    fail the individual write within a bound, not queue it forever. The
+    starved pool below yields no connection at all, so the probe can only
+    end by a timeout, and the discrimination is STATE (the ``timeout=``
+    kwarg the pool recorded), never elapsed wall clock - the elapsed
+    margin this replaces red on a healthy run whenever CI co-tenancy (or
+    coverage tracing) descheduled the loop >=150ms inside the probe's
+    window and pushed the measured elapsed past the margin while the
+    production bound was honored.
     """
-    pool = _starved_pool()
+    pool = _RecordingStarvedPool(ChaosConnection(_NullConn(), fail_on_call=1))  # pyright: ignore[reportArgumentType]  # Why: conn double stands in for an asyncpg Connection, same as the pool stand-ins in _deps below.
     sql = render_sql("taskq")
-    started = time.monotonic()
     try:
         await asyncio.wait_for(
             _mark_cancelled(
@@ -137,26 +186,33 @@ async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
                 new_job_id(),
                 new_uuid(),
             ),
-            timeout=0.5,
+            timeout=_ACQUIRE_GUARD_S,
         )
-    except TimeoutError as exc:
-        # Sibling-pattern discrimination: a bounded acquire's fast
-        # TimeoutError is the system's DESIGNED failure mode
-        # (worker/_handlers.py's _TERMINAL_WRITE_INFRA_EXCEPTIONS
-        # anticipates "timeout acquiring a pool connection") and passes;
-        # only a wait that outlived the margin - nothing internal ended
-        # it - violates the contract.
-        elapsed = time.monotonic() - started
-        if elapsed >= _UNBOUNDED_MARGIN_S:
+    except TimeoutError:
+        # Two waits can end this probe: the pool's OWN honored bound
+        # (the DESIGNED terminal-write infra failure - the contract
+        # holding) or the test's guard (nothing internal ended the wait
+        # - the contract violated). bounded_failure says which fired.
+        if not pool.bounded_failure:
+            handed = pool.acquired_with[-1] if pool.acquired_with else None
             pytest.fail(
                 "Contract: terminal-write pool acquires must be bounded (or routed off "
                 "the heartbeat pool) - a starved pool must fail the write within a bound. "
-                "Today backend/_terminal.py's _mark_cancelled acquires with "
-                "`async with pool.acquire() as conn:` (no timeout=), routed to the "
-                "heartbeat pool by backend/postgres.py's mark_cancelled, so the "
-                "cancel write was still queued at the test's own 0.5 s bound "
-                f"({exc!r}) and never resolves while the pool is exhausted."
+                "Today backend/_terminal.py's _mark_cancelled handed its pool acquire "
+                f"timeout={handed!r} (the guard is {_ACQUIRE_GUARD_S}s = 2x the shipped "
+                "0.25s default), routed to the heartbeat pool by backend/postgres.py's "
+                "mark_cancelled, so the cancel write was still queued at the test's own "
+                f"{_ACQUIRE_GUARD_S}s guard and never resolves while the pool is exhausted."
             )
+    handed = pool.acquired_with[-1] if pool.acquired_with else None
+    assert handed is not None and handed <= _ACQUIRE_GUARD_S, (
+        "Contract: terminal-write pool acquires must be bounded (or routed off "
+        "the heartbeat pool) - the pool observed timeout="
+        f"{handed!r} (guard {_ACQUIRE_GUARD_S}s = 2x the shipped 0.25s default); "
+        "None means backend/_terminal.py's unbounded `pool.acquire()` regressed, "
+        "a loose bound means the cancel write queues past the heartbeat loop's "
+        "own bounded acquire and starves it into isolate_self"
+    )
 
 
 async def test_cancel_storm_starves_heartbeat_loop_into_isolate_self(
