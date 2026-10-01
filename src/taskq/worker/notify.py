@@ -483,7 +483,7 @@ async def reconnect_notify_conn(
             # stall the reconnect loop. The helper never raises
             # (except CancelledError, which must propagate), so the
             # original exception is always re-raised below.
-            await close_conn_bounded(new_conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
+            await close_conn_bounded(new_conn, "notify", CLOSE_TIMEOUT_SECS, family="mid_run")
             raise
         deps.notify_conn = new_conn
         # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
@@ -509,7 +509,7 @@ async def reconnect_notify_conn(
                 # never collected). The helper bounds the wait, terminates
                 # on timeout, and never raises, subsuming the old
                 # suppress(Exception).
-                await close_conn_bounded(old_conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
+                await close_conn_bounded(old_conn, "notify", CLOSE_TIMEOUT_SECS, family="mid_run")
 
             # Store the reference so the task is not garbage-collected before
             # completing. The set is module-level (single event loop, async-safe).
@@ -572,7 +572,7 @@ async def _recover_notify_conn(
         # health-check loop before reconnect even starts. The
         # helper bounds the wait, terminates on timeout, and never
         # raises, subsuming a bare suppress(Exception).
-        await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
+        await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, family="mid_run")
 
     delay = float(deps.settings.notify_reconnect_backoff_initial)
     attempt = 0
@@ -735,7 +735,7 @@ async def notify_listener_loop(
             if deps.owns_notify_conn:
                 conn = deps.notify_conn
                 if conn is not None:
-                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
+                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, family="mid_run")
             raise
         except (
             asyncpg.PostgresConnectionError,

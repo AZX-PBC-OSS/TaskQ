@@ -4,8 +4,9 @@ Pins the promises the helpers' docstrings make but the suite previously
 never asserted: the helpers never raise EXCEPT ``asyncio.CancelledError``
 (which must still propagate so outer cancellation unwinds promptly - a
 refactor to ``except BaseException`` would otherwise pass the whole suite);
-a hung conn close is terminated after the bound; and ``mid_run`` selects the
-structlog event family (``conn-close-*`` vs ``conn-teardown-close-*``) so a
+a hung conn close is terminated after the bound; and ``family`` selects the
+structlog event family (``conn-close-*`` vs ``conn-teardown-close-*`` vs the
+reload path's ``conn-drain-*``/``pool-drain-*``) so a
 mid-run close failure stays distinguishable from final-teardown noise in log
 alerts (review C10). Docker-free, hand-rolled fakes; no ``pytestmark`` so
 the file runs under ``pytest -m "not integration"``.
@@ -135,7 +136,7 @@ async def test_close_redis_bounded_propagates_cancelled_error() -> None:
         await close_redis_bounded(client, "redis", 0.05)
 
 
-# ── mid_run event-family pins ──────────────────────────────────────────
+# ── family event pins ──────────────────────────────────────────────────
 
 
 async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> None:
@@ -150,7 +151,7 @@ async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> No
         # Why the outer timeout: if the 0.05s bound regresses, fail fast
         # instead of hanging until pytest-timeout.
         async with asyncio.timeout(5):
-            await close_conn_bounded(conn, "x", 0.05, mid_run=True)
+            await close_conn_bounded(conn, "x", 0.05, family="mid_run")
 
     assert conn.terminated is True
     assert conn.close_calls == 1
@@ -177,7 +178,7 @@ async def test_close_conn_bounded_teardown_timeout_logs_teardown_family() -> Non
         # Why the outer timeout: if the 0.05s bound regresses, fail fast
         # instead of hanging until pytest-timeout.
         async with asyncio.timeout(5):
-            await close_conn_bounded(conn, "x", 0.05)  # mid_run defaults to False
+            await close_conn_bounded(conn, "x", 0.05)  # family defaults to "teardown"
 
     assert conn.terminated is True
     assert conn.close_calls == 1
@@ -202,7 +203,7 @@ async def test_close_conn_bounded_mid_run_error_logs_conn_close_error() -> None:
     conn.close_error = boom
 
     with structlog.testing.capture_logs() as captured:
-        await close_conn_bounded(conn, "x", 0.05, mid_run=True)  # must not raise
+        await close_conn_bounded(conn, "x", 0.05, family="mid_run")  # must not raise
 
     assert conn.close_calls == 1
     assert conn.terminated is False  # helper never terminates on the error path
@@ -222,7 +223,7 @@ async def test_close_conn_bounded_teardown_error_logs_teardown_family() -> None:
     conn.close_error = boom
 
     with structlog.testing.capture_logs() as captured:
-        await close_conn_bounded(conn, "x", 0.05)  # mid_run defaults to False
+        await close_conn_bounded(conn, "x", 0.05)  # family defaults to "teardown"
 
     assert conn.close_calls == 1
     assert conn.terminated is False  # helper never terminates on the error path
@@ -279,3 +280,144 @@ async def test_close_redis_bounded_error_logs_redis_teardown_close_error() -> No
     event = error_events[0]
     assert event.get("error") == repr(boom)
     assert event.get("label") == "redis"
+
+
+# ── drain event-family pins (credential-reload path) ───────────────────
+#
+# The reload drains in taskq.worker.deps delegate here with
+# ``family="drain"``; these pins hold the drain family to its exact event
+# names and field names so log alerts keep matching byte-for-byte
+# (drain events carry ``drain_timeout=``, teardown events
+# ``close_timeout=`` - review C9's distinction, preserved).
+
+
+async def test_close_pool_bounded_drain_family_logs_drain_events() -> None:
+    """``family="drain"`` announces ``pool-draining`` first, then a hung
+    close logs ``pool-drain-timeout-terminating`` with the
+    ``drain_timeout=`` field - never the teardown family, never the
+    ``close_timeout=`` field."""
+
+    class _HangingClosePool(_FakePool):
+        """_FakePool with the hang gate its close() otherwise lacks."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_wait = asyncio.Event()
+            self.close_wait.set()
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            await self.close_wait.wait()
+            if self.close_error is not None:
+                raise self.close_error
+            self.closed = True
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.terminated = True
+            self.closed = True
+            self.close_wait.set()  # aborts any in-flight close() wait
+
+    pool = _HangingClosePool()
+    pool.close_wait.clear()  # close() blocks forever from now on
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            await close_pool_bounded(pool, "pool", 0.05, family="drain")
+
+    assert pool.terminated is True
+    draining = [e for e in captured if e.get("event") == "pool-draining"]
+    assert len(draining) == 1, f"expected 1 pool-draining announcement, got {captured!r}"
+    assert draining[0].get("pool") == "pool"
+    assert draining[0].get("drain_timeout") == 0.05
+    timeout_events = [e for e in captured if e.get("event") == "pool-drain-timeout-terminating"]
+    assert len(timeout_events) == 1, f"expected 1 drain timeout event, got {captured!r}"
+    event = timeout_events[0]
+    assert event.get("drain_timeout") == 0.05
+    assert event.get("pool") == "pool"
+    teardown_events = [
+        e for e in captured if str(e.get("event", "")).startswith("pool-teardown-close-")
+    ]
+    assert teardown_events == [], f"teardown family must not fire on drain: {captured!r}"
+
+
+async def test_close_pool_bounded_drain_family_error_logs_drain_error() -> None:
+    """A raising pool close() on the drain path logs
+    ``pool-drain-error`` and is swallowed (never-raise)."""
+    pool = _FakePool()
+    boom = RuntimeError("simulated PG close failure")
+    pool.close_error = boom
+
+    with structlog.testing.capture_logs() as captured:
+        await close_pool_bounded(pool, "pool", 0.05, family="drain")  # must not raise
+
+    assert pool.close_calls == 1
+    error_events = [e for e in captured if e.get("event") == "pool-drain-error"]
+    assert len(error_events) == 1, f"expected 1 drain error event, got {captured!r}"
+    event = error_events[0]
+    assert event.get("error") == repr(boom)
+    assert event.get("pool") == "pool"
+
+
+async def test_close_pool_bounded_drain_family_still_propagates_cancelled_error() -> None:
+    """``family="drain"`` must not change the never-raise contract's one
+    exception: CancelledError propagates (the drain task's outer
+    cancellation is never swallowed)."""
+    pool = _FakePool()
+    pool.close_error = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_pool_bounded(pool, "pool", 0.05, family="drain")
+
+
+async def test_close_conn_bounded_drain_family_logs_drain_events() -> None:
+    """``family="drain"`` logs the ``conn-drain-*`` family with the
+    ``drain_timeout=`` field - a THIRD family, distinct from both the
+    teardown and mid_run families."""
+    conn = _FakeConn()
+    conn.close_wait.clear()  # close() blocks forever from now on
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            await close_conn_bounded(conn, "x", 0.05, family="drain")
+
+    assert conn.terminated is True
+    timeout_events = [e for e in captured if e.get("event") == "conn-drain-timeout-terminating"]
+    assert len(timeout_events) == 1, f"expected 1 drain timeout event, got {captured!r}"
+    event = timeout_events[0]
+    assert event.get("drain_timeout") == 0.05
+    assert event.get("label") == "x"
+    other = [
+        e
+        for e in captured
+        if str(e.get("event", "")).startswith(("conn-close-", "conn-teardown-close-"))
+    ]
+    assert other == [], f"teardown/mid_run families must not fire on drain: {captured!r}"
+
+
+async def test_close_conn_bounded_drain_family_error_logs_drain_error() -> None:
+    """A raising conn close() on the drain path logs ``conn-drain-error``
+    and is swallowed (never-raise); the helper does not terminate."""
+    conn = _FakeConn()
+    boom = RuntimeError("simulated PG close failure")
+    conn.close_error = boom
+
+    with structlog.testing.capture_logs() as captured:
+        await close_conn_bounded(conn, "x", 0.05, family="drain")  # must not raise
+
+    assert conn.close_calls == 1
+    assert conn.terminated is False
+    error_events = [e for e in captured if e.get("event") == "conn-drain-error"]
+    assert len(error_events) == 1, f"expected 1 drain error event, got {captured!r}"
+    event = error_events[0]
+    assert event.get("error") == repr(boom)
+    assert event.get("label") == "x"
+
+
+async def test_close_conn_bounded_drain_family_still_propagates_cancelled_error() -> None:
+    """Same CancelledError propagation pin for the drain family."""
+    conn = _FakeConn()
+    conn.close_error = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_conn_bounded(conn, "x", 0.05, family="drain")
