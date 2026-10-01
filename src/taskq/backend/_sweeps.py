@@ -116,7 +116,6 @@ from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL, WAKE_NOTIFY_SQL
 from taskq.backend._sql_fragments import DEADLINE_EXCEEDED_MESSAGE
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
@@ -126,6 +125,7 @@ from taskq.constants import (
     ERROR_CLASS_WORKER_CRASHED,
     MIN_DEFERRAL_INTERVAL,
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
+    require_schema,
     wake_channel,
 )
 from taskq.obs import (
@@ -179,8 +179,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: byte-equality discipline the SQL constants are pinned to.
 @lru_cache(maxsize=64)
 def _render_sweep_sql(template: str, schema: str) -> str:
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return template.format(schema=schema)
 
 
@@ -194,8 +193,7 @@ def _render_event_ttl_base_sql(schema: str) -> str:
     outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER)``. The schema
     still passes ``_IDENT_RE`` validation before any interpolation, the
     same ValueError per call as the direct render raised."""
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     return _SWEEP_EVENT_TTL_SQL.format(
         schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
     )
@@ -1569,8 +1567,7 @@ async def sweep_expired_locks(
 
     Returns the count of rows reclaimed by this call.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
@@ -1739,8 +1736,7 @@ async def sweep_deadline_exceeded(
 
     Returns the count of rows swept by this call.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
@@ -1864,8 +1860,7 @@ async def sweep_scheduled_to_pending(
 
     Returns the count of rows promoted by this call.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
@@ -1937,8 +1932,7 @@ async def sweep_leaked_reservation_slots(
 
     Returns the count of released slots.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
 
     sql = _render_sweep_sql(_SWEEP_4_SQL, schema)
@@ -1989,8 +1983,7 @@ async def sweep_expired_results(
 
     Returns the count of results expired by this call.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
 
     sql = _render_sweep_sql(_SWEEP_RESULT_TTL_SQL, schema)
@@ -2084,8 +2077,7 @@ async def sweep_expired_events(
 
     Returns the count of events deleted by this call (both arms).
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
     if retention <= timedelta(0):
         raise ValueError(
@@ -2396,8 +2388,7 @@ async def sweep_idle_keyed_rows(
 
      Returns the count of rows deleted by this call (both arms).
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_positive("batch_size", batch_size)
     if horizon <= timedelta(0):
         raise ValueError(

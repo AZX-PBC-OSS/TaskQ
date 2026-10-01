@@ -59,6 +59,12 @@ pytestmark = pytest.mark.integration
 
 _SHALLOW_DEPTH = 1_000
 _DEEP_DEPTH = 30_000
+# The re-pended regime pin's depths: the flip is estimate-driven and only
+# reachable past the planner's honest-walk crossover, so the shallow leg
+# sits at the audit's 12k observation point and the deep leg at its 94k
+# capture.
+_REPENDED_SHALLOW_DEPTH = 12_000
+_REPENDED_BITMAP_BOUND = 1_000
 _LIMIT_N = 50
 _OVERSAMPLE = 2
 _LOCK_LEASE = timedelta(seconds=30)
@@ -336,6 +342,124 @@ async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
             "full JIT compile time on every round. This reproduces the "
             "original 'gets slower the behinder you are' symptom via "
             "compile time instead of scan time; see this test's docstring."
+        )
+    finally:
+        await conn.close()
+
+
+async def _seed_repended_backlog(conn: asyncpg.Connection, schema: str, depth: int) -> None:
+    """Seed the deep RE-PENDED regime: ``depth`` pending assignment-routed
+    rows across 5 actors x 4 queue labels, NULL fairness keys (one cohort
+    per actor), all due. This is the shape the SQL audit's deep-backlog
+    capture measured - a crash-reclaim tail landing a fleet's whole
+    backlog back into the pending pool, which routes every row to the
+    claim statement's re-pended arm. VACUUM (ANALYZE) mirrors production
+    (a table this size is above autovacuum's analyze threshold) and is
+    what collects migration 01.00.22_01's expression statistics - the
+    pin below reds without them, which is the mutation proof that the
+    statistics object, not the seed, holds the plan shape.
+    """
+    await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
+    await conn.execute(f'DELETE FROM "{schema}".actor_config')
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) '
+        "SELECT 'actor' || g, 'q' || (g % 4) FROM generate_series(0, 4) g"
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, status, priority, scheduled_at, "
+        "max_attempts, retry_kind, assignment_routed) "
+        "SELECT gen_random_uuid(), 'actor' || (g % 5), 'q' || (g % 4), "
+        "'{\"v\": 1}'::jsonb, 'pending', (g % 5)::smallint, "
+        "clock_timestamp() - interval '1 minute', 3, 'transient', true "
+        "FROM generate_series(1, $1::int) AS g",
+        depth,
+    )
+    await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+
+
+def _worst_bitmap_row_work(plan: dict[str, Any]) -> tuple[float, str]:
+    """(rows * loops, label) of the worst jobs bitmap node in the plan.
+
+    The re-pended regime's flip signature is a bitmap over the cohort's
+    whole index range feeding a sort (the planner under-prices the range
+    when the cohort-key expression has no statistics); a bounded round's
+    bitmap work stops at the claim window regardless of depth.
+    """
+    worst = 0.0
+    label = "no jobs bitmap node"
+    stack: list[dict[str, Any]] = [plan]
+    while stack:
+        node = stack.pop()
+        if node.get("Relation Name") == "jobs" and "Bitmap" in str(node.get("Node Type", "")):
+            rows = float(node.get("Actual Rows", 0) or 0)
+            loops = max(int(node.get("Actual Loops", 1) or 1), 1)
+            if rows * loops > worst:
+                worst = rows * loops
+                label = str(node.get("Node Type"))
+        stack.extend(node.get("Plans") or [])
+    return worst, label
+
+
+@pytest.mark.parametrize(("variant", "sql"), _VARIANTS, ids=[v for v, _ in _VARIANTS])
+async def test_repended_cohort_probe_stays_bounded_at_depth(
+    pg_dsn: str, depth_schema: str, variant: str, sql: str
+) -> None:
+    """The re-pended arm's per-cohort probe does not flip to a backlog-wide
+    bitmap at depth.
+
+    Breaking regime (SQL audit F1): a deep RE-PENDED backlog (the crash-
+    reclaim tail shape seeded by ``_seed_repended_backlog``) drives the
+    candidates lateral's per-cohort probe through an estimate comparison
+    the ordered walk loses - the probe's range estimate is dominated by
+    the selectivity of ``COALESCE(fairness_key, '__null__') = <key>``,
+    which prices at the default eqsel (0.005) until a statistics object
+    names the expression. Measured on PostgreSQL 18.6 without it: the
+    round planned ``Bitmap Index Scan act=18,764 loops=5`` - 94k index
+    entries + 28k heap blocks to claim 50 jobs (57-75 ms) where the
+    bounded ordered walk costs 3.8-4.6 ms. Migration 01.00.22_01 ships
+    the expression statistics; with them the bitmap alternative is
+    priced at the cohort's real range and the probe stays an ordered
+    walk that stops at its LIMIT at every depth. The pin asserts the
+    plan shape (the worst jobs bitmap node's row work), the same
+    deterministic oracle the depth-bound test above uses.
+    """
+    rendered = sql.format(schema=depth_schema)
+    worker_id = new_uuid()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        worst_by_depth: dict[int, float] = {}
+        for depth in (_REPENDED_SHALLOW_DEPTH, _DEEP_DEPTH):
+            await _seed_repended_backlog(conn, depth_schema, depth)
+            rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+                ["q0", "q1", "q2", "q3"],
+                _LIMIT_N,
+                worker_id,
+                _LOCK_LEASE,
+                _OVERSAMPLE,
+            )
+            raw = rows[0]["QUERY PLAN"]
+            document: Any = json.loads(raw) if isinstance(raw, str) else raw
+            worst, label = _worst_bitmap_row_work(document[0]["Plan"])
+            worst_by_depth[depth] = worst
+            assert worst <= _REPENDED_BITMAP_BOUND, (
+                f"{variant}: at a {depth}-row re-pended backlog the claim "
+                f"plan's widest jobs bitmap node ({label}) did {worst:.0f} "
+                "rows of work - the per-cohort probe flipped to a "
+                "backlog-wide bitmap (the cohort-key expression's "
+                "statistics are missing or stale: check migration "
+                "01.00.22_01 and that the table was analyzed). Widest "
+                f"nodes: {label}; execution would be 10-20x the bounded "
+                "walk's at this depth."
+            )
+        assert worst_by_depth[_DEEP_DEPTH] <= _DEPTH_RATIO_BOUND * max(
+            worst_by_depth[_REPENDED_SHALLOW_DEPTH], 1.0
+        ), (
+            f"{variant}: the re-pended probe's bitmap row work grows with "
+            f"backlog depth - {worst_by_depth[_REPENDED_SHALLOW_DEPTH]:.0f} at "
+            f"{_REPENDED_SHALLOW_DEPTH} pending vs {worst_by_depth[_DEEP_DEPTH]:.0f} "
+            f"at {_DEEP_DEPTH}."
         )
     finally:
         await conn.close()
