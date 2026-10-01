@@ -2,7 +2,8 @@
 
 This module carries the single-source pieces of the shipped SQL that more
 than one module reads: the deadline-failure message texts, the terminal-write
-fence predicate, the attempt-refund expression, and the pre-rendered
+fence predicate, the lease-clear SET trio, the progress-merge SET pair, the
+attempt-refund expression, and the pre-rendered
 non-consuming deferral floor. The pre-rendered statement bundle
 (``taskq.backend._sql_templates``) interpolates them; the in-memory twins in
 ``taskq.testing`` read the same constants so the two backends cannot drift.
@@ -133,10 +134,11 @@ JOB_FENCE_BOUND_SQL: Final[str] = (
 # locked on one axis (a cleared lock_expires_at with a stale
 # last_heartbeat_at misleads the stale-heartbeat readers; the reverse
 # misleads the reclaim probe), so the trio travels as one fragment.
-# Deliberately NOT a consumer: the mark_succeeded / mark_failed pair clears
-# only the two lock columns and keeps last_heartbeat_at (the attempt that
-# finished is the row's last heartbeat, the audit trail a terminal row
-# should keep), so their 2-column shape is hand-maintained. The reference is
+# Deliberately NOT a consumer: the mark_succeeded / mark_failed /
+# mark_cancelled trio clears only the two lock columns and keeps
+# last_heartbeat_at (the attempt that finished is the row's last heartbeat,
+# the audit trail a terminal row should keep), so their 2-column shape is
+# hand-maintained. The reference is
 # unqualified (a SET clause, no alias) with the continuation indent baked in
 # at the templates' SET-body depth; a trailing comma is the caller's, since
 # the trio is always followed by another assignment.

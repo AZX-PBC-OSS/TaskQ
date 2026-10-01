@@ -17,6 +17,7 @@ from uuid import UUID
 
 from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
+from taskq.ratelimit._dependency_guards import _require_redis
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import (
     GCRA_REFUND_SCRIPT,
@@ -223,17 +224,13 @@ async def _acquire_redis_log(
 ) -> RateLimitDecision:
     """Redis log-style acquire, the script derives now from
     ``redis.call('TIME')`` (store-domain), so no Python clock participates."""
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
 
     if request_id is None:
         raise RuntimeError("request_id required for log-style acquire")
 
     script = await _ensure_log_script(self, redis_client)
 
-    schema_name = settings.schema_name
     key = f"taskq:{schema_name}:sw:{{{self._name}}}"
 
     window_ms = int(self._window.total_seconds() * 1000)
@@ -291,14 +288,10 @@ async def _acquire_redis_gcra(
 ) -> RateLimitDecision:
     """Redis GCRA acquire, the script derives now from ``redis.call('TIME')``
     (store-domain), so no Python clock participates."""
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
 
     script = await _ensure_gcra_script(self, redis_client)
 
-    schema_name = settings.schema_name
     key = f"taskq:{schema_name}:sw_gcra:{{{self._name}}}"
 
     window_ms = int(self._window.total_seconds() * 1000)
@@ -368,12 +361,7 @@ async def _peek_redis_log(
     """Read-only log-style snapshot, the retry estimate runs on the
     store's clock (``TIME``), the same domain the acquire script's ZADD
     scores live in."""
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
-
-    schema_name = settings.schema_name
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
     key = f"taskq:{schema_name}:sw:{{{self._name}}}"
     window_ms = int(self._window.total_seconds() * 1000)
 
@@ -503,12 +491,7 @@ async def _peek_redis_gcra(
 ) -> RateLimitState:
     """Read-only GCRA snapshot, measured against the store's clock
     (``TIME``), the same domain the acquire script advances the TAT in."""
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
-
-    schema_name = settings.schema_name
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
     key = f"taskq:{schema_name}:sw_gcra:{{{self._name}}}"
     window_ms = int(self._window.total_seconds() * 1000)
     emission_interval_ms = window_ms / self._limit
@@ -593,12 +576,7 @@ async def _reset_redis_log(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> None:
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
-
-    schema_name = settings.schema_name
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
     key = f"taskq:{schema_name}:sw:{{{self._name}}}"
     await redis_client.delete(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py delete return type is untyped in the stub
 
@@ -608,12 +586,7 @@ async def _reset_redis_gcra(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> None:
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend")
-
-    schema_name = settings.schema_name
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
     key = f"taskq:{schema_name}:sw_gcra:{{{self._name}}}"
     await redis_client.delete(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py delete return type is untyped in the stub
 
@@ -629,12 +602,7 @@ async def _refund_redis_log(
             "log-style refund requires decision.request_id for ZREM; "
             "got None, was this decision from a non-log acquire path?"
         )
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis backend refund")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis backend refund")
-
-    schema_name = settings.schema_name
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis backend refund")
     key = f"taskq:{schema_name}:sw:{{{self._name}}}"
 
     await redis_client.zrem(key, decision.request_id)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py zrem() return type is untyped in the stub
@@ -648,14 +616,10 @@ async def _refund_redis_gcra(
 ) -> None:
     if decision.previous_state is None:
         return
-    if redis_client is None:
-        raise RuntimeError("redis_client not injected for redis gcra refund")
-    if settings is None:
-        raise RuntimeError("settings not injected for redis gcra refund")
+    redis_client, schema_name = _require_redis(redis_client, settings, "redis gcra refund")
 
     script = await _ensure_gcra_refund_script(self, redis_client)
 
-    schema_name = settings.schema_name
     key = f"taskq:{schema_name}:sw_gcra:{{{self._name}}}"
 
     pre_acquire_tat_str = str(decision.previous_state["pre_acquire_tat_str"])  # type: ignore[arg-type]  # Why: dict[str, object] value is str at runtime; type narrowing not possible from generic dict
