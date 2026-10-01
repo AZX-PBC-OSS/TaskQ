@@ -1879,6 +1879,24 @@ class Backend(Protocol):
     in by overriding this to True.
     """
 
+    supports_progress_stream: ClassVar[bool] = True
+    """Whether ``JobHandle.progress_stream`` may run against this backend
+    (True), or must refuse up front with :class:`NotImplementedError`
+    (False).
+
+    ``PostgresBackend`` returns True, the PG poll fallback (and the Redis
+    pub/sub arm on top of it) is always available.
+
+    ``InMemoryBackend`` returns False, it has no pub/sub channel and no
+    event table to poll, so ``JobHandle.progress_stream`` raises
+    ``NotImplementedError`` ("progress_stream requires Redis; in-memory
+    backend does not support SSE.") before touching the transport. This
+    capability flag is the production-side replacement for a
+    ``client → testing`` import: the client layer asks the backend
+    instead of naming the test double. A third-party ``Backend`` that
+    cannot back a progress stream overrides this to False.
+    """
+
     # ── Enqueue ────────────────────────────────────────────────────────
     async def enqueue(self, args: EnqueueArgs) -> JobRow: ...
 

@@ -61,8 +61,9 @@ from taskq._advisory import (
 from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
-from taskq.exceptions import RateLimitDependencyUnavailable, RateLimitStoreCorrupt
+from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
+from taskq.ratelimit._dependency_guards import _require_pg, _require_redis
 from taskq.ratelimit._lock_budget import resolve_token_bucket_lock_timeout_ms
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import REFUND_SCRIPT, TOKEN_BUCKET_SCRIPT
@@ -682,15 +683,9 @@ class TokenBucket:
         """Read-only Redis state snapshot, the elapsed-refill estimate runs
         on the store's clock (``TIME``), the same domain the acquire script
         stamps ``ts`` in."""
-        if redis_client is None:
-            raise RuntimeError("redis_client not injected for redis backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for redis backend")
-
-        schema_name = settings.schema_name
+        redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
         now_seconds = await redis_time_seconds(redis_client)
-
         raw = await redis_client.hmget(key, ["tokens", "ts"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]  # Why: redis-py hmget return type is untyped in the stub; all operations reflect correct runtime behavior.
 
         if raw is not None and not isinstance(raw, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance, reportUnnecessaryComparison]  # Why: the stub types hmget as a list of per-field values (never None), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
@@ -766,12 +761,7 @@ class TokenBucket:
         redis_client: "redis_async.Redis | None",
         settings: "WorkerSettings | None",
     ) -> None:
-        if redis_client is None:
-            raise RuntimeError("redis_client not injected for redis backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for redis backend")
-
-        schema_name = settings.schema_name
+        redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
         await redis_client.delete(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py delete return type is untyped in the stub
 
@@ -796,12 +786,7 @@ class TokenBucket:
         exhausted bucket still tells the operator how long one more
         token takes.
         """
-        if pg_pool is None:
-            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for postgres backend")
-
-        schema = settings.schema_name
+        pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
 
         select_sql = f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
 
@@ -855,12 +840,7 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
     ) -> None:
-        if pg_pool is None:
-            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for postgres backend")
-
-        schema = settings.schema_name
+        pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
         delete_sql = f'DELETE FROM "{schema}".rate_limit_buckets WHERE bucket_name = $1'  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
         await pg_pool.execute(delete_sql, self._name)
 
@@ -875,14 +855,10 @@ class TokenBucket:
         redis_client: "redis_async.Redis | None",
         settings: "WorkerSettings | None",
     ) -> None:
-        if redis_client is None:
-            raise RuntimeError("redis_client not injected for redis backend refund")
-        if settings is None:
-            raise RuntimeError("settings not injected for redis backend refund")
+        redis_client, schema_name = _require_redis(redis_client, settings, "redis backend refund")
 
         script = await self._ensure_refund_script(redis_client)
 
-        schema_name = settings.schema_name
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
 
         argv: list[float] = [count, self._capacity, self._refill]
@@ -942,15 +918,10 @@ class TokenBucket:
         waits indefinitely, the ``lock_timeout`` GUC convention shared
         with migrate.py and ``taskq._advisory``.
         """
-        if pg_pool is None:
-            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend refund")
-        if settings is None:
-            raise RuntimeError("settings not injected for postgres backend refund")
+        pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend refund")
         lock_timeout_ms = resolve_token_bucket_lock_timeout_ms(
             lock_timeout_ms, settings, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
         )
-
-        schema = settings.schema_name
 
         select_sql = (
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
@@ -1073,14 +1044,10 @@ class TokenBucket:
     ) -> RateLimitDecision:
         """Redis acquire, the script derives now from ``redis.call('TIME')``
         (store-domain), so no Python clock participates."""
-        if redis_client is None:
-            raise RuntimeError("redis_client not injected for redis backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for redis backend")
+        redis_client, schema_name = _require_redis(redis_client, settings, "redis backend")
 
         script = await self._ensure_script(redis_client)
 
-        schema_name = settings.schema_name
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
 
         ttl_seconds = self._compute_ttl_seconds()
@@ -1226,15 +1193,10 @@ class TokenBucket:
         statement, no transaction and no GUC), the ``lock_timeout`` GUC
         convention shared with migrate.py and ``taskq._advisory``.
         """
-        if pg_pool is None:
-            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
-        if settings is None:
-            raise RuntimeError("settings not injected for postgres backend")
+        pg_pool, schema = _require_pg(pg_pool, settings, "postgres backend")
         lock_timeout_ms = resolve_token_bucket_lock_timeout_ms(
             lock_timeout_ms, settings, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
         )
-
-        schema = settings.schema_name
 
         # Schema-name interpolation ; schema_name is
         # pre-validated against _IDENT_RE at WorkerSettings load time.
