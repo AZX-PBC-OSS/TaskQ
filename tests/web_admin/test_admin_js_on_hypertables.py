@@ -92,6 +92,8 @@ from taskq.testing._shared_containers import (
 from taskq.timescale import enable_hypertables
 from taskq.web.admin import create_router, setup_admin_state
 
+from .test_admin_on_hypertables import _drain_stream_tail
+
 pytestmark = pytest.mark.integration
 
 ADMIN_JS = Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "admin.js"
@@ -1797,6 +1799,10 @@ async def _stream_request(
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
+    # The leak baseline: every task alive BEFORE the app task exists - the
+    # caller's own machinery is in it, so the drain below can never sweep
+    # a task the caller owns - only tasks the STREAM minted.
+    baseline = set(asyncio.all_tasks())
     messages: asyncio.Queue[Any] = asyncio.Queue()
     disconnected = asyncio.Event()
 
@@ -1840,6 +1846,14 @@ async def _stream_request(
                 leftover.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await leftover
+        # The drain race, closed deterministically - see _drain_stream_tail
+        # in test_admin_on_hypertables.py (this module's twin harness): the
+        # stream's exit under the disconnect cancellation detaches its own
+        # bounded close tail as a background task, and a task minted by the
+        # test but left to the loop is the hygiene guard's definition of a
+        # leak. Await the tail HERE, keyed to its actual completion, with
+        # the same documented bound (2 * CLOSE_TIMEOUT_SECS + poll slack).
+        await _drain_stream_tail(baseline)
     return buf
 
 

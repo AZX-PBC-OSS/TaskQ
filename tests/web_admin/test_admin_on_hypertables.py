@@ -108,6 +108,7 @@ pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 
 from fastapi import FastAPI  # Why: importorskip guards the optional extra first.
 
+from taskq._close import CLOSE_TIMEOUT_SECS
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -1431,6 +1432,11 @@ async def _stream_until(
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
+    # The leak baseline: every task alive BEFORE the app task exists. The
+    # caller's own machinery (a repeated notifier/publisher task, the
+    # session-scoped pool workers) is in it, so the drain below can never
+    # sweep a task the caller owns - only tasks the STREAM minted.
+    baseline = set(asyncio.all_tasks())
     messages: asyncio.Queue[Any] = asyncio.Queue()
     disconnected = asyncio.Event()
 
@@ -1475,7 +1481,64 @@ async def _stream_until(
                 leftover.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await leftover
+        # The drain race, closed deterministically - see _drain_stream_tail.
+        await _drain_stream_tail(baseline)
     return buf
+
+
+async def _drain_stream_tail(baseline: set[asyncio.Task[object]]) -> None:
+    """Await the stream's own close tail to quiescence, inside the call.
+
+    The stream's exit under the disconnect cancellation detaches its own
+    close tail as a background task: sse.py's shield detaches the bounded
+    ``wait_for(feed.aclose(), ...)``, and when that bound expires under
+    load, _listen's shield detaches the release cleanup
+    (remove_listener / UNLISTEN / pool.release) inside it. A task minted
+    by the test but left to the loop is the hygiene guard's definition of
+    a leak, and the guard is right: await the tail HERE, keyed to its
+    actual completion, not to a hope. The caller's own machinery (a
+    repeated notifier/publisher task, the session-scoped pool workers) is
+    in *baseline*, so only tasks the STREAM minted are drained.
+
+    The bound's arithmetic (2 * CLOSE_TIMEOUT_SECS + 1.0): the tail
+    cannot START before the stream's bounded close runs to its own
+    expiry, so CLOSE_TIMEOUT_SECS (read at call time, the same constant
+    sse.py binds) fronts it; the tail's own round trips (three
+    suppressed pool statements on a live connection) get the second
+    CLOSE_TIMEOUT_SECS, the same budget the close itself grants one full
+    release; +1.0s is poll slack, not delay - the poll below returns at
+    the instant the set drains (milliseconds on a healthy loop). On a
+    blown bound the stragglers are cancelled (aborted, so the loop is
+    still left clean) and the test fails LOUDLY naming them - a close
+    path that can no longer be awaited reds here, at the test that
+    minted it, instead of as a teardown-window ERROR on the loop-hygiene
+    guard.
+    """
+    residual_deadline = asyncio.get_running_loop().time() + 2.0 * CLOSE_TIMEOUT_SECS + 1.0
+    while True:
+        residual = {
+            pending
+            for pending in asyncio.all_tasks() - baseline
+            if pending is not asyncio.current_task()
+        }
+        if not residual:
+            return
+        if asyncio.get_running_loop().time() >= residual_deadline:
+            for pending in residual:
+                pending.cancel()
+            await asyncio.gather(*residual, return_exceptions=True)
+            pytest.fail(
+                "the stream's close tail never drained - "
+                f"{len(residual)} task(s) still pending "
+                f"{2.0 * CLOSE_TIMEOUT_SECS + 1.0}s after the disconnect "
+                "(the bound: 2 * CLOSE_TIMEOUT_SECS + poll slack):\n"
+                + "\n".join(
+                    f"  - task {t.get_name()!r}; coroutine: {t.get_coro()!r}"
+                    for t in sorted(residual, key=lambda t: t.get_name())
+                ),
+                pytrace=False,
+            )
+        await asyncio.sleep(0.05)
 
 
 async def test_admin_sse_stream_delivers_real_notify_on_converted_schema(
