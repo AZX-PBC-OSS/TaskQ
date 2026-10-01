@@ -155,10 +155,10 @@ def _make_deps(
     heartbeat_pool: FakePool | None = None,
     is_leader: bool = False,
     heartbeat_interval: float = 0.5,
-    # 18.0 = the cascade floor at h=0.5 with the default
-    # heartbeat_command_timeout of 2.0: 4 * (0.5 + 2 * 2). The renewal
-    # threshold the loop derives is unchanged by this bump (its safety
-    # floor, 18.0, dominated the old lease/2 arm already).
+    # Above the cascade floor at h=0.5 with the default
+    # heartbeat_command_timeout of 2.0 (max(0.5, 2) + 4 * (0.5 + 2) = 12).
+    # The renewal threshold the loop derives is unchanged by this bump
+    # (its safety floor, 18.0, dominated the old lease/2 arm already).
     lock_lease: float = 18.0,
     max_heartbeat_failures: int = 3,
     heartbeat_command_timeout: float = 2.0,
@@ -559,7 +559,8 @@ async def test_repeated_failures_isolate_at_the_documented_tick_without_hammerin
 
     interval = 1.0
     pool = FakePool(fail_acquire_with=asyncpg.PostgresConnectionError("boom"))
-    # 20.0 = the cascade floor at this interval: 4 * (1.0 + 2 * 2.0).
+    # 20.0 >= the cascade floor at this interval:
+    # max(1.0, 2.0) + 4 * (1.0 + 2.0) = 14.
     deps = _make_deps(
         heartbeat_pool=pool,
         heartbeat_interval=interval,
@@ -885,7 +886,7 @@ async def test_soft_warning_at_half_max_failures() -> None:
     deps = _make_deps(
         heartbeat_pool=pool,
         max_heartbeat_failures=4,
-        # 25 >= the cascade floor at F=4: 5 * (0.5 + 2 * 2) = 22.5.
+        # 25 >= the cascade floor at F=4: max(0.5, 2) + 5 * (0.5 + 2) = 14.5.
         lock_lease=25.0,
     )
     shutdown = asyncio.Event()
@@ -1021,8 +1022,9 @@ async def test_custom_schema_name_flows_to_sql() -> None:
         "postgresql://x:x@localhost/x",
         SCHEMA_NAME="custom_ns",
         HEARTBEAT_INTERVAL="0.5",
-        # 18.0 = the cascade floor at h=0.5 with the default command
-        # timeout of 2.0 (see _make_deps for the same bump and why the
+        # 18.0 >= the cascade floor at h=0.5 with the default command
+        # timeout of 2.0 (max(0.5, 2.0) + 4 * (0.5 + 2.0) = 12; see
+        # _make_deps for the same bump and why the
         # renewal-threshold behaviour is unchanged).
         LOCK_LEASE="18.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
@@ -1364,7 +1366,7 @@ def test_invalid_heartbeat_ratio_raises_validation_error() -> None:
 
 def test_valid_heartbeat_ratio_passes() -> None:
     """boundary. A ratio inside the cascade floor
-    (lock_lease=60 >= 4 * (10 + 2 * 2) = 56, heartbeat_interval=10)
+    (lock_lease=60 >= max(10, 2) + 4 * (10 + 2) = 58, heartbeat_interval=10)
     loads without error."""
     settings = _worker_settings(
         "postgresql://x:x@localhost/x",
@@ -1624,7 +1626,7 @@ def test_lease_renewal_threshold_default_config() -> None:
         heartbeat_command_timeout=2.0,
     )
     assert threshold == timedelta(seconds=58.0)
-    # 56 >= 50 = lease - interval: the beat after a renewal carries 50s
+    # 58 >= 50 = lease - interval: the beat after a renewal carries 50s
     # (still at/under the threshold), so nothing is ever skipped.
     assert threshold >= timedelta(seconds=50.0)
 
@@ -1638,7 +1640,7 @@ def test_lease_renewal_threshold_default_config() -> None:
         (2.0, 0.5, 3, 2.0),
         # A failure-tolerant fleet (F=10) with a default lease.
         (60.0, 10.0, 10, 2.0),
-        # The DEFAULT lease: the enforced-bound floor (56) meets the
+        # The DEFAULT lease: the enforced-bound floor (58) meets the
         # harvestable slack (50) - the arithmetic that closes the
         # reproduced default-settings lapse window.
         (60.0, 10.0, 3, 2.0),
@@ -1684,7 +1686,7 @@ def test_lease_renewal_threshold_savings_resume_above_the_default_lease(
     lock_lease: float,
     expected_saving: int,
 ) -> None:
-    """The gate's savings resume from lease ≈ 70s: the floor (56s at the
+    """The gate's savings resume from lease ≈ 70s: the floor (58s at the
     default timing knobs) must sit strictly under the harvestable slack
     (lease - interval) for the beat after a renewal to skip, and the
     renewal cadence is (lease - threshold) + interval."""
@@ -2115,7 +2117,7 @@ async def _run_budget_tick(
     deps = _make_deps(
         heartbeat_pool=pool,
         heartbeat_interval=0.5,
-        # 18.0 = the cascade floor at h=0.5, c=2.0 (see _make_deps);
+        # 18.0 >= the cascade floor at h=0.5, c=2.0 = 12 (see _make_deps);
         # the tick-budget assertions below read the threshold, which this
         # bump leaves unchanged (its 18.0 safety floor dominated already).
         lock_lease=18.0,
