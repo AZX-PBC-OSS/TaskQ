@@ -3,7 +3,7 @@
 # Base pinned to the same 3.13/trixie pair the production Dockerfile uses;
 # uv pinned to the repo's validated 0.12.x line (pyproject required-version is
 # >=0.12.7,<0.13), so the sync below cannot run on an unvetted uv release.
-FROM python:3.13-slim-trixie
+FROM python:3.14-slim-trixie
 
 # UV_PYTHON_PREFERENCE=only-system: build the venv on THIS image's
 # interpreter instead of letting uv download a managed CPython (whose
