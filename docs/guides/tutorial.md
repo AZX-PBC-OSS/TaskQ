@@ -59,12 +59,20 @@ registry = [compile_digest]
 Start a worker:
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
+
+!!! note "A worker consumes only the `default` queue unless told otherwise"
+    `compile_digest` is declared on `queue="digests"`, and `TASKQ_QUEUES`
+    defaults to `default`, so the `--queues digests` flag above is load-bearing:
+    without it the worker boots healthy, the enqueue succeeds, and
+    `handle.wait()` times out because no consumer will ever claim the job.
+    Every later part reuses the `digests` queue and adds `email` in Part 5,
+    so from there on start the worker with `--queues digests --queues email`.
 
 Enqueue a job from a script using `TaskQ`:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/enqueue.py
 import asyncio
 from taskq import TaskQ
@@ -98,7 +106,7 @@ result typed as `R`. Add `result_ttl` to control how long the result is retained
 
 Replace the `@actor` decorator from Part 1:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 
 
@@ -112,12 +120,12 @@ async def compile_digest(payload: DigestPayload) -> DigestResult:
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 Update the enqueue script to wait for the typed result:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/enqueue.py
 import asyncio
 from taskq import TaskQ
@@ -159,7 +167,7 @@ The digest compilation calls a notifications API that can be rate-limited.
 Configure a `RetryPolicy`, mark permanent errors as non-retryable, and use
 `RetryAfter` for `Retry-After` headers. Add these classes and replace the actor:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import RetryAfter
 from taskq.retry import RetryPolicy
 
@@ -207,7 +215,7 @@ async def compile_digest(payload: DigestPayload) -> DigestResult:
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 `RetryAfter(delay)` reschedules at `now + delay`, bypassing backoff. Pass
@@ -222,7 +230,7 @@ If the cron fires twice or an operator re-triggers a run, you do not want
 duplicate digests. Configure `unique_for` on the actor and pass
 `identity_key` at enqueue time.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(
     queue="digests",
     result_ttl=timedelta(hours=24),
@@ -234,12 +242,12 @@ async def compile_digest(payload: DigestPayload) -> DigestResult: ...
 ```
 
 ```bash
-taskq worker --actors myapp.actors:registry
+taskq worker --actors myapp.actors:registry --queues digests
 ```
 
 Enqueue with `identity_key` so `unique_for` can match duplicate requests:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/enqueue.py
 import asyncio
 from taskq import TaskQ
@@ -282,7 +290,7 @@ dependencies must run through the programmatic `worker_main` entry point.
 
 Add a new actor and `SmtpClient` class to `actors.py`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 class SendDigestEmailPayload(BaseModel):
     user_id: str
     target_date: date
@@ -313,7 +321,7 @@ registry = [compile_digest, send_digest_email]
 
 Create a worker entry point that builds and passes the DI registry:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/worker.py
 from taskq.di import ProviderRegistry, Scope
 from taskq.settings import WorkerSettings
@@ -342,7 +350,7 @@ if __name__ == "__main__":
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 !!! warning "Do not pre-validate the registry"
@@ -365,7 +373,7 @@ See [Dependency Injection](dependency-injection.md).
 Instead of sending one email at a time, fan out individual send jobs using
 `ctx.jobs.enqueue_batch()`. Add a `compile_batch_digest` actor to `actors.py`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import EnqueueItem
 from taskq.context import JobContext
 
@@ -409,12 +417,12 @@ registry = [compile_digest, send_digest_email, compile_batch_digest]
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 Enqueue the batch digest from a script:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/enqueue_batch.py
 import asyncio
 from taskq import TaskQ
@@ -477,7 +485,7 @@ cron(
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 The `cron()` call auto-registers at import time. At worker startup the
@@ -502,7 +510,7 @@ The batch digest may process thousands of users. Add a progress and
 cancellation loop to the start of `compile_batch_digest`'s body, before the
 existing `items` list comprehension:
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
     total = len(payload.user_ids)
 
     for i, uid in enumerate(payload.user_ids):
@@ -518,12 +526,12 @@ existing `items` list comprehension:
 ```
 
 ```bash
-python -m myapp.worker
+TASKQ_QUEUES=digests,email python -m myapp.worker
 ```
 
 Cancel a running job from client code:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # myapp/cancel.py
 import asyncio
 from taskq import TaskQ
@@ -566,7 +574,7 @@ See [Progress](progress.md) and [Cancellation](cancellation.md).
 Test the digest system without Postgres or Redis using `InMemoryBackend` and
 `FakeClock`. Register stubs, enqueue jobs, call `run_until_drained()`, assert.
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 # tests/test_digest.py
 from datetime import UTC, datetime
 from taskq import JobsClient

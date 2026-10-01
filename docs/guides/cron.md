@@ -77,7 +77,7 @@ Each fire resolves the payload through one of two mechanisms:
 
 Pass `static_payload={"key": "value"}` to include a fixed dict with every fire:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 cron(
     "0 * * * *",
     "hourly_sync",
@@ -105,7 +105,7 @@ is below the minimum fundable grant), a factory-backed schedule is **deferred** 
 than struck. See [Tick budget and deferral](#tick-budget-and-deferral) below for the
 boundary, the retry semantics, and the fairness lever.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # myapp/payloads.py
 from pydantic import BaseModel
 
@@ -173,6 +173,18 @@ The same honesty applies one window wider: a sparse expression whose catch-up wi
 lapses re-anchors to the next **real** occurrence and consumes it as the immediate fire,
 so a monthly schedule's phase can shift — `0 0 31 * *` can fire its October 31st
 occurrence weeks early as the catch-up, with December 31st the next scheduled fire.
+
+The dropped-slot count is computed by walking the schedule forward one occurrence at a
+time from the owed slot to the re-anchored one, so its cost is the backlog's depth — and
+a fleet that was down for weeks leaves a fine-grained schedule (`* * * * * */5`) owing
+hundreds of thousands of slots. The walk is therefore bounded by a slice of the tick's
+own deadline: a backlog deeper than the budget's reach still fires and re-anchors in one
+tick (a walk that outlived the deadline would cancel the tick, roll it back, and re-walk
+the same backlog every second — a fleet-wide cron livelock), but its count is a FLOOR,
+flagged `skipped_slots_partial=true` on the `cron missed slots skipped` warning, the
+`cron fired` line and the fire span. Every consumer tolerates the floor: the runaway
+predicate compares the depth against the cron period, and a backlog that deep is past any
+period.
 
 A deferred schedule advances `next_fire_at` by one leader tick (~1 second): a retry,
 NOT a skip to the next cron slot, because the owed slot is still perfectly landable;
@@ -263,7 +275,7 @@ earlier occurrence jumped straight to the following year: the naive wall-clock w
 distinguish the two occurrences, so the later one was silently lost; reachable after any
 leader outage spanning a fall-back.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Fire at 02:30 every day in a timezone with DST transitions.
 # "allof" means the job fires twice during fall-back overlap.
 cron("30 2 * * *", "dst_aware_job", timezone="Europe/Amsterdam", dst_strategy="allof")
@@ -305,7 +317,7 @@ fire. When the actor has `unique_for` configured, this enables deduplication
 between cron-fired jobs and ad-hoc on-demand enqueues for the same logical
 entity:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 
@@ -326,7 +338,7 @@ cron(
 
 If an operator triggers an on-demand sync via:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 await client.enqueue(
     sync_tenant,
     TenantPayload(tenant_id="acme"),
@@ -399,7 +411,7 @@ spec = CronScheduleSpec(
 When a schedule is created in the database, a `ScheduleHandle` is returned by
 `JobsClient` methods. The handle provides async methods for runtime management:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 schedules = await client.list_schedules()
 # Find the schedule by actor name or inspect schedule_id
 handle = await client.create_schedule("daily_report", "0 3 * * *")

@@ -91,7 +91,7 @@ Defined in `src/taskq/backend/_protocol.py`.
 
 ### Protocol declaration
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @runtime_checkable
 class Backend(Protocol):
     BACKEND_PROTOCOL_VERSION: ClassVar[int]
@@ -432,7 +432,7 @@ extends the active filter without a second edit.
 | running → failed | Consumer after error / deadline |
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
-| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, retries exhausted) |
+| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, ANY retry budget -- operator intent outranks the budget once the grace ladder lapses; see [Crash-reclaim interaction](#crash-reclaim-interaction)) |
 | running → cancelled | Shutdown RELEASING phase (operator cancel in flight: `mark_cancelled`, the operator's own verdict, the same fenced write the unwinding consumer races) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3: the holder-ignored expiry, and the unheld orphan class) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
@@ -449,7 +449,8 @@ without enumerating every `job_id`.
 Coverage note: the feed carries both reclaim writers.  The leader's sweep
 rows name the deadline that fired (`lock_expired` / `heartbeat_timeout`);
 `isolate_self` (worker heartbeat loss) performs the same `running →
-pending` / `running → crashed` transitions and writes the same
+pending` / `running → crashed` transitions -- and, like the sweep, its own
+`running → cancelled` when a cancel was in flight -- and writes the same
 `reason='lock_expired'` event with `cause='isolate_self'` (see the isolate
 asymmetries under
 [Crash-reclaim interaction](#crash-reclaim-interaction)).  The attempt row
@@ -576,7 +577,7 @@ per event can never reach zero -- a fan-out whose jobs all succeed
 delivers no reclaim event at all, and the counter stalls above zero
 while the feed looks healthy:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
     cursor = await load_reclaim_cursor()  # your own durable store
     wake = asyncio.Event()
@@ -995,7 +996,7 @@ stays outstanding on every fan-out that keys on the feed.
 
 ### `CancelController` Protocol
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @runtime_checkable
 class CancelController(Protocol):
     async def run_in_tx(self, conn: asyncpg.Connection) -> None: ...
@@ -1108,7 +1109,8 @@ keeps winning.
 4. **Cron**: fires cron-scheduled actors at their declared cadence, at most
    `cron_tick_limit` schedules per one-second tick under the schema-qualified
    cron advisory lock (`taskq:cron:<schema>`, transaction-scoped).
-5. **Sweep (Sweeps 1, 2, 4)**: **leader-only** (gated on `ctx.deps.is_leader`),
+5. **Sweep (Sweeps 1, 2, 4)**: **leader-only** (gated on `ctx.deps.leading()`,
+   the trust-narrowed gate, not the bare event),
    runs every `sweep_interval` (default 30 s): `reclaim_expired_locks`
    (Sweep 1, uses `FOR UPDATE SKIP LOCKED`), `deadline_sweep` (Sweep 2), and,
    when the backend supports them, `sweep_leaked_reservation_slots` (Sweep 4),

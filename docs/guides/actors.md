@@ -33,7 +33,7 @@ the actor's payload and result types end-to-end.
 
 Supports both plain and parameterised forms:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Plain: all options take their defaults.
 @actor
 async def send_email(payload: EmailPayload) -> EmailResult: ...
@@ -161,7 +161,7 @@ interchangeable, and the strict ones are the leased-slot mechanisms, not the
 A thread-unsafe PDF library where two concurrent calls corrupt output. One slot
 means one job at a time, fleet-wide, enforced by a physical row:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 
 from taskq import actor
@@ -254,7 +254,7 @@ async def resize_image(payload: ResizePayload) -> ResizeResult:
 
 ### Payload and context
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.context import JobContext
 
@@ -268,7 +268,7 @@ async def resize_image(payload: ResizePayload, ctx: JobContext[ResizePayload]) -
 
 ### Payload and DI dependencies
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 
 
@@ -289,7 +289,7 @@ worker's DI resolver maps the annotation to a registered provider at dispatch ti
 
 ### Payload, context, and DI dependencies
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.context import JobContext
 
@@ -339,7 +339,7 @@ def generate_pdf(payload: PdfPayload) -> PdfResult:
 
 Sync actors cannot be force-cancelled via `asyncio.Task.cancel()`. They must cooperate by polling `ctx.should_abort()`:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 def long_loop(payload: BigPayload, ctx: JobContext[BigPayload]) -> None:
     for item in payload.items:
@@ -463,8 +463,8 @@ for tests and simulators.
 | `metadata` | `dict[str, object]` | Actor-level metadata. |
 | `unique_for` | `timedelta \| None` | Deduplication window. |
 | `unique_states` | `tuple[JobStatus, ...]` | Active statuses for dedup. |
-| `rate_limits` | `list[str]` | Rate-limit bucket names. |
-| `reservations` | `list[str]` | Concurrency reservation names. |
+| `rate_limits` | `list` | Rate-limit bucket names or bucket/ref objects. |
+| `reservations` | `list` | Concurrency reservation names or reservation objects. |
 | `wants_ctx` | `bool` | Whether the handler declared a `JobContext` parameter. |
 | `is_sync` | `bool` | `True` when the handler is a plain `def` (not `async def`). Sync actors run via `asyncio.to_thread()`. |
 | `dependencies` | `dict[str, type[object]]` | DI parameter names mapped to their annotated types. |
@@ -472,7 +472,7 @@ for tests and simulators.
 
 ### Direct invocation (`__call__`)
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # Handler with no ctx:
 result = await resize_image(ResizePayload(image_id="abc", width=800, height=600))
 
@@ -519,7 +519,7 @@ def cancellation_requested(self) -> bool: ...
 Returns `True` when `cancel_event` is set, meaning a cancellation request has reached phase 1
 (cooperative). Poll this in long-running loops to exit cleanly:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 async def long_job(payload: LongPayload, ctx: JobContext[LongPayload]) -> None:
     for item in payload.items:
@@ -537,7 +537,7 @@ Alternatively, `await ctx.cancel_event.wait()` blocks until cancellation is requ
 Both `P` and `R` must be `pydantic.BaseModel` subclasses. `R` may additionally be `None` for
 fire-and-forget actors.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from pydantic import BaseModel
 
 
@@ -571,7 +571,7 @@ v2 models are required for JSONB round-trip serialisation.
 `singleton=True` enforces at most one active job of this actor fleet-wide across all queues and
 workers.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(singleton=True)
 async def daily_report(payload: ReportPayload) -> None: ...
 ```
@@ -593,7 +593,7 @@ async def daily_report(payload: ReportPayload) -> None: ...
   this key manually; the library unconditionally overwrites it.
 - On collision, [`SingletonCollisionError`](jobs-clients.md#error-handling) is raised.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import SingletonCollisionError
 
 try:
@@ -612,7 +612,7 @@ the blocking job's `schedule_to_close` when available, otherwise `None`.
 
 `unique_for` deduplicates enqueues for the same `(actor, identity_key)` within a sliding window. For how to choose between this, `idempotency_key`, and `singleton`: they are three different tools; see the chooser table in [ops.md: Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 
 
@@ -646,11 +646,12 @@ async def sync_account(payload: SyncPayload) -> None: ...
   because they mean the work did *not* happen; matching them would let one transient failure
   suppress every later attempt for the rest of the window. To block only concurrent execution,
   pass `unique_states=("pending", "scheduled", "running")` explicitly.
-- A dedup onto a job that is already finished is reported: the enqueue logs a `WARN`-level
-  `enqueue-dedup` line naming the matched status, and `JobHandle.deduplicated_onto_terminal` is
-  `True` so the caller can branch without re-reading the row.
+- A dedup onto a job that is already finished is reported: the enqueue logs a
+  `WARN`-level `enqueue_deduplicated` line naming the matched status, and
+  `JobHandle.deduplicated_onto_terminal` is `True` so the caller can branch
+  without re-reading the row.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 handle = await client.enqueue(
     sync_account,
     SyncPayload(account_id="acct_123"),
@@ -660,8 +661,10 @@ if handle.was_existing:
     print("deduped: returning existing job handle")
 ```
 
-The `identity_key` and `unique_for` window can be overridden per-enqueue via
-[`JobsClient.enqueue`](jobs-clients.md#enqueue).
+The `identity_key` can be passed per-enqueue via
+[`JobsClient.enqueue`](jobs-clients.md#enqueue). (A per-call `unique_for`
+override exists only on `SubJobEnqueuer.enqueue`, inside an actor body;
+`JobsClient.enqueue` always uses the actor-declared window.)
 
 ---
 
@@ -669,7 +672,7 @@ The `identity_key` and `unique_for` window can be overridden per-enqueue via
 
 `max_pending` limits the number of `pending` + `scheduled` jobs before `enqueue` rejects.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(max_pending=1000)
 async def ingest_event(payload: EventPayload) -> None: ...
 ```
@@ -682,7 +685,7 @@ async def ingest_event(payload: EventPayload) -> None: ...
 - When the limit is reached, `MaxPendingExceededError` is raised synchronously. The caller decides
   whether to retry, back off, or drop.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import MaxPendingExceededError
 
 try:
@@ -717,7 +720,7 @@ directions: actor code may loosen its own declaration.
 
 Declare named rate-limit buckets and concurrency reservation slots on the actor:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(
     rate_limits=["openai", "vendor_x"],
     reservations=["gpu_pool"],
@@ -734,7 +737,7 @@ configuration. For bucket and slot configuration syntax see [Rate Limiting](rate
 
 Pass a `RetryPolicy` to control how the worker retries failed jobs.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 from taskq.retry import RetryPolicy
@@ -781,7 +784,7 @@ without consuming retry budget (for `Snooze`) or while consuming it (for `RetryA
 Reschedules the job at `now + delay` without consuming retry budget. The job re-enters
 `scheduled` state.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq.exceptions import Snooze
 
@@ -803,7 +806,7 @@ succeeds, fails, or is cancelled.
 
 Schedules a retry at a specific delay. Consumes the retry budget by default.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq.exceptions import RetryAfter
 
@@ -835,7 +838,7 @@ Create a `ProviderRegistry`, register your providers, validate it, then pass it 
 [Dependency Injection](dependency-injection.md) for the full
 wiring. The three registration methods are:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.di import ProviderRegistry, Scope
 
 registry = ProviderRegistry()
@@ -880,7 +883,7 @@ A provider may depend only on providers of the same or wider scope. Violations r
 
 ### Declaring dependencies in an actor
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 async def send_email(
     payload: SendEmailPayload,
@@ -902,7 +905,7 @@ All other annotated keyword parameters are resolved from the registry. Missing p
 
 Enqueue sub-jobs from within an actor body via `ctx.jobs`, which is a `SubJobEnqueuer`.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 async def process_batch(payload: BatchPayload, ctx: JobContext[BatchPayload]) -> None:
     for item_id in payload.item_ids:
@@ -971,7 +974,7 @@ Handles returned by `ctx.jobs.enqueue()` do **not** have a client bound to them.
 `.wait()` works because it reads through the backend directly. To poll a sub-job's result from
 outside the actor body, pass its `job_id` to a full `JobsClient` instance:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 sub_handle = await ctx.jobs.enqueue(process_item, ItemPayload(item_id=item_id))
 job_id = sub_handle.job_id  # safe: job_id is always available
 
@@ -1026,7 +1029,7 @@ reconnecting via `Last-Event-ID`.
 payload exceeds `WorkerSettings.progress_data_max_bytes`. Keep `data` small; use `detail` for
 human-readable strings and `data` only for structured metadata.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor(queue="media")
 async def transcode_video(payload: TranscodePayload, ctx: JobContext[TranscodePayload]) -> None:
     segments = await split_into_segments(payload.url)
@@ -1235,7 +1238,7 @@ per-run deployments (e.g. `my-actor.<run-id>`), each run leaves a row behind.
 
 ### `client.actors.deregister()`
 
-```python
+```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 async with TaskQ(dsn=...) as tq:
     result = await tq.actors.deregister("my-actor.run-123")
     # force=False: refuses if non-terminal jobs or enabled schedules exist
@@ -1281,7 +1284,7 @@ before calling `deregister`.
 A second `deregister` call on an already-deregistered actor raises
 `ActorNotFoundError`. For cleanup-automation loops:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import ActorNotFoundError
 
 try:

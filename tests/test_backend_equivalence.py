@@ -301,13 +301,26 @@ async def _set_actor_cap(
 
 async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
     """enqueue 50 jobs with unique priorities into the backend.
-    Call dispatch_batch(limit=10). Assert the returned job_id list is
-    sorted by (priority DESC, scheduled_at ASC).
+    Call dispatch_batch(limit=10). Assert SELECTION parity: each actor's
+    dispatched rows are that actor's highest-priority pending rows, taken
+    in (priority DESC, scheduled_at) rank order.
 
     Uses unique priorities (shuffled 0-49) so the dispatch sort key
     ``(priority DESC, scheduled_at)`` is unambiguous - PG dispatch SQL
     sorts by priority DESC, scheduled_at without an id tie-breaker,
     while InMemory adds id. With unique priorities both agree.
+
+    The assertion is on the admitted SET, not the emitted sequence: the
+    claim is one terminal ``UPDATE ... RETURNING`` whose emission order
+    carries no row-order guarantee (the backend semantic-parity registry's
+    standing doctrine - the ORDER BY inside the CTE governs which rows
+    the LIMIT admits, not the order they are emitted), so an earlier
+    version's within-actor sequence assert held only while the terminal
+    plan happened to emit in rank order. Expression statistics
+    (migration 01.00.22_01) legitimately re-price that toy-scale plan -
+    estimates are what the migration exists to make honest - which flips
+    the emission order at this scale while the admitted set, the limit
+    semantics and the rank order the CTE computes stay identical.
     """
     import random
 
@@ -351,29 +364,25 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
     for did in dispatched_ids:
         assert did in ids, f"Dispatched unknown job id {did}"
 
-    # Invariant: within each actor, dispatched jobs maintain priority DESC order
+    # Invariant: each actor's dispatched rows are ITS top-k pending rows
+    # in (priority DESC, scheduled_at) order - the strict-FIFO rank the
+    # claim CTE computes, independent of the terminal UPDATE's emission
+    # order.
     id_to_pri = {ids[i]: priorities[i] for i in range(50)}
     id_to_actor = {ids[i]: _ACTORS[i % len(_ACTORS)] for i in range(50)}
-    per_actor: dict[str, list[int]] = {}
-    for did in dispatched_ids:
-        per_actor.setdefault(id_to_actor[did], []).append(id_to_pri[did])
-    for actor, pris in per_actor.items():
-        for i in range(len(pris) - 1):
-            assert pris[i] >= pris[i + 1], (
-                f"Actor {actor}: priority {pris[i]} before {pris[i + 1]} violates DESC order"
-            )
-            break  # Only need to check first rank-2
-
-    # Invariant: within same actor, priority DESC
+    per_actor_pending: dict[str, list[int]] = {}
+    for i in range(50):
+        per_actor_pending.setdefault(_ACTORS[i % len(_ACTORS)], []).append(priorities[i])
     per_actor_dispatched: dict[str, list[int]] = {}
     for did in dispatched_ids:
         actor = id_to_actor[did]
         per_actor_dispatched.setdefault(actor, []).append(id_to_pri[did])
     for actor, pris in per_actor_dispatched.items():
-        for i in range(len(pris) - 1):
-            assert pris[i] >= pris[i + 1], (
-                f"Actor {actor}: priority {pris[i]} before {pris[i + 1]} violates DESC order"
-            )
+        expected = sorted(per_actor_pending[actor], reverse=True)[: len(pris)]
+        assert sorted(pris, reverse=True) == expected, (
+            f"Actor {actor}: dispatched priorities {pris} are not its top "
+            f"{len(pris)} pending rows {expected} in DESC order"
+        )
 
 
 # ── batch cap partition parity ──────────────────────────────────

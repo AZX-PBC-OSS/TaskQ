@@ -377,12 +377,28 @@ async def _wait_for_lock_waiter(
     taken its snapshot. pg_locks, not pg_stat_activity's wait_event
     columns: the parked arbiter's wait_event registration proved
     unreliable under the parallel runner, the ungranted pg_locks row is
-    the arbiter's own queue entry and does not lag."""
+    the arbiter's own queue entry and does not lag.
+
+    Scoped to THIS database's SESSIONS: pg_locks is cluster-wide and the
+    xdist invocation shares ONE Postgres container while every module gets
+    its OWN database - the suite's other contention tests deliberately park
+    sessions on ungranted locks for seconds, so an unscoped count sees
+    their queue entries too and trips this guard on timing (observed on
+    the coverage leg, run 36616766673: the arbiter plus ONE waiter from a
+    concurrent worker's database). The scope CANNOT be pg_locks.database:
+    a parked row-lock waiter is a transactionid lock whose database column
+    is NULL (verified on PG18), so the discriminator is the waiting
+    SESSION - pg_stat_activity's datname. Within one database only this
+    module's tests run, so the scoped count is exactly this test's waiter
+    plus nothing."""
     del schema
     waited = 0.0
     while waited < timeout_secs:
         waiters = await conn.fetchval(
-            "SELECT count(*) FROM pg_locks WHERE pid <> pg_backend_pid() AND NOT granted",
+            "SELECT count(*) FROM pg_locks l "
+            "JOIN pg_stat_activity a ON a.pid = l.pid "
+            "WHERE l.pid <> pg_backend_pid() AND NOT l.granted "
+            "AND a.datname = current_database()",
         )
         assert waiters is not None and int(waiters) <= 1, (
             f"fixture broken: {waiters} unexpected lock waiters in the database"

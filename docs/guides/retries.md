@@ -42,7 +42,7 @@ Retries up to `max_attempts` total attempts. The classifier retries when `attemp
 
 If a retry is due but the next dispatch would land past `schedule_to_close`, the job fails with `error_class="DeadlineExceeded"` instead of retrying: the deadline is enforced in SQL at the retry write (see [`schedule_to_close` interaction](#6-schedule_to_close-interaction)).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.retry import RetryPolicy
 
@@ -69,7 +69,7 @@ Either condition produces `Fail(error_class="DeadlineExceeded")`.
 
 If neither `schedule_to_close` nor `time_budget` is set, the job retries without any time limit. A warning is logged at decoration time when `kind="indefinite"` and `time_budget=None`.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 from taskq.retry import RetryPolicy
@@ -85,7 +85,7 @@ Fails immediately on the first exception, with no retries regardless of the exce
 
 Use for actors where a retry would be harmful (e.g. payment operations whose idempotency is handled externally and a duplicate execution would cause double-charging).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 from taskq.retry import RetryPolicy
 
@@ -228,7 +228,7 @@ back to the actor's static `RetryPolicy` unchanged, or a `RetryOverride(kind=...
 refine this specific occurrence. Both fields are optional: set only the ones you want to
 override.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 from taskq.retry import RetryOverride, RetryPolicy
@@ -266,9 +266,10 @@ async def call_partner_api(payload: Payload) -> Result: ...
 ```
 
 **Precedence: the hook is not always consulted.** `non_retryable_exceptions` and TaskQ's
-internal `PayloadValidationError` handling are checked *before* the hook and always win: if
-either matches, the job fails immediately and `retry_classifier` is never called for that
-exception.
+built-in unconditional-failure classes — `PayloadValidationError`, a pydantic
+`ValidationError` from payload decoding, `ResultTooLarge`, and `UnencodableValue` — are
+checked *before* the hook and always win: if any matches, the job fails immediately and
+`retry_classifier` is never called for that exception.
 
 !!! note "A broken hook can never crash the retry pipeline"
     If `retry_classifier` itself raises, the exception is caught and logged at `WARNING` by
@@ -305,7 +306,7 @@ This applies to all retry kinds, including `"indefinite"`.
 
 Set at enqueue time via the client:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import UTC, datetime, timedelta
 from taskq.client import JobsClient
 
@@ -358,7 +359,7 @@ found wins:
 4. **Unbounded**: if nothing anywhere sets a value, the attempt has no execution timeout
    (`None`).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq import actor
 from taskq.client import JobsClient
@@ -410,7 +411,7 @@ Invocation behaviour:
 
 `job_row.payload` is a raw `dict[str, object]`. If you need a typed payload inside the hook, re-validate it:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 typed_payload = actor_ref.payload_type.model_validate(job_row.payload)
 ```
 
@@ -426,7 +427,7 @@ type OnSuccess = Callable[[JobRow, object], Awaitable[None] | None]
 
 When a job succeeds and transitions to `succeeded`, the consumer loop invokes this hook if one is registered. The hook receives the persisted `JobRow` and the actor's result. The result is typed `object` (the consumer loop erases the actor's return type at this boundary); re-validate it via the actor's `result_adapter` if you need a typed value:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 typed_result = actor_ref.result_adapter.validate_python(job_row.result)
 ```
 
@@ -435,7 +436,7 @@ Invocation behaviour mirrors `on_retry_exhausted`:
 - `TimeoutError` and all other exceptions raised by the hook are caught and logged at `WARNING` level; they never propagate to the consumer loop.
 - The hook runs after the transaction commits but before the success state-change event is published, so a failing hook does not roll back the job.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import actor
 
 
@@ -464,7 +465,7 @@ A negative `delay` raises `ValueError` at construction.
 
 If `now + delay > schedule_to_close`, the backend immediately fails the job with `error_class="DeadlineExceeded"` and `error_message="schedule_to_close reached before next dispatch"` instead of rescheduling. If the row already carries an operator's cancel request, the deferral is refused entirely (the write is a noop) and the cancel ladder terminalises the row; a cancel request on a row whose `schedule_to_close` lapses at deferral time terminalises `cancelled`, not `DeadlineExceeded`: operator intent outranks the deadline.
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq.exceptions import Snooze
 
@@ -487,7 +488,7 @@ A negative `delay` raises `ValueError` at construction.
 
 `RetryAfter`'s delay is **not** clamped by `max_retry_backoff`; only `schedule_to_close` gates it. This differs from a `retry_classifier` `RetryOverride(delay=...)`, which *is* clamped (see [§5](#5-retry_classifier-hook-per-instance-retry-overrides)).
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from datetime import timedelta
 from taskq.exceptions import RetryAfter
 

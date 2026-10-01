@@ -76,7 +76,7 @@ See [cli.md](cli.md) for the full option reference. The `--actors` argument is r
 
 `worker_main` is the production entry point. It sets up logging, starts an `asyncio.Runner`, and calls `_main` which wires the full TaskGroup.
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import registry
@@ -91,7 +91,7 @@ exit_code = worker_main(settings, actor_registry=registry)
 
 `worker_main` returns an `int` exit code (0 on clean shutdown). In a container entrypoint:
 
-```python
+```python no-exec — not executed: continues the user-local module the guide is building
 import contextlib
 import signal
 import sys
@@ -261,7 +261,7 @@ row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
     declaration, so fixing starvation means changing the *producer*, not just
     the queue:
 
-    ```python
+    ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
     # Without fairness_key, set-mode round_robin is inert.
     await client.enqueue(process_doc, payload, fairness_key=payload.tenant_id)
     ```
@@ -409,7 +409,7 @@ Each consumer loop iteration follows this sequence:
 
 Each actor carries a `RetryPolicy`. The default policy is:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 RetryPolicy(
     kind="transient",
     max_attempts=3,
@@ -454,6 +454,8 @@ After computing the raw delay, multiplicative jitter is applied: `delay = raw * 
 
 **Global backoff ceiling:** `TASKQ_MAX_RETRY_BACKOFF` (default `24h`) is applied as `effective_cap = min(policy.cap, max_retry_backoff)`. This prevents a misconfigured `cap=timedelta(days=365)` from stranding jobs silently.
 
+**Retry-delay floor:** every failure-retry, snooze, and non-consuming retry-after delay is floored at 1 second (`MIN_DEFERRAL_INTERVAL`), applied after the cap and the jitter draw, so a sub-second `base` (or a zero `Retry-After`) cannot produce a zero-period claim/run/fail loop monopolising a worker slot; for a `cap` below 1 second the floor, not the cap, is the binding bound on the stamped delay. The exception is a **consuming** `RetryAfter` (`consume_budget=True`), which keeps its raw delay: an immediate consuming retry is a real execution, bounded by the budget it spends.
+
 **Control-flow exceptions:**
 
 - `Snooze(delay: timedelta)`: re-schedules the job with `mark_snoozed` and increments the row's `snooze_count` counter column. If `schedule_to_close` has passed, the job is failed with `DeadlineExceeded`.
@@ -476,7 +478,7 @@ Cancellation is a three-phase protocol coordinated between the API layer (which 
 
 **Actor-side cooperative cancellation:**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 @actor
 async def long_running(payload: MyPayload, ctx: JobContext[MyPayload]) -> None:
     for chunk in chunks:
@@ -554,7 +556,7 @@ SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advanc
 | DRAINING | 1 | Sets `producer_stop_event`; calls `drain_local_queue_to_pending` to re-pend locked-but-not-started rows (the claim's attempt increment is refunded) |
 | CANCELLING | 2 | Sets `cancel_event` on all in-flight jobs and stamps their cancel origin as the shutdown; waits up to `cancellation_grace_period` for cooperative exit |
 | FORCING | 3 | Calls `task.cancel()` on remaining jobs (even when a job's `write_cancel_escalation` PG write fails; the local cancel is the process-side half of the phase and is never skipped); issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
-| RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted`; the spent attempt stands (no refund), one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget **plus the watchdog's exit tail** (the dump-interval lag before the deadline trip is observed, and the bounded metrics flush before `os._exit`); or `lock_lease` when the shutdown watchdog is disabled; jobs under an operator cancel reach `abandoned` here instead; closes `leader_conn` (releasing the advisory lock) |
+| RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted`; the spent attempt stands (no refund), one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget **plus the watchdog's exit tail** (the dump-interval lag before the deadline trip is observed, and the bounded metrics flush before `os._exit`); or `lock_lease` when the shutdown watchdog is disabled; jobs under an operator cancel are terminalised here with the operator's OWN verdict (`mark_cancelled`, forced - the same fenced write the unwinding consumer races), never `abandoned`; closes `leader_conn` (releasing the advisory lock) |
 
 **DRAINING phase detail.** `drain_local_queue_to_pending` re-pends DB-level rows where `status='running' AND locked_by_worker` is this worker, excluding jobs with a live consumer. The claim stamps `started_at` at claim time, so the predicate cannot distinguish "claimed but unstarted" from "executing"; only this process's active-jobs registry can, which is what the exclusion reads. The producer loop repeats the same hand-back on its own exit, so a claim round that was in flight when the stop event landed is caught too. Rows the consumer loops took off the local queue before the stop signal are never dispatched past it.
 
@@ -916,7 +918,7 @@ to `worker_main()`):
 taskq worker --actors myapp.actors:registry --until-idle
 ```
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 exit_code = worker_main(settings, actor_registry=registry, until_idle=True)
 # 0 = all jobs succeeded
 # 3 = some jobs failed

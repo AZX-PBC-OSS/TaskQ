@@ -199,7 +199,7 @@ the client, CLI, and admin UI, not worker-internal.
 
 **Old (v0.2.0-v0.2.2):**
 
-```python
+```python no-exec — not executed: deliberately broken, the old import path raises ImportError
 from taskq.worker.actor_config import ActorConfig
 ```
 
@@ -222,7 +222,7 @@ development, update to the top-level path.
 
 **Old (unreleased branch only):**
 
-```python
+```python no-exec — not executed: deliberately broken, the old import path raises ImportError
 from taskq.worker.actor_config_ops import (
     list_actor_configs,
     get_actor_config,
@@ -356,7 +356,7 @@ export now resolves to the single sanitized implementation in
 
 **Old:**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import validate_actor_payload
 
 model = validate_actor_payload(MyPayload, raw_payload, actor_name="send_email")
@@ -364,7 +364,7 @@ model = validate_actor_payload(MyPayload, raw_payload, actor_name="send_email")
 
 **New:**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq import validate_actor_payload
 
 model = validate_actor_payload(MyPayload, raw_payload, actor="send_email")
@@ -372,7 +372,7 @@ model = validate_actor_payload(MyPayload, raw_payload, actor="send_email")
 
 The positional form needs no change and works on both versions:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 model = validate_actor_payload(MyPayload, raw_payload, "send_email")
 ```
 
@@ -433,7 +433,7 @@ you can now remove it.
 
 **Old (broken):**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 KeyedRateLimitRef(
     base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0
 )
@@ -441,7 +441,7 @@ KeyedRateLimitRef(
 
 **New:**
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 KeyedRateLimitRef.typed(
     MyPayload,
     base_name="api-per-tenant",
@@ -1840,7 +1840,7 @@ The realistic sources of a stray trailing newline are a shell `$(...)`
 substitution, a value read from a file, and an unstripped environment
 variable:
 
-```python
+```python no-exec — not executed: fragment, names bound by an earlier fence
 # This used to pass validation and now raises ValueError:
 queue = pathlib.Path("/etc/taskq/queue").read_text()  # "default\n"
 
@@ -2595,3 +2595,26 @@ practical; otherwise run `taskq migrate up --allow-checksum-drift` on it
 and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
+
+### Published variants: the one exception to immutability
+
+Restoring a byte-exact file fixes the guard going forward, but databases
+that applied the PREVIOUS published bytes of an amended file carry that
+older checksum in their ledgers permanently — and no single file can
+render to two checksums. The `_variants/` directory inside
+`taskq.migrations` carries the published history: for each amended file,
+the exact bytes of the version that shipped first (one `.sql` file per
+vintage, named for the commit that published it). The drift guard accepts
+a ledger checksum when it matches the current file OR any bundled
+variant's, each rendered with the checking database's own schema — so an
+accepted checksum is schema-agnostic by construction, and a checksum
+rendered under a different schema is still drift.
+
+A ledger checksum nothing bundled produced — current file or variant — is
+drift exactly as before; the variants widen what counts as *published
+history*, never what counts as *legitimate SQL*. Variants are code:
+reviewed, bundled, and versioned with the package (the wheel ships them,
+and the guard degrades to fail-closed refusal if an install loses them) —
+adding one is a PR, never a runtime knob. Never add a variant for a file
+that has not actually shipped amended bytes: a variant legitimises a
+checksum forever.

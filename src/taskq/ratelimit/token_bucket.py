@@ -812,7 +812,28 @@ class TokenBucket:
             tokens = self._capacity
         else:
             state = jsonb_to_dict(row["state"], column="state")
-            tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
+            try:
+                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
+            except (TypeError, ValueError, OverflowError) as exc:
+                # A peek is read-only, but the trust boundary is the same as
+                # the redis peek's: a state value no honest write could have
+                # produced (the row IS the reply) is a store lie, failed
+                # closed as the outage it is indistinguishable from, never a
+                # ValueError crash with no provenance.
+                raise RateLimitStoreCorrupt(
+                    f"token-bucket peek read a non-numeric state value: {row['state']!r}"
+                ) from exc
+            # The writers bound the stored count to [0, capacity] (the spend
+            # floors at 0, the refill's min caps at capacity); anything else
+            # in the document is a lie (a negative count is a
+            # permanent-denial lie, a huge one a phantom balance, a NaN
+            # neither exhausted nor alive) — the same verdict
+            # ``_peek_redis`` hands the identical shape.
+            if not math.isfinite(tokens) or not (0.0 <= tokens <= self._capacity):
+                raise RateLimitStoreCorrupt(
+                    f"token-bucket peek read tokens outside [0, capacity={self._capacity}]: "
+                    f"{tokens!r}"
+                )
 
         is_exhausted = tokens <= 0.0
         retry_after: timedelta | None = None
@@ -1001,8 +1022,30 @@ class TokenBucket:
 
             now = float(row["now_s"])
             state = jsonb_to_dict(row["state"], column="state")
-            tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
-            ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same, state is non-None; fallback to now for rows missing "ts"
+            try:
+                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
+                ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same, state is non-None; fallback to now for rows missing "ts"
+            except (TypeError, ValueError, OverflowError) as exc:
+                # The refund WRITES from the values it reads, so a state
+                # document no honest write could have produced (the row IS
+                # the reply) must not reach the arithmetic: NaN collapses
+                # the ``min`` cap to capacity (restoring a spent fixed
+                # quota, an over-refund) and a non-numeric value is a bare
+                # crash the release path would report as a mere refund
+                # failure. The sentinel is the fail-closed verdict: the
+                # refund does not happen, the loss stays visible.
+                raise RateLimitStoreCorrupt(
+                    f"token-bucket refund read a non-numeric state value: {row['state']!r}"
+                ) from exc
+            if not math.isfinite(tokens) or not (0.0 <= tokens <= self._capacity):
+                # Same range contract as the peek: the writers bound the
+                # stored count to [0, capacity]; a negative count is a
+                # permanent-denial lie the refund would preserve, a huge
+                # one a phantom balance it would cap to full.
+                raise RateLimitStoreCorrupt(
+                    f"token-bucket refund read tokens outside [0, capacity={self._capacity}]: "
+                    f"{tokens!r}"
+                )
 
             elapsed = max(0.0, now - ts)
             tokens = min(self._capacity, tokens + elapsed * self._refill)
