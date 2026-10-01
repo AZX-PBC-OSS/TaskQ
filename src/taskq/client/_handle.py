@@ -402,7 +402,16 @@ class JobHandle[R: BaseModel | None]:
         recording), and advancing only there would make the semantics
         backend-dependent.
         """
-        if not self._backend.supports_progress_stream:
+        # getattr with the protocol default (True), not a bare attribute
+        # read: ``Backend`` is a Protocol, so a structural (duck-typed)
+        # backend that predates this capability does not inherit the
+        # ClassVar default, and a bare read would turn the pre-capability
+        # behavior (the stream runs and fails however its transport fails)
+        # into an AttributeError on the flag read itself. The tolerant read
+        # keeps missing-flag == True == exactly the pre-capability
+        # behavior; the subscribe_* wake capabilities in worker/ use the
+        # same pattern for structural backends.
+        if not getattr(self._backend, "supports_progress_stream", True):
             raise NotImplementedError(
                 "progress_stream requires Redis; in-memory backend does not support SSE."
             )
