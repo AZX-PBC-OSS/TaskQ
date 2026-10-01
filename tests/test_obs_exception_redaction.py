@@ -1159,6 +1159,7 @@ def test_detail_scrub_stays_under_a_time_bound_on_marker_runs() -> None:
         assert "DETAIL:" not in scrubbed, label
 
 
+@pytest.mark.load_sensitive
 def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
     """The organic shape: a nested ExceptionGroup wrapping a PG error,
     rendered by ``traceback.format_exception`` and scrubbed whole.
@@ -1166,10 +1167,37 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
     Depth 8 renders the inner DETAIL line (inside ``max_group_depth``), so
     the scrub really has marker-prefixed work to do; depth 30 exercises the
     truncated rendering path. Both must stay inside the same budget.
+
+    Load-sensitive, not the parallel lanes (the #627 class-1 precedent):
+    the budget is a real discrimination only on a quiet serial runner. The
+    linear render+scrub of these groups measures ~0.3 ms locally, but the
+    matrix lane's co-tenancy (two xdist workers plus their containers on a
+    4-core runner) descheduled the run's thread inside the measured window
+    and read 405 ms on healthy code (CI run 36815836388) -- the budget
+    measured the environment, not the matcher, and no budget that could
+    catch a super-linear matcher survives that deschedule. Red on demand:
+    a per-call tracer park (the ``--cov`` cost class) lands the same
+    observable deterministically -- 66 traced calls in the timed region,
+    269 ms, red 3/3 on the unfixed test. The parallel lanes keep the
+    super-linear guards that scale: the structural no-nested-quantifier
+    sweep, the byte-identical equivalence pin, and the 100k-marker budget
+    legs above. A complexity assertion cannot live HERE: the organic shape
+    cannot scale past ``traceback``'s ``max_group_depth`` (depth 8 and
+    depth 30 render near-identical text), so growth-vs-baseline has no
+    signal on this member's own inputs -- the marker-run legs own the
+    scaling argument.
+
+    The timing legs hold the budget only on an untraced interpreter (under
+    coverage the measurement is the tracer's, not the scrub's -- the same
+    ``interpreter_is_traced`` guard the fleet pins carry); the redaction
+    behavior below is asserted either way.
     """
     import time
 
     from taskq.obs._redact_exc import render_exception
+    from tests.conftest import interpreter_is_traced
+
+    traced = interpreter_is_traced()
 
     def _deep_group(levels: int) -> BaseException:
         exc: BaseException = _unique_violation("Key (idempotency_key)=(cust-88) exists.")
@@ -1191,9 +1219,10 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
         start = time.perf_counter()
         scrubbed = render_exception(group8)
         elapsed = time.perf_counter() - start
-        assert elapsed < _SCRUB_BUDGET_SECS, (
-            f"8-deep group render+scrub took {elapsed * 1000:.1f} ms"
-        )
+        if not traced:
+            assert elapsed < _SCRUB_BUDGET_SECS, (
+                f"8-deep group render+scrub took {elapsed * 1000:.1f} ms"
+            )
         assert "cust-88" not in scrubbed.stacktrace
         assert "cust-88" not in scrubbed.message
 
@@ -1203,9 +1232,10 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
         start = time.perf_counter()
         render_exception(group30)
         elapsed = time.perf_counter() - start
-        assert elapsed < _SCRUB_BUDGET_SECS, (
-            f"30-deep group render+scrub took {elapsed * 1000:.1f} ms"
-        )
+        if not traced:
+            assert elapsed < _SCRUB_BUDGET_SECS, (
+                f"30-deep group render+scrub took {elapsed * 1000:.1f} ms"
+            )
 
 
 def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> None:
