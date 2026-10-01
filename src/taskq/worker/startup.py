@@ -10,7 +10,7 @@ from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import ConnLike
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    require_schema,
 )
 from taskq.exceptions import ActorConfigDriftError, ActorConfigDriftList
 from taskq.obs import get_logger
@@ -130,8 +130,7 @@ async def read_stored_queue_assignments(
     "no stored assignments known" rather than a boot failure, matching
     the pending-migration guard's own degradation convention.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     if not actors:
         return {}
     rows = await conn.fetch(_SELECT_ACTOR_CONFIG_SQL.format(schema=schema), list(actors))
@@ -196,8 +195,7 @@ async def sync_actor_config(
     block so a SELECT-then-UPSERT race is impossible against another
     worker's startup. The empty-actor-list case is a no-op.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     count = len(actor_configs)
     logger.info(

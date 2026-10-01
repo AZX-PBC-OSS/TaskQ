@@ -8,7 +8,7 @@ the explicit public surface of this module within the backend package.
 from datetime import timedelta
 
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    require_schema,
 )
 
 __all__ = [
@@ -248,8 +248,7 @@ def build_heartbeat_sql(
     fence of the term it holds. An unfenced refresh from this loop would
     keep a lapsed holder's row un-takeable.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     jobs_template = (
         UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE
         if renewal_threshold is not None

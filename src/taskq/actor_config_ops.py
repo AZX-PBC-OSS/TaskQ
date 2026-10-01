@@ -70,10 +70,10 @@ from taskq.backend._sweeps import (
 )
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ERROR_CLASS_ACTOR_DEREGISTERED,
+    require_schema,
 )
 from taskq.exceptions import (
     ActorHasActiveJobsError,
@@ -188,8 +188,7 @@ def _row_to_dataclass(row: asyncpg.Record) -> ActorConfigRow:
 
 async def list_actor_configs(conn: ConnLike, *, schema: str = "taskq") -> list[ActorConfigRow]:
     """Return every stored `{schema}.actor_config` row, ordered by actor name."""
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     rows = await conn.fetch(_LIST_ACTOR_CONFIG_SQL.format(schema=schema))
     return [_row_to_dataclass(row) for row in rows]
 
@@ -209,8 +208,7 @@ SELECT ac.actor, ac.max_concurrent, ac.max_pending, ac.queue,
 
 async def list_actor_summaries(conn: ConnLike, *, schema: str = "taskq") -> list[dict[str, object]]:
     """Return actor_config rows with active job and schedule counts for display."""
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     rows = await conn.fetch(
         _ACTOR_SUMMARIES_SQL.format(schema=schema),
         list(ACTIVE_STATUSES),
@@ -222,8 +220,7 @@ async def get_actor_config(
     conn: ConnLike, actor: str, *, schema: str = "taskq"
 ) -> ActorConfigRow | None:
     """Return the stored row for *actor*, or ``None`` if it has never been synced."""
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     row = await conn.fetchrow(_GET_ACTOR_CONFIG_SQL.format(schema=schema), actor)
     return _row_to_dataclass(row) if row is not None else None
 
@@ -300,8 +297,7 @@ async def set_actor_config_capacity(
     it is written), and NaN/±inf raise ``interval out of range`` in that
     same UPDATE, failing every completion for the actor.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_int_field("max_concurrent", max_concurrent)
     _validate_int_field("max_pending", max_pending)
     _validate_result_ttl(result_ttl)
@@ -537,8 +533,7 @@ async def move_actor_queue(
     deregister won the race).
     """
 
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     _validate_queue_name(new_queue)
     # LIMIT 0 would stall the drain forever; a zero statement_timeout
     # disables the batch's safety net outright (deregister's guards).
@@ -892,8 +887,7 @@ async def deregister_actor(
        other's ``actor_config`` row as still present under READ
        COMMITTED). The queue can be manually deleted if needed.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
     # LIMIT 0 is a legal rowless query that would otherwise stall the
     # force drain forever (an empty window never falls below it); a zero
     # statement_timeout disables the batch's safety net outright.

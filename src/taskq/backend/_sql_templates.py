@@ -34,7 +34,6 @@ from taskq.backend._sql_fragments import (
     PROGRESS_MERGE_SQL,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
@@ -42,6 +41,7 @@ from taskq.constants import (
     CANCEL_ORIGIN_UNREQUESTED,
     ERROR_CLASS_DEADLINE_EXCEEDED,
     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
+    require_schema,
 )
 
 __all__ = ["SqlTemplates", "render"]
@@ -215,8 +215,7 @@ def render(schema: str) -> SqlTemplates:
     Validates *schema* against the canonical identifier regex before
     formatting.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
+    require_schema(schema)
 
     s = schema
 
