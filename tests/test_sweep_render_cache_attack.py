@@ -344,12 +344,21 @@ def test_call_sites_pass_module_constants_not_composed_templates() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "_render_sweep_sql"
     ]
-    assert len(calls) == 11, (
-        f"expected the 11 converted call sites (INSERT_EVENTS_DETAIL_BATCH_SQL "
-        f"renders at two sweeps), found {len(calls)}"
+    # 10 direct call sites: the collapse of the two single-statement
+    # sweeps into _run_single_statement_sweep folded their two calls
+    # into the helper's one (fed by its ``sql_template`` parameter,
+    # pinned to module constants by the scan below).
+    assert len(calls) == 10, (
+        f"expected the 10 direct call sites (INSERT_EVENTS_DETAIL_BATCH_SQL "
+        f"renders at two sweeps; the two single-statement sweeps render via "
+        f"_run_single_statement_sweep), found {len(calls)}"
     )
     for call in calls:
         arg = call.args[0]
+        if isinstance(arg, ast.Name) and arg.id == "sql_template":
+            # The shared helper's own call: its parameter is pinned to
+            # module constants at the helper's call sites (scan below).
+            continue
         assert isinstance(arg, ast.Name), (
             f"line {call.lineno}: template argument is composed "
             f"({type(arg).__name__}), the (template, schema) key would grow per call"
@@ -366,6 +375,32 @@ def test_call_sites_pass_module_constants_not_composed_templates() -> None:
             "_SWEEP_IDLE_KEYED_SLOTS_SQL",
             "INSERT_EVENTS_DETAIL_BATCH_SQL",
         }
+
+    # The indirection must not become a bypass: every
+    # _run_single_statement_sweep call site's ``sql_template`` argument
+    # is itself a bare module-constant Name, so the (template, schema)
+    # cache key still only ever sees module constants.
+    helper_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_single_statement_sweep"
+    ]
+    assert len(helper_calls) >= 2, (
+        f"expected the 2 collapsed single-statement sweeps to delegate to "
+        f"_run_single_statement_sweep, found {len(helper_calls)}"
+    )
+    for call in helper_calls:
+        kw = {k.arg: k.value for k in call.keywords}
+        arg = kw.get("sql_template")
+        assert isinstance(arg, ast.Name), (
+            f"line {call.lineno}: helper sql_template argument is composed "
+            f"({type(arg).__name__}), the (template, schema) key would grow per call"
+        )
+        assert arg.id in {"_SWEEP_4_SQL", "_SWEEP_RESULT_TTL_SQL"}, (
+            f"line {call.lineno}: helper sql_template is {arg.id}, not a pinned module constant"
+        )
 
 
 # ── Races ────────────────────────────────────────────────────────────
