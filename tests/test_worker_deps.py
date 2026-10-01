@@ -21,6 +21,7 @@ import asyncpg
 import pytest
 from testcontainers.community.postgres import PostgresContainer
 
+from taskq._close import CloseEventFamily
 from taskq.constants import wake_channel
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.settings import make_integration_settings
@@ -330,10 +331,14 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
     original_close_bounded = deps_mod.close_pool_bounded
 
     async def _capturing_close_bounded(
-        pool: asyncpg.Pool, label: str, close_timeout: float
+        pool: asyncpg.Pool,
+        label: str,
+        close_timeout: float,
+        *,
+        family: CloseEventFamily = "teardown",
     ) -> None:
         captured_pools.append(pool)
-        await original_close_bounded(pool, label, close_timeout)
+        await original_close_bounded(pool, label, close_timeout, family=family)
 
     monkeypatch.setattr(deps_mod, "close_pool_bounded", _capturing_close_bounded)
 
