@@ -420,8 +420,10 @@ async def test_heartbeat_excludes_disowned_jobs_from_lease_renewal() -> None:
         "the statement still renews every row this worker holds"
     )
     assert "$3::uuid[]" in sql
-    # The gated statement, with the threshold compared server-side.
-    assert "lock_expires_at <= clock_timestamp() + $4::interval" in sql
+    # The gated statement, with the threshold compared server-side
+    # (statement_timestamp(): STABLE, so the expiry arm's range bound is
+    # an index condition on jobs_running_lock_expires_idx).
+    assert "lock_expires_at <= statement_timestamp() + $4::interval" in sql
 
 
 async def test_heartbeat_excludes_disowned_jobs_from_reservation_lease_renewal() -> None:
