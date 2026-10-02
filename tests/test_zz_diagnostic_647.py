@@ -1,9 +1,9 @@
 """BISECT 647-DIAG: TEMPORARY diagnostic — DELETE BEFORE MERGE.
 
-Runs its own module-scoped worker probe. When the escalation series is
-absent this test FAILS with the full evidence dump (all served series
-names + the probe subprocess's stdout/stderr tails), which is the ground
-truth the CI red hides behind its truncated ``assert []``.
+Runs its own module-scoped worker probe and ALWAYS fails with the full
+evidence dump (all served series names + the probe subprocess's
+stdout/stderr tails + timing markers). The CI red truncates the ground
+truth to 'assert []'; this surfaces it either way.
 """
 
 from __future__ import annotations
@@ -24,18 +24,13 @@ def _diag_scrapes(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> 
     )
 
 
-def test_bisect647_diag_abandoned_series_or_full_dump(_diag_scrapes: dict[str, str]) -> None:
+def test_bisect647_diag_always_dump(_diag_scrapes: dict[str, str]) -> None:
     live = parse_exposition(_diag_scrapes["LIVE"])
-    names = live.names()
-    if "taskq_jobs_abandoned_total" in names:
-        return
+    names = ", ".join(sorted(live.names()))
     diag = "\n\n".join(f"== probe {k} ==\n{v}" for k, v in _PROBE_DIAG.items()) or (
         "<no probe diag captured>"
     )
     pytest.fail(
-        "ESCALATION SERIES ABSENT — served series:\n"
-        + ", ".join(sorted(names))
-        + "\n\n"
-        + diag,
+        "BISECT 647-DIAG (always-dump) — served series:\n" + names + "\n\n" + diag,
         pytrace=False,
     )
