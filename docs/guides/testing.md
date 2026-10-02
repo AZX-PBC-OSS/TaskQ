@@ -386,7 +386,7 @@ use them):
 | `clean_pg_conn` | function | `asyncpg.Connection` | Truncates + re-seeds within the module schema. |
 | `clean_jobs_app` | function | `JobsApp` | Truncate + re-seed, then open `WorkerDeps` + backend. |
 | `worker_with_running_job` | function | `(worker_id, job_id, conn)` | Pre-created worker + running job on `clean_pg_conn`. |
-| `redis_container` | session | `RedisContainer` | Dragonfly v1.39.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
+| `redis_container` | session | `RedisContainer` | Dragonfly v2.0.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
 | `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test, for chaos tests that stop/restart Redis. Never stop the session container. |
 | `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1-1023) allocated from the invocation's file-backed monotonic counter (unique across all xdist workers). DB 0 is reserved. |
 | `module_redis_url` | module | `str` | Unique Redis DB (1-1023) per module. `FLUSHDB` at setup AND on teardown. |
