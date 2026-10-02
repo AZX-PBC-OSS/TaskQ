@@ -140,6 +140,38 @@ invocation fetches a fresh credential and calls `asyncpg.create_pool` /
 `asyncpg.connect` / `redis.from_url`. Redis reconnects re-fetch
 automatically via the redis-py `CredentialProvider` adapter.
 
+> **Resilience kwargs are the factory's job.** Clients TaskQ builds itself
+> (from `TASKQ_REDIS_URL`) come from `taskq._redis_client.build_redis_client`,
+> which sets `health_check_interval=30`, `socket_keepalive=True`, and a
+> 3-attempt exponential-backoff `Retry` with
+> `retry_on_error=[ConnectionError, TimeoutError]` (and deliberately no
+> `socket_timeout` — TaskQ bounds every redis wait at the application
+> level, and a global timeout would change pubsub blocking-read semantics).
+> A factory-built or caller-supplied redis client skips that builder, so
+> `make_redis_client_factory` callers should pass the same kwargs in its
+> `**client_kwargs` (or pass the builder's output through and add
+> `credential_provider=`):
+>
+> ```python
+> from redis.asyncio.retry import Retry
+> from redis.backoff import ExponentialBackoff
+> from redis.exceptions import ConnectionError, TimeoutError
+>
+> redis_factory = make_redis_client_factory(
+>     url,
+>     provider,
+>     health_check_interval=30,
+>     socket_keepalive=True,
+>     retry=Retry(ExponentialBackoff(cap=1.0, base=0.05), retries=3),
+>     retry_on_error=[ConnectionError, TimeoutError],
+> )
+> ```
+>
+> Without them, Azure's ~10-minute idle-connection reap surfaces as raw
+> `ConnectionError`s: into `JobHandle.progress_stream`'s / `TaskQ.stream`'s
+> pubsub consumers, and as `rate-limit-redis-transient-retry` /
+> `progress-publish-failure` warning noise on the worker.
+
 **How the credential reaches asyncpg**: the PG factories pass it as
 `password=` (always) and `user=` (when the credential carries one)
 **keyword arguments**. Keyword arguments take precedence over both DSN

@@ -32,13 +32,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
+from taskq.constants import progress_channel
+from taskq.progress._events import ProgressEvent
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
 
@@ -78,6 +82,14 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 
 _RESTART_PROBE_TIMEOUT = 60.0
 _RECOVERY_TIMEOUT = 120.0
+
+# The pooled-drop recovery window: with the resilience defaults the token
+# acquisition reconnects inside the retry budget (backoff base 0.05s, cap
+# 1.0s, 3 attempts) and the job completes in one rate window. Without them
+# the acquisition fails closed (snoozed 5s) AND the dependency-failure
+# WARNING fires - the warning is the red/green discriminator, the window
+# is the operator-facing promise.
+_DROP_RECOVERY_WINDOW = 30.0
 
 
 def _delivered_endpoints(effects: list[asyncpg.Record]) -> set[str]:
@@ -408,3 +420,246 @@ async def test_redis_outage_degrades_gracefully(
 
     recovery_effects = await fetch_effects(chaos_pool, schema, f"{run_id}-recovery", kind="send")
     assert recovery_effects, "the post-recovery job must have run at least once"
+
+
+# ── Helpers for the CLIENT KILL drop scenarios ────────────────────────────
+
+
+def _kill_all_normal_clients(chaos_df: ChaosDf, chaos_schema: ChaosSchema) -> None:
+    """Sever every established client connection on the chaos Dragonfly.
+
+    Dragonfly never idle-closes a live connection, so a drop must be
+    injected. Dragonfly v1.39 has no ``CLIENT KILL TYPE`` filter, so each
+    connection is killed by ID from a throwaway sync client (the killer
+    excludes its own ID and survives).
+    """
+    import redis as redis_sync
+
+    with redis_sync.from_url(
+        f"{chaos_df.host_url}/{chaos_schema.redis_db}", socket_timeout=None
+    ) as killer:
+        own_id = killer.client_id()
+        listing = killer.execute_command("CLIENT", "LIST")
+        assert isinstance(listing, bytes), f"CLIENT LIST reply was not bytes: {listing!r}"
+        victim_ids = [
+            fields["id"]
+            for line in listing.decode().strip().splitlines()
+            if (fields := dict(kv.split("=", 1) for kv in line.split(" ") if "=" in kv))
+            and int(fields["id"]) != own_id
+        ]
+        assert victim_ids, "no established client connections to kill"
+        for victim_id in victim_ids:
+            killer.execute_command("CLIENT", "KILL", "ID", victim_id)
+
+
+def _worker_logs(worker: E2EWorker) -> str:
+    """The worker container's combined stdout+stderr, best-effort."""
+    try:
+        stdout, stderr = worker.container.get_logs()
+    except Exception:  # pragma: no cover - docker hiccup, never mask a result
+        return "<worker container logs unavailable>"
+    return stdout.decode(encoding="utf-8", errors="replace") + stderr.decode(
+        encoding="utf-8", errors="replace"
+    )
+
+
+# ── Pooled-drop recovery (the fail-closed snooze is today's behaviour) ────
+
+
+@pytest.mark.usefixtures("e2e_worker_image", "e2e_network", "e2e_pg")
+async def test_client_kill_pooled_drop_completes_in_window_without_dependency_failure(
+    chaos_client: TaskQ,
+    chaos_worker: E2EWorker,
+    chaos_df: ChaosDf,
+    chaos_schema: ChaosSchema,
+    chaos_pool: asyncpg.Pool,
+    run_id: str,
+) -> None:
+    """``CLIENT KILL`` severs the worker's ESTABLISHED redis connections
+    (Dragonfly never idle-closes, so the drop is injected) and the next
+    rate-limited job must still complete in-window with NO redis-level
+    WARNING.
+
+    Red before the resilience defaults: the token acquisition rides a dead
+    pooled connection and surfaces the raw ``ConnectionError`` into the
+    limiter - which weathers it with its own bounded transient-retry budget
+    (``rate-limit-redis-transient-retry`` WARNING, 0.25s backoff) and the
+    worker's terminal publish logs ``progress-publish-failure``. Safe but
+    noisy, and the job completes a retry-budget late. Green after: the
+    client's retry/health-check machinery reconnects the first dead
+    connection invisibly - the acquisition and the publish both succeed on
+    their first attempt and no redis WARNING is ever emitted.
+    """
+    schema = chaos_schema.schema_name
+
+    # Established conns: one rate-limited job runs to delivery.
+    await chaos_client.enqueue(
+        deliver_webhook,
+        DeliverWebhookPayload(run_id=run_id, endpoint_id="ep-seed"),
+    )
+    await wait_for_effects(chaos_pool, schema, run_id, kind="delivered", min_count=1, timeout=30.0)
+
+    logs_before = _worker_logs(chaos_worker)
+
+    # Inject the drop: every established client connection dies.
+    _kill_all_normal_clients(chaos_df, chaos_schema)
+
+    # The next rate-limited job: acquisition rides a (now dead) pooled
+    # connection. In-window completion + no new dependency-failure WARNING.
+    drop_handle = await chaos_client.enqueue(
+        deliver_webhook,
+        DeliverWebhookPayload(run_id=f"{run_id}-drop", endpoint_id="ep-drop"),
+    )
+    await drop_handle.wait(timeout=_DROP_RECOVERY_WINDOW)
+
+    logs_after = _worker_logs(chaos_worker)
+    for noise_line in (
+        "rate-limit-dependency-failure",  # the fail-closed snooze's WARNING
+        "rate-limit-redis-transient-retry",  # the limiter's own weathering budget
+        "progress-publish-failure",  # the worker's terminal-publish noise
+    ):
+        assert logs_after.count(noise_line) == logs_before.count(noise_line), (
+            f"the pooled-drop rate-limited job completed but {noise_line!r} "
+            "fired after the connection kill - the redis client surfaced the "
+            "dead connection into the rate-limit/publish path instead of "
+            "reconnecting. Worker log tail:\n" + logs_after[-4000:]
+        )
+
+
+# ── Stream survival: the pubsub connection killed mid-stream ──────────────
+
+
+async def test_stream_survives_pubsub_connection_kill(
+    chaos_df: ChaosDf,
+    chaos_schema: ChaosSchema,
+    chaos_pool: asyncpg.Pool,
+) -> None:
+    """``JobHandle.progress_stream`` (the pubsub surface every
+    ``redis_url=``-configured client uses) must deliver the terminal event
+    even when its pubsub connection is killed mid-stream.
+
+    Red before the resilience defaults: the killed connection raises a raw
+    ``redis.ConnectionError`` straight into the consumer's ``async for``
+    (redis-py 8.1's internal PubSub retry is ``retries=0`` unless the client
+    passes one). Green after: the client's ``Retry`` reconnects the pubsub
+    connection (re-subscribing via on_connect), so the terminal publish -
+    or the PG safety-net re-fetch - delivers the terminal event and the
+    stream ends normally.
+    """
+    import asyncpg
+    import redis as redis_sync
+
+    from taskq import TaskQ
+
+    schema = chaos_schema.schema_name
+    redis_url = f"{chaos_df.host_url}/{chaos_schema.redis_db}"
+
+    async with TaskQ(
+        dsn=chaos_schema.host_dsn,
+        schema=schema,
+        redis_url=redis_url,
+        poll_timeout=1.0,  # tight PG safety-net cadence; bounds each read
+    ) as client:
+        handle = await client.enqueue(
+            deliver_webhook,
+            DeliverWebhookPayload(run_id="stream-kill", endpoint_id="ep-stream"),
+        )
+        job_id = handle.job_id
+
+        events: list[ProgressEvent] = []
+        stream_errors: list[BaseException] = []
+
+        async def _consume() -> None:
+            try:
+                async for event in handle.progress_stream():
+                    events.append(event)
+            except BaseException as exc:
+                stream_errors.append(exc)
+
+        async def _client_conn_established() -> bool:
+            """The test client's pubsub connection exists on the broker.
+
+            The only redis connection this in-process client holds is the
+            stream's pubsub one (nothing else has touched its pool), so any
+            non-prober connection in CLIENT LIST is it.
+            """
+            import redis as redis_sync
+
+            with redis_sync.from_url(f"{chaos_df.host_url}/{chaos_schema.redis_db}") as prober:
+                own_id = prober.client_id()
+                listing = prober.execute_command("CLIENT", "LIST")
+                assert isinstance(listing, bytes), f"CLIENT LIST reply was not bytes: {listing!r}"
+                others = [
+                    line
+                    for line in listing.decode().strip().splitlines()
+                    if int(dict(kv.split("=", 1) for kv in line.split(" ") if "=" in kv)["id"])
+                    != own_id
+                ]
+                return len(others) >= 1
+
+        consume_task = asyncio.create_task(_consume())
+        try:
+            # The redis arm emits no event until something publishes (the
+            # snapshot read happens first but is only yielded for an
+            # already-terminal row), so the pubsub connection appearing on
+            # the broker is the readiness gate for the kill.
+            await poll_until(
+                _client_conn_established,
+                timeout=30.0,
+                description="the stream's pubsub connection to appear on the broker",
+            )
+            # Drive the job terminal in PG so the terminal publish (or the
+            # safety-net re-fetch) can produce a terminal ProgressEvent.
+            conn = await asyncpg.connect(chaos_schema.host_dsn)
+            try:
+                await conn.execute(
+                    f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
+                    "progress_seq = progress_seq + 1 WHERE id = $1",
+                    str(job_id),
+                )
+            finally:
+                await conn.close()
+
+            # Inject the drop mid-stream, then publish the terminal event
+            # until the stream ends: the first publish may race the pubsub
+            # re-subscription, a later one lands after it (and the safety
+            # net re-fetches regardless).
+            _kill_all_normal_clients(chaos_df, chaos_schema)
+
+            terminal_event = ProgressEvent(
+                kind="state_change",
+                job_id=job_id,
+                actor="deliver_webhook",
+                ts=datetime.now(UTC),
+                seq=1,
+                status="succeeded",
+                terminal=True,
+            )
+            channel = progress_channel(schema, job_id)
+
+            async def _publish_until_done() -> None:
+                deadline = time.monotonic() + _DROP_RECOVERY_WINDOW
+                while not consume_task.done():
+                    if time.monotonic() > deadline:
+                        return
+                    with redis_sync.from_url(redis_url) as publisher:
+                        publisher.publish(
+                            channel, terminal_event.model_dump_json(exclude_none=True)
+                        )
+                    await asyncio.sleep(0.5)
+
+            await asyncio.wait_for(_publish_until_done(), timeout=_DROP_RECOVERY_WINDOW + 5.0)
+            await asyncio.wait_for(consume_task, timeout=10.0)
+        finally:
+            if not consume_task.done():
+                consume_task.cancel()
+                await asyncio.gather(consume_task, return_exceptions=True)
+
+    assert not stream_errors, (
+        "JobHandle.progress_stream escaped a pubsub connection kill as a "
+        f"raw connection error instead of surviving it: {stream_errors!r}"
+    )
+    assert events, "the stream delivered no events at all"
+    terminal = events[-1]
+    assert terminal.terminal is True
+    assert terminal.status == "succeeded"

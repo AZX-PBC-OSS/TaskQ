@@ -30,7 +30,7 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
-from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
+from taskq._forkguard import guarded_connection_class
 from taskq.auth import credential_provider_of
 from taskq.connections import (
     ConnFactory,
@@ -1033,13 +1033,11 @@ async def open_worker_deps(
                 ) from exc
             owns_redis = True
         elif settings.redis_url is not None:
-            import redis.asyncio as redis_async  # type: ignore[no-redef]  # Why: runtime import guarded by settings.redis_url; TYPE_CHECKING import is for annotations only
-
-            redis_client = redis_async.from_url(
-                str(settings.redis_url),
-                decode_responses=False,
-                connection_class=guarded_redis_connection_class(),
+            from taskq._redis_client import (
+                build_redis_client,  # Why: runtime import guarded by settings.redis_url; the [redis] extra is optional at module scope
             )
+
+            redis_client = build_redis_client(str(settings.redis_url))
             owns_redis = True
         deps.redis_client = redis_client
 
