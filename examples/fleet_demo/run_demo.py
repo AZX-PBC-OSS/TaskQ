@@ -242,11 +242,14 @@ def act3_operator_cancel(log_path: Path) -> None:
             print(f"\n  the row terminalised: {status}")
             print("    the verdict is 'cancelled' — an operator cancel owns the row;")
             print("    'abandoned' is never its outcome, the cancel bookkeeping")
-            print("    (cancel_requested_at, cancel_origin=operator) stays on the row.")
+            print("    (cancel_requested_at, cancel_phase) stays on the row. The")
+            print("    operator-vs-shutdown ORIGIN is the worker's routing stamp —")
+            print("    it picked who owns this write; act 5's cancel_origin_counts")
+            print("    event is where a shutdown origin surfaces.")
 
     asyncio.run(wait_terminal())
 
-    print("\n  the job's event trail (the cancel_request event, origin=operator):")
+    print("\n  the job's event trail (the cancel_request entry with the operator's reason):")
     out = _run_cli(["taskq", "job", "events", job_id])
     for line in out.splitlines():
         if line.strip():
@@ -397,7 +400,8 @@ def act6_doctor() -> None:
     print(f"       {out.strip()[:150]}")
     print("    3. a typo'd TASKQ_ env var (set for the doctor invocation)")
     print("    4. a platform stop grace of 1s (below the modelled worst case)")
-    print("    5. offline_meter's pending job: routed to a queue no worker serves")
+    print("    5. offline_meter: in the doctor's registry only, its queue never")
+    print("       subscribed — a second actor with no stored actor_config row")
     print("    6. ghost_job: in the doctor's registry, absent from the worker's,")
     print("       so it has no stored actor_config row")
     time.sleep(8)  # let the worker's liveness fully expire
@@ -434,9 +438,9 @@ def act7_insights() -> None:
 
 def act_cleanup() -> None:
     _banner("CLEANUP — compose down -v (leave no volume behind)")
-    print(
-        "  run: docker compose -p taskq-fleet-demo -f examples/fleet_demo/docker-compose.yml down -v"
-    )
+    print("  docker compose -p taskq-fleet-demo down -v …")
+    _run([*COMPOSE, "down", "-v"])
+    print("  demo containers and volume dropped — nothing left running.")
 
 
 # ── plumbing ────────────────────────────────────────────────────────────
