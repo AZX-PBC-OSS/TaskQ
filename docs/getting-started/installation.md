@@ -7,9 +7,15 @@ and integration testing.
 
 ## Prerequisites
 
-- **Python 3.12+** (3.13 is also supported)
-- **Postgres**: Postgres 18 (the bundled Docker Compose pins the `postgres:18` image).
-  Production requires
+- **Python 3.12+** (3.13 and 3.14 are also supported — the CI matrix runs
+  all three majors)
+- **Postgres**: **15 is the minimum supported major; 15–18 are covered by CI** —
+  the system-e2e tier runs its full multi-process lifecycle against every major
+  via a testcontainers version matrix. `docker-compose.yml` pins the
+  `postgres:18` image for local development (PG 18 is also what the fast test
+  suite uses). No PG18-specific SQL exists in the bundled migrations; the floor
+  is 15 because that is the oldest major the CI matrix exercises — older majors
+  may work but are untested and unsupported. Production requires
   a direct connection (not PgBouncer in transaction-pooling mode) for advisory locks and
   `LISTEN/NOTIFY`.
 - **Redis** (optional): required only for real-time progress fanout and admin UI live

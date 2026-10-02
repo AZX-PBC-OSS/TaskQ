@@ -54,6 +54,7 @@ __all__ = [
     "bounded_lock_budget_ms",
     "connection_init_hook",
     "lock_budget_command_timeout_secs",
+    "lock_budget_pairs",
     "statement_cache_kwargs",
     "with_connection_init",
 ]
@@ -192,6 +193,28 @@ def lock_budget_command_timeout_secs(
         if configured_ms > default_ms:
             bound = max(bound, configured_ms / 1000.0 / _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE)
     return bound
+
+
+def lock_budget_pairs(
+    settings: TaskQSettings, field_names: Iterable[str]
+) -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per lock-budget knob named in
+    *field_names*, the input :func:`lock_budget_command_timeout_secs`
+    derives a TaskQ-built pool's per-query bound from.
+
+    *settings* is the loaded settings model the knobs are read from (the
+    client pool reads its enqueue knobs off ``TaskQSettings``; the
+    dispatcher pool reads the admission knobs off ``WorkerSettings``);
+    *field_names* lists that model's lock-budget field names, spelled once
+    by each caller so the derivation cannot drift onto a different knob.
+    The defaults are read off the model's field metadata, never restated.
+    """
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in field_names:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
 
 
 #: Bound on the pool-release path the retry guard's checkout owns: the

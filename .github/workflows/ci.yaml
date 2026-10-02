@@ -531,6 +531,298 @@ jobs:
           echo "pip-audit failed on 5 attempts - treating as a real finding"
           exit 1
 
+  pr-title:
+    # The conventional-commit title gate: every PR title must match
+    # `type(scope)?: subject` with type one of the conventional types.
+    #
+    # The deploy-check deadlock lesson, recorded in the ledger: a check that is
+    # marked required but does not REGISTER on every PR — the classic cause is
+    # a `paths:`/`branches:` filter on the job's trigger — becomes an
+    # unmeetable context on exactly the PRs it failed to register for, and the
+    # merge queue wedges. So this job has NO path filters of any kind: it runs
+    # on EVERY pull_request event, on every PR, whatever it touches, and the
+    # only conditional is the event type (there is no PR title to check on a
+    # push). Title gating is a property of the PR, not of its diff, so there is
+    # no path this check could ever be scoped to anyway.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the PR title is a conventional commit
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # type(scope)?: subject — scope optional, bang for breaking changes,
+          # and the subject may not be empty.
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([^)]+\))?(!)?: .+'
+          echo "PR title: ${PR_TITLE}"
+          if ! grep -Eq "$pattern" <<<"$PR_TITLE"; then
+            echo "::error::The PR title must be a conventional commit: " \
+              "'type(optional scope)?(optional !): subject'. Allowed types: feat, fix, " \
+              "docs, style, refactor, perf, test, build, ci, chore. Example: " \
+              "'feat(worker): bound the reclaim sweep'."
+            exit 1
+          fi
+
+  migrations:
+    # The migration upgrade gate, in two legs, both running on EVERY
+    # pull_request event (the deadlock lesson above applies verbatim: a
+    # `paths:` filter here would make this check unmeetable on exactly the
+    # PRs that need it most).
+    #
+    # The shipped-migration incident: a bundled migration file was rewritten
+    # in place, and every deployment that had already applied it began logging
+    # migration-checksum-drift on its next migrate — the runtime drift guard
+    # (tests/test_migrations_released_frozen.py, taskq.migrate's ledger
+    # refusal) catches that at RUNTIME, on someone's database. CI must catch
+    # it at PR time instead. The rule is the ledger's own: NEW migration files
+    # are legal (fixes ship as new migrations); edits, renames and deletes of
+    # RELEASED files are forbidden.
+    #
+    # Leg 1 (freeze check): the touched files are diffed against the git
+    # merge-base and the released manifest
+    # (tests/data/released_migrations.sha256). Any modify/rename/delete of a
+    # file pinned at the merge base fails the PR; so does removing or
+    # rewriting a pin in the manifest itself (a rewritten pin is a rewritten
+    # migration wearing a diff the file check cannot see). A pin ADDED in the
+    # same PR as its new file is the normal release flow and stays legal.
+    #
+    # Leg 2 (upgrade path, the base→branch upgrade gate): when the PR's diff
+    # touches the migration tree or the manifest at all, a fresh Postgres 18
+    # database is migrated with the MERGE BASE's own code, and this branch's
+    # code then applies what is pending and must converge — nothing left
+    # pending, no checksum drift. This is the real upgrade path an existing
+    # deployment takes when it pulls the PR's commit.
+    #
+    # NO path filters on either job — see pr-title's deadlock note.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # The upgrade leg's database, created by the service container below.
+      # The base and branch legs share it: the branch leg upgrades what the
+      # base leg built.
+      TASKQ_PG_DSN: postgresql://postgres:postgres@localhost:5432/taskq_gate
+      # The PR's target branch. Empty on push events (no PR base); the freeze
+      # step below defaults it to main.
+      BASE_REF: ${{ github.base_ref }}
+    services:
+      # Same major the e2e lane pins (the system-e2e matrix covers 15-18); the
+      # upgrade path is exercised against the newest supported server.
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: taskq_gate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      # fetch-depth 0: the merge-base diff needs the base branch's history,
+      # which a shallow PR checkout does not provide (same reason as the
+      # coverage job).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-uv-env
+
+      - name: Freeze-check the migration tree against the merge base
+        id: freeze
+        run: |
+          set -euo pipefail
+          base_sha="$(git merge-base "origin/${BASE_REF:-main}" HEAD)"
+          echo "comparing the migration tree against merge base ${base_sha}"
+          git diff --name-status "$base_sha" HEAD -- src/taskq/migrations tests/data/released_migrations.sha256 > "$RUNNER_TEMP/migration-changes.txt"
+          if git cat-file -e "$base_sha:tests/data/released_migrations.sha256"; then
+            git show "$base_sha:tests/data/released_migrations.sha256" > "$RUNNER_TEMP/manifest-base.sha256"
+          else
+            : > "$RUNNER_TEMP/manifest-base.sha256"
+          fi
+          cat "$RUNNER_TEMP/migration-changes.txt"
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          changes = (temp / "migration-changes.txt").read_text(encoding="utf-8")
+
+          def parse_manifest(text: str) -> dict[str, str]:
+              pinned = {}
+              for raw in text.splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  digest, _, filename = line.partition("  ")
+                  if len(digest) != 64 or not filename:
+                      raise SystemExit(f"malformed manifest line: {raw!r}")
+                  pinned[filename] = digest
+              return pinned
+
+          base = parse_manifest((temp / "manifest-base.sha256").read_text(encoding="utf-8"))
+          manifest = Path("tests/data/released_migrations.sha256")
+          head = parse_manifest(manifest.read_text(encoding="utf-8") if manifest.exists() else "")
+
+          # A file is frozen if it was pinned BEFORE this PR (the base
+          # manifest). A pin added in the same PR as its new file is the
+          # normal release flow and stays legal; removing or rewriting a base
+          # pin is not.
+          released = set(base)
+
+          touched = False
+          failures = []
+          for line in changes.splitlines():
+              if not line.strip():
+                  continue
+              status, _, paths = line.partition("\t")
+              paths = paths.split("\t")
+              # Deleted paths and rename/copy sources and targets are all "the
+              # file moved"; a plain A/M carries one path after the status.
+              candidates = paths if status[0] in "DRC" else paths[-1:]
+              for path in candidates:
+                  if path == "tests/data/released_migrations.sha256":
+                      continue
+                  if os.path.basename(path) in released:
+                      failures.append(
+                          f"{status} {path}: a released migration file may not be "
+                          "modified, renamed or deleted; fix forward with a new migration"
+                      )
+                  else:
+                      touched = True
+          if changes.strip():
+              touched = True
+
+          for filename, digest in base.items():
+              if head.get(filename) != digest:
+                  failures.append(
+                      f"the manifest pin for {filename} (sha256 {digest}) was removed "
+                      "or changed; released pins are never edited"
+                  )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"touched={'true' if touched else 'false'}\n")
+          if failures:
+              for failure in failures:
+                  print(f"::error::{failure}")
+              sys.exit("released migration files were touched; see the ::error lines above")
+          print("freeze check: no released migration file was modified, renamed or deleted")
+          PY
+          # The upgrade leg needs the merge-base SHA again; persist it.
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+
+      - name: Migrate a base-version database to this branch's chain
+        if: steps.freeze.outputs.touched == 'true'
+        run: |
+          set -euo pipefail
+          workspace="$PWD"
+          # A second sync, and a deliberate exception to "the shared action is
+          # the only place CI builds an environment": the base worktree runs
+          # the MERGE BASE's code against the BASE lockfile, which no single
+          # environment can serve. It is still the sanctioned form --locked,
+          # and the branch leg below uses the environment the action built.
+          git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
+          cd "$RUNNER_TEMP/base"
+          uv sync --locked --all-extras --group dev
+          echo "--- leg 1: the merge base's chain builds the base-version database"
+          uv run --no-sync python - <<'PY'
+          import asyncio
+
+          import asyncpg
+
+          from taskq import migrate
+          from taskq.settings import TaskQSettings
+
+          async def main() -> None:
+              settings = TaskQSettings.load()
+              conn = await asyncpg.connect(str(settings.pg_dsn))
+              try:
+                  applied = await migrate.apply_pending(
+                      conn, schema=settings.schema_name, phase=None
+                  )
+                  last = applied[-1].key if applied else "none"
+                  print(f"base chain: applied {len(applied)} migrations (up to {last})")
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          PY
+          cd "$workspace"
+          echo "--- leg 2: this branch's chain applies what is pending, and must converge"
+          uv run --no-sync python - <<'PY'
+          import asyncio
+
+          import asyncpg
+
+          from taskq import migrate
+          from taskq.settings import TaskQSettings
+
+          async def main() -> None:
+              settings = TaskQSettings.load()
+              schema = settings.schema_name
+              conn = await asyncpg.connect(str(settings.pg_dsn))
+              try:
+                  await migrate.apply_pending(conn, schema=schema, phase=None)
+                  applied = await migrate.list_applied(conn, schema)
+                  discovered = migrate.discover()
+                  pending = [m.key for m in discovered if m.key not in applied]
+                  assert not pending, (
+                      "the upgrade did not converge: "
+                      f"{len(pending)} migration(s) still pending: {pending}"
+                  )
+                  # Convergence above is one-directional: it proves the branch
+                  # applies everything it ships, and is silent about ledger
+                  # entries the branch no longer ships. The freeze check cannot
+                  # see a released file that was never pinned in the manifest,
+                  # so a delete or rename of one would otherwise upgrade
+                  # "green" while fresh databases silently lost the schema the
+                  # migration created.
+                  vanished = sorted(applied - {m.key for m in discovered})
+                  assert not vanished, (
+                      "the upgrade dropped migration(s) this branch no longer "
+                      f"ships: {vanished}; a released migration file may not "
+                      "be deleted or renamed; fix forward with a new migration"
+                  )
+                  # Strict byte equality for every migration the ledger holds.
+                  # The runner's own drift check accepts a bundled published
+                  # variant as the ledger's checksum -- right at RUNTIME, wrong
+                  # HERE: a PR could rewrite a released file and bundle its old
+                  # bytes as a "variant", laundering the rewrite past the drift
+                  # check. This ledger was built by the merge base's own code,
+                  # so any difference from this branch's current bytes is a
+                  # rewritten released file, full stop.
+                  ledger = {
+                      r["version"]: r["checksum"]
+                      for r in await conn.fetch(
+                          f'SELECT version, checksum FROM "{schema}".schema_migrations'
+                      )
+                  }
+                  rewritten = [
+                      f"{m.key}: ledger {ledger[m.key][:12]} != file "
+                      f"{m.checksum(schema)[:12]}"
+                      for m in discovered
+                      if m.key in ledger and ledger[m.key] != m.checksum(schema)
+                  ]
+                  assert not rewritten, (
+                      "the upgrade rewrote released migration file(s); a "
+                      f"bundled variant does not bless a rewrite: {rewritten}"
+                  )
+                  drifts = await migrate.checksum_drifts(conn, schema=schema)
+                  assert not drifts, f"checksum drift after the upgrade: {drifts}"
+                  print(
+                      f"upgrade converged: {len(applied)} applied, 0 pending, "
+                      "0 checksum drift"
+                  )
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          PY
+
   build:
     runs-on: ubuntu-latest
     needs: [lint, typecheck, test, security]

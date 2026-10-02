@@ -1419,6 +1419,104 @@ async def _ensure_own_reservation_slots(
             )
 
 
+def _bootstrap_guards_and_registries(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]] | None,
+    _local_queue_seed: list[JobRow] | None,
+    _registry: ProviderRegistry | None,
+    rate_limit_registry: RateLimitRegistry | None,
+) -> tuple[ProviderRegistry, RateLimitRegistry]:
+    """``_main``'s pre-deps prologue: install the fork guard, run the
+    bootstrap-input guards, and assemble the DI + rate-limit registries.
+
+    Extracted verbatim from ``_main`` (single entry, single exit, purely
+    synchronous, no ``deps``, no events, no signal wiring): everything the
+    guards must reject runs before a worker row exists, and everything the
+    TaskGroup needs from the registries is resolved before
+    ``open_worker_deps`` opens. Returns the assembled ``(registry,
+    resolved_rl_registry)`` pair ``_main`` continues with.
+    """
+    # The fork guard goes in BEFORE any resource exists: every connection
+    # built after this point records this process as its owner, and a fork
+    # anywhere in the worker's lifetime is stamped for the loops to report.
+    # Idempotent, so an embedding that already installed it (TaskQ.open)
+    # keeps its original pin.
+    install_fork_guard()
+
+    if actor_registry is not None:
+        # Why: a mismapped entry (key != ref.name) surfaces deep in
+        # sync_actor_config as a raw CardinalityViolation ("ON CONFLICT DO
+        # UPDATE command cannot affect row a second time") when two refs
+        # share a .name. Dispatch looks actors up by registry key, so
+        # key == ref.name is the essential invariant; enforcing it here
+        # also makes duplicate names impossible (same name means same key,
+        # so the dict itself dedupes at construction).
+        mismatched = sorted(
+            (key, ref.name) for key, ref in actor_registry.items() if key != ref.name
+        )
+        if mismatched:
+            pairs = ", ".join(f"{key!r} -> {name!r}" for key, name in mismatched)
+            raise ValueError(
+                f"actor_registry keys must equal each ActorRef's name; mismatches: {pairs}"
+            )
+
+    if _local_queue_seed is not None and len(_local_queue_seed) > settings.max_concurrency:
+        # Why at the boundary, before any I/O: the seed loop below pushes
+        # onto local_queue (maxsize = max_concurrency) BEFORE the consumer
+        # TaskGroup exists, so the excess put would park bootstrap forever
+        # on a full queue with zero consumers running, a silent hang, not
+        # a slow start. Rejecting here fails before a worker row is
+        # registered or signal handlers are installed.
+        raise ValueError(
+            f"_local_queue_seed has {len(_local_queue_seed)} job(s) but "
+            f"max_concurrency is {settings.max_concurrency}: the seed is "
+            f"pushed onto local_queue (bounded at max_concurrency) before "
+            f"any consumer starts, so an oversized seed would park "
+            f"bootstrap forever. Seed at most max_concurrency jobs."
+        )
+
+    registry = _registry if _registry is not None else ProviderRegistry()
+    if not registry.has_provider(WorkerSettings):
+        registry.register_value(WorkerSettings, Scope.PROCESS, settings)
+
+    if not registry.has_provider(Clock):
+        registry.register_value(Clock, Scope.PROCESS, SystemClock())
+
+    resolved_rl_registry = _resolve_rl_registry(rate_limit_registry, registry)
+
+    # Actor-declared primitive instances (the primary registration path):
+    # collect every TokenBucket / SlidingWindow / ConcurrencyReservation
+    # declared on actors in this worker's actor_registry into the resolved
+    # registry BEFORE validate() runs. Conflict semantics are register()'s
+    # own (_same_config): identical config = debug-log no-op; same name
+    # with different config = ValueError at startup (fail fast). Actors
+    # decorated but absent from the mapping are NOT collected. The startup
+    # log counts DECLARATIONS (not distinct new registrations), the same
+    # instance declared on two actors logs rate_limit_count=2 but
+    # registers once (idempotent no-op).
+    if actor_registry is not None:
+        collected_rl_names: list[str] = []
+        collected_res_names: list[str] = []
+        for actor_ref in actor_registry.values():
+            for rl_entry in actor_ref.rate_limits:
+                if isinstance(rl_entry, TokenBucket | SlidingWindow):
+                    resolved_rl_registry.register(rl_entry)
+                    collected_rl_names.append(rl_entry.name)
+            for res_entry in actor_ref.reservations:
+                if isinstance(res_entry, ConcurrencyReservation):
+                    resolved_rl_registry.register(res_entry)
+                    collected_res_names.append(res_entry.name)
+        _startup_log.info(
+            "ratelimit-actor-primitives-registered",
+            rate_limit_count=len(collected_rl_names),
+            reservation_count=len(collected_res_names),
+            rate_limit_names=collected_rl_names,
+            reservation_names=collected_res_names,
+        )
+
+    return registry, resolved_rl_registry
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -1516,83 +1614,13 @@ async def _main(
         register_worker,
     )
 
-    # The fork guard goes in BEFORE any resource exists: every connection
-    # built after this point records this process as its owner, and a fork
-    # anywhere in the worker's lifetime is stamped for the loops to report.
-    # Idempotent, so an embedding that already installed it (TaskQ.open)
-    # keeps its original pin.
-    install_fork_guard()
-
-    if actor_registry is not None:
-        # Why: a mismapped entry (key != ref.name) surfaces deep in
-        # sync_actor_config as a raw CardinalityViolation ("ON CONFLICT DO
-        # UPDATE command cannot affect row a second time") when two refs
-        # share a .name. Dispatch looks actors up by registry key, so
-        # key == ref.name is the essential invariant; enforcing it here
-        # also makes duplicate names impossible (same name means same key,
-        # so the dict itself dedupes at construction).
-        mismatched = sorted(
-            (key, ref.name) for key, ref in actor_registry.items() if key != ref.name
-        )
-        if mismatched:
-            pairs = ", ".join(f"{key!r} -> {name!r}" for key, name in mismatched)
-            raise ValueError(
-                f"actor_registry keys must equal each ActorRef's name; mismatches: {pairs}"
-            )
-
-    if _local_queue_seed is not None and len(_local_queue_seed) > settings.max_concurrency:
-        # Why at the boundary, before any I/O: the seed loop below pushes
-        # onto local_queue (maxsize = max_concurrency) BEFORE the consumer
-        # TaskGroup exists, so the excess put would park bootstrap forever
-        # on a full queue with zero consumers running, a silent hang, not
-        # a slow start. Rejecting here fails before a worker row is
-        # registered or signal handlers are installed.
-        raise ValueError(
-            f"_local_queue_seed has {len(_local_queue_seed)} job(s) but "
-            f"max_concurrency is {settings.max_concurrency}: the seed is "
-            f"pushed onto local_queue (bounded at max_concurrency) before "
-            f"any consumer starts, so an oversized seed would park "
-            f"bootstrap forever. Seed at most max_concurrency jobs."
-        )
-
-    registry = _registry if _registry is not None else ProviderRegistry()
-    if not registry.has_provider(WorkerSettings):
-        registry.register_value(WorkerSettings, Scope.PROCESS, settings)
-
-    if not registry.has_provider(Clock):
-        registry.register_value(Clock, Scope.PROCESS, SystemClock())
-
-    resolved_rl_registry = _resolve_rl_registry(rate_limit_registry, registry)
-
-    # Actor-declared primitive instances (the primary registration path):
-    # collect every TokenBucket / SlidingWindow / ConcurrencyReservation
-    # declared on actors in this worker's actor_registry into the resolved
-    # registry BEFORE validate() runs. Conflict semantics are register()'s
-    # own (_same_config): identical config = debug-log no-op; same name
-    # with different config = ValueError at startup (fail fast). Actors
-    # decorated but absent from the mapping are NOT collected. The startup
-    # log counts DECLARATIONS (not distinct new registrations), the same
-    # instance declared on two actors logs rate_limit_count=2 but
-    # registers once (idempotent no-op).
-    if actor_registry is not None:
-        collected_rl_names: list[str] = []
-        collected_res_names: list[str] = []
-        for actor_ref in actor_registry.values():
-            for rl_entry in actor_ref.rate_limits:
-                if isinstance(rl_entry, TokenBucket | SlidingWindow):
-                    resolved_rl_registry.register(rl_entry)
-                    collected_rl_names.append(rl_entry.name)
-            for res_entry in actor_ref.reservations:
-                if isinstance(res_entry, ConcurrencyReservation):
-                    resolved_rl_registry.register(res_entry)
-                    collected_res_names.append(res_entry.name)
-        _startup_log.info(
-            "ratelimit-actor-primitives-registered",
-            rate_limit_count=len(collected_rl_names),
-            reservation_count=len(collected_res_names),
-            rate_limit_names=collected_rl_names,
-            reservation_names=collected_res_names,
-        )
+    registry, resolved_rl_registry = _bootstrap_guards_and_registries(
+        settings,
+        actor_registry,
+        _local_queue_seed,
+        _registry,
+        rate_limit_registry,
+    )
 
     scope_containers: dict[Scope, ProcessScope | ThreadScope | LoopScope] = {}
     resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type]  # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol, pyright cannot verify dict covariance across the Protocol boundary

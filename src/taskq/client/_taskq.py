@@ -83,6 +83,7 @@ from taskq.client._jobs import JobsClient
 from taskq.connections import (
     bounded_lock_budget_ms,
     lock_budget_command_timeout_secs,
+    lock_budget_pairs,
     statement_cache_kwargs,
 )
 from taskq.constants import (
@@ -227,16 +228,13 @@ def _resolve_default_schema_name() -> str:
 
 
 def _lock_budget_pairs(settings: "TaskQSettings") -> list[tuple[float, float]]:
-    """``(configured, shipped default)`` per lock-budget knob, the input
-    :func:`taskq.connections.lock_budget_command_timeout_secs` derives the
-    pool bound from. The defaults are read off the model's field metadata,
-    never restated."""
-    pairs: list[tuple[float, float]] = []
-    fields = type(settings).get_fields()
-    for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
-        _field_type, field_info = fields[field_name]
-        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
-    return pairs
+    """``(configured, shipped default)`` per enqueue lock-budget knob, the
+    input :func:`taskq.connections.lock_budget_command_timeout_secs` derives
+    the pool bound from. Delegates to
+    :func:`taskq.connections.lock_budget_pairs` (the one derivation both
+    pool families share); the enqueue field names are the only
+    family-specific part."""
+    return lock_budget_pairs(settings, _ENQUEUE_LOCK_BUDGET_FIELDS)
 
 
 def _client_pool_command_timeout_secs() -> float:

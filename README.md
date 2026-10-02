@@ -113,7 +113,8 @@ pip install "taskq-py[redis,fastapi,otel,prometheus]"
   suite, `docker-compose.yml`, and the bundled dev stack pin). No
   PG18-specific SQL exists in the bundled migrations; the floor is 15 because
   that is the oldest major the CI matrix exercises — older majors may work
-  but are untested and unsupported.
+  but are untested and unsupported. See
+  [Installation: prerequisites](docs/getting-started/installation.md#prerequisites).
 
 ### Bring up local infra
 

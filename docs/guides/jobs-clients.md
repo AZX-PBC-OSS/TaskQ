@@ -120,6 +120,61 @@ JobsClient(
 | `settings` | `TaskQSettings \| None` | `None` | Settings instance threaded through to `JobHandle` for features (e.g. Redis-backed progress fanout) that need config beyond the backend connection. |
 | `capacity_cache_ttl` | `float` | `5.0` (`DEFAULT_CAPACITY_CACHE_TTL`) | TTL in seconds of the per-actor `max_pending` capacity cache: how long a cached headroom reading is trusted before it is re-counted from the database. This is the TTL behind the "operator `max_pending` change takes effect fleet-wide within seconds" behavior. |
 
+### `invalidate_actor_capacity_cache()`
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+def invalidate_actor_capacity_cache(self) -> None
+```
+
+Drops the cached `actor_config.max_pending` snapshot immediately, so the next
+`enqueue()` re-counts headroom from the backend instead of waiting out the
+`capacity_cache_ttl`. Not needed in normal operation — staleness is bounded by
+the TTL — but it is the escape hatch for ops tooling (and tests) that just
+changed the table and cannot wait out the TTL, e.g. a config editor that wrote
+a new `max_pending` via `taskq actor-config set` and must see its next enqueue
+admit against the new cap immediately:
+
+```python
+import asyncio
+from datetime import UTC, datetime
+
+from pydantic import BaseModel
+
+from taskq import JobsClient, actor
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend
+
+
+class PingPayload(BaseModel):
+    n: int = 0
+
+
+@actor(max_pending=10)
+async def ping(payload: PingPayload) -> None:
+    print("ping", payload.n)
+
+
+async def main() -> None:
+    backend = InMemoryBackend(clock=FakeClock(start=datetime.now(UTC)))
+    client = JobsClient(backend)
+
+    handle = await client.enqueue(ping, PingPayload())
+    print(handle.job_id)
+
+    # The tool just rewrote a stored max_pending; drop the cached snapshot
+    # so the next enqueue re-counts headroom immediately instead of within
+    # capacity_cache_ttl (5s by default).
+    client.invalidate_actor_capacity_cache()
+    print("capacity snapshot dropped; next enqueue re-reads the backend")
+
+
+asyncio.run(main())
+```
+
+The same invalidation is available to any process holding a `JobsClient`;
+an operator `taskq actor-config set` on another pod needs no call from this
+one — its enqueues pick the change up within the TTL on their own.
+
 ### `backend` property
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
