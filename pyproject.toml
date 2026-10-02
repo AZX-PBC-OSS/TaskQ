@@ -42,8 +42,15 @@ dependencies = [
     # Rust-backed escape-parity byte scan for the NUL guard on the jsonb
     # write path (src/taskq/_json.py imports tors.contains_unescaped
     # directly). First-party: published by the same org (AZX PBC) as
-    # TaskQ, so it is a core dependency, not an extra. >=0.10.1 is the
-    # floor that ships contains_unescaped. Resolves from PyPI or the
+    # TaskQ, so it is a core dependency, not an extra. >=0.15.0 is the
+    # floor #545 pinned: the terminal-write adoption (utf8_byte_len,
+    # imported by src/taskq/backend/_terminal.py's result-size check)
+    # and the scrub_secrets redaction pre-pass were measured and pinned
+    # against 0.15.0. The APIs themselves are older — utf8_byte_len and
+    # contains_unescaped both shipped in 0.7.0 and scrub_secrets in
+    # 0.14.0 — so the floor is the measured-adoption rev, not the first
+    # release with the API; see docs/design/tors-adoption-map.md for
+    # the measured adoption verdicts. Resolves from PyPI or the
     # operator's index; contributors testing against the local tors
     # checkout install it from the source tree instead
     # (`uv pip install ../tors`) — do NOT point this requirement at a path.

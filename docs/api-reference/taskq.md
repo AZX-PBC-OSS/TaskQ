@@ -47,8 +47,11 @@ the stranded-jobs detector) — check the actor spelling and
     Unknown `TASKQ_*` environment variables are **ignored** by the
     settings loader (dotenvmodel loads only its known fields and logs no
     warning). A misspelled knob — `TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS` —
-    silently applies that knob's default instead of failing. Verify
-    spellings against the field descriptions on
+    silently applies that knob's default instead of failing. Run
+    [`taskq doctor`](../guides/cli.md#taskq-doctor), whose environment
+    finding family names every unknown `TASKQ_*` variable in the
+    environment (with the closest real setting name as a remedy hint);
+    verify spellings against the field descriptions on
     [`TaskQSettings`][taskq.settings.TaskQSettings] when a setting
     appears to have no effect.
 
