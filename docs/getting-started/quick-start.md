@@ -8,7 +8,10 @@ This guide walks from a fresh install to a running worker dispatching its first 
 
 - Python 3.12 or later
 - `uv` or `pip` for package management
-- Postgres 18 (the bundled Docker Compose pins the `postgres:18` image)
+- Postgres **15 minimum; 15–18 covered by CI** (the bundled Docker Compose pins
+  the `postgres:18` image for dev) — see
+  [Installation: prerequisites](installation.md#prerequisites) for the full
+  support matrix
 - Redis (optional; required only for real-time progress fanout and admin UI live updates)
 
 ---
@@ -215,12 +218,84 @@ See [Worker](../guides/workers.md) for pool sizing, heartbeat configuration, and
 
 ## Enqueue a job
 
-`JobsClient` is the public API for enqueuing jobs. It wraps a `Backend` instance. For demos and tests, use `InMemoryBackend`, which is in-process only and not persistent. For production enqueue from application code outside the worker, see [Client API](../guides/jobs-clients.md) for the production pattern.
+The `TaskQ` facade is the production entry point for enqueuing from application
+code (a FastAPI route, a script, anything outside a worker): it owns the
+Postgres pool, resolves the schema the way the worker does, and hands you
+enqueue-plus-wait in one object.
 
-**For tests and local demos:**
+**Production (real Postgres):**
+
+```python
+import asyncio
+
+import asyncpg
+from pydantic import BaseModel
+
+from taskq import TaskQ, actor
+from taskq.migrate import apply_pending_locked
+from taskq.settings import TaskQSettings
+
+
+class SendEmailPayload(BaseModel):
+    to: str
+    subject: str
+    body: str
+
+
+class SendEmailResult(BaseModel):
+    message_id: str
+
+
+# In a real application this lives in myapp/actors.py (the module the
+# worker's --actors flag resolves).
+@actor
+async def send_email(payload: SendEmailPayload) -> SendEmailResult:
+    return SendEmailResult(message_id="msg-123")
+
+
+async def main() -> None:
+    settings = TaskQSettings.load()
+
+    # First run on a fresh database: apply the schema migrations
+    # (`taskq migrate up` does the same from the CLI).
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        await apply_pending_locked(conn=conn, schema=str(settings.schema_name))
+    finally:
+        await conn.close()
+
+    async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
+        handle = await tq.enqueue(
+            send_email,
+            SendEmailPayload(to="user@example.com", subject="Hello", body="World"),
+        )
+        print(handle.job_id)  # UUID of the enqueued job
+        print(handle.was_existing)  # False for a fresh enqueue
+
+        # Nothing runs the job until a worker consumes it. Start the worker
+        # from the previous section and re-run to see the job complete;
+        # without a consumer, wait() times out with a bare TimeoutError.
+        try:
+            result = await handle.wait(timeout=10.0)
+            print(result.message_id)  # SendEmailResult.message_id
+        except TimeoutError:
+            print("no worker consumed the job within 10s")
+
+
+asyncio.run(main())
+```
+
+`handle.wait()` returns only once a consumer has run the job; see
+[Wait for a result](#wait-for-a-result) below for what it raises. For the
+full production wiring pattern — including a FastAPI application that shares
+the worker's pools via dependency injection — see
+[Client API](../guides/jobs-clients.md).
+
+**For tests and local demos (no infrastructure):** `JobsClient` over
+`InMemoryBackend` runs entirely in-process, no Postgres or Redis needed.
+It is not persistent and holds state in memory only — never for production:
 
 ```python no-exec — not executed: continues the user-local module the guide is building
-import asyncio
 from datetime import UTC, datetime
 from taskq import JobsClient
 from taskq.testing.in_memory import InMemoryBackend
@@ -241,11 +316,10 @@ async def demo() -> None:
     print(handle.was_existing)  # False for a fresh enqueue
 ```
 
-`InMemoryBackend` is for tests and demos only: it holds state in-process and does not persist across restarts.
-
-**In production application code** (e.g., a FastAPI route that enqueues a job):
-
-The production path goes through the worker's `open_worker_deps` context manager, which constructs the three asyncpg pools. `PostgresBackend` is built internally by the worker and is not constructible from a bare pool in standalone code. For a FastAPI application that shares the worker's pool, inject the `JobsClient` via FastAPI's dependency system. See [Client API](../guides/jobs-clients.md) for the full production wiring pattern.
+The production path never goes through `open_worker_deps` from application
+code: `PostgresBackend` is built internally by the worker and is not
+constructible from a bare pool in standalone code — the `TaskQ` facade above
+is the supported way to reach Postgres from a client process.
 
 ---
 
