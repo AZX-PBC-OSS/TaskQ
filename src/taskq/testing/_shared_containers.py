@@ -166,7 +166,7 @@ _PG_COMMAND = (
 
 # Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA, FLUSHDB, all
 # verified); pinned by tag for reproducibility.
-DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
+DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0"
 
 # Dragonfly sizes its memory requirement as proactor_threads x 0.25GiB and EXITS at
 # startup if host RAM doesn't cover it ("There are N threads, so X GiB are required.

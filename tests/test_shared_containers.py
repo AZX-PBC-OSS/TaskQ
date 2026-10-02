@@ -41,7 +41,7 @@ _NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
 # module under test on every overridden run. Under the default env this IS
 # ``postgres:18-alpine``, which is the value these tests pin.
 _PG_IMAGE = sc._PG_IMAGE
-_DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
+_DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0"
 _COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 
 
