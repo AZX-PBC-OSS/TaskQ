@@ -1,3 +1,4 @@
+-- TAMPER: proves the freeze gate bites
 -- TaskQ initial schema: jobs/dispatch core, archive tables, and rate-limit tables.
 -- The literal ""{schema}"" tokens are substituted at apply time by the migration runner.
 
