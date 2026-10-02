@@ -284,6 +284,39 @@ example one derived from a server's `Retry-After` header, is clamped to
 A malicious or malformed header (e.g. `Retry-After: 999999999`) cannot strand a job past the
 worker-wide ceiling. See [`WorkerSettings.max_retry_backoff`](workers.md) for that setting.
 
+### `JobRetryState`: the row projection behind classification
+
+Before classification, the failure path projects the job row into a
+`JobRetryState` (`taskq.retry`, re-exported from `taskq`) — the
+`NamedTuple` `decide_after_failure` consumes to reconstruct the effective
+policy and to feed your `retry_classifier` hook:
+
+```python
+from datetime import timedelta
+
+from taskq import JobRetryState
+
+# What the failure path projects from the job row before classification
+# (illustrative values; TaskQ constructs this from the row itself):
+state = JobRetryState(
+    attempt=2,  # 1-based; the hook receives this as its second argument
+    max_attempts=5,  # row-stored; authoritative over the @actor literal
+    retry_kind="transient",  # row-stored kind the policy is reconstructed from
+    schedule_to_close=None,  # observability only: the SQL deadline guard arbitrates the deadline
+    start_to_close=timedelta(seconds=30),  # reserved for per-attempt enforcement at the consumer
+)
+print(state.attempt, state.max_attempts, state.retry_kind)
+```
+
+Two fields are not classification inputs: `schedule_to_close` is carried for
+observability (the SQL deadline guard in `mark_failed_or_retry` is the single
+deadline arbiter — see [§6](#6-schedule_to_close-interaction)), and
+`start_to_close` is reserved for per-attempt timeout enforcement at the
+consumer level (`asyncio.wait_for`), not used by the classifier. The row's
+`max_attempts` and `retry_kind` are authoritative over the registered
+`@actor` literal: a row/registration mismatch is re-validated loudly rather
+than silently trusted.
+
 ---
 
 ## 6. `schedule_to_close` interaction
