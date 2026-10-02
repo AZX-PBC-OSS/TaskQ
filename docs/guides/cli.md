@@ -521,6 +521,16 @@ symptom is work that quietly does not happen. `doctor` names them together:
   once, so its cap is unreachable), and an actor cap above its queue's cap
   (the queue binds first, so raising the actor cap changes nothing).
 
+The report's **environment family** sits upstream of all of these: every
+`TASKQ_`-prefixed environment variable that matches no settings field is a
+**typo applying its intended setting's default silently** (the settings
+loader reads only the names it defines — see
+[configuration.md](configuration.md) for the full variable tables). Each
+finding names the offender, states the consequence, and offers the closest
+real setting name as the remedy hint (a typo is nearly always one character
+of drift). The wrong value was in force before any worker registered, so
+this family is checked before every stored-row condition in the report.
+
 The two stranded-jobs families are the same computation the leader's
 stranded-jobs sweep runs every minute, issued here on demand: `doctor` is
 the surface an operator reaches for mid-incident, and it cannot wait on a

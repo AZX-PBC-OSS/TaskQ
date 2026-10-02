@@ -28,6 +28,7 @@ import pytest
 from opentelemetry.metrics import CallbackOptions
 
 import taskq.obs._otel as otel_mod
+from taskq.testing.otel import attribute_str
 
 
 @pytest.fixture
@@ -67,7 +68,7 @@ def test_success_cache_reader_survives_concurrent_first_success(
 
     # Draining the open iterator must not raise - publication is a rebind.
     remaining = list(reader)
-    assert {dict(o.attributes or {})["sweep_name"] for o in remaining} <= {
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in remaining} <= {
         "scheduled_to_pending",
         "deadline_exceeded",
     }
@@ -88,7 +89,7 @@ def test_batch_size_cache_reader_survives_concurrent_first_write(
     otel_mod.update_sweep_batch_size_cache("deadline_exceeded", 25)
 
     remaining = list(reader)
-    assert {dict(o.attributes or {})["sweep_name"] for o in remaining} <= {
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in remaining} <= {
         "scheduled_to_pending",
         "deadline_exceeded",
     }
@@ -108,7 +109,7 @@ def test_batch_size_configured_cache_reader_survives_concurrent_first_write(
     otel_mod.record_sweep_batch_size_configured("deadline_exceeded", 100)
 
     remaining = list(reader)
-    assert {dict(o.attributes or {})["sweep_name"] for o in remaining} <= {
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in remaining} <= {
         "scheduled_to_pending",
         "deadline_exceeded",
     }

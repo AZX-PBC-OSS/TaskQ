@@ -24,6 +24,7 @@ from opentelemetry.util.types import AttributeValue
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.constants import schema_lock_name
+from taskq.testing.otel import attribute_str
 
 #: The closed set of sweep names the leader loops pass to the sweep
 #: emitters (grep-verified against every call site at write time).
@@ -90,7 +91,9 @@ def test_sweep_timeouts_dimensions_are_the_sweep_name_enum_only(
 
     points = _counter_points(enum_reader, "taskq.maintenance_leader.sweep_timeouts")
     assert {tuple(attrs) for attrs, _ in points} == {("sweep_name",)}
-    assert {attrs["sweep_name"] for attrs, _ in points} == set(_PRODUCTION_SWEEP_NAMES)
+    assert {attribute_str(attrs["sweep_name"]) for attrs, _ in points} == set(
+        _PRODUCTION_SWEEP_NAMES
+    )
 
 
 def test_lock_contention_dimensions_are_the_qualified_lock_names_only(
@@ -112,7 +115,7 @@ def test_lock_contention_dimensions_are_the_qualified_lock_names_only(
         for schema in schemas
         for purpose in _PRODUCTION_LOCK_PURPOSES
     }
-    assert {attrs["lock"] for attrs, _ in points} == expected
+    assert {attribute_str(attrs["lock"]) for attrs, _ in points} == expected
 
 
 def test_backlog_gauge_dimensions_are_the_status_enum_only() -> None:
@@ -194,7 +197,7 @@ def test_sweep_batch_size_gauge_dimensions_are_the_sweep_name_enum_only() -> Non
 
     assert {tuple(dict(o.attributes or {})) for o in observations} == {("sweep_name",)}
     assert all(o.value == 100 for o in observations)
-    assert {dict(o.attributes or {})["sweep_name"] for o in observations} == set(
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in observations} == set(
         _PRODUCTION_SWEEP_NAMES
     )
 
@@ -216,7 +219,7 @@ def test_sweep_batch_size_configured_gauge_dimensions_are_the_sweep_name_enum_on
 
     assert {tuple(dict(o.attributes or {})) for o in observations} == {("sweep_name",)}
     assert all(o.value == 100 for o in observations)
-    assert {dict(o.attributes or {})["sweep_name"] for o in observations} == set(
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in observations} == set(
         _PRODUCTION_SWEEP_NAMES
     )
 
@@ -234,7 +237,7 @@ def test_sweep_success_gauge_dimensions_are_the_sweep_name_enum_only(
     observations = list(otel_mod._observe_sweep_success(CallbackOptions()))  # pyright: ignore[reportPrivateUsage]  # Why: same callback-observation pattern as above.
 
     assert {tuple(dict(o.attributes or {})) for o in observations} == {("sweep_name",)}
-    assert {dict(o.attributes or {})["sweep_name"] for o in observations} == set(
+    assert {attribute_str(dict(o.attributes or {})["sweep_name"]) for o in observations} == set(
         _PRODUCTION_SWEEP_NAMES
     )
     # The observation payload is a wall-clock stamp, not an elapsed age:
@@ -288,7 +291,7 @@ def test_dispatch_failure_dimensions_are_queue_and_error_type_only(
 
     points = _counter_points(dispatch_failure_reader, "taskq.dispatch.failures")
     assert {frozenset(attrs) for attrs, _ in points} == {frozenset({"queue", "error_type"})}
-    assert {attrs["error_type"] for attrs, _ in points} == {
+    assert {attribute_str(attrs["error_type"]) for attrs, _ in points} == {
         "ConnectionResetError",
         "TimeoutError",
     }
@@ -390,7 +393,7 @@ def test_distinct_queues_beyond_the_cap_do_not_grow_series(
     for _attr, name in _JOB_SIDE_INSTRUMENTS:
         points = _series_attributes(job_reader, name)
         assert len(points) == 4, f"{name} minted {len(points)} series for 32 queues"
-        assert {attrs["queue"] for attrs in points} == {
+        assert {attribute_str(attrs["queue"]) for attrs in points} == {
             "queue_0",
             "queue_1",
             "queue_2",
@@ -411,7 +414,12 @@ def test_overflow_queues_aggregate_under_the_fixed_other_label(
         obs_mod.record_published_message("actor_0", f"queue_{i}")
 
     points = _series_attributes(job_reader, "messaging.client.published.messages")
-    assert {attrs["queue"] for attrs in points} == {"queue_0", "queue_1", "queue_2", "_other_"}
+    assert {attribute_str(attrs["queue"]) for attrs in points} == {
+        "queue_0",
+        "queue_1",
+        "queue_2",
+        "_other_",
+    }
     # Re-read the raw points for the aggregation assertion.
     data = job_reader.get_metrics_data()
     assert data is not None
@@ -439,7 +447,7 @@ def test_queues_within_the_cap_keep_their_real_names(
 
     for _attr, name in _JOB_SIDE_INSTRUMENTS:
         points = _series_attributes(job_reader, name)
-        assert {attrs["queue"] for attrs in points} == {"critical", "default"}
+        assert {attribute_str(attrs["queue"]) for attrs in points} == {"critical", "default"}
 
 
 # ── The cron consecutive-failures counter's label contract ──────────────
@@ -501,10 +509,12 @@ def test_cron_consecutive_failures_dimensions_are_the_actor_set_only(
 
     points = _counter_points(cron_reader, "taskq.cron.consecutive_failures")
     assert {tuple(attrs) for attrs, _ in points} == {("actor",)}
-    assert {attrs["actor"] for attrs, _ in points} == set(_CRON_FIRE_ACTORS)
+    assert {attribute_str(attrs["actor"]) for attrs, _ in points} == set(_CRON_FIRE_ACTORS)
     # The up-down balance nets on the one series every schedule of an
     # actor shares: +3 then -1 leaves 2 per actor.
-    assert {attrs["actor"]: value for attrs, value in points} == dict.fromkeys(_CRON_FIRE_ACTORS, 2)
+    assert {attribute_str(attrs["actor"]): value for attrs, value in points} == dict.fromkeys(
+        _CRON_FIRE_ACTORS, 2
+    )
 
 
 def test_cron_actor_label_cap_and_overflow_label_are_pinned() -> None:
@@ -538,7 +548,7 @@ def test_distinct_actors_beyond_the_cap_do_not_grow_series(
         f"32 distinct actors minted {len(points)} series; the cap must bound it at 4"
     )
     assert {tuple(attrs) for attrs, _ in points} == {("actor",)}
-    assert {attrs["actor"] for attrs, _ in points} == {
+    assert {attribute_str(attrs["actor"]) for attrs, _ in points} == {
         "dangling_actor_0",
         "dangling_actor_1",
         "dangling_actor_2",
@@ -561,7 +571,7 @@ def test_overflow_actors_aggregate_under_the_fixed_other_label(
         obs_mod.record_cron_failure(f"dangling_actor_{i}", 1)
 
     points = _counter_points(cron_reader, "taskq.cron.consecutive_failures")
-    by_actor = {attrs["actor"]: value for attrs, value in points}
+    by_actor = {attribute_str(attrs["actor"]): value for attrs, value in points}
     assert set(by_actor) == {
         "dangling_actor_0",
         "dangling_actor_1",

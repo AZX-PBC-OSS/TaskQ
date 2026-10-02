@@ -463,8 +463,8 @@ for tests and simulators.
 | `metadata` | `dict[str, object]` | Actor-level metadata. |
 | `unique_for` | `timedelta \| None` | Deduplication window. |
 | `unique_states` | `tuple[JobStatus, ...]` | Active statuses for dedup. |
-| `rate_limits` | `list` | Rate-limit bucket names or bucket/ref objects. |
-| `reservations` | `list` | Concurrency reservation names or reservation objects. |
+| `rate_limits` | `list[str \| KeyedRateLimitRef \| TokenBucket \| SlidingWindow] \| None` | Rate-limit bucket names, keyed refs, or bucket objects. |
+| `reservations` | `list[str \| KeyedReservationRef \| ConcurrencyReservation] \| None` | Concurrency reservation names, keyed refs, or reservation objects. |
 | `wants_ctx` | `bool` | Whether the handler declared a `JobContext` parameter. |
 | `is_sync` | `bool` | `True` when the handler is a plain `def` (not `async def`). Sync actors run via `asyncio.to_thread()`. |
 | `dependencies` | `dict[str, type[object]]` | DI parameter names mapped to their annotated types. |

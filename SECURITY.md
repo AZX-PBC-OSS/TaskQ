@@ -20,14 +20,20 @@ This policy covers the TaskQ Python package and its CI/CD pipeline. Vulnerabilit
 
 ## Network listeners
 
-TaskQ's optional TCP listeners are unauthenticated by design and are meant
-for the pod network: the health socket (`TASKQ_HEALTH_SOCKET`, plus the
-optional health port) serves three process gauges, and the worker's
-Prometheus scrape (`TASKQ_METRICS_PORT` with the `[prometheus]` extra)
-serves metric series naming actors, queues, and exception classes. Neither
-carries payloads or credentials, but neither authenticates its clients:
-bind them to a loopback or pod-network interface and do not expose them
-to untrusted networks.
+TaskQ's worker-side health transports are unauthenticated by design and are
+meant for the pod network: the health Unix socket
+(`TASKQ_HEALTH_SOCKET_PATH`, default `/tmp/taskq_health.sock`, plus the
+optional TCP listener `TASKQ_HEALTH_PORT`) serves three process gauges, and
+the worker's Prometheus scrape (`TASKQ_METRICS_PORT` with the
+`[prometheus]` extra) serves metric series naming actors, queues, and
+exception classes. Neither carries payloads or credentials, but neither
+authenticates its clients: bind them to a loopback or pod-network interface
+and do not expose them to untrusted networks.
+
+The admin UI's health and metrics endpoints are a different surface: they are
+served through the FastAPI application and are token-gated — in a non-dev
+environment the server refuses to boot unless `TASKQ_HEALTH_TOKEN` is set
+(or `TASKQ_HEALTH_REQUIRE_TOKEN=false` explicitly opts out).
 
 ## Disclosure
 
