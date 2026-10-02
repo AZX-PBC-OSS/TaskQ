@@ -104,21 +104,12 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
     # Call-time import: the [redis] extra is optional at the module level,
     # the same discipline every other construction site follows.
     from redis.asyncio import from_url
-    from redis.asyncio.retry import Retry
-    from redis.backoff import ExponentialBackoff
-    from redis.exceptions import ConnectionError as RedisConnectionError
-    from redis.exceptions import TimeoutError as RedisTimeoutError
 
+    # BISECT 647-DIAG: resilience kwargs temporarily removed — the factory
+    # must behave EXACTLY like main's bare from_url so CI can isolate which
+    # hunk breaks the review probe's cancel escalation. REVERT BEFORE MERGE.
     return from_url(
         url,
         decode_responses=decode_responses,
         connection_class=guarded_redis_connection_class(),
-        health_check_interval=HEALTH_CHECK_INTERVAL_SECS,
-        socket_keepalive=True,
-        socket_timeout=SOCKET_TIMEOUT_SECS,
-        retry=Retry(
-            ExponentialBackoff(cap=RETRY_BACKOFF_CAP_SECS, base=RETRY_BACKOFF_BASE_SECS),
-            retries=RETRY_RETRIES,
-        ),
-        retry_on_error=[RedisConnectionError, RedisTimeoutError],
     )

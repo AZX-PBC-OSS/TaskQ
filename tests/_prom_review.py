@@ -773,6 +773,11 @@ def _migrate_schema(pg_dsn: str, schema: str) -> None:
     assert result.returncode == 0, f"migration failed: {result.stderr}"
 
 
+# BISECT 647-DIAG: the last worker probe's ground truth, keyed by schema.
+# REVERT BEFORE MERGE.
+_PROBE_DIAG: dict[str, str] = {}
+
+
 def run_worker_probe(
     pg_dsn: str,
     schema: str,
@@ -828,6 +833,13 @@ def run_worker_probe(
     )
     assert result.returncode == 0, (
         f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+    )
+    # BISECT 647-DIAG: stash the probe's ground truth so a diagnostic test
+    # can dump it when the escalation series is absent. REVERT BEFORE MERGE.
+    _PROBE_DIAG[schema] = (
+        f"returncode={result.returncode}\n"
+        f"--- stdout tail ---\n{result.stdout[-3000:]}\n"
+        f"--- stderr tail ---\n{result.stderr[-2000:]}"
     )
     scrapes = {}
     for tag in ("LIVE", "FINAL"):
