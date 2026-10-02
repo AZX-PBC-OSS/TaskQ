@@ -58,13 +58,19 @@ def test_build_redis_client_decode_responses_passthrough() -> None:
     assert decoded_client.connection_pool.connection_kwargs["decode_responses"] is True
 
 
-def test_build_redis_client_sets_no_socket_timeout() -> None:
-    # Deliberate: every redis wait in TaskQ is bounded by an app-level
-    # wait_for; a global socket_timeout would change pubsub blocking-read
-    # semantics (PubSub.parse_response hands math.inf to read_response when
-    # block=True). The builder must not smuggle one in.
+def test_build_redis_client_pins_socket_timeout() -> None:
+    # A bound-pin, not an absence: redis-py 8.x's asyncio Connection already
+    # defaults socket_timeout to 5s (redis._defaults.DEFAULT_SOCKET_TIMEOUT),
+    # and the fail-closed surfaces' bounded wall depends on it — the rate
+    # limiter's with_pg_fallback wraps its redis call in NO app-level
+    # wait_for, so against a black-holed broker the socket timeout is the
+    # only bound per read. Pinning the value makes that bound structural
+    # instead of inherited (redis-py's asyncio default was None for years
+    # pre-8.0). Behavior is byte-identical today; pubsub blocking reads are
+    # unaffected either way (parse_response hands math.inf to read_response
+    # when block=True, overriding the socket timeout explicitly).
     kwargs = build_redis_client("redis://localhost:6379/0").connection_pool.connection_kwargs
-    assert "socket_timeout" not in kwargs
+    assert kwargs["socket_timeout"] == 5.0
 
 
 def test_build_redis_client_returns_fresh_retry_per_call() -> None:

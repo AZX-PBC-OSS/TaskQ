@@ -28,14 +28,26 @@ the resilience defaults over the fork-guard:
   re-subscribes (via redis-py's ``on_connect`` callback) instead of
   escaping the kill/idle-drop into the consumer.
 
-Deliberately NOT set here: ``socket_timeout``. Every redis wait in this
-codebase is bounded by an application-level ``asyncio.wait_for`` (the
-reload factory budget, the open/initialize budget, the close budget), and
-a global socket timeout would change pubsub blocking-read semantics —
-``PubSub.parse_response`` hands ``math.inf`` to ``read_response`` when
-``block=True`` and expects the socket to have no client-side timeout. The
-retry's ``TimeoutError`` member covers the bounded-wait surfaces without
-one.
+``socket_timeout`` IS pinned — to redis-py 8.x's own asyncio default
+(5s, ``redis._defaults.DEFAULT_SOCKET_TIMEOUT``). This is a
+bound-pin, not a change: a bare ``from_url`` already runs every
+command read under that 5s socket timeout today, and pubsub's
+blocking read is unaffected by it either way (``PubSub.parse_response``
+hands ``math.inf`` to ``read_response`` when ``block=True``,
+overriding the socket timeout explicitly). The pin exists because the
+bounded wall of the fail-closed surfaces DEPENDS on it: the rate
+limiter's ``with_pg_fallback`` wraps its redis call in NO
+application-level ``wait_for`` — against a black-holed broker (a
+peer that accepts TCP and never answers) the only bound on each read
+is the socket timeout, and the limiter's
+``RateLimitDependencyUnavailable`` fires only after that bound
+multiplies out (measured: 3 client retries ≈ 84s per acquire, times 3
+limiter attempts ≈ 252s — bounded, never infinite). redis-py's
+asyncio socket-timeout default was ``None`` for years before 8.0;
+within the ``redis>=8.0.1,<9`` range a future minor could revert it,
+which would turn that bounded 252s into an unbounded hang with the
+fail-closed classification never reached. Pinning the value makes the
+bound structural instead of inherited.
 
 These are defaults, not policy: caller-supplied clients (``redis_client=``,
 ``redis_client_factory=``/``WorkerConnections.redis_client_factory``, the
@@ -59,6 +71,16 @@ RETRY_RETRIES: int = 3
 RETRY_BACKOFF_CAP_SECS: float = 1.0
 RETRY_BACKOFF_BASE_SECS: float = 0.05
 
+SOCKET_TIMEOUT_SECS: float = 5.0
+"""Per-read socket timeout, pinned to redis-py 8.x's asyncio default.
+
+A bound-pin, not a restriction: a bare ``from_url`` already runs under
+this default today. It is stated explicitly so the fail-closed surfaces'
+bounded wall (see the module docstring) survives a redis-py minor that
+reverts the default to ``None``. Pubsub blocking reads override it with
+``math.inf`` — this value never bounds a blocked pubsub read.
+"""
+
 
 def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
     """Build the one redis client shape every TaskQ-internal surface uses.
@@ -66,10 +88,11 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
     ``redis.asyncio.from_url`` over *url* with the fork-guard connection
     class (a forked child's command write is refused before a byte reaches
     the inherited socket) plus the resilience defaults: health checks every
-    30s of idleness, TCP keepalive, and a 3-attempt exponential-backoff
-    retry for connection errors and socket timeouts. NO ``socket_timeout``
-    is set — see the module docstring for why (app-level bounds everywhere;
-    a global one would change pubsub blocking-read semantics).
+    30s of idleness, TCP keepalive, a 3-attempt exponential-backoff
+    retry for connection errors and socket timeouts, and a 5s
+    ``socket_timeout`` pinned to redis-py 8.x's asyncio default (a
+    bound-pin — see the module docstring for why the fail-closed wall
+    depends on it).
 
     A fresh ``Retry`` instance is built per call: ``Retry``/backoff objects
     carry per-attempt state and must never be shared between clients.
@@ -92,6 +115,7 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
         connection_class=guarded_redis_connection_class(),
         health_check_interval=HEALTH_CHECK_INTERVAL_SECS,
         socket_keepalive=True,
+        socket_timeout=SOCKET_TIMEOUT_SECS,
         retry=Retry(
             ExponentialBackoff(cap=RETRY_BACKOFF_CAP_SECS, base=RETRY_BACKOFF_BASE_SECS),
             retries=RETRY_RETRIES,
