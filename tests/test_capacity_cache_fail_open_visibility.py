@@ -30,7 +30,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.client._capacity import ActorCapacityCache
-from taskq.testing.otel import counter_data_points
+from taskq.testing.otel import attribute_str, counter_data_points
 
 _FAILURE_COUNTER = "taskq.backpressure.capacity_refresh_failures"
 
@@ -168,7 +168,7 @@ def test_counter_still_records_with_telemetry_disabled(
     otel_mod.record_capacity_refresh_failure(has_snapshot=True)
 
     points = counter_data_points(reader, _FAILURE_COUNTER)
-    assert {(p.attributes or {})["degraded"] for p in points} == {
+    assert {attribute_str((p.attributes or {})["degraded"]) for p in points} == {
         "no_snapshot",
         "stale_snapshot",
     }, f"both degradation modes must stay distinguishable with telemetry off, got {points}"
