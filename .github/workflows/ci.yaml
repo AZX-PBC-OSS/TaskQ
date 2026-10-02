@@ -768,10 +768,48 @@ jobs:
               try:
                   await migrate.apply_pending(conn, schema=schema, phase=None)
                   applied = await migrate.list_applied(conn, schema)
-                  pending = [m.key for m in migrate.discover() if m.key not in applied]
+                  discovered = migrate.discover()
+                  pending = [m.key for m in discovered if m.key not in applied]
                   assert not pending, (
                       "the upgrade did not converge: "
                       f"{len(pending)} migration(s) still pending: {pending}"
+                  )
+                  # Convergence above is one-directional: it proves the branch
+                  # applies everything it ships, and is silent about ledger
+                  # entries the branch no longer ships. The freeze check cannot
+                  # see a released file that was never pinned in the manifest,
+                  # so a delete or rename of one would otherwise upgrade
+                  # "green" while fresh databases silently lost the schema the
+                  # migration created.
+                  vanished = sorted(applied - {m.key for m in discovered})
+                  assert not vanished, (
+                      "the upgrade dropped migration(s) this branch no longer "
+                      f"ships: {vanished}; a released migration file may not "
+                      "be deleted or renamed; fix forward with a new migration"
+                  )
+                  # Strict byte equality for every migration the ledger holds.
+                  # The runner's own drift check accepts a bundled published
+                  # variant as the ledger's checksum -- right at RUNTIME, wrong
+                  # HERE: a PR could rewrite a released file and bundle its old
+                  # bytes as a "variant", laundering the rewrite past the drift
+                  # check. This ledger was built by the merge base's own code,
+                  # so any difference from this branch's current bytes is a
+                  # rewritten released file, full stop.
+                  ledger = {
+                      r["version"]: r["checksum"]
+                      for r in await conn.fetch(
+                          f'SELECT version, checksum FROM "{schema}".schema_migrations'
+                      )
+                  }
+                  rewritten = [
+                      f"{m.key}: ledger {ledger[m.key][:12]} != file "
+                      f"{m.checksum(schema)[:12]}"
+                      for m in discovered
+                      if m.key in ledger and ledger[m.key] != m.checksum(schema)
+                  ]
+                  assert not rewritten, (
+                      "the upgrade rewrote released migration file(s); a "
+                      f"bundled variant does not bless a rewrite: {rewritten}"
                   )
                   drifts = await migrate.checksum_drifts(conn, schema=schema)
                   assert not drifts, f"checksum drift after the upgrade: {drifts}"
