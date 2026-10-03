@@ -884,3 +884,8 @@ connection pressure of such a split.
 - [Observability: testing observability](observability.md#6-testing-observability): `setup_tracer`, `setup_meter`, trace-context propagation
 - [API Reference: Testing](../api-reference/testing.md): full `taskq.testing` API surface
 - [Workers](workers.md): worker lifecycle, `WorkerDeps`, maintenance leader
+- The fleet demo (`examples/fleet_demo/`): a runnable end-to-end tour on real
+  containers — enqueue → rate-limit denial → operator cancel → cron tick
+  budget → SIGTERM deploy → `taskq doctor` → `taskq insights` — run with
+  `uv run python -m examples.fleet_demo.run_demo`; its worker logs are the
+  proof for every guarantee this guide tests with fakes.

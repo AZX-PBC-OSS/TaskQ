@@ -1727,6 +1727,11 @@ asyncio.run(main())
     out with the job parked and nothing to claim it:
     `taskq worker --actors myapp.actors:registry --queues media`.
 
+This example is the spine of the fleet demo (`examples/fleet_demo/`; run with
+`uv run python -m examples.fleet_demo.run_demo`): it enqueues through the
+client, cancels through `taskq job cancel`, and reads the run back through
+`taskq insights` — on real containers, with a real worker subprocess.
+
 ---
 
 ## Idempotency example

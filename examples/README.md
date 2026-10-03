@@ -2,6 +2,16 @@
 
 A self-contained demo that exercises every TaskQ feature.
 
+Prefer a narrated tour of the engine's production behavior — rate-limit
+denials with Retry-After, operator cancels, cron tick budgets, SIGTERM
+deploys, `taskq doctor`, `taskq insights` —? Run the flagship fleet demo:
+
+```bash
+uv run python -m examples.fleet_demo.run_demo
+```
+
+See [the fleet demo README](fleet_demo/README.md) for the seven-act story.
+
 ## Quick Start
 
 ```bash
@@ -39,11 +49,14 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 
 | File | What it demonstrates |
 |---|---|
+| `actors/` | The toy actor fleet, organized by feature domain (one module per domain: basic, failure, ratelimit, chained, DI, batch, advanced, cron, progress, tags, sync, real-world). See the [actors package README](actors/README.md). |
+| `admin_app.py` | The admin UI as a **separate process** (the decoupled deployment shape from Deployment Shapes below). Run with `uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001` — the compose stack's `admin` service does exactly this; the sidecar then serves `/admin` on port 8001. |
 | `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python -m examples.client_script [--backfill N \| --cancel ID \| --list \| --realworld]` (module form: the script imports `examples.actors`, which needs the repo root on the import path). |
 | `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
 | `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup start examples/workgroup.toml` (or `taskq workgroup validate examples/workgroup.toml` to check the config without starting). Serves the DI-free actor subset — workgroup children are plain `taskq worker` subprocesses and cannot register DI providers. |
 | `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python -m examples.otel_setup` (requires `[otel]` extra). |
 | `fastapi_app/aad.py` | Azure managed-identity (Entra ID) deployment scaffold — AAD-authenticated worker and web app wired through `taskq[aad]` credential-provider factories, including the serve-mode lifespan ownership pattern. Run with `uv run python -m examples.fastapi_app.aad worker` or `... serve` (requires Azure resources; see the [Managed Identities guide](https://AZX-PBC-OSS.github.io/TaskQ/guides/managed-identities/)). |
+| `fastapi_app/` | Minimal FastAPI app (separate from this trigger UI) demonstrating enqueue + SSE job-event streaming + cancellation against the public client surface, with its own [README](fastapi_app/README.md). The compose stack serves it on port 8002. |
 
 ## Actor Table
 
