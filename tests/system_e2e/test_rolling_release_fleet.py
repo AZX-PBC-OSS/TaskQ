@@ -1126,12 +1126,31 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         )
 
         # ── the graceful half: SIGTERM a pod holding cap slots ────────
-        holder = await conn.fetchrow(
-            f"SELECT locked_by_worker::text AS wid, count(*)::int AS n "
-            f"FROM \"{schema}\".jobs WHERE status = 'running' "
-            f"AND queue = 'roll_capped' GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+        # The victim's selection is a STATE wait, not a moment: the
+        # saturation assert above proved a running capped row existed
+        # at ITS fetch, but the selection re-reads the durable rows one
+        # round trip later, and a body turnover in that gap (plus the
+        # backlog's re-claim cycle) makes a bare single-shot fetch a
+        # hope-timing red. The wait is a hang guard only - one claim
+        # cycle stretched the runners' 20x stall-band factor (the
+        # _PROBE_STALL_MARGIN arithmetic); a fleet whose capped queue
+        # stops running anything at all reds at the bound.
+        holder_deadline = time.monotonic() + _PROBE_STALL_MARGIN
+        holder = None
+        while time.monotonic() < holder_deadline:
+            holder = await conn.fetchrow(
+                f"SELECT locked_by_worker::text AS wid, count(*)::int AS n "
+                f"FROM \"{schema}\".jobs WHERE status = 'running' "
+                f"AND queue = 'roll_capped' GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+            )
+            if holder is not None and holder["wid"] is not None:
+                break
+            await asyncio.sleep(0.1)
+        assert holder is not None and holder["wid"] is not None, (
+            f"no pod ran a capped job within the {_PROBE_STALL_MARGIN:.0f}s "
+            f"selection hang guard (one claim cycle stretched) right after "
+            "the caps saturated - the capped queue stopped running"
         )
-        assert holder is not None and holder["wid"] is not None
         victim = next(name for name, wid in ids.items() if wid == holder["wid"])
         t_sig = time.monotonic()
         fleet[victim].proc.terminate()
@@ -1140,12 +1159,23 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         drained.add(victim)
         assert rc == 0, f"pod {victim} exited rc={rc}"
         await _assert_corpse_owns_nothing(conn, schema, ids[victim], f"graceful {victim}")
-        assert graceful_secs < _GRACE, (
-            f"graceful slot release took {graceful_secs:.2f}s, past the {_GRACE:.0f}s drain bound"
+        # The grace pin, the same derived shape as the sequential
+        # drains' (see that scenario for the doctrine): the seconds are
+        # read on THIS starved test process's clock, so the comparison
+        # budgets the operator grace PLUS the co-tenancy margin - and
+        # this comparison IS the bound (the tier's workers boot with
+        # the shutdown watchdog disabled; the harness's SIGKILL lands
+        # only at the graceful_stop timeout, past it).
+        assert graceful_secs < _GRACE + _PROBE_STALL_MARGIN, (
+            f"graceful slot release took {graceful_secs:.2f}s, past the "
+            f"{_GRACE:.0f}s termination grace plus the "
+            f"{_PROBE_STALL_MARGIN:.0f}s co-tenancy margin this process's "
+            "own observation is budgeted"
         )
         print(
             f"[s7] graceful cap release ({victim}, {holder['n']} capped rows): "
-            f"measured {graceful_secs:.2f}s vs bound {_GRACE:.0f}s"
+            f"measured {graceful_secs:.2f}s vs bound "
+            f"{_GRACE + _PROBE_STALL_MARGIN:.0f}s"
         )
 
         # ── the capacity-leak construct: SIGKILL a pod mid-job ────────
@@ -1175,8 +1205,19 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
                 "GROUP BY 1 ORDER BY 2 DESC LIMIT 1",
                 ids[victim],
             )
-            assert holder_row is not None
-            if holder_row["wid"] is not None:
+            # No in-loop assert: None is the state this loop EXISTS to
+            # wait through. At cap 1 the departed victim held the ONLY
+            # slot, so between its release and the next admitted claim
+            # (a denial backoff + a claim poll) the probe legitimately
+            # reads no holder - the CI red (run 37114445963) was the
+            # first probe landing in that ordinary window, reding a
+            # healthy fleet on a byte-identical assert that cap 2's
+            # second slot had masked on base. The probe re-checks the
+            # STATE each pass; the pin is the deadline plus the final
+            # assert below - a fleet that NEVER re-acquires (the
+            # genuine capacity-leak defect) reds there, inside the
+            # derived hang-guard bound.
+            if holder_row is not None and holder_row["wid"] is not None:
                 corpse = holder_row["wid"]
                 held = holder_row["n"]
                 break
