@@ -1056,7 +1056,8 @@ is still flushed to Postgres at the end of the job.
 
 Use `InMemoryBackend` and `FakeClock` to test actor behaviour in unit tests without Postgres.
 `InMemoryBackend` simulates the full enqueue-dispatch-execute cycle including `unique_for` dedup,
-singleton enforcement, and `max_pending` backpressure.
+singleton enforcement, and `max_pending` backpressure. Both come from the test-support
+namespace; see the [Testing API reference](../api-reference/testing.md) for its full surface.
 
 ```python
 import pytest

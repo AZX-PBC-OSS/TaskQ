@@ -171,7 +171,10 @@ archived_row = await backend.get_archived(job_id)
 `FakeClock` is a deterministic clock for tests. Its canonical home is
 `taskq.clock`, a production module that imports nothing from
 `taskq.testing`, so `import taskq` never pulls in the test-double backend.
-`taskq.testing.clock` re-exports it for backcompat.
+`taskq.testing.clock` re-exports it for backcompat. All four import paths
+(`taskq`, `taskq.clock`, `taskq.testing`, `taskq.testing.clock`) resolve to
+the same class object — see
+[FakeClock: one class, four import paths](../api-reference/testing.md#fakeclock-one-class-four-import-paths).
 
 ```python
 from datetime import UTC, datetime, timedelta
