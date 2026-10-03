@@ -21,7 +21,6 @@ from typing import Any
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._forkguard import guarded_redis_connection_class
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
 
@@ -45,13 +44,9 @@ async def get_redis_pool(
             "Redis not configured but a Redis-backed rate limiter "
             "(TokenBucket/SlidingWindow) was registered"
         )
-    import redis.asyncio as redis_async
+    from taskq._redis_client import build_redis_client
 
-    client = redis_async.from_url(
-        str(settings.redis_url),
-        decode_responses=False,  # Why: raw bytes are safer for binary payloads and cluster-safety across shards
-        connection_class=guarded_redis_connection_class(),
-    )
+    client = build_redis_client(str(settings.redis_url))
     try:
         yield client
     finally:
