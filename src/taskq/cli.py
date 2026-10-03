@@ -49,7 +49,7 @@ from taskq._doctor import (
     _StrandedActorJobs,  # pyright: ignore[reportPrivateUsage]  # Why: the stranded-jobs record is shared by the CLI's asyncpg fetcher (_list_stranded_pending_jobs) and the moved engine; cli.py is the surviving call path.
     _unknown_taskq_env_vars,  # pyright: ignore[reportPrivateUsage]  # Why: tests import this scan from taskq.cli and _doctor calls it here; the engine module only hosts the analysis.
 )
-from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
+from taskq._forkguard import guarded_connection_class
 from taskq._humantime import humanize_age
 from taskq._json import loads as json_loads
 from taskq.actor import ActorRef
@@ -2207,14 +2207,6 @@ def _ui_serve(
 
             redis_client: object | None = None
             if redis_url is not None:
-                try:
-                    import redis.asyncio as aioredis
-                except ImportError as exc:
-                    raise ImportError(
-                        "redis_url is configured but the [redis] extra is not installed. "
-                        "Install it with: pip install 'taskq-py[redis]'"
-                    ) from exc
-
                 if redis_factory is not None:
                     # Why bounded: same first-use factory discipline as the
                     # pool factory above, the worker's reload bounds its
@@ -2233,10 +2225,15 @@ def _ui_serve(
                             "fails loudly instead of parking forever."
                         ) from exc
                 else:
-                    client = aioredis.from_url(
-                        redis_url,
-                        connection_class=guarded_redis_connection_class(),
-                    )
+                    from taskq._redis_client import build_redis_client
+
+                    try:
+                        client = build_redis_client(redis_url)
+                    except ImportError as exc:
+                        raise ImportError(
+                            "redis_url is configured but the [redis] extra is not installed. "
+                            "Install it with: pip install 'taskq-py[redis]'"
+                        ) from exc
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded), a hung broker

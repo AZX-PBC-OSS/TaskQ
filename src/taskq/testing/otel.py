@@ -20,6 +20,7 @@ from opentelemetry.sdk.metrics.export import (
 )
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.util.types import AttributeValue
 from structlog._config import BoundLoggerLazyProxy
 
 import taskq.obs as obs_mod
@@ -445,3 +446,16 @@ def counter_data_points(reader: InMemoryMetricReader, name: str) -> list[NumberD
         if m.name == name:
             return [p for p in m.data.data_points if isinstance(p, NumberDataPoint)]
     return []
+
+
+def attribute_str(value: AttributeValue) -> str:
+    """Narrow an OTel attribute value to the ``str`` callers assert on.
+
+    OTel 1.45.0 widened ``AttributeValue`` with ``Sequence[AnyValue]`` and
+    ``Mapping[str, AnyValue]`` arms, which are unhashable, so pyright
+    (correctly) refuses set-membership on a raw attribute lookup. Every
+    value the metric suites mint is a ``str``; this says so at runtime
+    too, rather than a comprehension silently dropping a non-string.
+    """
+    assert isinstance(value, str), value
+    return value

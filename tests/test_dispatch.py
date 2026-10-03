@@ -23,6 +23,7 @@ from opentelemetry import trace
 import taskq.obs as obs_mod
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.testing.otel import (
+    attribute_str,
     collect_metrics,
     histogram_points,
     setup_meter,
@@ -454,7 +455,7 @@ async def test_consumed_counter_all_valid_outcomes(
 
     dps = counter_data_points(reader, "messaging.client.consumed.messages")
     assert len(dps) == 4
-    recorded = {dp.attributes.get("outcome") for dp in dps if dp.attributes is not None}
+    recorded = {attribute_str(dp.attributes["outcome"]) for dp in dps if dp.attributes is not None}
     assert recorded == {"succeeded", "failed", "cancelled", "scheduled"}
 
 

@@ -54,6 +54,7 @@ __all__ = [
     "bounded_lock_budget_ms",
     "connection_init_hook",
     "lock_budget_command_timeout_secs",
+    "lock_budget_pairs",
     "statement_cache_kwargs",
     "with_connection_init",
 ]
@@ -192,6 +193,28 @@ def lock_budget_command_timeout_secs(
         if configured_ms > default_ms:
             bound = max(bound, configured_ms / 1000.0 / _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE)
     return bound
+
+
+def lock_budget_pairs(
+    settings: TaskQSettings, field_names: Iterable[str]
+) -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per lock-budget knob named in
+    *field_names*, the input :func:`lock_budget_command_timeout_secs`
+    derives a TaskQ-built pool's per-query bound from.
+
+    *settings* is the loaded settings model the knobs are read from (the
+    client pool reads its enqueue knobs off ``TaskQSettings``; the
+    dispatcher pool reads the admission knobs off ``WorkerSettings``);
+    *field_names* lists that model's lock-budget field names, spelled once
+    by each caller so the derivation cannot drift onto a different knob.
+    The defaults are read off the model's field metadata, never restated.
+    """
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in field_names:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
 
 
 #: Bound on the pool-release path the retry guard's checkout owns: the
@@ -631,7 +654,21 @@ class WorkerConnections:
     redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; matches WorkerDeps.redis_client typing.
     """Redis client for progress fanout / rate limiting. Caller-owned."""
     redis_client_factory: RedisFactory | None = None
-    """Factory for the Redis client. TaskQ-owned."""
+    """Factory for the Redis client. TaskQ-owned.
+
+    The client a factory returns replaces the one TaskQ builds from
+    ``TASKQ_REDIS_URL`` — including its resilience defaults. TaskQ-built
+    clients set ``health_check_interval=30``, ``socket_keepalive=True``,
+    a 5s ``socket_timeout`` (pinned to redis-py 8.x's asyncio default —
+    the bound the fail-closed wall stands on), and a 1-attempt
+    exponential-backoff ``Retry`` (0.02s base, 0.1s cap — see
+    ``taskq._redis_client``'s ``RETRY_RETRIES`` for why one) with
+    ``retry_on_error=[ConnectionError, TimeoutError]`` (see
+    ``taskq._redis_client``). A factory-built
+    client must set these kwargs itself — without them an idle-closed
+    broker connection surfaces as a raw ``ConnectionError`` in the
+    progress-stream pubsub and as the limiter's fail-closed warning noise
+    (see ``docs/guides/managed-identities.md``)."""
 
     def __post_init__(self) -> None:
         """Reject concrete + factory for the same role (configuration error)."""

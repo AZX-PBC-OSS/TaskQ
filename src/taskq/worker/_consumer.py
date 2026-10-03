@@ -639,6 +639,224 @@ def _actor_exit_wait_budget(
     return max(0.0, min(remaining, settings.release_park_lease_cap))
 
 
+async def _acquire_rate_limits_or_route_denial(
+    *,
+    job: JobRow,
+    worker_id: UUID,
+    validated_payload: BaseModel | None,
+    payload_type: type[BaseModel],
+    rate_limit_registry: RateLimitRegistry | None,
+    rate_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None,
+    reservations: Sequence[str | KeyedReservationRef | ConcurrencyReservation] | None,
+    redis_client: "redis_async.Redis | None",
+    worker_pool: asyncpg.Pool | None,
+    clock: Clock,
+    settings: WorkerSettings | None,
+    deps: WorkerDeps | None,
+    backend: Backend,
+    consumer_span: trace.Span,
+    actor_config: ActorConfigLike,
+    error_reporter: ErrorReporter | None,
+    job_log: structlog.stdlib.BoundLogger,
+) -> tuple[list[AcquiredResource], BaseModel, AttemptOutcome | None]:
+    """``consume_one_job``'s pre-try rate-limit pre-flight, extracted verbatim.
+
+    Resolves the typed payload when the caller did not supply one (an
+    invalid payload must never acquire), then acquires the actor's
+    rate-limit resources on the bounded denial-retry budget. An acquire
+    denial or a limiter-store dependency failure is routed to its terminal
+    outcome here and returned as the third tuple element for the caller to
+    return; the acquisition itself returns the ``(acquired,
+    validated_payload, None)`` triple the try body continues with. The
+    returned payload is always resolved (the fallback above the acquire
+    runs unconditionally on a ``None`` input), so the second element is a
+    plain ``BaseModel``; *job_log* arrives already defaulted by the caller.
+    """
+    _rl_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] = (
+        rate_limits if rate_limits is not None else ()
+    )
+    _rl_reservations: Sequence[str | KeyedReservationRef | ConcurrencyReservation] = (
+        reservations if reservations is not None else ()
+    )
+    _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
+
+    # Resolve the typed model BEFORE rate-limit acquisition: an invalid payload must not
+    # acquire, and non-refundably burn, a rate-limit token for an actor
+    # body that can never run. acquire_for_actor then receives the validated
+    # BaseModel, so keyed refs either hit the registry's isinstance fast path
+    # (same model) or re-validate the model's dump, which carries the actor
+    # model's applied defaults/aliases, not the raw row dict. The wrapped
+    # PayloadValidationError propagates to the caller, exactly as it did
+    # from the in-try fallback and as non-dependency acquire-path errors
+    # still do (a wiring or programming defect must stay loud): callers
+    # (dispatch_one_job's outer except, the in-memory runner's catch) own
+    # the terminal write for pre-actor failures. A STORE-dependency failure
+    # is the exception, the acquire boundary below fails it closed as the
+    # limiter's own denial, because an infrastructure outage is not a job
+    # outcome either.
+    if validated_payload is None:
+        # The row's stored version rides the raise, not the helper's
+        # current-version default, so a row that predates a payload
+        # migration is distinguishable from a malformed caller payload.
+        validated_payload = validate_actor_payload(
+            payload_type,
+            job.payload,
+            job.actor,
+            payload_schema_ver=str(job.payload_schema_ver),
+        )
+
+    acquired: list[AcquiredResource] = []
+
+    if _needs_acquire and rate_limit_registry is not None:
+        try:
+            acquired = await _acquire_for_actor_with_denial_retry(
+                rate_limit_registry,
+                rate_limits=_rl_limits,
+                reservations=_rl_reservations,
+                job_id=job.id,
+                worker_id=worker_id,
+                payload=validated_payload,
+                redis_client=redis_client,
+                pg_pool=worker_pool,
+                clock=clock,
+                settings=settings,
+                job_log=job_log,
+            )
+        except ReservationUnavailable as e:
+            # The handler owns the outcome tri-state (a snooze, a
+            # deadline failure, a budget-exhaustion failure, or a noop
+            # when the job moved underneath us), its result is this
+            # dispatch's result, not a hardcoded reschedule. Routed
+            # through _run_terminal_path exactly as _dispatch_exception
+            # routes the in-actor denial for the same handler: the
+            # snooze write's infra failures surface as
+            # terminal-write-failed (never re-classified as the actor's
+            # failure by an outer generic catch), and the scheduled
+            # transition reaches Redis like every other requeue.
+            if e.source == "reservation":
+                handler_kwargs: dict[str, object] = {
+                    "awaiting_prefix": "reservation:",
+                    "outcome": "reservation_denied",
+                    "debug_event": "consume-reservation-denied-noop",
+                }
+            else:
+                handler_kwargs = {
+                    "awaiting_prefix": "rate_limit:",
+                    "outcome": "rate_limit_denied",
+                    "debug_event": "consume-rate-limit-denied-noop",
+                }
+            handler_kwargs["error_reporter"] = error_reporter
+            return (
+                [],
+                validated_payload,
+                await _run_terminal_path(
+                    job=job,
+                    worker_id=worker_id,
+                    progress_buffers=deps.progress_buffers if deps is not None else None,
+                    worker_pool=deps.worker_pool if deps is not None else worker_pool,
+                    settings=deps.settings if deps is not None else settings,
+                    redis_client=deps.redis_client if deps is not None else redis_client,
+                    disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                    job_log=job_log,
+                    handler=_handle_reservation_class_denied,
+                    handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
+                    handler_kwargs=handler_kwargs,
+                    status="scheduled",
+                    terminal=False,
+                    outcome="scheduled",
+                    job_exc=e,
+                ),
+            )
+        except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
+            # The limiter's store could not answer. This try block wraps
+            # ONLY the acquire composition, so a store-failure-family
+            # exception here has exactly one provenance, and one
+            # response: the limiter's own fail-closed denial, never the
+            # actor-failure accounting an escapee falls into (a retry
+            # attempt burnt and the store's error persisted as the job's
+            # error_class). The snooze write runs through the same
+            # _run_terminal_path as an ordinary denial, so its infra
+            # failures surface as terminal-write-failed and the row is
+            # reclaimed by lock-lease expiry.
+            #
+            # Distinguishability: the denial carries an awaiting
+            # annotation naming the unavailability and its cause
+            # (rate_limit:unavailable:<error_type>), the
+            # acquire_dependency_failures counter rises beside the
+            # denials counter (an operator scaling a bucket on denials
+            # alone would chase an outage with capacity), and the
+            # WARNING is window-gated, a sustained outage denies every
+            # rate-limited dispatch, and a warning per denial is a log
+            # flood, not a signal.
+            #
+            # Non-consuming: the denial is infra backpressure about a
+            # job whose actor never ran, so it rides mark_snoozed's
+            # 'unavailable' arm (attempt refunded, no terminal arm) ,
+            # never the budget-consuming bounded loop a saturation
+            # denial deliberately takes. The reason is passed here,
+            # explicitly: the store's unavailability is proven only at
+            # this synthesis site, never inferred downstream.
+            error_type = type(exc).__name__
+            record_ratelimit_acquire_dependency_failure(error_type)
+            now = monotonic()
+            last_warned = _dependency_failure_warned.get(error_type)
+            if last_warned is None or now - last_warned >= _DEPENDENCY_FAILURE_LOG_WINDOW_S:
+                _dependency_failure_warned[error_type] = now
+                job_log.warning(
+                    "rate-limit-dependency-failure",
+                    kind="rate_limit_dependency_failure",
+                    error_class=error_type,
+                    error_message=str(exc),
+                )
+            denial = ReservationUnavailable(
+                bucket_name=f"unavailable:{error_type}",
+                retry_after=DEFAULT_RESERVATION_BACKOFF,
+                source="rate_limit",
+            )
+            # Why a direct __cause__ assignment: the synthetic denial is
+            # constructed, not raised, so no except-context chains the
+            # store failure automatically, the chain is what the
+            # terminal-write infra log and any traceback reader see.
+            denial.__cause__ = exc
+            return (
+                [],
+                validated_payload,
+                await _run_terminal_path(
+                    job=job,
+                    worker_id=worker_id,
+                    progress_buffers=deps.progress_buffers if deps is not None else None,
+                    worker_pool=deps.worker_pool if deps is not None else worker_pool,
+                    settings=deps.settings if deps is not None else settings,
+                    redis_client=deps.redis_client if deps is not None else redis_client,
+                    disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                    job_log=job_log,
+                    handler=_handle_reservation_class_denied,
+                    handler_args=(
+                        backend,
+                        job,
+                        worker_id,
+                        denial,
+                        consumer_span,
+                        job_log,
+                        actor_config,
+                    ),
+                    handler_kwargs={
+                        "awaiting_prefix": "rate_limit:",
+                        "outcome": "rate_limit_denied",
+                        "debug_event": "consume-rate-limit-dependency-failure-noop",
+                        "error_reporter": error_reporter,
+                        "denial_reason": "unavailable",
+                    },
+                    status="scheduled",
+                    terminal=False,
+                    outcome="scheduled",
+                    job_exc=denial,
+                ),
+            )
+
+    return acquired, validated_payload, None
+
+
 async def consume_one_job(
     backend: Backend,
     job: JobRow,
@@ -745,179 +963,27 @@ async def consume_one_job(
     # refusal and the parent's job row is untouched by it.
     assert_own_process(f"worker job attempt (job {job.id})")
 
-    _rl_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] = (
-        rate_limits if rate_limits is not None else ()
+    acquired, validated_payload, denial_outcome = await _acquire_rate_limits_or_route_denial(
+        job=job,
+        worker_id=worker_id,
+        validated_payload=validated_payload,
+        payload_type=payload_type,
+        rate_limit_registry=rate_limit_registry,
+        rate_limits=rate_limits,
+        reservations=reservations,
+        redis_client=redis_client,
+        worker_pool=worker_pool,
+        clock=clock,
+        settings=settings,
+        deps=deps,
+        backend=backend,
+        consumer_span=consumer_span,
+        actor_config=actor_config,
+        error_reporter=error_reporter,
+        job_log=job_log,
     )
-    _rl_reservations: Sequence[str | KeyedReservationRef | ConcurrencyReservation] = (
-        reservations if reservations is not None else ()
-    )
-    _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
-
-    # Resolve the typed model BEFORE rate-limit acquisition: an invalid payload must not
-    # acquire, and non-refundably burn, a rate-limit token for an actor
-    # body that can never run. acquire_for_actor then receives the validated
-    # BaseModel, so keyed refs either hit the registry's isinstance fast path
-    # (same model) or re-validate the model's dump, which carries the actor
-    # model's applied defaults/aliases, not the raw row dict. The wrapped
-    # PayloadValidationError propagates to the caller, exactly as it did
-    # from the in-try fallback and as non-dependency acquire-path errors
-    # still do (a wiring or programming defect must stay loud): callers
-    # (dispatch_one_job's outer except, the in-memory runner's catch) own
-    # the terminal write for pre-actor failures. A STORE-dependency failure
-    # is the exception, the acquire boundary below fails it closed as the
-    # limiter's own denial, because an infrastructure outage is not a job
-    # outcome either.
-    if validated_payload is None:
-        # The row's stored version rides the raise, not the helper's
-        # current-version default, so a row that predates a payload
-        # migration is distinguishable from a malformed caller payload.
-        validated_payload = validate_actor_payload(
-            payload_type,
-            job.payload,
-            job.actor,
-            payload_schema_ver=str(job.payload_schema_ver),
-        )
-
-    acquired: list[AcquiredResource] = []
-
-    if _needs_acquire and rate_limit_registry is not None:
-        try:
-            acquired = await _acquire_for_actor_with_denial_retry(
-                rate_limit_registry,
-                rate_limits=_rl_limits,
-                reservations=_rl_reservations,
-                job_id=job.id,
-                worker_id=worker_id,
-                payload=validated_payload,
-                redis_client=redis_client,
-                pg_pool=worker_pool,
-                clock=clock,
-                settings=settings,
-                job_log=job_log,
-            )
-        except ReservationUnavailable as e:
-            # The handler owns the outcome tri-state (a snooze, a
-            # deadline failure, a budget-exhaustion failure, or a noop
-            # when the job moved underneath us), its result is this
-            # dispatch's result, not a hardcoded reschedule. Routed
-            # through _run_terminal_path exactly as _dispatch_exception
-            # routes the in-actor denial for the same handler: the
-            # snooze write's infra failures surface as
-            # terminal-write-failed (never re-classified as the actor's
-            # failure by an outer generic catch), and the scheduled
-            # transition reaches Redis like every other requeue.
-            if e.source == "reservation":
-                handler_kwargs: dict[str, object] = {
-                    "awaiting_prefix": "reservation:",
-                    "outcome": "reservation_denied",
-                    "debug_event": "consume-reservation-denied-noop",
-                }
-            else:
-                handler_kwargs = {
-                    "awaiting_prefix": "rate_limit:",
-                    "outcome": "rate_limit_denied",
-                    "debug_event": "consume-rate-limit-denied-noop",
-                }
-            handler_kwargs["error_reporter"] = error_reporter
-            return await _run_terminal_path(
-                job=job,
-                worker_id=worker_id,
-                progress_buffers=deps.progress_buffers if deps is not None else None,
-                worker_pool=deps.worker_pool if deps is not None else worker_pool,
-                settings=deps.settings if deps is not None else settings,
-                redis_client=deps.redis_client if deps is not None else redis_client,
-                disowned_jobs=deps.disowned_jobs if deps is not None else None,
-                job_log=job_log,
-                handler=_handle_reservation_class_denied,
-                handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
-                handler_kwargs=handler_kwargs,
-                status="scheduled",
-                terminal=False,
-                outcome="scheduled",
-                job_exc=e,
-            )
-        except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
-            # The limiter's store could not answer. This try block wraps
-            # ONLY the acquire composition, so a store-failure-family
-            # exception here has exactly one provenance, and one
-            # response: the limiter's own fail-closed denial, never the
-            # actor-failure accounting an escapee falls into (a retry
-            # attempt burnt and the store's error persisted as the job's
-            # error_class). The snooze write runs through the same
-            # _run_terminal_path as an ordinary denial, so its infra
-            # failures surface as terminal-write-failed and the row is
-            # reclaimed by lock-lease expiry.
-            #
-            # Distinguishability: the denial carries an awaiting
-            # annotation naming the unavailability and its cause
-            # (rate_limit:unavailable:<error_type>), the
-            # acquire_dependency_failures counter rises beside the
-            # denials counter (an operator scaling a bucket on denials
-            # alone would chase an outage with capacity), and the
-            # WARNING is window-gated, a sustained outage denies every
-            # rate-limited dispatch, and a warning per denial is a log
-            # flood, not a signal.
-            #
-            # Non-consuming: the denial is infra backpressure about a
-            # job whose actor never ran, so it rides mark_snoozed's
-            # 'unavailable' arm (attempt refunded, no terminal arm) ,
-            # never the budget-consuming bounded loop a saturation
-            # denial deliberately takes. The reason is passed here,
-            # explicitly: the store's unavailability is proven only at
-            # this synthesis site, never inferred downstream.
-            error_type = type(exc).__name__
-            record_ratelimit_acquire_dependency_failure(error_type)
-            now = monotonic()
-            last_warned = _dependency_failure_warned.get(error_type)
-            if last_warned is None or now - last_warned >= _DEPENDENCY_FAILURE_LOG_WINDOW_S:
-                _dependency_failure_warned[error_type] = now
-                job_log.warning(
-                    "rate-limit-dependency-failure",
-                    kind="rate_limit_dependency_failure",
-                    error_class=error_type,
-                    error_message=str(exc),
-                )
-            denial = ReservationUnavailable(
-                bucket_name=f"unavailable:{error_type}",
-                retry_after=DEFAULT_RESERVATION_BACKOFF,
-                source="rate_limit",
-            )
-            # Why a direct __cause__ assignment: the synthetic denial is
-            # constructed, not raised, so no except-context chains the
-            # store failure automatically, the chain is what the
-            # terminal-write infra log and any traceback reader see.
-            denial.__cause__ = exc
-            return await _run_terminal_path(
-                job=job,
-                worker_id=worker_id,
-                progress_buffers=deps.progress_buffers if deps is not None else None,
-                worker_pool=deps.worker_pool if deps is not None else worker_pool,
-                settings=deps.settings if deps is not None else settings,
-                redis_client=deps.redis_client if deps is not None else redis_client,
-                disowned_jobs=deps.disowned_jobs if deps is not None else None,
-                job_log=job_log,
-                handler=_handle_reservation_class_denied,
-                handler_args=(
-                    backend,
-                    job,
-                    worker_id,
-                    denial,
-                    consumer_span,
-                    job_log,
-                    actor_config,
-                ),
-                handler_kwargs={
-                    "awaiting_prefix": "rate_limit:",
-                    "outcome": "rate_limit_denied",
-                    "debug_event": "consume-rate-limit-dependency-failure-noop",
-                    "error_reporter": error_reporter,
-                    "denial_reason": "unavailable",
-                },
-                status="scheduled",
-                terminal=False,
-                outcome="scheduled",
-                job_exc=denial,
-            )
+    if denial_outcome is not None:
+        return denial_outcome
 
     # ── Buffer registration ────────────────────────────────────────────────
     _effective_pool = deps.worker_pool if deps is not None else worker_pool

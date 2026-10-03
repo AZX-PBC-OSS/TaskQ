@@ -30,7 +30,7 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
-from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
+from taskq._forkguard import guarded_connection_class
 from taskq.auth import credential_provider_of
 from taskq.connections import (
     ConnFactory,
@@ -38,6 +38,7 @@ from taskq.connections import (
     RedisFactory,
     WorkerConnections,
     lock_budget_command_timeout_secs,
+    lock_budget_pairs,
     statement_cache_kwargs,
 )
 from taskq.constants import wake_channel
@@ -161,14 +162,11 @@ different spelling (the same listing doctrine as
 def _admission_lock_budget_pairs(settings: WorkerSettings) -> list[tuple[float, float]]:
     """``(configured, shipped default)`` per admission lock budget, the
     input :func:`taskq.connections.lock_budget_command_timeout_secs`
-    derives the dispatcher pool's per-query bound from. The defaults are
-    read off the model's field metadata, never restated."""
-    pairs: list[tuple[float, float]] = []
-    fields = type(settings).get_fields()
-    for field_name in _ADMISSION_LOCK_BUDGET_FIELDS:
-        _field_type, field_info = fields[field_name]
-        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
-    return pairs
+    derives the dispatcher pool's per-query bound from. Delegates to
+    :func:`taskq.connections.lock_budget_pairs` (the one derivation both
+    pool families share); the admission field names are the only
+    family-specific part."""
+    return lock_budget_pairs(settings, _ADMISSION_LOCK_BUDGET_FIELDS)
 
 
 def _apply_keepalive(sock: socket.socket) -> None:
@@ -1035,13 +1033,11 @@ async def open_worker_deps(
                 ) from exc
             owns_redis = True
         elif settings.redis_url is not None:
-            import redis.asyncio as redis_async  # type: ignore[no-redef]  # Why: runtime import guarded by settings.redis_url; TYPE_CHECKING import is for annotations only
-
-            redis_client = redis_async.from_url(
-                str(settings.redis_url),
-                decode_responses=False,
-                connection_class=guarded_redis_connection_class(),
+            from taskq._redis_client import (
+                build_redis_client,  # Why: runtime import guarded by settings.redis_url; the [redis] extra is optional at module scope
             )
+
+            redis_client = build_redis_client(str(settings.redis_url))
             owns_redis = True
         deps.redis_client = redis_client
 

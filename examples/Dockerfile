@@ -18,7 +18,7 @@ FROM python:3.14-slim-trixie
 ENV UV_PYTHON_PREFERENCE=only-system \
     UV_PYTHON=3.14
 
-RUN pip install --no-cache-dir uv==0.12.17
+RUN pip install --no-cache-dir uv==0.12.21
 
 WORKDIR /app
 

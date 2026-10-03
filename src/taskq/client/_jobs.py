@@ -28,7 +28,6 @@ import structlog
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
-from taskq._forkguard import guarded_redis_connection_class
 from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER, validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_job_cursor
@@ -413,18 +412,15 @@ class JobsClient:
         ``[redis]`` extra is not installed.
         """
         if settings.redis_url is not None:
+            from taskq._redis_client import build_redis_client
+
             try:
-                import redis.asyncio as redis_async
+                client = build_redis_client(str(settings.redis_url))
             except ImportError as exc:
                 raise ImportError(
                     "redis_url is configured but the [redis] extra is not installed. "
                     "Install it with: pip install 'taskq-py[redis]'"
                 ) from exc
-            client = redis_async.from_url(
-                str(settings.redis_url),
-                decode_responses=False,
-                connection_class=guarded_redis_connection_class(),
-            )
 
             # Why not stack.enter_async_context(client): Redis.__aexit__
             # calls aclose() UNBOUNDED, a hung broker would wedge
