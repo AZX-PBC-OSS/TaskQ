@@ -160,10 +160,11 @@ else:
 
 
 __all__ = [
+    "RUN_TOKEN_ENV_VAR",
     "ActorRunnerCallable",
     "JobsApp",
     "ModulePgSchema",
-    "_create_worker",
+    "RedisContainerLike",
     "actor_runner",
     "backend_pair",
     "clean_jobs_app",
@@ -181,6 +182,7 @@ __all__ = [
     "redis_container",
     "redis_url",
     "redis_url_for",
+    "run_isolation_token",
     "worker_with_running_job",
 ]
 
