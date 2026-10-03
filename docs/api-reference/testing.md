@@ -11,7 +11,7 @@ from taskq.testing import FakeClock, InMemoryBackend
 
 The [Testing guide](../guides/testing.md) walks these tools in context; this
 page is the namespace index: every public name, the module that defines it,
-and the rendered reference for each module.
+and the rendered reference for the core surfaces.
 
 ## `FakeClock`: one class, four import paths
 
@@ -55,11 +55,27 @@ from the module that defines it:
 | `taskq.testing.spy` | `WarningSpy` |
 
 All 38 render under the package directive below. Three more surfaces are
-deliberately **not** in the package `__all__` and have their own sections:
+also **not** in the package `__all__` and have their own sections:
 the pytest fixtures (`taskq.testing.fixtures` — keeps `pytest`/`asyncpg` off
 the package import path), the OTel test utilities (`taskq.testing.otel` —
 requires the `[otel]` extra), and the asyncpg chaos tools
-(`taskq.testing.asyncpg_chaos`).
+(`taskq.testing.asyncpg_chaos`). The defining modules also carry public
+module-level helpers that are not re-exported through the package; those are
+indexed [below](#module-level-publics-outside-the-package-contract).
+
+### Module-level publics outside the package contract
+
+These names are public in their defining modules (most in the module's own
+`__all__`) but deliberately not re-exported from `taskq.testing` — import
+them from the defining module:
+
+| Home module | Names |
+|---|---|
+| `taskq.testing.in_memory` | `BACKEND_PROTOCOL_VERSION`, `PassthroughPayload`, `StubFn`, `decode_batch_cursor`, `decode_cursor`, `encode_batch_cursor`, `encode_cursor`, `wait_for_batch` |
+| `taskq.testing.assertions` | `plain_cli_output` (strip ANSI/collapse whitespace for CLI-output assertions), `wait_for_condition` (poll a predicate with test-failure semantics) |
+| `taskq.testing.jobs` | `enqueue_and_dispatch_memory` (enqueue + dispatch against an `InMemoryBackend`), `enqueue_and_dispatch_pg` (same against a PG backend) |
+| `taskq.testing.pg` | `ROW_VISIT_COUNTER_ROLE` (role the row-visit probe runs as), `RowVisitCounter`, `install_row_visit_counter`, `read_row_visits` |
+| `taskq.testing.settings` | `shorten_chaos_settings` (context manager: shorten heartbeat/lease timings for chaos tests) |
 
 ## Package surface (fakes, assertions, settings factories)
 
@@ -113,6 +129,13 @@ The module also exports three `autouse` pytest fixtures —
 `_otel_enabled_guard`, `_otel_gauge_cache_guard`, and
 `_logging_configured_guard` — that activate automatically for any test
 importing from it:
+
+!!! note
+    The module's `__all__` currently lags this surface: it omits the public
+    `attribute_str` and lists the private `_save_*` / `_*_guard` helpers
+    instead. Import paths are unaffected (`from taskq.testing.otel import
+    attribute_str` resolves); correcting `__all__` is a source change tracked
+    separately from this page.
 
 ::: taskq.testing.otel
     options:
