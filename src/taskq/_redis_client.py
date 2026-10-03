@@ -21,12 +21,15 @@ the resilience defaults over the fork-guard:
 - ``socket_keepalive=True`` — TCP keepalive probes hold the socket through
   stateful middleboxes and NAT gateways that silently reap idle TCP.
 - ``retry`` — :class:`~redis.asyncio.retry.Retry` with
-  :class:`~redis.backoff.ExponentialBackoff` (0.05s base, 1.0s cap, 3
-  attempts) and ``retry_on_error=[ConnectionError, TimeoutError]``. The
+  :class:`~redis.backoff.ExponentialBackoff` (0.02s base, 0.1s cap, 1
+  attempt) and ``retry_on_error=[ConnectionError, TimeoutError]``. The
   retry is inherited by EVERY connection the pool hands out — including a
   pubsub connection, whose blocked ``get_message`` read reconnects and
   re-subscribes (via redis-py's ``on_connect`` callback) instead of
-  escaping the kill/idle-drop into the consumer.
+  escaping the kill/idle-drop into the consumer. ONE attempt is the
+  doctrine (see ``RETRY_RETRIES``): the retry buys the reconnect, never
+  the outage — a multi-attempt budget measured starving the worker's
+  dispatcher tick on real CI runners (PR #647).
 
 ``socket_timeout`` IS pinned — to redis-py 8.x's own asyncio default
 (5s, ``redis._defaults.DEFAULT_SOCKET_TIMEOUT``). This is a
@@ -41,11 +44,13 @@ application-level ``wait_for`` — against a black-holed broker (a
 peer that accepts TCP and never answers) the only bound on each read
 is the socket timeout, and the limiter's
 ``RateLimitDependencyUnavailable`` fires only after that bound
-multiplies out (measured: 3 client retries ≈ 84s per acquire, times 3
-limiter attempts ≈ 252s — bounded, never infinite). redis-py's
+multiplies out (measured at the original 3-attempt retry: ≈ 84s per
+acquire; scaling the same measurement to the 1-attempt retry: ≈ 42s
+per acquire, ≈ 126s through the limiter's 3 attempts — bounded, never
+infinite). redis-py's
 asyncio socket-timeout default was ``None`` for years before 8.0;
 within the ``redis>=8.0.1,<9`` range a future minor could revert it,
-which would turn that bounded 252s into an unbounded hang with the
+which would turn that bounded ~126s into an unbounded hang with the
 fail-closed classification never reached. Pinning the value makes the
 bound structural instead of inherited.
 
@@ -65,11 +70,25 @@ from taskq._forkguard import guarded_redis_connection_class
 HEALTH_CHECK_INTERVAL_SECS: float = 30.0
 """Idle seconds before a TaskQ-built client health-checks a connection."""
 
-RETRY_RETRIES: int = 3
-"""Retry attempts for transient connection errors on TaskQ-built clients."""
+RETRY_RETRIES: int = 1
+"""Retry attempts for transient connection errors on TaskQ-built clients.
 
-RETRY_BACKOFF_CAP_SECS: float = 1.0
-RETRY_BACKOFF_BASE_SECS: float = 0.05
+ONE attempt, deliberately. The retry buys the RECONNECT — a command that
+consumed a dropped pooled connection gets exactly one fresh-connect
+attempt, which lands in milliseconds when the broker is alive — and never
+the OUTAGE: the fail-closed surfaces own that. The original draft's
+3-attempt/1.0s-cap budget was measured (PR #647's CI, 3/3 runs, both
+supported Pythons) starving the worker's dispatcher of its funded tick
+budget: the rate limiter's acquire runs inside the dispatcher's
+~4.5s funded tick, and a 3-attempt retry multiplies every dead-broker
+command to ~0.35s — the acquire alone consumed the tick, the claim rolled
+back with it, and the probe's cancel escalation never landed (zero
+cancellation phase transitions, zero abandonments). One cheap attempt
+keeps the reconnect contract (the e2e pooled-drop pin) while the outage
+degrades at the fail-closed surfaces' own budgets, not the client's."""
+
+RETRY_BACKOFF_CAP_SECS: float = 0.1
+RETRY_BACKOFF_BASE_SECS: float = 0.02
 
 SOCKET_TIMEOUT_SECS: float = 5.0
 """Per-read socket timeout, pinned to redis-py 8.x's asyncio default.
@@ -88,8 +107,9 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
     ``redis.asyncio.from_url`` over *url* with the fork-guard connection
     class (a forked child's command write is refused before a byte reaches
     the inherited socket) plus the resilience defaults: health checks every
-    30s of idleness, TCP keepalive, a 3-attempt exponential-backoff
-    retry for connection errors and socket timeouts, and a 5s
+    30s of idleness, TCP keepalive, a 1-attempt exponential-backoff
+    retry for connection errors and socket timeouts (see
+    ``RETRY_RETRIES`` for why one), and a 5s
     ``socket_timeout`` pinned to redis-py 8.x's asyncio default (a
     bound-pin — see the module docstring for why the fail-closed wall
     depends on it).

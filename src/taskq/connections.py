@@ -660,8 +660,9 @@ class WorkerConnections:
     ``TASKQ_REDIS_URL`` — including its resilience defaults. TaskQ-built
     clients set ``health_check_interval=30``, ``socket_keepalive=True``,
     a 5s ``socket_timeout`` (pinned to redis-py 8.x's asyncio default —
-    the bound the fail-closed wall stands on), and a 3-attempt
-    exponential-backoff ``Retry`` with
+    the bound the fail-closed wall stands on), and a 1-attempt
+    exponential-backoff ``Retry`` (0.02s base, 0.1s cap — see
+    ``taskq._redis_client``'s ``RETRY_RETRIES`` for why one) with
     ``retry_on_error=[ConnectionError, TimeoutError]`` (see
     ``taskq._redis_client``). A factory-built
     client must set these kwargs itself — without them an idle-closed

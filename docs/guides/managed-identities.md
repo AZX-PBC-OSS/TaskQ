@@ -145,7 +145,8 @@ automatically via the redis-py `CredentialProvider` adapter.
 > which sets `health_check_interval=30`, `socket_keepalive=True`, a 5s
 > `socket_timeout` (pinned to redis-py 8.x's asyncio default — the bound
 > the fail-closed wall stands on), and a
-> 3-attempt exponential-backoff `Retry` with
+> 1-attempt exponential-backoff `Retry` (0.02s base, 0.1s cap — the retry
+> buys the reconnect, never the outage) with
 > `retry_on_error=[ConnectionError, TimeoutError]`.
 > A factory-built or caller-supplied redis client skips that builder, so
 > `make_redis_client_factory` callers should pass the same kwargs in its
@@ -163,7 +164,7 @@ automatically via the redis-py `CredentialProvider` adapter.
 >     health_check_interval=30,
 >     socket_keepalive=True,
 >     socket_timeout=5,
->     retry=Retry(ExponentialBackoff(cap=1.0, base=0.05), retries=3),
+>     retry=Retry(ExponentialBackoff(cap=0.1, base=0.02), retries=1),
 >     retry_on_error=[ConnectionError, TimeoutError],
 > )
 > ```

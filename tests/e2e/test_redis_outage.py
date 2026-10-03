@@ -84,11 +84,12 @@ _RESTART_PROBE_TIMEOUT = 60.0
 _RECOVERY_TIMEOUT = 120.0
 
 # The pooled-drop recovery window: with the resilience defaults the token
-# acquisition reconnects inside the retry budget (backoff base 0.05s, cap
-# 1.0s, 3 attempts) and the job completes in one rate window. Without them
-# the acquisition fails closed (snoozed 5s) AND the dependency-failure
-# WARNING fires - the warning is the red/green discriminator, the window
-# is the operator-facing promise.
+# acquisition reconnects inside the retry budget (backoff base 0.02s, cap
+# 0.1s, 1 attempt - see taskq._redis_client.RETRY_RETRIES for why one) and
+# the job completes in one rate window. Without them the acquisition fails
+# closed (snoozed 5s) AND the dependency-failure WARNING fires - the
+# warning is the red/green discriminator, the window is the
+# operator-facing promise.
 _DROP_RECOVERY_WINDOW = 30.0
 
 

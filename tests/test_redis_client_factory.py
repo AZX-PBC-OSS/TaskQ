@@ -34,7 +34,10 @@ def test_build_redis_client_sets_resilience_kwargs() -> None:
 
     retry = kwargs["retry"]
     assert isinstance(retry, Retry)
-    assert retry.get_retries() == 3
+    # ONE attempt (see RETRY_RETRIES): the retry buys the reconnect, never
+    # the outage — a fatter budget measured starving the worker dispatcher's
+    # funded tick on real CI runners (PR #647).
+    assert retry.get_retries() == 1
     # `_backoff` is private but the only accessor redis-py exposes; pin the
     # class so a silent swap to NoBackoff (retry = immediate re-fire into a
     # dead broker) fails loudly.
