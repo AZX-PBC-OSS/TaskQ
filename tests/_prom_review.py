@@ -592,6 +592,29 @@ async def _run() -> None:
 
     async def _live_scrape_and_stop() -> None:
         await asyncio.sleep(window - 20)
+        # BISECT 647-DIAG: dump the abandonment pathology's PG ground truth
+        # at LIVE-scrape time. REVERT BEFORE MERGE.
+        try:
+            conn = await asyncpg.connect(PG_DSN)
+            try:
+                row = await conn.fetchrow(
+                    f'SELECT status, cancel_phase FROM "{_schema()}".jobs '
+                    "WHERE id = $1",
+                    str(_abandon_handle.job_id),
+                )
+                print(f"DIAG_ROW:{dict(row) if row else 'MISSING'}", flush=True)
+                by_status = await conn.fetch(
+                    f'SELECT status, count(*) AS n FROM "{_schema()}".jobs '
+                    "GROUP BY status ORDER BY status"
+                )
+                print(
+                    "DIAG_STATUS:" + str({r["status"]: r["n"] for r in by_status}),
+                    flush=True,
+                )
+            finally:
+                await conn.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"DIAG_ROW:FAILED:{type(exc).__name__}:{exc}", flush=True)
         await _dump("LIVE")
         await asyncio.sleep(19)
         os.kill(os.getpid(), signal.SIGTERM)
@@ -773,6 +796,11 @@ def _migrate_schema(pg_dsn: str, schema: str) -> None:
     assert result.returncode == 0, f"migration failed: {result.stderr}"
 
 
+# BISECT 647-DIAG: the last worker probe's ground truth, keyed by schema.
+# REVERT BEFORE MERGE.
+_PROBE_DIAG: dict[str, str] = {}
+
+
 def run_worker_probe(
     pg_dsn: str,
     schema: str,
@@ -828,6 +856,13 @@ def run_worker_probe(
     )
     assert result.returncode == 0, (
         f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+    )
+    # BISECT 647-DIAG: stash the probe's ground truth so a diagnostic test
+    # can dump it when the escalation series is absent. REVERT BEFORE MERGE.
+    _PROBE_DIAG[schema] = (
+        f"returncode={result.returncode}\n"
+        f"--- stdout tail ---\n{result.stdout[-6000:]}\n"
+        f"--- stderr tail ---\n{result.stderr[-8000:]}"
     )
     scrapes = {}
     for tag in ("LIVE", "FINAL"):

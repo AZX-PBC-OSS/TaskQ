@@ -654,7 +654,20 @@ class WorkerConnections:
     redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; matches WorkerDeps.redis_client typing.
     """Redis client for progress fanout / rate limiting. Caller-owned."""
     redis_client_factory: RedisFactory | None = None
-    """Factory for the Redis client. TaskQ-owned."""
+    """Factory for the Redis client. TaskQ-owned.
+
+    The client a factory returns replaces the one TaskQ builds from
+    ``TASKQ_REDIS_URL`` — including its resilience defaults. TaskQ-built
+    clients set ``health_check_interval=30``, ``socket_keepalive=True``,
+    a 5s ``socket_timeout`` (pinned to redis-py 8.x's asyncio default —
+    the bound the fail-closed wall stands on), and a 3-attempt
+    exponential-backoff ``Retry`` with
+    ``retry_on_error=[ConnectionError, TimeoutError]`` (see
+    ``taskq._redis_client``). A factory-built
+    client must set these kwargs itself — without them an idle-closed
+    broker connection surfaces as a raw ``ConnectionError`` in the
+    progress-stream pubsub and as the limiter's fail-closed warning noise
+    (see ``docs/guides/managed-identities.md``)."""
 
     def __post_init__(self) -> None:
         """Reject concrete + factory for the same role (configuration error)."""
