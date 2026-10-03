@@ -10,7 +10,7 @@ FROM python:3.13-slim-trixie
 # bundled pip vendors known-vulnerable copies — see the pip removal below).
 ENV UV_PYTHON_PREFERENCE=only-system
 
-RUN pip install --no-cache-dir uv==0.12.17
+RUN pip install --no-cache-dir uv==0.12.21
 
 WORKDIR /app
 

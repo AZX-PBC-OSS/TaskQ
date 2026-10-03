@@ -218,7 +218,7 @@ system packages and no base-image rebuild needed.
 > ```dockerfile
 > FROM taskq-worker        # this repo's Dockerfile, as built by CI
 > USER root
-> COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /usr/local/bin/uv
+> COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /usr/local/bin/uv
 > RUN UV_CACHE_DIR=/tmp/uv-cache uv pip install --python /app/.venv/bin/python "taskq-py[saml]"
 > USER taskq
 > COPY myapp/ myapp/
