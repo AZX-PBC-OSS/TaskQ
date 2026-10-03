@@ -93,8 +93,21 @@ _TAG = "sys-s7"
 _PODS = ["w0", "w1", "w2", "w3", "w4"]
 _QUEUES = "system_e2e,roll_capped"
 
-#: The queue-cap fleet pin: the capped queue admits 2 fleet-wide.
-_QUEUE_CAP = 2
+#: The queue-cap fleet pin: the capped queue admits 1 fleet-wide.
+#:
+#: Why 1, not 2: the drain scenarios' exercise proof is the durable
+#: evidence that the cap was actually admitted through, and a cap of 1
+#: makes that evidence DETERMINISTIC - saturation is any single capped
+#: claim, so the proof cannot miss it by runner speed or sampler
+#: cadence. At 2 the proof needed two capped claims to coincide inside
+#: a 2s body, a throughput property the loaded CI runner voided (CI run
+#: 37092146919 attempt 1: ``peak.capped_queue`` = 1 across a whole
+#: 13-minute scenario - "the queue cap was never exercised - the
+#: sampler pins are vacuous" - on a fleet that was serving fine). The
+#: never-exceed pins keep (sharpen, in fact) their teeth at 1: any
+#: over-admission above one concurrent capped job is a breach, sampled
+#: from durable rows for the whole scenario.
+_QUEUE_CAP = 1
 
 #: The per-worker dispatch cap (the harness's TASKQ_MAX_CONCURRENCY).
 _WORKER_CAP = 4
@@ -263,31 +276,33 @@ class CapSampler:
     * the worker cap: a pod never runs more than its max_concurrency.
 
     The sampler also records each cap's PEAK. The peaks are diagnostics
-    and, on ONE surface, an exercise pin - the two surfaces are not
-    symmetric:
+    only, on BOTH surfaces - the exercise proof lives elsewhere, and
+    neither surface's peak is pinned:
 
     * the JOBS surface is durable: a running row lives for its body's
-      whole duration, so even the sparse ticks of a starved test
-      process catch it. ``peak.capped_queue >= _QUEUE_CAP`` is pinned
-      in the drain scenarios as the exercise proof - the DB-level
-      evidence that the cap was actually admitted through (measured
-      under load: 2 on the very run whose slot-surface peak read 1);
+      whole duration, but a PEAK over ticks still needs a tick to land
+      inside a running window, and the starved test process's sparse
+      ticks cannot promise one - at the retired cap of 2 the loaded CI
+      runner read ``peak.capped_queue`` = 1 across a whole 13-minute
+      scenario (run 37092146919, attempt 1) while the fleet served
+      fine. The exercise proof is therefore a DETERMINISTIC durable
+      poll instead (``_assert_queue_cap_exercised``): the cap is 1
+      fleet-wide, so any single capped claim saturates it, and the poll
+      waits out the slowest sanctioned runner for that claim before the
+      first SIGTERM - the evidence that the cap was actually admitted
+      through, which is what keeps the never-exceed checks below from
+      being vacuous for the scenario that follows;
     * the SLOTS surface is transient: a slot flips free at every
       claim/release turnover and the lease predicate excludes the
       renewal gaps, so a 100 ms tick witnesses a LOWER BOUND of the
       true peak and, under runner load, the sparse ticks land in the
       turnover gaps - observed ``peak.slots:...:roll_capped`` = 1 >= 2
       on a loaded box while CI stayed green on the same sha: the
-      sampler caught a gap, not a cap defect. That slot-bucket peak is
-      therefore recorded but NEVER pinned - its intent (the cap was
-      exercised, the hard pin is not vacuous) is subsumed by the
-      durable jobs-surface pin above, because a capped-queue job's body
-      runs only inside an acquired slot (the post-claim
-      ``acquire_for_actor`` is the admission authority, the release
-      rides the body's finally), so two durable running rows ARE two
-      slots simultaneously held; the cap-churn scenario's wait-until DB
-      polls re-prove the exercise under churn and its corpse-slot
-      checks query ``reservation_slots`` directly.
+      sampler caught a gap, not a cap defect. Recorded, never pinned -
+      the cap's enforcement teeth are the never-exceed checks, which a
+      slot over-hold trips on any tick, and the cap-churn scenario's
+      wait-until DB polls re-prove the exercise under churn and its
+      corpse-slot checks query ``reservation_slots`` directly.
 
     The never-exceed checks keep their teeth: a sample ABOVE the bound
     is still a violation, and no weather can hide one.
@@ -327,9 +342,20 @@ class CapSampler:
                 self._record(f"slots:{bucket}", row["held"], _QUEUE_CAP)
             elif bucket.startswith("roll-tenant:"):
                 self._record(f"slots:{bucket}", row["held"], 1)
-        # DAMPED: the job surface, at the full fleet's derived bounds.
+        # DAMPED: the job surface, at the fleet's claim width. This
+        # surface counts CLAIMED rows, and a claim the cap then DENIES
+        # stays 'running' while its denial-retry loop re-probes (up to
+        # the ~0.8s local budget, per _acquire_for_actor_with_denial_
+        # retry), so the surface legitimately reads ABOVE the queue
+        # cap's admitted count - observed 6 running capped rows at a
+        # cap of 1 (1 admitted + 5 denied re-probers, steady across a
+        # 2s sample span). Its honest ceiling is therefore the claim
+        # width - every consumer of every pod holding one queued claim
+        # - and the CAP's own teeth live on the SLOTS surface above
+        # (a denier holds no slot; an over-admission holds cap+1) plus
+        # the exercise proof's slot receipt.
         capped = [r for r in rows if r["queue"] == "roll_capped"]
-        self._record("capped_queue", len(capped), len(_PODS) * _QUEUE_CAP, rows)
+        self._record("capped_queue", len(capped), len(_PODS) * _WORKER_CAP, rows)
         per_tenant: dict[str, int] = {}
         for row in rows:
             if row["actor"] == "sys_keyed":
@@ -487,6 +513,84 @@ async def _fill_fleet(
     )
 
 
+#: The cap-exercise cohort: three capped bodies, each outlasting the
+#: claim-observation window, so once a claim lands the durable running
+#: row's dwell is the poll's to miss, never the fleet's to make.
+_CAP_EXERCISE_COHORT = 3
+_CAP_EXERCISE_BODY_S = 3.0
+
+#: The exercise poll's bound, arithmetic in-code, sized for the slowest
+#: sanctioned runner: the enqueue wake's claim cycle (one poll floor)
+#: stretched by the runners' 20x stall-band factor (the factor
+#: _PROBE_STALL_MARGIN derives) plus one cohort body - the dwell the
+#: poll must land a round trip inside once the claim lands. The failure
+#: mode it reds is "the capped queue never admitted anything through
+#: its cap" - a never, which no finite stretch tolerates; a claim that
+#: HAPPENED cannot be hidden by any runner speed at this bound.
+_CAP_EXERCISE_BOUND = _POLL_FLOOR * _PROBE_STRETCH + _CAP_EXERCISE_BODY_S
+
+
+async def _assert_queue_cap_exercised(
+    conn: asyncpg.Connection, schema: str, sys_client: TaskQ
+) -> None:
+    """Prove the queue cap's admission path exercised, deterministically.
+
+    The cap is 1 fleet-wide, so ANY durable running row on the capped
+    queue IS a saturated cap: the exercise needs one claim, not a
+    throughput coincidence. The retired shape pinned
+    ``sampler.peak.capped_queue >= _QUEUE_CAP`` - a peak over 100ms
+    ticks from this (starved) test process, which at cap 2 needed two
+    capped claims to coincide inside a 2s body and read 1 on the loaded
+    CI runner across a whole 13-minute scenario (run 37092146919,
+    attempt 1): the exercise is a throughput property there, voided by
+    runner weather on a fleet that was serving fine. A dedicated cohort
+    is enqueued HERE so the backlog is live at poll time regardless of
+    what the fill's own capped work already finished, and the poll
+    waits out the slowest sanctioned runner.
+
+    The claim must ALSO show its RECEIPT: a live-held slot row on the
+    cap's own bucket, observed in the same poll pass. The running row
+    alone cannot distinguish an admission from a claim the cap denied
+    and is still re-probing (denied claims sit 'running' too); the slot
+    row is the cap machinery's own write, so requiring both in one pass
+    proves the admission went THROUGH the cap - and a revert that
+    un-registers the reservation (no slot rows ever exist) reds here,
+    while a revert that neuters the admission (rows wide open) reds the
+    sampler's slot never-exceed. With this proof taken before the first
+    SIGTERM, those never-exceed pins are non-vacuous for the whole
+    scenario that follows.
+    """
+    for _ in range(_CAP_EXERCISE_COHORT):
+        await sys_client.enqueue(sys_capped, SysPayload(sleep=_CAP_EXERCISE_BODY_S), tags=[_TAG])
+    deadline = time.monotonic() + _CAP_EXERCISE_BOUND
+    running = -1
+    held = -1
+    while time.monotonic() < deadline:
+        row = await conn.fetchrow(
+            f'SELECT (SELECT count(*)::int FROM "{schema}".jobs '
+            "WHERE status = 'running' AND queue = 'roll_capped') AS running, "
+            f'(SELECT count(*)::int FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = 'taskq:global:queue:roll_capped' "
+            "AND job_id IS NOT NULL "
+            "AND lease_expires_at >= statement_timestamp()) AS held"
+        )
+        assert row is not None
+        running = row["running"]
+        held = row["held"]
+        if running >= _QUEUE_CAP and held >= _QUEUE_CAP:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"the queue cap was never exercised within {_CAP_EXERCISE_BOUND:.0f}s - the poll "
+        f"requires a durable running row on the capped queue (last observed {running}, "
+        f"cap {_QUEUE_CAP}) WITH a live-held slot on the cap's bucket as the admission's "
+        f"receipt (last observed {held}): the claim cycle is one poll floor stretched "
+        f"{_PROBE_STRETCH:.0f}x plus one body, so a never here means the capped queue's "
+        f"admission machinery is dead or unregistered and the sampler's never-exceed "
+        f"pins would be vacuous"
+    )
+
+
 # ── Scenario 1: sequential drains ────────────────────────────────────────
 
 
@@ -523,6 +627,13 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     try:
         ids = await _worker_ids(conn, schema, fleet)
         await _fill_fleet(conn, schema, sys_client, want_running=10)
+        # The cap-exercise proof, taken while the fleet is at full
+        # strength: with the cap at 1, one durable capped claim
+        # saturates it, and the bounded poll (arithmetic in-code) waits
+        # out the slowest sanctioned runner for that claim. Everything
+        # the sampler's never-exceed pins check for the rest of the
+        # scenario is thereby proven non-vacuous.
+        await _assert_queue_cap_exercised(conn, schema, sys_client)
 
         for name in _PODS[:-1]:
             # The mid-drain probe wave (uncapped queue: the probe must
@@ -600,15 +711,12 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
         )
         await assert_effects_balance(conn, schema, _TAG)
         await sampler.stop_and_report("sequential drains")
-        assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
-            "the queue cap was never exercised - the sampler pins are vacuous"
-        )
-        # The slots-surface twin is deliberately NOT pinned: its peak is
-        # diagnostic only (the CapSampler docstring carries the doctrine
-        # - a 100ms instantaneous max misses the slot turnover gaps
-        # under load and read `1 >= 2` on a healthy fleet), and its
-        # intent - the cap was exercised, the never-exceed pin is not
-        # vacuous - is subsumed by the durable jobs-surface pin above.
+        # The exercise proof ran BEFORE the first SIGTERM (the
+        # deterministic durable poll, _assert_queue_cap_exercised); the
+        # peaks stay for the record - neither surface's peak is pinned,
+        # a 100ms tick's max cannot promise it landed inside a running
+        # window, and the CapSampler docstring carries the doctrine.
+        print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
         for label, measured, bound in measurements:
             print(f"[s7] {label}: measured {measured:.2f}s vs bound {bound:.0f}s")
     finally:
@@ -643,6 +751,12 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
     try:
         ids = await _worker_ids(conn, schema, fleet)
         await _fill_fleet(conn, schema, sys_client, want_running=10)
+        # The cap-exercise proof, taken while the fleet is at full
+        # strength (the deterministic durable poll; see the sequential
+        # scenario's call for the doctrine). Everything the sampler's
+        # never-exceed pins check for the rest of the scenario is
+        # thereby proven non-vacuous.
+        await _assert_queue_cap_exercised(conn, schema, sys_client)
 
         # Pair 1: both SIGTERMs land back to back; both drains run
         # concurrently.
@@ -726,12 +840,11 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
 
         await assert_effects_balance(conn, schema, _TAG)
         await sampler.stop_and_report("overlapping pairs")
-        assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
-            "the queue cap was never exercised - the sampler pins are vacuous"
-        )
-        # The slots-surface twin is deliberately NOT pinned - the
-        # sequential-drains scenario and the CapSampler docstring carry
-        # the doctrine.
+        # The exercise proof ran BEFORE the first SIGTERM (the
+        # deterministic durable poll, _assert_queue_cap_exercised); the
+        # peaks stay for the record - neither surface's peak is pinned
+        # (the CapSampler docstring carries the doctrine).
+        print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
     finally:
         await sampler.close()
         for name in _PODS:
@@ -878,8 +991,8 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
     try:
         ids = await _worker_ids(conn, schema, fleet)
 
-        # Saturate BOTH cap families: the queue cap's two slots and one
-        # keyed slot, all with a backlog behind them.
+        # Saturate BOTH cap families: the queue cap's single slot and
+        # one keyed slot, all with a backlog behind them.
         for _ in range(6):
             await sys_client.enqueue(sys_capped, SysPayload(sleep=30.0), tags=[_TAG])
         for _ in range(4):
