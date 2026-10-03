@@ -1270,7 +1270,7 @@ async def test_token_bucket_refill() -> None:
     assert r.allowed
 ```
 
-`FakeClock` is importable from `taskq.testing.clock`. `clock.advance(delta)` moves the clock forward without sleeping. Backward steps are safe; the implementation clamps elapsed time to zero.
+`FakeClock` is importable from `taskq.testing.clock`. `clock.advance(delta)` moves the clock forward without sleeping. Backward steps are safe; the implementation clamps elapsed time to zero. `taskq.testing.clock` and the canonical home `taskq.clock` re-export the same class object — see [Testing API reference](../api-reference/testing.md#fakeclock-one-class-four-import-paths).
 
 For sliding window tests:
 

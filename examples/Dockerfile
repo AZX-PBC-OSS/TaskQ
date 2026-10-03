@@ -1,16 +1,24 @@
 # Example image for the TaskQ quickstart / compose stack (examples/docker-compose.yml).
 #
-# Base pinned to the same 3.13/trixie pair the production Dockerfile uses;
-# uv pinned to the repo's validated 0.12.x line (pyproject required-version is
-# >=0.12.7,<0.13), so the sync below cannot run on an unvetted uv release.
-FROM python:3.13-slim-trixie
+# Base is the 3.14/trixie canary — one interpreter ahead of the production
+# Dockerfile's 3.13/trixie pair, so the example stack exercises the next
+# Python before production adopts it; uv pinned to the repo's validated
+# 0.12.x line (pyproject required-version is >=0.12.7,<0.13), so the sync
+# below cannot run on an unvetted uv release.
+FROM python:3.14-slim-trixie
 
 # UV_PYTHON_PREFERENCE=only-system: build the venv on THIS image's
 # interpreter instead of letting uv download a managed CPython (whose
 # bundled pip vendors known-vulnerable copies — see the pip removal below).
-ENV UV_PYTHON_PREFERENCE=only-system
+# UV_PYTHON=3.14 outranks the repo's .python-version dev pin (3.13) that
+# `COPY . /app` ships into the build context: without it uv demands the
+# 3.13 interpreter, finds none in this 3.14 image, and the sync dies (the
+# same request governs the compose files' `uv run --no-sync` at container
+# start, so the env var has to live here, in the image).
+ENV UV_PYTHON_PREFERENCE=only-system \
+    UV_PYTHON=3.14
 
-RUN pip install --no-cache-dir uv==0.12.17
+RUN pip install --no-cache-dir uv==0.12.21
 
 WORKDIR /app
 

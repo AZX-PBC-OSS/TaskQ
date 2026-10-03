@@ -29,12 +29,7 @@ import taskq.obs._structlog as structlog_mod
 
 __all__ = [
     "ListSpanExporter",
-    "_logging_configured_guard",
-    "_otel_enabled_guard",
-    "_otel_gauge_cache_guard",
-    "_save_logging_configured",
-    "_save_otel_enabled",
-    "_unpin_cached_loggers",
+    "attribute_str",
     "collect_metrics",
     "counter_data_points",
     "counter_value",
@@ -176,11 +171,6 @@ def setup_meter(
     return reader
 
 
-def _save_otel_enabled() -> bool:
-    """Snapshot ``obs._otel._otel_enabled`` for later restoration."""
-    return otel_mod._otel_enabled  # type: ignore[reportPrivateUsage]  # Why: testing utility snapshots private module flag for restoration.
-
-
 def restore_otel_enabled(saved: bool) -> None:
     """Restore ``obs._otel._otel_enabled`` to a previously saved value."""
     otel_mod._otel_enabled = saved  # type: ignore[reportPrivateUsage]  # Why: testing utility restores private module flag from snapshot.
@@ -289,11 +279,6 @@ def _otel_gauge_cache_guard() -> Generator[None, None, None]:  # pyright: ignore
         yield
     finally:
         reset_otel_gauge_caches()
-
-
-def _save_logging_configured() -> bool:
-    """Snapshot ``obs._structlog._logging_configured`` for later restoration."""
-    return structlog_mod._logging_configured  # type: ignore[reportPrivateUsage]  # Why: testing utility snapshots private module flag for restoration.
 
 
 def restore_logging_configured(saved: bool) -> None:

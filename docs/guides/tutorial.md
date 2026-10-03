@@ -573,6 +573,8 @@ See [Progress](progress.md) and [Cancellation](cancellation.md).
 
 Test the digest system without Postgres or Redis using `InMemoryBackend` and
 `FakeClock`. Register stubs, enqueue jobs, call `run_until_drained()`, assert.
+The full test-support surface is indexed in the
+[Testing API reference](../api-reference/testing.md).
 
 ```python no-exec — not executed: continues the user-local module the guide is building
 # tests/test_digest.py
