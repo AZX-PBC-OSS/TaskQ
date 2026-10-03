@@ -96,7 +96,8 @@ The fixtures are not re-exported from `taskq.testing.__init__` (importing
 render from their defining module. The module defines 17 fixtures (sync via
 `pytest.fixture`, async via `pytest_asyncio.fixture`) plus the
 `run_isolation_token` helper and `RUN_TOKEN_ENV_VAR` used to isolate
-per-run/per-worker database and schema names:
+per-run/per-worker database and schema names, and the `RedisContainerLike`
+protocol that `redis_url_for` reads a running (or killable) container as:
 
 ::: taskq.testing.fixtures
 
@@ -130,12 +131,9 @@ The module also exports three `autouse` pytest fixtures —
 `_logging_configured_guard` — that activate automatically for any test
 importing from it:
 
-!!! note
-    The module's `__all__` currently lags this surface: it omits the public
-    `attribute_str` and lists the private `_save_*` / `_*_guard` helpers
-    instead. Import paths are unaffected (`from taskq.testing.otel import
-    attribute_str` resolves); correcting `__all__` is a source change tracked
-    separately from this page.
+`__all__` on the module is exactly that public surface: the autouse guards
+are deliberately left private (the test conftest imports them directly, not
+through the contract).
 
 ::: taskq.testing.otel
     options:
