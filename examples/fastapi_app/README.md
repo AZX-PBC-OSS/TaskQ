@@ -16,8 +16,13 @@ stuck `pending` (module form: the worker imports `examples.actors`, which
 needs the repo root on the import path):
 
 ```bash
-uv run python -m examples.worker
+TASKQ_QUEUES=examples uv run python -m examples.worker
 ```
+
+`TASKQ_QUEUES=examples` matters: the worker otherwise consumes the
+`default` queue only, and the `process_item` actor is registered on the
+`examples` queue — without it the demo still hangs with jobs stuck
+`pending`.
 
 ## Environment Variables
 
