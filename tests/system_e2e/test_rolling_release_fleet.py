@@ -685,9 +685,17 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     The grace pin below is derived the same way: the drain's seconds
     are read on THIS starved test process's clock (the SIGTERM ->
     graceful-stop round trip), so the comparison budgets the operator
-    grace PLUS the same co-tenancy margin; the grace's own teeth are
-    the state assert beside it - a drain that overruns the configured
-    grace is SIGKILLed and exits non-zero, which the rc == 0 pin reds.
+    grace PLUS the same co-tenancy margin. The comparison IS the bound:
+    this tier's workers boot with the in-worker shutdown watchdog
+    DISABLED (the harness's TASKQ_WATCHDOG_ENABLED=false - at this
+    cadence it cannot arm: watchdog_loop_lag_budget 30 + heartbeat 0.5
+    must be < lock_lease 8, a settings-validation error), so a drain
+    that overruns the configured grace is NOT force-exited by the
+    worker (drilled: a 25s wind-down body held w0's drain at 28.22s,
+    188% of the 15s grace, and the pod exited rc=0). The harness's
+    graceful_stop SIGKILLs only at its own timeout (_GRACE + 30), so
+    the rc == 0 pin reds a grace-overrun only past THAT window; inside
+    it, this comparison is the only bound the scenario has.
     """
     conn = sys_ledger
     schema = module_pg_schema.schema_name
@@ -745,15 +753,23 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             # (measured 12.19s against the bare 15s grace under a mere
             # 4-hog load - 81% of a bound that never budgeted the
             # observer). So the comparison budgets the grace PLUS that
-            # margin; the grace's own teeth stay with the state assert
-            # above: past the grace the pod is SIGKILLed and exits
-            # non-zero, reding rc == 0.
+            # margin - and this comparison IS the bound, not slack on a
+            # state assert beside it: the tier's workers boot with the
+            # shutdown watchdog disabled (the harness's cadence cannot
+            # arm it, see the scenario docstring), so a drain overrunning
+            # the grace exits rc=0, and only the harness's SIGKILL at
+            # graceful_stop's own timeout (_GRACE + 30) turns an overrun
+            # into a non-zero rc. Drilled: 25s wind-down body, drain
+            # 28.22s, rc=0, only this pin could have red.
             assert drain_secs < _GRACE + _PROBE_STALL_MARGIN, (
                 f"pod {name}'s drain ran {drain_secs:.2f}s, past its "
                 f"{_GRACE:.0f}s termination grace plus the "
                 f"{_PROBE_STALL_MARGIN:.0f}s co-tenancy margin this "
-                f"process's own observation is budgeted (a drain past the "
-                f"grace itself is SIGKILLed and reds the rc==0 pin)"
+                f"process's own observation is budgeted (the worker does "
+                f"not force-exit at the grace - the shutdown watchdog is "
+                f"disabled at this tier's cadence - and the harness's "
+                f"SIGKILL lands at the graceful_stop timeout, past this "
+                f"bound: here, this comparison is the bound)"
             )
             measurements.append(
                 (f"sequential drain {name}", drain_secs, _GRACE + _PROBE_STALL_MARGIN)
