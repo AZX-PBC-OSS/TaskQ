@@ -93,8 +93,21 @@ _TAG = "sys-s7"
 _PODS = ["w0", "w1", "w2", "w3", "w4"]
 _QUEUES = "system_e2e,roll_capped"
 
-#: The queue-cap fleet pin: the capped queue admits 2 fleet-wide.
-_QUEUE_CAP = 2
+#: The queue-cap fleet pin: the capped queue admits 1 fleet-wide.
+#:
+#: Why 1, not 2: the drain scenarios' exercise proof is the durable
+#: evidence that the cap was actually admitted through, and a cap of 1
+#: makes that evidence DETERMINISTIC - saturation is any single capped
+#: claim, so the proof cannot miss it by runner speed or sampler
+#: cadence. At 2 the proof needed two capped claims to coincide inside
+#: a 2s body, a throughput property the loaded CI runner voided (CI run
+#: 37092146919 attempt 1: ``peak.capped_queue`` = 1 across a whole
+#: 13-minute scenario - "the queue cap was never exercised - the
+#: sampler pins are vacuous" - on a fleet that was serving fine). The
+#: never-exceed pins keep (sharpen, in fact) their teeth at 1: any
+#: over-admission above one concurrent capped job is a breach, sampled
+#: from durable rows for the whole scenario.
+_QUEUE_CAP = 1
 
 #: The per-worker dispatch cap (the harness's TASKQ_MAX_CONCURRENCY).
 _WORKER_CAP = 4
@@ -263,31 +276,40 @@ class CapSampler:
     * the worker cap: a pod never runs more than its max_concurrency.
 
     The sampler also records each cap's PEAK. The peaks are diagnostics
-    and, on ONE surface, an exercise pin - the two surfaces are not
-    symmetric:
+    only, on BOTH surfaces - the exercise proof lives elsewhere, and
+    neither surface's peak is pinned:
 
     * the JOBS surface is durable: a running row lives for its body's
-      whole duration, so even the sparse ticks of a starved test
-      process catch it. ``peak.capped_queue >= _QUEUE_CAP`` is pinned
-      in the drain scenarios as the exercise proof - the DB-level
-      evidence that the cap was actually admitted through (measured
-      under load: 2 on the very run whose slot-surface peak read 1);
+      whole duration, but a PEAK over ticks still needs a tick to land
+      inside a running window, and the starved test process's sparse
+      ticks cannot promise one - at the retired cap of 2 the loaded CI
+      runner read ``peak.capped_queue`` = 1 across a whole 13-minute
+      scenario (run 37092146919, attempt 1) while the fleet served
+      fine. The exercise proof is therefore the RECEIPT this sampler
+      records across the WHOLE scenario and the scenarios assert at
+      their tail (``assert_cap_receipt``): a running row on the capped
+      queue WITH a live-held slot on the cap's own bucket in the same
+      pass - the cap is 1 fleet-wide, so the pair is the admission's
+      receipt, and observed-at-least-once is a state no runner speed
+      can hide. The retired front-loaded poll spent a bounded budget
+      (one stretched claim cycle) on that observation inside the
+      scenario's first seconds, and red a healthy fleet whose first
+      admitted claim arrived past it; the tail record has the whole
+      scenario - thousands of ticks - to see a state that persists for
+      every admitted claim's body, so only a cap that NEVER admits
+      (the unregistered reservation, the dead admission path) stays
+      unseen;
     * the SLOTS surface is transient: a slot flips free at every
       claim/release turnover and the lease predicate excludes the
       renewal gaps, so a 100 ms tick witnesses a LOWER BOUND of the
       true peak and, under runner load, the sparse ticks land in the
       turnover gaps - observed ``peak.slots:...:roll_capped`` = 1 >= 2
       on a loaded box while CI stayed green on the same sha: the
-      sampler caught a gap, not a cap defect. That slot-bucket peak is
-      therefore recorded but NEVER pinned - its intent (the cap was
-      exercised, the hard pin is not vacuous) is subsumed by the
-      durable jobs-surface pin above, because a capped-queue job's body
-      runs only inside an acquired slot (the post-claim
-      ``acquire_for_actor`` is the admission authority, the release
-      rides the body's finally), so two durable running rows ARE two
-      slots simultaneously held; the cap-churn scenario's wait-until DB
-      polls re-prove the exercise under churn and its corpse-slot
-      checks query ``reservation_slots`` directly.
+      sampler caught a gap, not a cap defect. Recorded, never pinned -
+      the cap's enforcement teeth are the never-exceed checks, which a
+      slot over-hold trips on any tick, and the cap-churn scenario's
+      wait-until DB polls re-prove the exercise under churn and its
+      corpse-slot checks query ``reservation_slots`` directly.
 
     The never-exceed checks keep their teeth: a sample ABOVE the bound
     is still a violation, and no weather can hide one.
@@ -301,6 +323,11 @@ class CapSampler:
         self.violations: list[str] = []
         self.peak: dict[str, int] = {}
         self.samples = 0
+        #: The cap-exercise receipt: the sample count at which a running
+        #: row on the capped queue first coincided with a live-held slot
+        #: on the cap's own bucket, in the same pass over the durable
+        #: rows. None until seen; ``assert_cap_receipt`` owns the assert.
+        self.cap_receipt_at: int | None = None
         self._task: asyncio.Task[None] | None = None
 
     async def _tick(self) -> None:
@@ -327,9 +354,35 @@ class CapSampler:
                 self._record(f"slots:{bucket}", row["held"], _QUEUE_CAP)
             elif bucket.startswith("roll-tenant:"):
                 self._record(f"slots:{bucket}", row["held"], 1)
-        # DAMPED: the job surface, at the full fleet's derived bounds.
+        # DAMPED: the job surface, at the fleet's claim width. This
+        # surface counts CLAIMED rows, and a claim the cap then DENIES
+        # stays 'running' while its denial-retry loop re-probes (up to
+        # the ~0.8s local budget, per _acquire_for_actor_with_denial_
+        # retry), so the surface legitimately reads ABOVE the queue
+        # cap's admitted count - observed 6 running capped rows at a
+        # cap of 1 (1 admitted + 5 denied re-probers, steady across a
+        # 2s sample span). Its honest ceiling is therefore the claim
+        # width - every consumer of every pod holding one queued claim
+        # - and the CAP's own teeth live on the SLOTS surface above
+        # (a denier holds no slot; an over-admission holds cap+1) plus
+        # the exercise proof's slot receipt.
         capped = [r for r in rows if r["queue"] == "roll_capped"]
-        self._record("capped_queue", len(capped), len(_PODS) * _QUEUE_CAP, rows)
+        # The cap-exercise receipt, same pass over the durable rows: a
+        # running row on the capped queue AND a live-held slot on the
+        # cap's own bucket. The slot is the cap machinery's own write
+        # (a denied re-prober holds none), so the pair proves the
+        # admission went THROUGH the cap. Recorded once, asserted at
+        # the scenario tail - a state, not a timing bet.
+        cap_bucket_held = next(
+            (r["held"] for r in slots if r["bucket"] == "taskq:global:queue:roll_capped"), 0
+        )
+        if (
+            self.cap_receipt_at is None
+            and len(capped) >= _QUEUE_CAP
+            and cap_bucket_held >= _QUEUE_CAP
+        ):
+            self.cap_receipt_at = self.samples
+        self._record("capped_queue", len(capped), len(_PODS) * _WORKER_CAP, rows)
         per_tenant: dict[str, int] = {}
         for row in rows:
             if row["actor"] == "sys_keyed":
@@ -380,6 +433,35 @@ class CapSampler:
         assert not self.violations, (
             f"{label}: the distributed caps were breached under the churn:\n"
             + "\n".join(self.violations[:20])
+        )
+
+    def assert_cap_receipt(self, label: str) -> None:
+        """The exercise ASSERT, anchored at the scenario tail.
+
+        Requires the cap's admission receipt to have been observed at
+        least once across the WHOLE scenario: a running row on the
+        capped queue coinciding with a live-held slot on the cap's own
+        bucket, in one pass over the durable rows (same-pass semantics
+        as the retired front poll - the slot is the cap machinery's own
+        write, so the pair cannot be produced by a claim the cap
+        denied). This is state, not time: an admission that happened
+        persists in the durable rows for its body's whole dwell and the
+        sampler ticks every 100ms for the whole scenario, so no runner
+        speed can hide a receipt that was there to see - while a cap
+        that NEVER admits (the reverted registration: no slot rows ever
+        exist; the dead admission path) is unseen across every one of
+        the scenario's ticks and reds here. That is the same
+        state-not-time shape the scenario probes' settle asserts use,
+        and it is what keeps this sampler's never-exceed checks
+        non-vacuous.
+        """
+        assert self.cap_receipt_at is not None, (
+            f"{label}: the queue cap's admission receipt never appeared in "
+            f"{self.samples} samples across the WHOLE scenario - no live-held "
+            f"slot on the cap's own bucket ever coincided with a running row "
+            f"on the capped queue (peaks: {self.peak}): the capped queue's "
+            f"admission machinery is dead or unregistered and the sampler's "
+            f"never-exceed pins would be vacuous"
         )
 
 
@@ -487,6 +569,94 @@ async def _fill_fleet(
     )
 
 
+#: The cap-exercise cohort: three capped bodies, each outlasting the
+#: claim-observation window, so once a claim lands the durable running
+#: row's dwell is the poll's to miss, never the fleet's to make.
+_CAP_EXERCISE_COHORT = 3
+_CAP_EXERCISE_BODY_S = 3.0
+
+#: The FRONT DIAGNOSTIC probe's bound, arithmetic in-code: one claim
+#: cycle (the poll floor) stretched by the runners' 20x stall-band
+#: factor (the factor _PROBE_STALL_MARGIN derives) plus one cohort body.
+#: This bound no longer carries the ASSERT. The original shape spent it
+#: on a single front-loaded claim cycle and claimed "a claim that
+#: HAPPENED cannot be hidden by any runner speed at this bound" - that
+#: claim was false: the repo measures end-to-end runner stalls at 2.5-5
+#: minutes (dd4572ff, cited in the scenario docstrings below), so a
+#: healthy fleet whose first admitted claim arrived past the 23s bound
+#: red here while serving fine (the 1-in-10 sighting's exact
+#: signature). The assert now lives at the scenario TAIL, on the
+#: receipt the CapSampler records across the WHOLE scenario (state,
+#: not time - see ``assert_cap_receipt``); this probe only reports how
+#: quickly the receipt first appeared, and a miss is a diagnostic
+#: line, never a red.
+_CAP_EXERCISE_BOUND = _POLL_FLOOR * _PROBE_STRETCH + _CAP_EXERCISE_BODY_S
+
+
+async def _diagnose_queue_cap_exercise(
+    conn: asyncpg.Connection, schema: str, sys_client: TaskQ
+) -> None:
+    """Seed the capped cohort, then report how fast the cap's admission
+    receipt appears. DIAGNOSTIC ONLY - this probe never reds.
+
+    The cap is 1 fleet-wide, so ANY durable running row on the capped
+    queue IS a saturated cap: the exercise needs one claim, not a
+    throughput coincidence. The receipt is two durable rows observed in
+    the SAME pass: a running row on the capped queue plus a live-held
+    slot on the cap's own bucket. The running row alone cannot
+    distinguish an admission from a claim the cap denied and is still
+    re-probing (denied claims sit 'running' too); the slot row is the
+    cap machinery's own write, so the pair proves the admission went
+    THROUGH the cap. The retired shape pinned
+    ``sampler.peak.capped_queue >= _QUEUE_CAP`` - a peak over 100ms
+    ticks from this (starved) test process, which at cap 2 needed two
+    capped claims to coincide inside a 2s body and read 1 on the loaded
+    CI runner across a whole 13-minute scenario (run 37092146919,
+    attempt 1): the exercise is a throughput property there, voided by
+    runner weather on a fleet that was serving fine. A dedicated cohort
+    is enqueued HERE so the backlog is live at probe time regardless of
+    what the fill's own capped work already finished.
+
+    The ASSERT this probe used to carry sat in the scenario's critical
+    path, front-loaded, budgeting ONE claim cycle against runner
+    weather the repo measures at 2.5-5 minutes end to end (dd4572ff) -
+    a healthy fleet starved past the bound before its first admitted
+    claim red, the 1-in-10 sighting. The exercise assert therefore
+    lives at the SCENARIO TAIL now, on the receipt the CapSampler
+    records across the whole scenario (``assert_cap_receipt``): a
+    receipt observed at least once is a state, and no runner speed
+    hides a state - only a cap that NEVER admits (the reverted
+    registration, the dead admission path) stays unseen across
+    thousands of ticks.
+    """
+    for _ in range(_CAP_EXERCISE_COHORT):
+        await sys_client.enqueue(sys_capped, SysPayload(sleep=_CAP_EXERCISE_BODY_S), tags=[_TAG])
+    deadline = time.monotonic() + _CAP_EXERCISE_BOUND
+    t0 = time.monotonic()
+    while time.monotonic() < deadline:
+        row = await conn.fetchrow(
+            f'SELECT (SELECT count(*)::int FROM "{schema}".jobs '
+            "WHERE status = 'running' AND queue = 'roll_capped') AS running, "
+            f'(SELECT count(*)::int FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = 'taskq:global:queue:roll_capped' "
+            "AND job_id IS NOT NULL "
+            "AND lease_expires_at >= statement_timestamp()) AS held"
+        )
+        assert row is not None
+        if row["running"] >= _QUEUE_CAP and row["held"] >= _QUEUE_CAP:
+            print(
+                f"[s7] cap-exercise receipt observed after {time.monotonic() - t0:.2f}s "
+                "(diagnostic; the scenario tail owns the assert)"
+            )
+            return
+        await asyncio.sleep(0.1)
+    print(
+        f"[s7] cap-exercise receipt NOT observed within {_CAP_EXERCISE_BOUND:.0f}s "
+        "(diagnostic only - the scenario tail asserts on the sampler's "
+        "whole-scenario record, a state no runner speed can hide)"
+    )
+
+
 # ── Scenario 1: sequential drains ────────────────────────────────────────
 
 
@@ -503,15 +673,29 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     come back clean on exit.
 
     The mid-drain probe's bound is DERIVED, not raw: the drain window
-    the run itself measured (kept measured; its < grace pin below is
-    untouched) plus a co-tenancy margin of one claim cycle stretched by
-    the runners' 20x stall-band factor (the poll floor 1.0s x 20 = 20s;
-    the arithmetic is pinned on _PROBE_STALL_MARGIN above). Demanding an
-    effect inside the raw ~3s window bets on the probe chain threading
-    runner weather the repo has measured at 2.5-5 minutes end to end
-    (dd4572ff) - runner starvation misread as fleet stall. The teeth
-    stay: a fleet whose probes are absent for window + margin reds, and
-    one that never settles inside 30s reds first.
+    the run itself measured plus a co-tenancy margin of one claim cycle
+    stretched by the runners' 20x stall-band factor (the poll floor
+    1.0s x 20 = 20s; the arithmetic is pinned on _PROBE_STALL_MARGIN
+    above). Demanding an effect inside the raw ~3s window bets on the
+    probe chain threading runner weather the repo has measured at 2.5-5
+    minutes end to end (dd4572ff) - runner starvation misread as fleet
+    stall. The teeth stay: a fleet whose probes are absent for window +
+    margin reds, and one that never settles inside 30s reds first.
+
+    The grace pin below is derived the same way: the drain's seconds
+    are read on THIS starved test process's clock (the SIGTERM ->
+    graceful-stop round trip), so the comparison budgets the operator
+    grace PLUS the same co-tenancy margin. The comparison IS the bound:
+    this tier's workers boot with the in-worker shutdown watchdog
+    DISABLED (the harness's TASKQ_WATCHDOG_ENABLED=false - at this
+    cadence it cannot arm: watchdog_loop_lag_budget 30 + heartbeat 0.5
+    must be < lock_lease 8, a settings-validation error), so a drain
+    that overruns the configured grace is NOT force-exited by the
+    worker (drilled: a 25s wind-down body held w0's drain at 28.22s,
+    188% of the 15s grace, and the pod exited rc=0). The harness's
+    graceful_stop SIGKILLs only at its own timeout (_GRACE + 30), so
+    the rc == 0 pin reds a grace-overrun only past THAT window; inside
+    it, this comparison is the only bound the scenario has.
     """
     conn = sys_ledger
     schema = module_pg_schema.schema_name
@@ -523,6 +707,16 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     try:
         ids = await _worker_ids(conn, schema, fleet)
         await _fill_fleet(conn, schema, sys_client, want_running=10)
+        # The cap-exercise cohort, seeded while the fleet is at full
+        # strength, with the bounded receipt probe run as a DIAGNOSTIC
+        # (it never reds): the exercise ASSERT is the scenario tail's,
+        # on the receipt the sampler records across the whole scenario
+        # (sampler.assert_cap_receipt) - a state no runner speed can
+        # hide. The retired front-loaded bounded poll spent its budget
+        # on one claim cycle inside the scenario's first seconds and
+        # red a healthy fleet whose first admitted claim arrived past
+        # it (the 1-in-10 sighting).
+        await _diagnose_queue_cap_exercise(conn, schema, sys_client)
 
         for name in _PODS[:-1]:
             # The mid-drain probe wave (uncapped queue: the probe must
@@ -551,11 +745,35 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             assert rc == 0, (
                 f"pod {name} exited rc={rc} - the rolling release's drain was not graceful"
             )
-            assert drain_secs < _GRACE, (
+            # The grace pin, DERIVED: the SEMANTIC is the operator-facing
+            # termination grace (_GRACE - the harness boots every pod
+            # with it, TASKQ_TERMINATION_GRACE_PERIOD), but the drain's
+            # seconds are read on THIS process's clock, across the same
+            # starved round trips the _PROBE_STALL_MARGIN block derives
+            # (measured 12.19s against the bare 15s grace under a mere
+            # 4-hog load - 81% of a bound that never budgeted the
+            # observer). So the comparison budgets the grace PLUS that
+            # margin - and this comparison IS the bound, not slack on a
+            # state assert beside it: the tier's workers boot with the
+            # shutdown watchdog disabled (the harness's cadence cannot
+            # arm it, see the scenario docstring), so a drain overrunning
+            # the grace exits rc=0, and only the harness's SIGKILL at
+            # graceful_stop's own timeout (_GRACE + 30) turns an overrun
+            # into a non-zero rc. Drilled: 25s wind-down body, drain
+            # 28.22s, rc=0, only this pin could have red.
+            assert drain_secs < _GRACE + _PROBE_STALL_MARGIN, (
                 f"pod {name}'s drain ran {drain_secs:.2f}s, past its "
-                f"{_GRACE:.0f}s termination grace"
+                f"{_GRACE:.0f}s termination grace plus the "
+                f"{_PROBE_STALL_MARGIN:.0f}s co-tenancy margin this "
+                f"process's own observation is budgeted (the worker does "
+                f"not force-exit at the grace - the shutdown watchdog is "
+                f"disabled at this tier's cadence - and the harness's "
+                f"SIGKILL lands at the graceful_stop timeout, past this "
+                f"bound: here, this comparison is the bound)"
             )
-            measurements.append((f"sequential drain {name}", drain_secs, _GRACE))
+            measurements.append(
+                (f"sequential drain {name}", drain_secs, _GRACE + _PROBE_STALL_MARGIN)
+            )
 
             # No stall: the probes are served promptly, and within the
             # drain window plus the derived co-tenancy margin at least
@@ -599,16 +817,17 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             f"the fleet did not complete every job it admitted: {counts}"
         )
         await assert_effects_balance(conn, schema, _TAG)
+        # The exercise ASSERT, anchored at the tail on the sampler's
+        # whole-scenario record of the admission receipt (state, not
+        # time: observed-at-least-once cannot be hidden by any runner
+        # speed, and a cap that never admits - the unregistered
+        # reservation, the dead admission path - reds here). The peaks
+        # stay for the record - neither surface's peak is pinned, a
+        # 100ms tick's max cannot promise it landed inside a running
+        # window, and the CapSampler docstring carries the doctrine.
+        sampler.assert_cap_receipt("sequential drains")
         await sampler.stop_and_report("sequential drains")
-        assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
-            "the queue cap was never exercised - the sampler pins are vacuous"
-        )
-        # The slots-surface twin is deliberately NOT pinned: its peak is
-        # diagnostic only (the CapSampler docstring carries the doctrine
-        # - a 100ms instantaneous max misses the slot turnover gaps
-        # under load and read `1 >= 2` on a healthy fleet), and its
-        # intent - the cap was exercised, the never-exceed pin is not
-        # vacuous - is subsumed by the durable jobs-surface pin above.
+        print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
         for label, measured, bound in measurements:
             print(f"[s7] {label}: measured {measured:.2f}s vs bound {bound:.0f}s")
     finally:
@@ -643,6 +862,13 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
     try:
         ids = await _worker_ids(conn, schema, fleet)
         await _fill_fleet(conn, schema, sys_client, want_running=10)
+        # The cap-exercise cohort, seeded while the fleet is at full
+        # strength, with the bounded receipt probe run as a DIAGNOSTIC
+        # (it never reds; see the sequential scenario's call for the
+        # doctrine). The exercise ASSERT is this scenario's tail, on
+        # the receipt the sampler records across the whole scenario
+        # (sampler.assert_cap_receipt).
+        await _diagnose_queue_cap_exercise(conn, schema, sys_client)
 
         # Pair 1: both SIGTERMs land back to back; both drains run
         # concurrently.
@@ -725,13 +951,12 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
         await _assert_corpse_owns_nothing(conn, schema, ids["w4"], "survivor w4")
 
         await assert_effects_balance(conn, schema, _TAG)
+        # The exercise ASSERT, anchored at the tail on the sampler's
+        # whole-scenario record of the admission receipt (state, not
+        # time; see the sequential scenario's tail for the doctrine).
+        sampler.assert_cap_receipt("overlapping pairs")
         await sampler.stop_and_report("overlapping pairs")
-        assert sampler.peak.get("peak.capped_queue", 0) >= _QUEUE_CAP, (
-            "the queue cap was never exercised - the sampler pins are vacuous"
-        )
-        # The slots-surface twin is deliberately NOT pinned - the
-        # sequential-drains scenario and the CapSampler docstring carry
-        # the doctrine.
+        print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
     finally:
         await sampler.close()
         for name in _PODS:
@@ -878,8 +1103,8 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
     try:
         ids = await _worker_ids(conn, schema, fleet)
 
-        # Saturate BOTH cap families: the queue cap's two slots and one
-        # keyed slot, all with a backlog behind them.
+        # Saturate BOTH cap families: the queue cap's single slot and
+        # one keyed slot, all with a backlog behind them.
         for _ in range(6):
             await sys_client.enqueue(sys_capped, SysPayload(sleep=30.0), tags=[_TAG])
         for _ in range(4):
@@ -901,12 +1126,31 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         )
 
         # ── the graceful half: SIGTERM a pod holding cap slots ────────
-        holder = await conn.fetchrow(
-            f"SELECT locked_by_worker::text AS wid, count(*)::int AS n "
-            f"FROM \"{schema}\".jobs WHERE status = 'running' "
-            f"AND queue = 'roll_capped' GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+        # The victim's selection is a STATE wait, not a moment: the
+        # saturation assert above proved a running capped row existed
+        # at ITS fetch, but the selection re-reads the durable rows one
+        # round trip later, and a body turnover in that gap (plus the
+        # backlog's re-claim cycle) makes a bare single-shot fetch a
+        # hope-timing red. The wait is a hang guard only - one claim
+        # cycle stretched the runners' 20x stall-band factor (the
+        # _PROBE_STALL_MARGIN arithmetic); a fleet whose capped queue
+        # stops running anything at all reds at the bound.
+        holder_deadline = time.monotonic() + _PROBE_STALL_MARGIN
+        holder = None
+        while time.monotonic() < holder_deadline:
+            holder = await conn.fetchrow(
+                f"SELECT locked_by_worker::text AS wid, count(*)::int AS n "
+                f"FROM \"{schema}\".jobs WHERE status = 'running' "
+                f"AND queue = 'roll_capped' GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+            )
+            if holder is not None and holder["wid"] is not None:
+                break
+            await asyncio.sleep(0.1)
+        assert holder is not None and holder["wid"] is not None, (
+            f"no pod ran a capped job within the {_PROBE_STALL_MARGIN:.0f}s "
+            f"selection hang guard (one claim cycle stretched) right after "
+            "the caps saturated - the capped queue stopped running"
         )
-        assert holder is not None and holder["wid"] is not None
         victim = next(name for name, wid in ids.items() if wid == holder["wid"])
         t_sig = time.monotonic()
         fleet[victim].proc.terminate()
@@ -915,12 +1159,23 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         drained.add(victim)
         assert rc == 0, f"pod {victim} exited rc={rc}"
         await _assert_corpse_owns_nothing(conn, schema, ids[victim], f"graceful {victim}")
-        assert graceful_secs < _GRACE, (
-            f"graceful slot release took {graceful_secs:.2f}s, past the {_GRACE:.0f}s drain bound"
+        # The grace pin, the same derived shape as the sequential
+        # drains' (see that scenario for the doctrine): the seconds are
+        # read on THIS starved test process's clock, so the comparison
+        # budgets the operator grace PLUS the co-tenancy margin - and
+        # this comparison IS the bound (the tier's workers boot with
+        # the shutdown watchdog disabled; the harness's SIGKILL lands
+        # only at the graceful_stop timeout, past it).
+        assert graceful_secs < _GRACE + _PROBE_STALL_MARGIN, (
+            f"graceful slot release took {graceful_secs:.2f}s, past the "
+            f"{_GRACE:.0f}s termination grace plus the "
+            f"{_PROBE_STALL_MARGIN:.0f}s co-tenancy margin this process's "
+            "own observation is budgeted"
         )
         print(
             f"[s7] graceful cap release ({victim}, {holder['n']} capped rows): "
-            f"measured {graceful_secs:.2f}s vs bound {_GRACE:.0f}s"
+            f"measured {graceful_secs:.2f}s vs bound "
+            f"{_GRACE + _PROBE_STALL_MARGIN:.0f}s"
         )
 
         # ── the capacity-leak construct: SIGKILL a pod mid-job ────────
@@ -950,8 +1205,19 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
                 "GROUP BY 1 ORDER BY 2 DESC LIMIT 1",
                 ids[victim],
             )
-            assert holder_row is not None
-            if holder_row["wid"] is not None:
+            # No in-loop assert: None is the state this loop EXISTS to
+            # wait through. At cap 1 the departed victim held the ONLY
+            # slot, so between its release and the next admitted claim
+            # (a denial backoff + a claim poll) the probe legitimately
+            # reads no holder - the CI red (run 37114445963) was the
+            # first probe landing in that ordinary window, reding a
+            # healthy fleet on a byte-identical assert that cap 2's
+            # second slot had masked on base. The probe re-checks the
+            # STATE each pass; the pin is the deadline plus the final
+            # assert below - a fleet that NEVER re-acquires (the
+            # genuine capacity-leak defect) reds there, inside the
+            # derived hang-guard bound.
+            if holder_row is not None and holder_row["wid"] is not None:
                 corpse = holder_row["wid"]
                 held = holder_row["n"]
                 break
