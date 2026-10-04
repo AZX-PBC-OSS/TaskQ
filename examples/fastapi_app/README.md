@@ -12,11 +12,17 @@ uv run uvicorn examples.fastapi_app.main:app --reload
 This app only enqueues jobs — it does not run a worker. The `process_item`
 actor it enqueues is registered in `examples/worker.py`'s `ACTORS` dict, so
 also start a worker in a separate terminal or the demo will hang with jobs
-stuck `pending`:
+stuck `pending` (module form: the worker imports `examples.actors`, which
+needs the repo root on the import path):
 
 ```bash
-uv run python examples/worker.py
+TASKQ_QUEUES=examples uv run python -m examples.worker
 ```
+
+`TASKQ_QUEUES=examples` matters: the worker otherwise consumes the
+`default` queue only, and the `process_item` actor is registered on the
+`examples` queue — without it the demo still hangs with jobs stuck
+`pending`.
 
 ## Environment Variables
 

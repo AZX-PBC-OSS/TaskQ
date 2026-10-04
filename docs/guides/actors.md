@@ -1228,6 +1228,15 @@ async def submit_order(client, order_id: str, customer_id: str, amount_cents: in
     return handle.job_id
 ```
 
+A runnable companion: the `examples/actors/` package organizes a toy fleet by
+feature domain (one module per domain — basic, failure, ratelimit, chained,
+DI, batch, advanced, cron, progress, tags, sync, real-world), each with a
+docstring naming the feature and what to observe; see its README and run the
+stack with `docker compose up` in `examples/`. For the production tour of the
+same engine, `examples/fleet_demo/` narrates rate-limit denials, operator
+cancels, cron budgets, and SIGTERM deploys through a real worker's logs
+(`uv run python -m examples.fleet_demo.run_demo`).
+
 ---
 
 ## Actor deregistration
