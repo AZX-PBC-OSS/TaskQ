@@ -38,9 +38,12 @@ workflow edits, and the maintainer's own PRs.
   A rerun is a concession with conjunctive preconditions — all must
   hold: the failing test is byte-identical to `main`, it passes locally
   twice, and `main`'s own head is green. One named rerun per red; a
-  second reproduced red = STOP, no merge. *Rerunning past the first red
-  launders a real defect, and the preconditions are what separate
-  CI-local weather from the PR's own content.*
+  second reproduced red = STOP, no merge. A red your own change may
+  have caused — a cure that resizes a lane or cap, now failing a
+  sibling — is not weather: attribute it with a base control (the
+  merge-base, run twice) before reaching for a rerun. *Rerunning past
+  the first red launders a real defect, and the preconditions are what
+  separate CI-local weather from the PR's own content.*
 
 - **Bisect, don't rerun, for load-amplified mechanisms.** When load
   amplifies the failure, a green rerun proves luck, not weather:
@@ -69,8 +72,11 @@ review, and the review checks for them by name.
 
 - **Tests assert behavior, not implementation.** A pin states the
   observable contract and is proven by mutation, not by mirroring the
-  source's shape. *An implementation-shaped pin greens the refactor
-  that breaks the behavior it was meant to protect.*
+  source's shape, and the evidence it accepts must not be forgeable: a
+  receipt counts only when the path the pin convicts is the only thing
+  that can stamp it. *An implementation-shaped pin greens the refactor
+  that breaks the behavior it was meant to protect; a forgeable
+  receipt greens the defect that stamps its own proof.*
 
 - **No hope-sleeps, no tolerance bumps.** A timing-sensitive assertion
   is fixed by re-anchoring on state, or by a wall-clock bound carrying
@@ -85,10 +91,11 @@ review, and the review checks for them by name.
   batch of sibling branches dies in one command.*
 
 - **Conventional-commit titles.** Every PR title follows the
-  conventional-commit grammar (`feat:`, `fix:`, `docs:`, `refactor:`,
-  `test:`, `chore:`), and CI gates it. *The PR title is the squash
-  subject and the changelog entry; release tooling reads the title,
-  not the diff.*
+  conventional-commit grammar — `feat:`, `fix:`, `docs:`,
+  `refactor:`, `test:`, `chore:` and the rest of the conventional
+  types — and CI gates the exact allowed set. *The PR title is the
+  squash subject and the changelog entry; release tooling reads the
+  title, not the diff.*
 
 ## 3. The incident pattern
 
