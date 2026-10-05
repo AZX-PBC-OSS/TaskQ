@@ -29,8 +29,10 @@ from hypothesis import strategies as st
 import taskq.retry as _retry_module
 from taskq._ids import new_job_id
 from taskq.backend._protocol import EnqueueArgs, ErrorInfo
+from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.context import JobContext
 from taskq.retry import (
+    Fail,
     JobRetryState,
     Retry,
     RetryClassifier,
@@ -310,6 +312,187 @@ def test_classify_returns_the_override_delay_verbatim() -> None:
         policy=_policy(),  # default jitter=0.2
         non_retryable_exceptions=(),
         exception=_Http429Error(90),
+        attempt=1,
+        override=RetryOverride(kind="indefinite", delay=_HINT),
+    )
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == _HINT
+
+
+# ── the explicit-zero / sub-floor edge: the floor, named and pinned ──
+
+
+def test_explicit_zero_override_delay_lands_on_the_deferral_floor() -> None:
+    """An explicit ``RetryOverride(delay=timedelta(0))`` is the 'as fast as
+    possible' direction — and the documented ``MIN_DEFERRAL_INTERVAL`` floor
+    is the one place 'honored EXACTLY' bends: the decision carries exactly
+    the floor (a 1s *scheduled* requeue), never a pending-immediate one and
+    never the raw zero. The model-level pin
+    (``test_retry_hook_and_override_contract.py::
+    test_retry_override_accepts_zero_delay``) documents the zero as legal
+    'retry immediately' input; this pin documents what the decision layer
+    turns it into, so the floor's semantics for the explicit-zero case are
+    contract, not incident."""
+    decision = RetryClassifier.classify(
+        policy=_policy(),
+        non_retryable_exceptions=(),
+        exception=RuntimeError("rate limited"),
+        attempt=1,
+        override=RetryOverride(kind="indefinite", delay=timedelta(0)),
+    )
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == MIN_DEFERRAL_INTERVAL
+
+
+def test_sub_floor_override_delay_is_floored_not_rounded_away() -> None:
+    """A positive-but-sub-floor explicit delay (a server hinting 400ms) is
+    floored to exactly ``MIN_DEFERRAL_INTERVAL`` — the monopolisation floor
+    is the decision's lower bound on the verbatim path, the same bound the
+    write arms re-apply as defense-in-depth."""
+    decision = RetryClassifier.classify(
+        policy=_policy(),
+        non_retryable_exceptions=(),
+        exception=RuntimeError("rate limited"),
+        attempt=1,
+        override=RetryOverride(kind="indefinite", delay=timedelta(microseconds=400)),
+    )
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == MIN_DEFERRAL_INTERVAL
+
+
+def test_the_delay_field_documentation_names_the_floor() -> None:
+    """Doc-at-the-point contract: ``RetryOverride.delay``'s own description
+    is where an integration author decides to return a delay, so the floor
+    must be named there — 'honored EXACTLY' without naming the one bound
+    that bends it (the explicit-zero case) invites a pin broken in
+    production. Mirrors the deadline-hazard doc pin in
+    ``test_retry_hook_and_override_contract.py``."""
+    doc = (RetryOverride.model_fields["delay"].description or "").lower()
+    assert "floored" in doc and "min_deferral_interval" in doc, (
+        "RetryOverride.delay's description must name the MIN_DEFERRAL_INTERVAL "
+        "floor: an explicit zero is honored as 'as fast as the deferral floor "
+        "allows', and a reader relying on 'honored EXACTLY' alone would build "
+        "a pin expecting a pending-immediate requeue"
+    )
+
+
+# ── the deadline interplay: a reprieve longer than the horizon ───────
+
+
+async def test_override_delay_landing_past_schedule_to_close_fails_terminally_at_the_write() -> (
+    None
+):
+    """The cennan hazard shape, end to end on the override path: a server's
+    90s reprieve against a job whose ``schedule_to_close`` is only 60s away.
+    The write arm refuses the reschedule (the same single effective delay
+    feeds its deadline guard) and terminalises ``DeadlineExceeded`` — the
+    hint is honored right up to the horizon the caller set, and the
+    reprieve never runs. The curve-shaped twin of this pin is
+    ``test_retry_inmemory.py::test_indefinite_retry_exceeds_deadline``;
+    this is the override-delay shape, the one a Retry-After consumer
+    actually ships."""
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+
+    def always_429(payload: object, ctx: JobContext[EmptyPayload]) -> object:
+        raise _Http429Error(90)
+
+    backend.register_stub(
+        "partner",
+        always_429,
+        retry=_policy(),
+        retry_classifier=_hint_classifier,
+        payload_type=EmptyPayload,
+    )
+
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="partner",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+        schedule_to_close=_START + timedelta(seconds=60),
+    )
+    await backend.enqueue(args)
+    dispatched = await backend.dispatch_batch(
+        backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: test-only access, mirrors test_retry_inmemory.py
+        ["default"],
+        limit=1,
+        lock_lease=timedelta(seconds=60),
+    )
+    assert len(dispatched) == 1
+
+    # The classifier still hands back the 90s hint: it is not a deadline
+    # arbiter (pinned at the decision layer in
+    # test_retry_classifier_hook.py::test_hook_override_delay_honoured_deadline_is_sqls_business).
+    decision = decide_after_failure(
+        StubActorConfig(retry=_policy(), retry_classifier=_hint_classifier),
+        _Http429Error(90),
+        _job_state(),
+    )
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == _HINT
+
+    row = await backend.mark_failed_or_retry(
+        args.id,
+        backend._worker_id,  # type: ignore[reportPrivateUsage]
+        ErrorInfo(
+            error_class="Http429Error",
+            error_message="HTTP 429",
+            error_traceback=None,
+        ),
+        decision.retry_delay,
+        attempt=1,
+        claim_epoch=1,
+    )
+    assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded", (
+        "a reprieve longer than the job's own horizon must terminalise at the "
+        "retry write (the deadline path wins over the hint), never park the "
+        "row past its deadline where only the sweep can resolve it"
+    )
+
+
+# ── the budget edge: max_attempts=1 and the override delay ───────────
+
+
+def test_max_attempts_one_delay_only_override_is_terminal() -> None:
+    """``max_attempts=1`` + a transient policy + a delay-only override (no
+    ``kind``): the first failure is already at the attempt ceiling, so the
+    decision is terminal ``Fail`` and the override delay is discarded
+    because the job is over — not because the library muted it. The
+    attempt-ceiling guard on the policy's own kind outranks a delay-only
+    hint, the same precedence the adapter documents (a delay schedules
+    *when*, never *whether*)."""
+    decision = RetryClassifier.classify(
+        policy=RetryPolicy(kind="transient", max_attempts=1),
+        non_retryable_exceptions=(),
+        exception=RuntimeError("boom"),
+        attempt=1,
+        override=RetryOverride(delay=_HINT),
+    )
+    assert isinstance(decision, Fail), (
+        "a transient policy at max_attempts=1 terminalises on the first "
+        "failure even when a classifier offers a delay"
+    )
+
+
+def test_override_kind_indefinite_lifts_the_attempt_ceiling_explicitly() -> None:
+    """The rescue twin: an override carrying ``kind='indefinite'`` is an
+    explicit direction that replaces the policy's own kind BEFORE the
+    attempt-ceiling guard runs, so at ``max_attempts=1`` the delay IS
+    honored and the job retries past its declared ceiling — bounded then
+    only by ``schedule_to_close`` (the indefinite hazard the classifier
+    docstrings and retries.md §5 both warn about: a transient actor has no
+    deadline stamped, so composing an indefinite-returning classifier into
+    one has no stopping condition). Pinned as contract: the ceiling lift
+    is the override's documented job, never a silent default's choice."""
+    decision = RetryClassifier.classify(
+        policy=RetryPolicy(kind="transient", max_attempts=1),
+        non_retryable_exceptions=(),
+        exception=RuntimeError("boom"),
         attempt=1,
         override=RetryOverride(kind="indefinite", delay=_HINT),
     )

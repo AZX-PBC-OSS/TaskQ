@@ -508,7 +508,10 @@ class RetryOverride(BaseModel):
             "classifier specified (jitter spreads only the computed "
             "curve); to spread a hint across a fleet, apply "
             "apply_jitter() to it in your own classifier. Clamped by "
-            "max_retry_backoff, but NOT "
+            "max_retry_backoff and floored at MIN_DEFERRAL_INTERVAL — an "
+            "explicit delay=timedelta(0) is honored as 'as fast as the "
+            "deferral floor allows' (a 1s scheduled requeue), never a "
+            "pending-immediate one — but NOT "
             "reconciled with schedule_to_close, a delay landing past that "
             "deadline fails the job terminally through the deadline path."
         ),
