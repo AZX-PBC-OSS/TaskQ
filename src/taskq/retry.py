@@ -474,10 +474,11 @@ class RetryOverride(BaseModel):
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
     ceiling so a malicious or malformed header cannot strand a job. The
-    delay is also spread by the declared policy's ``jitter`` (same
-    multiplicative-symmetric band as the computed curve, fitted under
-    the ceiling; ``jitter=0.0`` is the exact-passthrough identity), so a
-    fleet fielding the same hint does not come due in lockstep.
+    delay is honored EXACTLY — no jitter draw: an explicit override
+    delay is an explicit direction, and the library never mutates a
+    value the classifier specified (jitter spreads only the computed
+    curve). A fleet that wants spread on a hint applies it in its own
+    classifier (:func:`apply_jitter`).
 
     A ``delay`` schedules the next attempt; it does not extend the job's
     budget, in either dimension. It does not spare the attempt, the
@@ -505,8 +506,14 @@ class RetryOverride(BaseModel):
             "max_attempts on schedule. Pair it with kind='indefinite' to keep "
             "retrying, or raise RetryAfter(delay, consume_budget=False) from "
             "the actor body for a known-duration wait that spends no budget. "
-            "Spread by the policy's jitter (jitter=0.0 is the exact "
-            "identity), then clamped by max_retry_backoff, but NOT "
+            "Honored EXACTLY — the library never mutates a value the "
+            "classifier specified (jitter spreads only the computed "
+            "curve); to spread a hint across a fleet, apply "
+            "apply_jitter() to it in your own classifier. Clamped by "
+            "max_retry_backoff and floored at MIN_DEFERRAL_INTERVAL — an "
+            "explicit delay=timedelta(0) is honored as 'as fast as the "
+            "deferral floor allows' (a 1s scheduled requeue), never a "
+            "pending-immediate one — but NOT "
             "reconciled with schedule_to_close, a delay landing past that "
             "deadline fails the job terminally through the deadline path."
         ),
@@ -851,17 +858,22 @@ def rate_limit_aware_classifier(
     ``docs/guides/retries.md`` §5):
 
     * a parsed hint → ``RetryOverride(kind="indefinite", delay=hint)``:
-      the hint flows through as the override delay and meets the
-      documented bounds on the decision path — clamped to
-      ``max_retry_backoff`` by :meth:`RetryClassifier._retry_decision`
-      (verified, not assumed — the same path any ``RetryOverride.delay``
-      takes), then floored at ``MIN_DEFERRAL_INTERVAL``. A finite hint
-      beyond the ceiling CLAMPS to it — the ceiling's documented job ("a
-      malicious or malformed header cannot strand a job"), the operator's
-      knob doing the bounding. The parse treats only unparsable, zero, or
-      negative values as garbage; an oversized-but-finite hint is the
-      ceiling's input, not garbage. The classifier adds no ceiling of
-      its own.
+      the hint flows through as the override delay VERBATIM (honored
+      EXACTLY — no jitter draw: an explicit delay is an explicit
+      direction, the library never mutates a value the classifier
+      specified) and meets the documented bounds on the decision path —
+      clamped to ``max_retry_backoff`` by
+      :meth:`RetryClassifier._retry_decision` (verified, not assumed —
+      the same path any ``RetryOverride.delay`` takes; the clamp reads
+      the verbatim raw value), then floored at
+      ``MIN_DEFERRAL_INTERVAL``. A finite hint beyond the ceiling CLAMPS
+      to it — the ceiling's documented job ("a malicious or malformed
+      header cannot strand a job"), the operator's knob doing the
+      bounding. The parse treats only garbage shapes as garbage (zero,
+      negative, or no grammar match — the closed decimal-fraction
+      grammar is a deliberate tightening of the former ``int()`` parse's
+      accidents); an oversized-but-finite hint is the ceiling's input,
+      not garbage. The classifier adds no ceiling of its own.
     * a claimed signal with no usable hint (no header, or the
       curve-fallback garbage cases: zero / negative / unparsable) →
       ``RetryOverride(kind="indefinite")`` with no ``delay``:
@@ -1195,22 +1207,27 @@ class RetryClassifier:
         """The Retry decision, computed curve or override delay.
 
         An override delay (a hook's ``RetryOverride(delay=...)`` — e.g. a
-        server's ``Retry-After`` hint) is spread by the policy's own
-        ``jitter`` exactly as a computed curve value is, through the same
-        band fitted under the ceiling (:func:`_capped_jitter_band`): a
-        fleet of workers fielding the same hint must not all come due at
-        the same instant. ``jitter=0.0`` is the identity (the
-        deterministic-suite knob), so an exact server contract is one
-        ``jitter=0`` policy away. The delay is clamped to
-        ``max_retry_backoff`` BEFORE the band is fitted, so the jitter
-        can never push the draw past the ceiling, and the result is
-        floored at :data:`MIN_DEFERRAL_INTERVAL` like every other delay.
+        server's ``Retry-After`` hint) is an explicit direction: it is
+        honored EXACTLY, with no jitter draw — the pre-#656 contract,
+        restored. #656 spread the override through the same
+        multiplicative-symmetric band as a computed curve value, which
+        mutated a value the user's classifier specified (a default
+        ``jitter=0.2`` turned a 90s ``Retry-After`` into a draw from
+        ``[72s, 108s]``, half of it *before* the server's horizon). Under
+        the maintainer's law — defaults never get in the way of the
+        user's explicit direction — the delay passes through verbatim,
+        still clamped to ``max_retry_backoff`` (the operator's safety
+        ceiling against a malicious or malformed header) and floored at
+        :data:`MIN_DEFERRAL_INTERVAL` like every other delay. A fleet
+        that wants spread on a hint applies it in its own classifier
+        (:func:`apply_jitter`); jitter keeps spreading only the computed
+        curve, where the TaskQ-chosen raw value is the thing being
+        softened. ``jitter=0.0`` remains the identity on both paths.
         """
         if override_delay is not None:
             cap_s = max_retry_backoff.total_seconds()
             raw_s = min(override_delay.total_seconds(), cap_s)
-            lower, upper = _capped_jitter_band(raw_s, cap_s, policy.jitter)
-            delay = timedelta(seconds=_draw_in_band(lower, upper, _production_rng.random(), cap_s))
+            delay = timedelta(seconds=raw_s)
         else:
             delay = compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
         # The monopolisation floor the deferral arms apply at their writes
