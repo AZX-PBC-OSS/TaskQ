@@ -459,6 +459,13 @@ get a hook) sniffs the mundane taxonomy:
 - **`None`** — everything else. Unsure → `None`: over-claiming is the haunt class, and
   a taxonomy that guesses sends work where the declared policy never agreed to go.
 
+The timeout name-suffix match is a name heuristic, not a semantics check. A real-world
+counterexample: `pymongo.errors.ExecutionTimeout` — the *server* killed an operation for
+exceeding its `maxTimeMS`, and re-running the same query re-fails deterministically —
+ends in `Timeout` and is claimed `transient` by the defaults (bounded by `max_attempts`,
+so the cost is a spent retry budget, not a runaway). Where a timeout means "this work can
+never succeed", exclude it by exact name: `exclude_names={"ExecutionTimeout"}`.
+
 The defaults are documented module constants (`taskq.retry`):
 `DEFAULT_TRANSIENT_STATUSES` (`408`, `425`, and the `5xx` band),
 `DEFAULT_NON_RETRYABLE_STATUSES` (the `4xx` band minus `{408, 425, 429}`),

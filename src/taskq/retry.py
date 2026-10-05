@@ -956,7 +956,14 @@ def failure_taxonomy_classifier(
        * TimeoutError-shaped: ``isinstance`` of the builtin
          ``TimeoutError`` (covers ``socket.timeout`` and, since 3.11,
          ``asyncio.TimeoutError``) or a class name ending in ``Timeout``/
-         ``TimeoutError`` (the httpx/requests/aiohttp shapes);
+         ``TimeoutError`` (the httpx/requests/aiohttp shapes). The suffix
+         match is a name heuristic, not a semantics check: a real-world
+         counterexample is ``pymongo.errors.ExecutionTimeout`` — the
+         server killed the operation for exceeding ``maxTimeMS``, and a
+         re-run of the same query re-fails deterministically — whose name
+         ends in ``Timeout`` and is claimed ``transient`` by the defaults;
+         where a timeout means "this work can never succeed", exclude it
+         by exact name (``exclude_names={"ExecutionTimeout"}``);
        * class name in ``include_names`` (exact match) or in the
          ``DEFAULT_TRANSIENT_EXCEPTION_NAMES`` defaults;
        * status in ``transient_status`` (defaults:
