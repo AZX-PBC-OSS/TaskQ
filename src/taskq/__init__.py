@@ -124,6 +124,7 @@ from taskq.retry import (
     RetryOverride,
     RetryPolicy,
     compose_retry_classifiers,
+    failure_taxonomy_classifier,
     rate_limit_aware_classifier,
 )
 from taskq.scheduler import register_cron
@@ -247,6 +248,7 @@ __all__ = [
     "cron",
     "enrich_pg_dsn",
     "ensure_sslmode_require",
+    "failure_taxonomy_classifier",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
     "make_redis_client_factory",

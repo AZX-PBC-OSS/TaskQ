@@ -403,6 +403,103 @@ body instead ([§9](#9-control-flow-signals)).
     a budget you track yourself), or pass `schedule_to_close=` per enqueue (deprecated
     form).
 
+### Sniffing the server's hint: `Retry-After` / `X-Retry-After`
+
+On a claimed signal the built-in also reads the server's delay hint, duck-typed over the
+common shapes with no import required (TaskQ never imports an HTTP client; your
+transitive dependency tree stays yours): `exception.response.headers` (the
+`httpx`/`httpx2`/`requests` shape) and a bare `exception.headers` (the `aiohttp`
+`ClientResponseError` shape, or any exception carrying headers directly). Both the
+standard `retry-after` and the de-facto `x-retry-after` header names are read,
+case-insensitively; the standard header wins when both are present. Values are parsed
+as seconds-integers (`"120"`) and HTTP-dates (RFC 9110 IMF-fixdate, via the stdlib's
+`email.utils.parsedate_to_datetime`).
+
+Every recognized signal, what the built-in returns for it, and what bounds the result:
+
+| Signal | Override returned | What bounds it |
+|---|---|---|
+| `429` + hint parsed to a delay in `(0, 1 day]` | `indefinite` **with** `delay` | the policy's `jitter` spreads the draw, `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
+| `429` with no hint header | `indefinite`, no `delay` | the declared policy's curve (`jitter`, `cap`, `max_retry_backoff`); `schedule_to_close` terminates |
+| `429` + hint of `0`, negative, unparsable, or beyond one day | `indefinite`, no `delay` (curve fallback) | same row as above — garbage degrades the *delay*, never the classification |
+| `RateLimitError`-named exception (with or without headers) | per the two rows above | same bounds |
+
+The curve-fallback rule is deliberate good citizenship: a server that answers
+`Retry-After: 0` (or a value past a day, or a format no RFC knows) does not get to
+degenerate the retry loop — the declared policy's curve keeps computing *when*, and the
+job's deadline keeps deciding *whether*. `jitter=0.0` gives exact `Retry-After`
+compliance (deterministic suites); the default `0.2` spreads a fleet's draws across the
+band so workers fielding the same hint do not come due in lockstep.
+
+When two legitimate intents collide — the server's directive vs the operator's
+`max_retry_backoff` ceiling — the default resolves **toward the server**: the parsed
+hint is honored as the delay (it wins over the computed curve), and `max_retry_backoff`
+stays exactly what it already was for every override delay, the operator's safety
+ceiling (the established contract, unchanged). The escape hatches are user
+configuration, never a silent override: a user who wants the raw server value passes
+`jitter=0.0` (and raises `max_retry_backoff` if the operator's ceiling is genuinely
+lower than the server's ask); a user who wants the curve regardless of the server
+fences the recognition with their own classifier registered first in the composition
+or `exclude_names`/`transient_status` on the taxonomy; composition order decides, the
+same way it decides for every override.
+
+### The common shapes: `failure_taxonomy_classifier`
+
+Where the built-in above owns the one signal with dedicated semantics (429 →
+`indefinite`, deadline-bounded), `failure_taxonomy_classifier` (a factory; call it to
+get a hook) sniffs the mundane taxonomy:
+
+- **transient** — connection-class errors (`isinstance` of the builtin
+  `ConnectionError` family), TimeoutError-shaped errors (`isinstance` of the builtin
+  `TimeoutError` — which covers `socket.timeout` and `asyncio.TimeoutError` — or a
+  class name ending in `Timeout`/`TimeoutError`, so `httpx.ReadTimeout`,
+  `requests.ConnectTimeout`, `aiohttp.ServerTimeoutError` claim without an import), and
+  HTTP `5xx` / `408` / `425` statuses;
+- **non-retryable** — any other `4xx` status;
+- **`None`** — everything else. Unsure → `None`: over-claiming is the haunt class, and
+  a taxonomy that guesses sends work where the declared policy never agreed to go.
+
+The defaults are documented module constants (`taskq.retry`):
+`DEFAULT_TRANSIENT_STATUSES` (`408`, `425`, and the `5xx` band),
+`DEFAULT_NON_RETRYABLE_STATUSES` (the `4xx` band minus `{408, 425, 429}`),
+`DEFAULT_TRANSIENT_EXCEPTION_NAMES`, `DEFAULT_EXCLUDED_EXCEPTION_NAMES` (empty).
+`429` is deliberately carved out of the non-retryable band — [§4](#4-non-retryable-exceptions)'s
+table calls it the single most important status to retry — so the taxonomy composes
+safely with the rate-limit built-in in either order.
+
+Defaults, composed after the rate-limit built-in (the recommended order); the
+configured variant shows sets replacing the defaults and name lists extending and
+excluding by exact class name. This fragment is deliberately not executed — it binds
+names from the earlier examples and illustrates configuration shape only, so it is
+set as indented text rather than a `​```python` fence (the executor collects those,
+and this fragment's names are bound by the earlier fences):
+
+    composed = compose_retry_classifiers(
+        rate_limit_aware_classifier,  # 429s, Retry-After hints
+        failure_taxonomy_classifier(),  # connection/timeout/5xx/4xx shapes
+    )
+    taxonomy = failure_taxonomy_classifier(
+        transient_status=frozenset({408, 425, *range(500, 600)}),
+        include_names=DEFAULT_TRANSIENT_EXCEPTION_NAMES | {"VendorFlake"},
+        exclude_names={"ReadTimeout"},
+    )
+
+Precedence, pinned by tests: `exclude_names` → transient signals (connection class,
+timeout shape, name include-set, `transient_status`) → `non_retryable_status` →
+`None`. A status present in both sets is transient ("retry later" is the safer wrong
+answer than killing a retryable job). Passing a set replaces the default entirely —
+there is no implicit merge, so what a classifier claims is always exactly what its
+configuration says.
+
+!!! note "Why the taxonomy never returns `indefinite`"
+    Every claim the taxonomy makes is `transient` (bounded by the declared
+    `max_attempts`) or `non_retryable` (terminal) — and `None` defers to the declared
+    policy. It never returns `indefinite`, so composing it needs no deadline argument:
+    a transient actor's budget still applies. The indefinite kind is reserved for the
+    rate-limit built-in above, whose danger block documents the deadline its override
+    requires. Pin:
+    `tests/test_failure_taxonomy_classifier.py::test_taxonomy_never_returns_indefinite`.
+
 ---
 
 ## 6. `schedule_to_close` interaction

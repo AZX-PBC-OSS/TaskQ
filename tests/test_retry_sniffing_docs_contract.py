@@ -1,0 +1,55 @@
+"""Docs-contract pins for the retry-sniffing feature (§5 extension).
+
+``docs/guides/retries.md`` §5 must keep the two things the retry-sniffing
+feature promises its users: the signal → override → bounds table (the
+"what bounds it" column is the haunt lesson rendered as documentation —
+every indefinite-returning path's docstring restates the deadline hazard,
+and the docs table is its user-facing twin) and the taxonomy's
+conservative-default contract. A doc edit that drifts from the shipped
+behaviour fails these pins (the pattern the docs-contract suite
+established; see tests/test_retries_crash_accounting_docs_contract.py).
+"""
+
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+_DOCS = _ROOT / "docs"
+
+
+def _normalized(path: Path) -> str:
+    return " ".join(path.read_text().split())
+
+
+def test_retries_guide_keeps_the_signal_override_bounds_table() -> None:
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "What bounds it" in text and "curve fallback" in text, (
+        "retries.md §5 must keep the signal → override → bounds table: the "
+        "header-sniffing feature's contract (what a Retry-After hint "
+        "changes, what still bounds it) must stay discoverable"
+    )
+    assert "X-Retry-After" in text and "parsedate_to_datetime" in text, (
+        "retries.md must name both header forms and the HTTP-date parse"
+    )
+    assert "the delay does not move the deadline" in text, (
+        "retries.md must restate the deadline hazard on the delay path: a "
+        "parsed Retry-After schedules when the next attempt lands, it does "
+        "not extend schedule_to_close"
+    )
+
+
+def test_retries_guide_keeps_the_taxonomy_conservative_default_contract() -> None:
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "failure_taxonomy_classifier" in text, (
+        "retries.md §5 must document the taxonomy classifier"
+    )
+    assert "over-claiming is the haunt class" in text, (
+        "retries.md must state the conservative default: unsure → None"
+    )
+    assert "never returns" in text and "indefinite" in text, (
+        "retries.md must pin the anti-haunt contract: the taxonomy claims "
+        "transient/non_retryable/None, never indefinite, so composing it "
+        "needs no deadline argument"
+    )
+    assert "DEFAULT_TRANSIENT_STATUSES" in text and "DEFAULT_NON_RETRYABLE_STATUSES" in text, (
+        "retries.md must name the documented module constants the sets default to"
+    )
