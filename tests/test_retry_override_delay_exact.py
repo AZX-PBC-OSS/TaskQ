@@ -29,6 +29,7 @@ from hypothesis import strategies as st
 import taskq.retry as _retry_module
 from taskq._ids import new_job_id
 from taskq.backend._protocol import EnqueueArgs, ErrorInfo
+from taskq.context import JobContext
 from taskq.retry import (
     JobRetryState,
     Retry,
@@ -37,6 +38,7 @@ from taskq.retry import (
     RetryPolicy,
     decide_after_failure,
 )
+from taskq.retry import rate_limit_aware_classifier as _rate_limit_aware_classifier
 from taskq.testing.actor import EmptyPayload, StubActorConfig
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -48,9 +50,12 @@ _HINT = timedelta(seconds=90)
 
 
 class _Http429Error(Exception):
-    """The user-side 429 carrying the server's ``Retry-After`` header."""
+    """The user-side 429 carrying the server's ``Retry-After`` header:
+    a bare ``.status_code`` (the built-in's claimed-signal duck-type)
+    plus ``.headers`` (its sniffed containers)."""
 
     def __init__(self, retry_after_seconds: int) -> None:
+        self.status_code = 429
         self.headers = {"Retry-After": str(retry_after_seconds)}
         super().__init__(f"HTTP 429, Retry-After: {retry_after_seconds}")
 
@@ -170,6 +175,73 @@ async def test_429_reprieve_schedules_the_retry_exactly_at_the_hint_in_virtual_t
         f"the retry was scheduled {row.scheduled_at - _START} after the failure in "
         f"virtual time; the server's exact 90s horizon must be honored verbatim"
     )
+
+
+# ── pin 2b: the cennan pin's full drain shape, mirrored upstream ────
+
+
+async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtual_time() -> None:
+    """The downstream consumer's pin, mirrored upstream at full fidelity
+    (cennan ``tests/unit/test_pipeline_actor_dispatch.py``, same test
+    name): the REAL ``rate_limit_aware_classifier`` (the built-in, not a
+    stand-in — the original pins its real classifier by identity, this
+    pin uses the real built-in for the same reason) turns a 429 carrying
+    ``Retry-After: 90`` into a reprieve scheduled at the server's own
+    horizon, advanced in VIRTUAL time by a full ``run_until_drained``
+    drain — attempt 2 runs and succeeds, the attempt rows' started_at
+    gap is exactly the honoured hint to the second (the override path
+    applies no jitter), where the static policy would have landed in the
+    jittered backoff band.
+    """
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+
+    calls: list[int] = []
+
+    def body(payload: object, ctx: JobContext[EmptyPayload]) -> object:
+        calls.append(ctx.attempt)
+        if len(calls) == 1:
+            raise _Http429Error(90)
+        # Attempt 2: the provider has recovered.
+        return {"ok": True}
+
+    backend.register_stub(
+        "partner",
+        body,
+        retry=_policy(),
+        # The REAL built-in, composed as a consumer would: the 429 shape
+        # below is the claimed signal (bare .status_code + .headers).
+        retry_classifier=_rate_limit_aware_classifier,
+        payload_type=EmptyPayload,
+    )
+
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="partner",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+    )
+    await backend.enqueue(args)
+
+    await backend.run_until_drained()
+
+    row = await backend.get(args.id)
+    assert row is not None and row.status == "succeeded"
+    assert row.attempt == 2, "the reprieve still spends one attempt of the budget (taskq semantics)"
+    assert calls == [1, 2], "the actor body ran exactly twice: the reprieved attempt, then success"
+
+    attempt_rows = await backend.get_attempts(args.id)
+    assert [a.attempt for a in attempt_rows] == [1, 2]
+    gap = attempt_rows[1].started_at - attempt_rows[0].started_at
+    assert gap == _HINT, (
+        f"the retry must be scheduled at the Retry-After horizon in virtual time, got {gap}; "
+        "the policy's jittered backoff answering instead is the #656 defect shape"
+    )
+    # And the drain genuinely moved the FakeClock to get there: no real second was spent.
+    assert clock.now() >= _START + _HINT
 
 
 # ── pin 3: the curve path STILL jitters (symmetric, unchanged) ──────
