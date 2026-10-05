@@ -24,7 +24,7 @@ The claim is scoped, and one family is deliberately outside it: the credential-r
 | `backoff` | `"exponential" \| "linear" \| "fixed"` | `"exponential"` | Backoff algorithm; see [Backoff algorithms](#3-backoff-algorithms). |
 | `base` | `timedelta` | `timedelta(seconds=5)` | Starting delay for the chosen backoff algorithm. Must be > 0. |
 | `cap` | `timedelta` | `timedelta(hours=1)` | Per-actor ceiling on the computed delay before jitter. Must be >= `base`. |
-| `jitter` | `float` | `0.2` | Multiplicative jitter factor. Must be in `[0.0, 1.0]`. |
+| `jitter` | `float` | `0.2` | Multiplicative jitter factor on the computed curve. Must be in `[0.0, 1.0]`. Explicit `RetryOverride.delay`s are honored exactly (never jittered). |
 
 **Validation constraints enforced at construction time:**
 - `max_attempts >= 1`: `RetryPolicy(max_attempts=0)` raises `ValidationError`.
@@ -155,6 +155,8 @@ At the cap the band is one-sided: once the curve saturates (the default exponent
 **Why not Full Jitter (`uniform(0, raw)`)?** Full Jitter collapses toward zero on attempt 1, causing a thundering-herd effect for high-volume actors. Multiplicative-symmetric jitter preserves the expected delay while still spreading retries across the fleet. (See Marc Brooker, "Exponential Backoff And Jitter", AWS Architecture Blog.)
 
 With `jitter=0.0`, `uniform(1, 1) = 1.0`, so the raw delay is returned exactly; there is no collapse to zero.
+
+**Scope: jitter spreads the computed curve, never an explicit override.** The band above applies to delays TaskQ computes — the backoff curve here, the crash-reclaim hand-back in [§12](#12-crash-vs-shutdown-what-happens-to-the-attempt-count). An explicit `RetryOverride.delay` — e.g. the server's `Retry-After` value your classifier handed back — is honored **exactly**, with no draw: an explicit direction is not something a default gets to mutate, and drawing ±20% over a server's horizon would schedule retries *before* it, the exact bad-citizen behavior the header exists to prevent. A fleet that wants spread on a hint applies it in its own classifier — see the opt-in spread pattern in [§5](#5-retry_classifier-hook-per-instance-retry-overrides).
 
 ### Global ceiling: `max_retry_backoff`
 
@@ -419,7 +421,7 @@ Every recognized signal, what the built-in returns for it, and what bounds the r
 
 | Signal | Override returned | What bounds it |
 |---|---|---|
-| `429` + hint parsed to a delay in `(0, 1 day]` | `indefinite` **with** `delay` | the policy's `jitter` spreads the draw, `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
+| `429` + hint parsed to a delay in `(0, 1 day]` | `indefinite` **with** `delay` | the delay is honored exactly — no jitter draw (the library never mutates a value your classifier specified) — `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
 | `429` with no hint header | `indefinite`, no `delay` | the declared policy's curve (`jitter`, `cap`, `max_retry_backoff`); `schedule_to_close` terminates |
 | `429` + hint of `0`, negative, unparsable, or beyond one day | `indefinite`, no `delay` (curve fallback) | same row as above — garbage degrades the *delay*, never the classification |
 | `RateLimitError`-named exception (with or without headers) | per the two rows above | same bounds |
@@ -427,18 +429,49 @@ Every recognized signal, what the built-in returns for it, and what bounds the r
 The curve-fallback rule is deliberate good citizenship: a server that answers
 `Retry-After: 0` (or a value past a day, or a format no RFC knows) does not get to
 degenerate the retry loop — the declared policy's curve keeps computing *when*, and the
-job's deadline keeps deciding *whether*. `jitter=0.0` gives exact `Retry-After`
-compliance (deterministic suites); the default `0.2` spreads a fleet's draws across the
-band so workers fielding the same hint do not come due in lockstep.
+job's deadline keeps deciding *whether*. The parsed hint itself is honored **exactly** —
+an explicit override delay is an explicit direction, and the library never mutates a
+value your classifier specified (drawing ±20% over the server's horizon would schedule
+retries *before* it). So the default needs no `jitter=0.0` escape for exact
+`Retry-After` compliance any more, and a fleet that wants its workers fielding the same
+hint not to come due in lockstep spreads the hint itself, in its own classifier. This
+fragment is deliberately not executed — it binds names from the earlier examples and
+illustrates the wrapping pattern only, so it is set as indented text rather than a
+`​```python` fence (the executor collects those):
+
+    import random
+
+    from taskq.retry import RetryOverride, apply_jitter
+
+    _spread_rng = random.Random()
+
+    def spread_rate_limit_hint(exc: BaseException, attempt: int) -> RetryOverride | None:
+        """The built-in's recognition, plus opt-in fleet-spread on the hint."""
+        override = rate_limit_aware_classifier(exc, attempt)
+        if override is not None and override.delay is not None:
+            return RetryOverride(
+                kind=override.kind,
+                delay=apply_jitter(override.delay, 0.2, _spread_rng),
+            )
+        return override
+
+    # register the wrapper instead of the bare built-in:
+    #     retry_classifier=spread_rate_limit_hint
+
+The spread is yours to shape (`apply_jitter` is the same multiplicative-symmetric band
+the curve uses, and it is your explicit direction now, so the default is not choosing
+for you).
 
 When two legitimate intents collide — the server's directive vs the operator's
 `max_retry_backoff` ceiling — the default resolves **toward the server**: the parsed
-hint is honored as the delay (it wins over the computed curve), and `max_retry_backoff`
+hint is honored as the delay, exactly (no jitter draws over it), and `max_retry_backoff`
 stays exactly what it already was for every override delay, the operator's safety
 ceiling (the established contract, unchanged). The escape hatches are user
-configuration, never a silent override: a user who wants the raw server value passes
-`jitter=0.0` (and raises `max_retry_backoff` if the operator's ceiling is genuinely
-lower than the server's ask); a user who wants the curve regardless of the server
+configuration, never a silent override: a user who wants the raw server value already
+has it — the default honors the hint exactly (raise `max_retry_backoff` if the
+operator's ceiling is genuinely lower than the server's ask); a user who wants the hint
+spread across a fleet applies `apply_jitter` to it in their own classifier (the pattern
+above); a user who wants the curve regardless of the server
 fences the recognition with their own classifier registered first in the composition
 or `exclude_names`/`transient_status` on the taxonomy; composition order decides, the
 same way it decides for every override.
@@ -550,8 +583,11 @@ place here:
        )
 
 And the runbook-exact case — retry at exactly the server's `Retry-After`, no
-spread — passes `jitter=0.0` on the declared policy (the
+spread — is the default now: an explicit override delay is honored exactly, no
+jitter draws over it anywhere on that path (the
 [escape note above](#sniffing-the-servers-hint-retry-after-x-retry-after)).
+`jitter=0.0` on the declared policy still silences the *computed curve's*
+jitter, for fully deterministic suites.
 
 ---
 

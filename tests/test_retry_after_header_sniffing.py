@@ -386,28 +386,29 @@ def test_retry_after_delay_respects_the_min_deferral_floor() -> None:
     assert decision.retry_delay >= timedelta(seconds=1)
 
 
-# ── jitter on indefinite-override delays, end-to-end ─────────────
+# ── override delays are honored exactly, end-to-end ──────────────
 
 
-def test_policy_jitter_spreads_the_retry_after_delay_end_to_end() -> None:
-    """The declared policy's jitter applies to the override delay exactly
-    as it applies to the computed curve: a fleet of workers fielding the
-    same Retry-After must not all come due at the same instant. The delay
-    draws from the multiplicative-symmetric band [raw·(1-j), raw·(1+j)]
-    (fitted under max_retry_backoff), so with jitter=0.5 on a 100s hint
-    the draws spread across [50s, 150s] and are not all identical."""
-    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.5)
+def test_override_delay_is_honored_exactly_under_default_jitter() -> None:
+    """An explicit ``RetryOverride.delay`` is an explicit direction: the
+    library never mutates a value the user's classifier specified.
+    #656 drew the policy's multiplicative-symmetric band over the hint,
+    which with the default ``jitter=0.2`` turned a 100s ``Retry-After``
+    into a draw from ``[80s, 120s]`` — half of it *before* the server's
+    horizon, the exact bad-citizen behavior the header exists to
+    prevent. The override path applies no jitter (the pre-#656
+    contract): 200 production draws under the default policy all land
+    on the hint exactly; jitter spreads only the computed curve."""
+    policy = RetryPolicy(kind="transient", max_attempts=3)  # default jitter=0.2
     exc = _with_retry_after("100")
 
-    decisions = [decide_after_failure(_actor_with(policy), exc, _job_state()) for _ in range(40)]
+    decisions = [decide_after_failure(_actor_with(policy), exc, _job_state()) for _ in range(200)]
 
     delays = [d.retry_delay for d in decisions if isinstance(d, Retry)]
-    assert len(delays) == 40
-    for delay in delays:
-        assert timedelta(seconds=50) <= delay <= timedelta(seconds=150)
-    assert len(set(delays)) > 1, (
-        "the policy's jitter must spread the override delay; identical draws "
-        "mean jitter is not applied to override delays"
+    assert len(delays) == 200
+    assert set(delays) == {timedelta(seconds=100)}, (
+        "an explicit override delay must be honored exactly; the policy's "
+        "jitter may not draw over a value the user's classifier specified"
     )
 
 
