@@ -317,6 +317,242 @@ consumer level (`asyncio.wait_for`), not used by the classifier. The row's
 `@actor` literal: a row/registration mismatch is re-validated loudly rather
 than silently trusted.
 
+### Composing classifiers: `compose_retry_classifiers` and `rate_limit_aware_classifier`
+
+An actor that needs both a domain-specific classifier and rate-limit awareness would
+otherwise hand-roll the "try mine, then fall back" chain inside one function. Two helpers
+(`taskq.retry`, re-exported from `taskq`) compose classifiers instead:
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import actor, rate_limit_aware_classifier
+from taskq.retry import RetryPolicy, compose_retry_classifiers
+
+
+@actor(
+    retry=RetryPolicy(kind="transient", max_attempts=5),
+    retry_classifier=compose_retry_classifiers(
+        classify_http_error,  # your domain classifier first...
+        rate_limit_aware_classifier,  # ...the built-in as the catch-all
+    ),
+)
+async def call_partner_api(payload: Payload) -> Result: ...
+```
+
+**Semantics: first override wins, order matters.** Each classifier is invoked in
+registration order with `(exception, attempt)`. The first classifier returning a
+`RetryOverride` decides and later classifiers are not consulted (short-circuit); a `None`
+falls through to the next; when every classifier returns `None` the composition returns
+`None` and the declared `RetryPolicy` governs, exactly as a single hook returning `None`
+does. Put the most specific classifier first — here `classify_http_error` claims 429s with
+a server-provided `Retry-After` delay before the built-in ever sees them.
+
+**A buggy classifier is isolated, not fatal.** The single-hook reliability guarantee
+composes per classifier: one that raises is logged at `WARNING` and skipped, and one that
+returns something that is not a `RetryOverride` is logged and skipped too — composition
+continues with the next classifier rather than discarding the healthy ones' overrides and
+falling back to the declared policy. `KeyboardInterrupt` and `asyncio.CancelledError` are
+never a classifier outcome and propagate raw. `compose_retry_classifiers()` with no
+arguments returns a hook that always returns `None`, so a call site can compose a
+possibly-empty list.
+
+**`rate_limit_aware_classifier` fixes the 429-burns-the-budget trap.** Without a
+classifier, a declared `transient` policy burns one attempt of `max_attempts` per 429:
+with the defaults (`max_attempts=3`, `base=5s`, exponential) a sustained rate limit kills
+the job after two delays — about 15 seconds (5s + 10s; the 20s rung is never reached, the
+third failure is terminal and schedules no delay) — which is almost never the operator's
+intent — a rate limit means "wait it out", the unbounded-in-attempts behaviour only an
+`indefinite` kind provides. The built-in recognizes:
+
+- TaskQ's own `ReservationUnavailable` raised with `source="rate_limit"` (a shared
+  limiter's denial surfacing in the actor's frame); a `source="reservation"` denial is a
+  concurrency-slot condition and is not recognized.
+- Common HTTP 429 duck-types, no import required: an exception carrying
+  `.response.status_code == 429` (the `httpx`/`httpx2`/`requests` shapes),
+  `.response.status == 429` or a bare `.status == 429` (the `aiohttp`
+  `ClientResponseError` shape), or a bare `.status_code == 429`.
+- An exception whose class is literally named `RateLimitError` (the openai/anthropic-style
+  SDK shape), even without HTTP attributes. This is the loosest signal: the HTTP shapes at
+  least require a 429, but the name match requires nothing, so an unrelated domain error
+  that merely carries the name (no rate-limit semantics at all) is overridden to
+  `indefinite` too. If your domain has such a class, put a classifier that claims it
+  *before* the built-in in the composition, or rename it.
+
+Everything else returns `None`: a 500 keeps its bounded transient budget and a 404 its
+non-retryable verdict even when the built-in is composed in. The override sets
+`kind="indefinite"` only — the declared policy's backoff curve (jitter, cap,
+`max_retry_backoff`) keeps computing *when* to retry. For a known-duration wait that
+spends no attempt budget, raise `RetryAfter(delay, consume_budget=False)` from the actor
+body instead ([§9](#9-control-flow-signals)).
+
+!!! danger "The override's only stopping condition is a deadline — give the job one"
+    `kind="indefinite"` has no attempt ceiling. Its single stopping condition is the job's
+    `schedule_to_close`, arbitrated in SQL — and **a `transient` actor never has one**:
+    `retry.time_budget` is only stamped as a `schedule_to_close` for actors declared
+    `kind="indefinite"` (setting it on a `transient` actor warns `actor-config-time-budget-ignored`
+    at registration and is dropped at enqueue), so a `transient` job's
+    `schedule_to_close` is `NULL` unless a per-enqueue `schedule_to_close=` was passed.
+    A `NULL` deadline never trips the deadline sweep and never blocks dispatch. Composing
+    this built-in into a `transient` actor therefore means: a sustained 429 storm retries
+    that job **forever** — unbounded attempts *and* unbounded wall-clock time, with no
+    warning at registration (the declared kind is `transient`, so
+    `actor-config-indefinite-no-budget` cannot fire) and no warning at override time. The
+    example at the top of this section is exactly this configuration. Give such an actor a
+    stopping condition: declare it `kind="indefinite"` with a `retry.time_budget` (the
+    deadline then exists and the registration warning stays honest), bound the 429s with a
+    domain classifier registered *before* the built-in (e.g. override to `transient` past
+    a budget you track yourself), or pass `schedule_to_close=` per enqueue (deprecated
+    form).
+
+### Sniffing the server's hint: `Retry-After` / `X-Retry-After`
+
+On a claimed signal the built-in also reads the server's delay hint, duck-typed over the
+common shapes with no import required (TaskQ never imports an HTTP client; your
+transitive dependency tree stays yours): `exception.response.headers` (the
+`httpx`/`httpx2`/`requests` shape) and a bare `exception.headers` (the `aiohttp`
+`ClientResponseError` shape, or any exception carrying headers directly). Both the
+standard `retry-after` and the de-facto `x-retry-after` header names are read,
+case-insensitively; the standard header wins when both are present. Values are parsed
+as seconds-integers (`"120"`) and HTTP-dates (RFC 9110 IMF-fixdate, via the stdlib's
+`email.utils.parsedate_to_datetime`).
+
+Every recognized signal, what the built-in returns for it, and what bounds the result:
+
+| Signal | Override returned | What bounds it |
+|---|---|---|
+| `429` + hint parsed to a delay in `(0, 1 day]` | `indefinite` **with** `delay` | the policy's `jitter` spreads the draw, `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
+| `429` with no hint header | `indefinite`, no `delay` | the declared policy's curve (`jitter`, `cap`, `max_retry_backoff`); `schedule_to_close` terminates |
+| `429` + hint of `0`, negative, unparsable, or beyond one day | `indefinite`, no `delay` (curve fallback) | same row as above — garbage degrades the *delay*, never the classification |
+| `RateLimitError`-named exception (with or without headers) | per the two rows above | same bounds |
+
+The curve-fallback rule is deliberate good citizenship: a server that answers
+`Retry-After: 0` (or a value past a day, or a format no RFC knows) does not get to
+degenerate the retry loop — the declared policy's curve keeps computing *when*, and the
+job's deadline keeps deciding *whether*. `jitter=0.0` gives exact `Retry-After`
+compliance (deterministic suites); the default `0.2` spreads a fleet's draws across the
+band so workers fielding the same hint do not come due in lockstep.
+
+When two legitimate intents collide — the server's directive vs the operator's
+`max_retry_backoff` ceiling — the default resolves **toward the server**: the parsed
+hint is honored as the delay (it wins over the computed curve), and `max_retry_backoff`
+stays exactly what it already was for every override delay, the operator's safety
+ceiling (the established contract, unchanged). The escape hatches are user
+configuration, never a silent override: a user who wants the raw server value passes
+`jitter=0.0` (and raises `max_retry_backoff` if the operator's ceiling is genuinely
+lower than the server's ask); a user who wants the curve regardless of the server
+fences the recognition with their own classifier registered first in the composition
+or `exclude_names`/`transient_status` on the taxonomy; composition order decides, the
+same way it decides for every override.
+
+### The common shapes: `failure_taxonomy_classifier`
+
+Where the built-in above owns the one signal with dedicated semantics (429 →
+`indefinite`, deadline-bounded), `failure_taxonomy_classifier` (a factory; call it to
+get a hook) sniffs the mundane taxonomy:
+
+- **transient** — connection-class errors (`isinstance` of the builtin
+  `ConnectionError` family), TimeoutError-shaped errors (`isinstance` of the builtin
+  `TimeoutError` — which covers `socket.timeout` and `asyncio.TimeoutError` — or a
+  class name ending in `Timeout`/`TimeoutError`, so `httpx.ReadTimeout`,
+  `requests.ConnectTimeout`, `aiohttp.ServerTimeoutError` claim without an import), and
+  HTTP `5xx` / `408` / `425` statuses;
+- **non-retryable** — any other `4xx` status;
+- **`None`** — everything else. Unsure → `None`: over-claiming is the haunt class, and
+  a taxonomy that guesses sends work where the declared policy never agreed to go.
+
+The timeout name-suffix match is a name heuristic, not a semantics check. A real-world
+counterexample: `pymongo.errors.ExecutionTimeout` — the *server* killed an operation for
+exceeding its `maxTimeMS`, and re-running the same query re-fails deterministically —
+ends in `Timeout` and is claimed `transient` by the defaults (bounded by `max_attempts`,
+so the cost is a spent retry budget, not a runaway). Where a timeout means "this work can
+never succeed", exclude it by exact name: `exclude_names={"ExecutionTimeout"}`.
+
+The defaults are documented module constants (`taskq.retry`):
+`DEFAULT_TRANSIENT_STATUSES` (`408`, `425`, and the `5xx` band),
+`DEFAULT_NON_RETRYABLE_STATUSES` (the `4xx` band minus `{408, 425, 429}`),
+`DEFAULT_TRANSIENT_EXCEPTION_NAMES`, `DEFAULT_EXCLUDED_EXCEPTION_NAMES` (empty).
+`429` is deliberately carved out of the non-retryable band — [§4](#4-non-retryable-exceptions)'s
+table calls it the single most important status to retry — so the taxonomy composes
+safely with the rate-limit built-in in either order.
+
+Defaults, composed after the rate-limit built-in (the recommended order); the
+configured variant shows sets replacing the defaults and name lists extending and
+excluding by exact class name. This fragment is deliberately not executed — it binds
+names from the earlier examples and illustrates configuration shape only, so it is
+set as indented text rather than a `​```python` fence (the executor collects those,
+and this fragment's names are bound by the earlier fences):
+
+    composed = compose_retry_classifiers(
+        rate_limit_aware_classifier,  # 429s, Retry-After hints
+        failure_taxonomy_classifier(),  # connection/timeout/5xx/4xx shapes
+    )
+    taxonomy = failure_taxonomy_classifier(
+        transient_status=frozenset({408, 425, *range(500, 600)}),
+        include_names=DEFAULT_TRANSIENT_EXCEPTION_NAMES | {"VendorFlake"},
+        exclude_names={"ReadTimeout"},
+    )
+
+Precedence, pinned by tests: `exclude_names` → transient signals (connection class,
+timeout shape, name include-set, `transient_status`) → `non_retryable_status` →
+`None`. A status present in both sets is transient ("retry later" is the safer wrong
+answer than killing a retryable job). Passing a set replaces the default entirely —
+there is no implicit merge, so what a classifier claims is always exactly what its
+configuration says.
+
+!!! note "Why the taxonomy never returns `indefinite`"
+    Every claim the taxonomy makes is `transient` (bounded by the declared
+    `max_attempts`) or `non_retryable` (terminal) — and `None` defers to the declared
+    policy. It never returns `indefinite`, so composing it needs no deadline argument:
+    a transient actor's budget still applies. The indefinite kind is reserved for the
+    rate-limit built-in above, whose danger block documents the deadline its override
+    requires. Pin:
+    `tests/test_failure_taxonomy_classifier.py::test_taxonomy_never_returns_indefinite`.
+
+### Don't want 429 doing (indefinite) backoff? You have three explicit ways out
+
+Everything above gives 429s to the built-in's `indefinite` override because a rate
+limit usually means "wait it out". That is a default, never a requirement — and
+none of the ways out is silent. All three are configuration you write, in one
+place here:
+
+1. **Don't compose the built-in.** `rate_limit_aware_classifier` is opt-in by
+   construction: nothing registers it for you. Leave it out and a 429 is an
+   ordinary exception — your declared policy governs untouched. For the default
+   `transient` policy that is the trap restated, not escaped: a sustained 429
+   burns the budget (5s + 10s, the third failure is terminal — about 15 seconds,
+   the math computed above when introducing the built-in). This way out restores
+   exactly the death the built-in exists to prevent; take it only when "give up
+   quickly on 429s" is genuinely the intent for that actor.
+
+2. **Claim 429 in your taxonomy's `transient_status`.** Run the taxonomy without
+   the built-in and claim the 429s as bounded-transient yourself:
+
+       taxonomy = failure_taxonomy_classifier(
+           transient_status=frozenset({408, 425, 429, *range(500, 600)}),  # the defaults, plus 429
+       )
+       taxonomy(Http429Error(), 1)  # → RetryOverride(kind="transient"): max_attempts governs
+
+   Passing the set replaces the defaults wholesale (no implicit merge), so spell
+   out the whole set, defaults included. The claim is
+   `RetryOverride(kind="transient")`: the declared `max_attempts` governs and the
+   job dies when the budget does — bounded, never indefinite. (Composed with the
+   built-in anyway, order decides: the taxonomy must come first, or the built-in's
+   `indefinite` claim wins the 429.)
+
+3. **Fence with your own classifier first.** Composition order is the general
+   escape: register a classifier that claims 429s however you like — your own
+   `Retry-After` parsing, your own budget — before the built-in, and the built-in
+   never sees one (first override wins; the short-circuit is the same mechanism
+   [pinned above](#composing-classifiers-compose_retry_classifiers-and-rate_limit_aware_classifier)).
+
+       hook = compose_retry_classifiers(
+           my_rate_limit_fence,  # claims 429s on your terms
+           rate_limit_aware_classifier,  # never consulted for a 429 yours claimed
+       )
+
+And the runbook-exact case — retry at exactly the server's `Retry-After`, no
+spread — passes `jitter=0.0` on the declared policy (the
+[escape note above](#sniffing-the-servers-hint-retry-after-x-retry-after)).
+
 ---
 
 ## 6. `schedule_to_close` interaction

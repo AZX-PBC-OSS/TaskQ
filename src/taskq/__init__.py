@@ -123,6 +123,9 @@ from taskq.retry import (
     RetryDecision,
     RetryOverride,
     RetryPolicy,
+    compose_retry_classifiers,
+    failure_taxonomy_classifier,
+    rate_limit_aware_classifier,
 )
 from taskq.scheduler import register_cron
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
@@ -241,13 +244,16 @@ __all__ = [
     "__version__",
     "actor",
     "apply_batch_terminal_outcome",
+    "compose_retry_classifiers",
     "cron",
     "enrich_pg_dsn",
     "ensure_sslmode_require",
+    "failure_taxonomy_classifier",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
     "make_redis_client_factory",
     "new_uuid",
+    "rate_limit_aware_classifier",
     "register_cron",
     "validate_actor_payload",
     "wait_for_batch",

@@ -7,17 +7,23 @@ clock reads, no backend imports. The adapter layer (OnRetryExhausted,
 OnSuccess, OnCancel, ActorConfigLike, decide_after_failure,
 invoke_on_retry_exhausted, invoke_on_success, invoke_on_cancel,
 safe_mark_failed_or_retry) wires the classifier to the consumer loop
-and is permitted backend imports
+and is permitted backend imports. The built-in classifier hooks
+(rate_limit_aware_classifier, failure_taxonomy_classifier) sit between
+the two: they are pure functions of ``(exception, attempt)`` except for
+one bounded clock read — HTTP-date ``Retry-After`` parsing needs *now*
+to turn a date into a delay; the clock is injectable (``now=``) and
+never touched on a claimed-without-header or miss path.
 """
 
 import asyncio
+import email.utils
 import hashlib
 import inspect
 import random
 import secrets
-from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
-from typing import Final, Literal, NamedTuple, Protocol, Self
+from collections.abc import Awaitable, Callable, Iterable
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
@@ -40,6 +46,7 @@ from taskq.constants import (
 )
 from taskq.exceptions import (
     PayloadValidationError,
+    ReservationUnavailable,
     ResultTooLarge,
     UnencodableValue,
     WorkerOwnershipMismatch,
@@ -63,11 +70,14 @@ __all__ = [
     "RetryOverride",
     "RetryPolicy",
     "apply_jitter",
+    "compose_retry_classifiers",
     "compute_backoff",
     "decide_after_failure",
+    "failure_taxonomy_classifier",
     "invoke_on_cancel",
     "invoke_on_retry_exhausted",
     "invoke_on_success",
+    "rate_limit_aware_classifier",
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
@@ -461,7 +471,11 @@ class RetryOverride(BaseModel):
     ``delay`` set lets the actor honour a server-provided retry-after
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
-    ceiling so a malicious or malformed header cannot strand a job.
+    ceiling so a malicious or malformed header cannot strand a job. The
+    delay is also spread by the declared policy's ``jitter`` (same
+    multiplicative-symmetric band as the computed curve, fitted under
+    the ceiling; ``jitter=0.0`` is the exact-passthrough identity), so a
+    fleet fielding the same hint does not come due in lockstep.
 
     A ``delay`` schedules the next attempt; it does not extend the job's
     budget, in either dimension. It does not spare the attempt, the
@@ -489,9 +503,10 @@ class RetryOverride(BaseModel):
             "max_attempts on schedule. Pair it with kind='indefinite' to keep "
             "retrying, or raise RetryAfter(delay, consume_budget=False) from "
             "the actor body for a known-duration wait that spends no budget. "
-            "Clamped by max_retry_backoff, but NOT reconciled with "
-            "schedule_to_close, a delay landing past that deadline fails "
-            "the job terminally through the deadline path."
+            "Spread by the policy's jitter (jitter=0.0 is the exact "
+            "identity), then clamped by max_retry_backoff, but NOT "
+            "reconciled with schedule_to_close, a delay landing past that "
+            "deadline fails the job terminally through the deadline path."
         ),
     )
 
@@ -527,6 +542,501 @@ policy in that case, a broken hook can never crash the retry pipeline.
 """
 
 
+def compose_retry_classifiers(
+    *classifiers: RetryClassifierHook,
+) -> RetryClassifierHook:
+    """Compose classifier hooks into one, first-override-wins.
+
+    Each *classifier* is invoked in registration order with
+    ``(exception, attempt)``. The first classifier that returns a
+    :class:`RetryOverride` decides the outcome and later classifiers are
+    not consulted for that exception; a ``None`` falls through to the
+    next classifier; when every classifier returns ``None`` the
+    composition returns ``None`` so the actor's declared ``RetryPolicy``
+    governs, exactly as a single hook returning ``None`` does.
+
+    Order matters: put the most specific classifier first. A composed
+    classifier registered via ``@actor(retry_classifier=...)`` sits at
+    the same seam as a single hook, so the adapter's own precedence
+    contract is unchanged, ``non_retryable_exceptions`` and the built-in
+    unconditional-Fail classes still win over the whole composition.
+
+    Per-classifier isolation (the single-classifier contract, composed):
+    a classifier that raises is logged at WARNING and skipped, and
+    composition continues with the next classifier, never propagating;
+    likewise a classifier returning something that is not a
+    :class:`RetryOverride` nor ``None`` is logged and skipped. The
+    adapter's carve-out applies per classifier: ``KeyboardInterrupt`` and
+    ``asyncio.CancelledError`` are never a classifier outcome and
+    propagate raw. A classifier that raises is skipped rather than
+    aborting the composition because the classifiers are independent
+    observers of the same exception, one of them being broken says
+    nothing about the others, and falling back to the declared policy on
+    the first broken one would silently discard the overrides the healthy
+    classifiers were registered to provide.
+
+    ``compose_retry_classifiers()`` with no arguments returns a hook that
+    always returns ``None`` (the declared policy governs), so call sites
+    can compose a possibly-empty list without a special case.
+    """
+
+    def composed(exception: BaseException, attempt: int) -> RetryOverride | None:
+        for index, classifier in enumerate(classifiers):
+            try:
+                override = classifier(exception, attempt)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # The carve-out, exactly as the adapter's single-hook
+                # boundary applies it: interpreter/operator intent
+                # (KeyboardInterrupt) and shutdown cancellation
+                # (CancelledError) are never a classifier outcome; both
+                # propagate raw.
+                raise
+            except BaseException as exc:
+                # BaseException, not Exception: classifiers are user code
+                # invoked in this frame, and the isolation contract is
+                # that a buggy classifier is logged and skipped, never
+                # propagated (the same boundary the adapter applies to a
+                # single hook). Logged with repr so the record names the
+                # classifier's own exception.
+                logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
+                logger.warning(
+                    "retry-classifier-hook-failed",
+                    hook="retry_classifier",
+                    classifier_index=index,
+                    error=safe_repr(exc),
+                )
+                continue
+            if override is None:
+                continue
+            if not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the classifier's declared return type is RetryOverride | None, but a buggy classifier may return a dict or other type at runtime; this guard keeps the composition's return contract (RetryOverride | None) true at runtime, mirroring the adapter's single-hook guard.
+                logger_invalid: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
+                logger_invalid.warning(
+                    "retry-classifier-hook-invalid-return",
+                    hook="retry_classifier",
+                    classifier_index=index,
+                    return_type=type(override).__name__,
+                )
+                continue
+            return override
+        return None
+
+    return composed
+
+
+_HTTP_STATUS_429: Final[int] = 429
+
+#: The header names the built-ins sniff, in precedence order: the standard
+#: ``Retry-After`` first, the de-facto ``X-Retry-After`` second. Lookup is
+#: case-insensitive (see :func:`_header_lookup`).
+_RETRY_AFTER_HEADERS: Final[tuple[str, str]] = ("retry-after", "x-retry-after")
+
+#: A parsed ``Retry-After`` delay beyond one day is treated as garbage and
+#: falls back to the curve (kind-only override): a server asking for more
+#: than a day of silence is either broken or hostile, and the operator's
+#: ``max_retry_backoff`` — not a remote header — should shape a wait that
+#: long. One day also dwarfs every sane rate-limit window while still
+#: honouring the hour-scale hints real providers send. The seconds form is
+#: checked against the seconds bound BEFORE the ``timedelta`` is built — a
+#: ``timedelta(seconds=10**18)`` overflows, and an OverflowError escaping
+#: a classifier is exactly the crash the isolation contract exists to
+#: absorb.
+_MAX_RETRY_AFTER_DELAY: Final[timedelta] = timedelta(days=1)
+_MAX_RETRY_AFTER_DELAY_SECONDS: Final[int] = _MAX_RETRY_AFTER_DELAY // timedelta(seconds=1)
+
+
+def _extract_http_status(exception: BaseException) -> int | None:
+    """The duck-typed HTTP status extraction shared by the built-in
+    classifiers, no import required (nothing under ``taskq`` imports an
+    HTTP client).
+
+    Recognized shapes, in check order: an exception carrying
+    ``.response.status_code`` (httpx / httpx2 / requests'
+    ``HTTPStatusError``/``HTTPError``), ``.response.status`` or a bare
+    ``.status`` on the exception (aiohttp's ``ClientResponseError``), or a
+    bare ``.status_code``. A non-int attribute (a mock, a property that
+    returns a string) is skipped, not trusted.
+    """
+    response = getattr(exception, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int):
+                return value
+    for attr in ("status_code", "status"):
+        value = getattr(exception, attr, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _header_lookup(headers: object, name: str) -> str | None:
+    """Case-insensitive single-header lookup over the duck-typed header
+    containers.
+
+    The real containers (httpx's ``Headers``, requests'
+    ``CaseInsensitiveDict``, aiohttp's ``CIMultiDict``) implement a
+    case-insensitive ``.get`` — that is the fast path. A plain dict (the
+    hand-rolled / test shape) is case-sensitive, so the lookup falls
+    through to an ``.items()`` scan. A value that is not a non-empty
+    string is not a header value and reads as absent.
+    """
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        value: Any = getter(name)
+        if isinstance(value, str) and value:
+            return value
+    items = getattr(headers, "items", None)
+    if callable(items):
+        lowered = name.lower()
+        pairs: Any = items()
+        for key, value in pairs:
+            if isinstance(key, str) and key.lower() == lowered and isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _extract_retry_after_header(exception: BaseException) -> str | None:
+    """The server-supplied retry hint, duck-typed over the common shapes.
+
+    ``exception.response.headers`` (httpx / httpx2 / requests) and a bare
+    ``exception.headers`` (aiohttp's ``ClientResponseError``, or any
+    exception carrying headers directly). Only ever called on an
+    already-claimed signal — the parse path must not run on the miss path
+    (every exception an actor raises crosses this classifier; only the
+    claimed ones pay for header sniffing).
+    """
+    response = getattr(exception, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            for name in _RETRY_AFTER_HEADERS:
+                value = _header_lookup(headers, name)
+                if value is not None:
+                    return value
+    headers = getattr(exception, "headers", None)
+    if headers is not None:
+        for name in _RETRY_AFTER_HEADERS:
+            value = _header_lookup(headers, name)
+            if value is not None:
+                return value
+    return None
+
+
+def _parse_retry_after(value: str, *, now: datetime) -> timedelta | None:
+    """Parse a ``Retry-After`` header value into a delay.
+
+    Recognized forms: the seconds-integer (``"120"``) and the HTTP-date
+    (RFC 9110 IMF-fixdate, via ``email.utils.parsedate_to_datetime``; a
+    naive date — the ``-0000`` zone — is read as UTC). ``*now`` turns the
+    date form into a delay; the classifier injects
+    ``datetime.now(UTC)`` so tests (and callers with their own
+    clock domain) can pin it.
+
+    Returns ``None`` — the curve-fallback signal — for every unusable
+    value: empty or unparsable text, a negative or zero delay (zero would
+    otherwise degenerate into the monopolisation loop the decision floor
+    exists to prevent), and the absurd (beyond
+    :data:`_MAX_RETRY_AFTER_DELAY`, one day). The caller degrades a
+    ``None`` to the kind-only override, so garbage can never *break* the
+    classification, only remove the delay half of it.
+    """
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        seconds = int(text)
+    except ValueError:
+        seconds = None
+    if seconds is not None:
+        if seconds <= 0 or seconds > _MAX_RETRY_AFTER_DELAY_SECONDS:
+            return None
+        delay = timedelta(seconds=seconds)
+    else:
+        try:
+            when = email.utils.parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        delay = when - now
+    if delay <= timedelta(0) or delay > _MAX_RETRY_AFTER_DELAY:
+        return None
+    return delay
+
+
+def rate_limit_aware_classifier(
+    exception: BaseException,
+    attempt: int,
+    *,
+    now: datetime | None = None,
+) -> RetryOverride | None:
+    """Built-in classifier for *application-level* rate-limit raises.
+
+    TaskQ's own rate limiting denies at claim time (the job is
+    rescheduled, no attempt is charged) and never reaches this
+    classifier; what this classifier recognizes is the moment an
+    application's *outgoing* call is rate-limited and the actor lets the
+    signal propagate, the shape the cbre-pfc migration audit (W3.H/F1)
+    found consumers hand-rolling: without it a declared ``transient``
+    policy burns one attempt of ``max_attempts`` per 429 and the job dies
+    after a few tens of seconds (base=5s exponential, max_attempts=3: two
+    delays, 5s + 10s — the 20s rung is never reached, the third failure is
+    terminal and schedules no delay), when the operator's intent for a rate
+    limit is "wait it out", the unbounded-in-attempts behaviour only an
+    ``indefinite`` kind provides.
+
+    Recognized signals, in check order:
+
+    * TaskQ's own :class:`~taskq.exceptions.ReservationUnavailable` raised
+      with ``source="rate_limit"``: a shared limiter's denial surfacing in
+      the actor's frame. A ``source="reservation"`` denial is a
+      concurrency-slot condition, not a rate limit, and is NOT recognized.
+    * Common HTTP 429 duck-types, no import required: an exception carrying
+      ``.response.status_code == 429`` (httpx / httpx2 / requests'
+      ``HTTPStatusError``/``HTTPError`` shapes), ``.response.status == 429``
+      or a bare ``.status == 429`` on the exception (aiohttp's
+      ``ClientResponseError``), or a bare ``.status_code == 429``.
+    * An exception whose class is literally named ``RateLimitError`` (the
+      openai/anthropic-style SDK shape), even when it carries no HTTP
+      status attribute.
+
+    On a claimed signal the classifier sniffs the server's retry hint —
+    the ``retry-after`` and ``x-retry-after`` headers, case-insensitive,
+    on ``exception.response.headers`` (httpx/requests) or a bare
+    ``exception.headers`` (aiohttp) — and parses it as a seconds-integer
+    or an HTTP-date (see :func:`_parse_retry_after`).
+
+    Everything else returns ``None``: the declared policy governs, so a
+    500 keeps its bounded transient budget and a 404 its non-retryable
+    verdict even when this classifier is composed in. Header sniffing
+    runs only on a claimed signal: the miss path (the path every ordinary
+    exception takes) does no ``getattr`` chains beyond the status
+    duck-typing and allocates nothing (pinned by
+    ``tests/perf/test_retry_classifier_miss_benchmark.py`` and the
+    tracemalloc pin in ``tests/test_retry_after_header_sniffing.py``).
+
+    The override and what bounds it (the full table lives in
+    ``docs/guides/retries.md`` §5):
+
+    * a parsed hint → ``RetryOverride(kind="indefinite", delay=hint)``:
+      the hint is spread by the declared policy's ``jitter`` and clamped
+      to ``max_retry_backoff`` by :meth:`RetryClassifier._retry_decision`
+      (verified, not assumed — the same path any ``RetryOverride.delay``
+      takes), then floored at ``MIN_DEFERRAL_INTERVAL``. The classifier
+      adds no ceiling of its own; the parse-level cap (one day) plus the
+      clamp are the two layers a malformed header meets.
+    * a claimed signal with no usable hint (no header, or the
+      curve-fallback garbage cases: zero / negative / unparsable / beyond
+      one day) → ``RetryOverride(kind="indefinite")`` with no ``delay``:
+      the declared policy's backoff curve (with jitter, cap, and
+      ``max_retry_backoff``) keeps computing *when* to retry, and the
+      job's ``schedule_to_close`` (``time_budget`` for an indefinite
+      policy) stays the single stopping condition, the same bound every
+      ``indefinite`` job has. Kind only, because the trap being fixed is
+      the attempt budget, not the curve.
+
+    Hazard: that stopping condition must exist. A ``transient`` actor is
+    never stamped with a ``schedule_to_close`` (``time_budget`` is only
+    honored for an ``indefinite``-declared policy; see
+    :func:`time_budget_as_interval`), so composing this classifier into a
+    ``transient`` actor makes a sustained 429 storm retry the job forever
+    — no attempt ceiling and no deadline. The parsed ``delay`` does not
+    change this: it schedules *when* the next attempt lands, it does not
+    move the job's ``schedule_to_close``, and a delay landing past that
+    deadline still fails the job terminally in the deadline path. Give
+    the actor a stopping condition: declare it ``kind="indefinite"`` with
+    a ``time_budget``, put a domain classifier before this one that
+    bounds the 429s, or pass a per-enqueue ``schedule_to_close``.
+
+    Compose it after your domain-specific classifiers:
+    ``compose_retry_classifiers(my_domain_classifier, rate_limit_aware_classifier)``;
+    a more specific classifier registered before it wins by composition
+    order, and one registered after it never sees a 429 this classifier
+    claimed.
+
+    ``now`` injects the clock for HTTP-date parsing (tests, or a caller
+    with its own clock domain); the default reads
+    ``datetime.now(UTC)`` — this is the module's one clock read,
+    never touched on the miss path.
+    """
+    if isinstance(exception, ReservationUnavailable):
+        if exception.source == "rate_limit":
+            return RetryOverride(kind="indefinite")
+        return None
+
+    status = _extract_http_status(exception)
+    if status != _HTTP_STATUS_429 and type(exception).__name__ != "RateLimitError":
+        return None
+
+    # Claimed: sniff the server's hint. Unusable → the curve-fallback
+    # (kind-only) override, exactly the pre-sniffing behavior.
+    header = _extract_retry_after_header(exception)
+    if header is not None:
+        delay = _parse_retry_after(header, now=now if now is not None else datetime.now(UTC))
+        if delay is not None:
+            return RetryOverride(kind="indefinite", delay=delay)
+    return RetryOverride(kind="indefinite")
+
+
+# ── failure taxonomy: the configurable common-shapes classifier ────────
+#
+# The defaults are documented module constants (frozen; build a variant
+# from them rather than mutating). The status sets REPLACE the built-in
+# defaults wholesale when passed explicitly — there is no implicit merge,
+# so what a classifier claims is always exactly what its configuration
+# says.
+
+
+#: Statuses the taxonomy claims ``transient``: 408 Request Timeout and 425
+#: Too Early (the two 4xx the §4 table calls retryable-because-timing) plus
+#: the whole 5xx band (server-side, usually recovers).
+DEFAULT_TRANSIENT_STATUSES: Final[frozenset[int]] = frozenset({408, 425, *range(500, 600)})
+
+#: Statuses the taxonomy claims ``non_retryable``: the 4xx band minus the
+#: carve-outs {408, 425} (transient above) and {429} — 429 is the single
+#: most important status to RETRY (see the §4 danger block) and belongs to
+#: :func:`rate_limit_aware_classifier`; the taxonomy deliberately claims
+#: nothing for it so the two compose safely in either order.
+DEFAULT_NON_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset(
+    status for status in range(400, 500) if status not in {408, 425, 429}
+)
+
+#: Exception class names the taxonomy claims ``transient`` by name: the
+#: stdlib connection/timeout shapes (also matched structurally — see the
+#: factory docstring) and the major HTTP clients' timeout/transport names,
+#: so httpx/requests/aiohttp outages claim without an import.
+DEFAULT_TRANSIENT_EXCEPTION_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "Timeout",
+        "TimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "ServerTimeoutError",
+        "ConnectionError",
+        "ConnectionResetError",
+        "ConnectionRefusedError",
+        "ConnectionAbortedError",
+    }
+)
+
+#: Exception class names the taxonomy refuses to claim. Empty by default;
+#: populated per actor for a domain class whose name matches a default or
+#: timeout-shaped signal but whose semantics disagree.
+DEFAULT_EXCLUDED_EXCEPTION_NAMES: Final[frozenset[str]] = frozenset()
+
+
+def failure_taxonomy_classifier(
+    *,
+    transient_status: Iterable[int] | None = None,
+    non_retryable_status: Iterable[int] | None = None,
+    include_names: Iterable[str] | None = None,
+    exclude_names: Iterable[str] | None = None,
+) -> RetryClassifierHook:
+    """Configurable classifier for the common failure shapes, the
+    conservative default the §4 table describes.
+
+    Where :func:`rate_limit_aware_classifier` owns the one signal with
+    dedicated semantics (429/rate-limit → ``indefinite``), this classifier
+    owns the mundane taxonomy: the shapes a declared ``transient`` policy
+    *should* govern but a single exception type cannot express
+    per-instance.
+
+    Claims, in check order:
+
+    1. ``exclude_names`` — an exception whose class name is listed returns
+       ``None`` whatever else matches (an explicit exclusion outranks
+       every signal, status included).
+    2. ``transient`` → :class:`RetryOverride(kind="transient")` — claimed
+       by any of:
+       * connection-class: ``isinstance`` of the builtin ``ConnectionError``
+         family (``ConnectionResetError``, ``ConnectionRefusedError``, …);
+       * TimeoutError-shaped: ``isinstance`` of the builtin
+         ``TimeoutError`` (covers ``socket.timeout`` and, since 3.11,
+         ``asyncio.TimeoutError``) or a class name ending in ``Timeout``/
+         ``TimeoutError`` (the httpx/requests/aiohttp shapes). The suffix
+         match is a name heuristic, not a semantics check: a real-world
+         counterexample is ``pymongo.errors.ExecutionTimeout`` — the
+         server killed the operation for exceeding ``maxTimeMS``, and a
+         re-run of the same query re-fails deterministically — whose name
+         ends in ``Timeout`` and is claimed ``transient`` by the defaults;
+         where a timeout means "this work can never succeed", exclude it
+         by exact name (``exclude_names={"ExecutionTimeout"}``);
+       * class name in ``include_names`` (exact match) or in the
+         ``DEFAULT_TRANSIENT_EXCEPTION_NAMES`` defaults;
+       * status in ``transient_status`` (defaults:
+         ``DEFAULT_TRANSIENT_STATUSES`` = 408, 425, and the 5xx band),
+         duck-typed through the same status shapes the built-in reads.
+    3. ``non_retryable`` → ``RetryOverride(kind="non_retryable")`` —
+       status in ``non_retryable_status`` (defaults:
+       ``DEFAULT_NON_RETRYABLE_STATUSES`` = 4xx minus {408, 425, 429}). A
+       status present in both sets is transient — check order decides,
+       and "retry later" is the safer wrong answer than killing a
+       retryable job.
+    4. Anything else → ``None``. The conservative default: over-claiming
+       is the haunt class.
+
+    Configuration replaces, never merges: passing
+    ``transient_status=frozenset({429})`` claims ONLY 429 (the 5xx band
+    and 408/425 stop being transient); ``include_names`` replaces the
+    default name set (extend ``DEFAULT_TRANSIENT_EXCEPTION_NAMES | {"Yours"}``
+    to keep the defaults). Build the classifier once at registration and
+    reuse it — the sets are frozen at build time, per-call cost is a few
+    frozenset lookups.
+
+    Why the taxonomy never returns ``indefinite``: an ``indefinite``
+    override has no attempt ceiling, and its single stopping condition is
+    the job's ``schedule_to_close`` — which a ``transient`` actor never
+    has stamped (``time_budget`` is only honored for an
+    ``indefinite``-declared policy), so composing an
+    ``indefinite``-claiming classifier into a ``transient`` actor retries
+    the job forever: no attempt ceiling, no deadline, no warning at
+    registration or override time. That is the haunt this module's §5
+    danger block documents for the one built-in that genuinely needs the
+    kind (a rate limit means "wait it out"). The taxonomy's signals carry
+    no such semantics: a connection reset or a 503 is what
+    ``max_attempts``-bounded retrying is FOR, so every claim here is
+    ``transient`` (bounded by the declared budget) or ``non_retryable``
+    (terminal), and the declared policy keeps governing everything the
+    taxonomy is unsure about. Pin:
+    ``tests/test_failure_taxonomy_classifier.py::test_taxonomy_never_returns_indefinite``.
+    """
+    transient = (
+        DEFAULT_TRANSIENT_STATUSES if transient_status is None else frozenset(transient_status)
+    )
+    non_retryable = (
+        DEFAULT_NON_RETRYABLE_STATUSES
+        if non_retryable_status is None
+        else frozenset(non_retryable_status)
+    )
+    include = (
+        DEFAULT_TRANSIENT_EXCEPTION_NAMES if include_names is None else frozenset(include_names)
+    )
+    exclude = (
+        DEFAULT_EXCLUDED_EXCEPTION_NAMES if exclude_names is None else frozenset(exclude_names)
+    )
+
+    def classify(exception: BaseException, attempt: int) -> RetryOverride | None:
+        name = type(exception).__name__
+        if name in exclude:
+            return None
+        status = _extract_http_status(exception)
+        if (
+            isinstance(exception, (ConnectionError, TimeoutError))
+            or name in include
+            or name.endswith(("Timeout", "TimeoutError"))
+            or (status is not None and status in transient)
+        ):
+            return RetryOverride(kind="transient")
+        if status is not None and status in non_retryable:
+            return RetryOverride(kind="non_retryable")
+        return None
+
+    return classify
+
+
 class RetryClassifier:
     """Pure classifier that maps an exception + policy to a RetryDecision.
 
@@ -546,11 +1056,27 @@ class RetryClassifier:
         max_retry_backoff: timedelta,
         override_delay: timedelta | None = None,
     ) -> Retry:
-        delay = (
-            max(timedelta(0), min(override_delay, max_retry_backoff))
-            if override_delay is not None
-            else compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
-        )
+        """The Retry decision, computed curve or override delay.
+
+        An override delay (a hook's ``RetryOverride(delay=...)`` — e.g. a
+        server's ``Retry-After`` hint) is spread by the policy's own
+        ``jitter`` exactly as a computed curve value is, through the same
+        band fitted under the ceiling (:func:`_capped_jitter_band`): a
+        fleet of workers fielding the same hint must not all come due at
+        the same instant. ``jitter=0.0`` is the identity (the
+        deterministic-suite knob), so an exact server contract is one
+        ``jitter=0`` policy away. The delay is clamped to
+        ``max_retry_backoff`` BEFORE the band is fitted, so the jitter
+        can never push the draw past the ceiling, and the result is
+        floored at :data:`MIN_DEFERRAL_INTERVAL` like every other delay.
+        """
+        if override_delay is not None:
+            cap_s = max_retry_backoff.total_seconds()
+            raw_s = min(override_delay.total_seconds(), cap_s)
+            lower, upper = _capped_jitter_band(raw_s, cap_s, policy.jitter)
+            delay = timedelta(seconds=_draw_in_band(lower, upper, _production_rng.random(), cap_s))
+        else:
+            delay = compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
         # The monopolisation floor the deferral arms apply at their writes
         # (mark_snoozed / the non-consuming retry-after arm, via
         # MIN_DEFERRAL_INTERVAL): a failure-retry delay below it requeues

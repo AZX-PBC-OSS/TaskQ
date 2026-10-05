@@ -743,6 +743,19 @@ markers = [
 #       tests/web_admin/test_realtime_js_render.py tests/web_admin/test_realtime_js_mode_probe.py \
 #       --gremlins --gremlin-executor=subprocess --gremlin-report=console,json
 # (the pins file holds the door raises).
+#
+# 3. The retry-sniffing surface (PR #656): the Retry-After header
+#    sniffing (_extract_http_status / _header_lookup /
+#    _extract_retry_after_header / _parse_retry_after) and the
+#    failure-taxonomy classifier (failure_taxonomy_classifier + its
+#    DEFAULT_* constants) in retry.py, plus the jitter-on-override-delay
+#    band in RetryClassifier._retry_decision. Reproducible run:
+#
+#   uv run pytest tests/test_retry_after_header_sniffing.py \
+#       tests/test_failure_taxonomy_classifier.py \
+#       tests/test_retry_classifier_composition.py \
+#       tests/test_retry_sniffing_docs_contract.py \
+#       --gremlins --gremlin-executor=subprocess --gremlin-report=console
 paths = [
     "src/taskq/exceptions.py",
     "src/taskq/testing/_reads.py",
@@ -750,6 +763,7 @@ paths = [
     "src/taskq/actor.py",
     "src/taskq/backend/_protocol.py",
     "src/taskq/backend/_sql_templates.py",
+    "src/taskq/retry.py",
 ]
 
 [tool.coverage.run]
