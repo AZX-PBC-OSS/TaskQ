@@ -478,12 +478,23 @@ def test_decimal_fraction_grammar_honored(value: str) -> None:
     assert result.delay == timedelta(seconds=float(value))
 
 
-@pytest.mark.parametrize("value", ["1,5", "1e3", "+30", "-30", "12 34", "NaN", "soon", "0x10"])
+@pytest.mark.parametrize(
+    "value", ["1,5", "1e3", "+30", "-30", "1_000", "١٢٣", "12 34", "NaN", "soon", "0x10"]
+)
 def test_grammar_limits_are_garbage_and_fall_back_to_the_curve(value: str) -> None:
     """The grammar stays deliberately closed — a comma decimal, scientific
-    notation, signs, embedded whitespace, hex — every non-grammar value
-    degrades to the kind-only override (the curve fallback), never to a
-    bogus delay and never to a crash."""
+    notation, signs, underscore separators, non-ASCII digits, embedded
+    whitespace, hex — every non-grammar value degrades to the kind-only
+    override (the curve fallback), never to a bogus delay and never to a
+    crash.
+
+    RED ON BASE for ``"+30"``, ``"1_000"``, and ``"١٢٣"``: the pre-#659
+    ``int()`` parse silently honored those (30 s / 1000 s / 123 s —
+    ``int()`` takes a leading sign, underscore separators, and non-ASCII
+    decimal digits). None is an RFC 9110 delta-seconds form (``1*DIGIT``,
+    ASCII), so the closed grammar is a deliberate TIGHTENING of exactly
+    those accidents, not a preservation — this pin exists so the
+    tightening is a reviewed decision, never an unnoticed drift."""
     result = rate_limit_aware_classifier(_with_retry_after(value), 1, now=_NOW)
 
     assert result == RetryOverride(kind="indefinite")

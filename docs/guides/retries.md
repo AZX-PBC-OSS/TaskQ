@@ -436,8 +436,8 @@ transitive dependency tree stays yours): `exception.response.headers` (the
 `ClientResponseError` shape, or any exception carrying headers directly). Both the
 standard `retry-after` and the de-facto `x-retry-after` header names are read,
 case-insensitively; the standard header wins when both are present. Values are parsed
-as seconds-integers (`"120"`) and HTTP-dates (RFC 9110 IMF-fixdate, via the stdlib's
-`email.utils.parsedate_to_datetime`).
+as decimal-fraction seconds (`"120"`, `"0.5"`) and HTTP-dates (RFC 9110 IMF-fixdate, via
+the stdlib's `email.utils.parsedate_to_datetime`).
 
 Every recognized signal, what the built-in returns for it, and what bounds the result
 (the default `claim_kind="indefinite"` mode; the transient mode swaps the kind and the
@@ -469,7 +469,11 @@ instead of crashing a classifier); it adds no semantic cap — the ceiling IS th
 `"120"`, `"0.5"` (digits, optional `.`-fraction — a sub-second hint flows through and
 lands on the `MIN_DEFERRAL_INTERVAL` floor, 1s, on the decision path). Rejected as
 garbage (curve fallback): a comma decimal (`"1,5"`), scientific notation (`"1e3"`), a
-sign (`"+30"`), embedded whitespace, and everything unparsable. A rate-limit hint is a
+sign (`"+30"`), an underscore digit separator (`"1_000"`), non-ASCII decimal digits
+(`"١٢٣"`), embedded whitespace, and everything unparsable — the last three were
+silently honored by the previous `int()` parse and the closed grammar is a deliberate
+tightening of exactly those accidents (none is an RFC 9110 delta-seconds form). A
+rate-limit hint is a
 human-scale count of seconds; every richer parse is a divergence surface between
 consumers, not a feature. `Retry-After: 0` stays curve-fallback (the monopolisation
 hazard); the explicit-zero *floor* — an override carrying `delay=timedelta(0)` honored

@@ -641,7 +641,13 @@ _RETRY_AFTER_HEADERS: Final[tuple[str, str]] = ("retry-after", "x-retry-after")
 #: count of seconds, and every parser trick beyond the fraction (locale
 #: decimals, exponents) is a divergence surface between consumers, not a
 #: feature — a consumer wanting a richer grammar fences the header in
-#: their own classifier first (composition order, §5).
+#: their own classifier first (composition order, §5). This grammar is a
+#: TIGHTENING of the previous ``int()`` parse, not a preservation: the
+#: old parse silently honored a leading sign (``"+30"`` → 30 s), an
+#: underscore digit separator (``"1_000"`` → 1000 s), and non-ASCII
+#: decimal digits (``"١٢٣"`` → 123 s) — none of them an RFC 9110
+#: delta-seconds form (``1*DIGIT``, ASCII); all three are curve-fallback
+#: garbage now. Pinned in ``tests/test_rate_limit_claim_kind.py``.
 _RETRY_AFTER_SECONDS_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 #: The parse-level saturation for a finite hint whose value exceeds
@@ -828,8 +834,9 @@ def rate_limit_aware_classifier(
     On a claimed signal the classifier sniffs the server's retry hint —
     the ``retry-after`` and ``x-retry-after`` headers, case-insensitive,
     on ``exception.response.headers`` (httpx/requests) or a bare
-    ``exception.headers`` (aiohttp) — and parses it as a seconds-integer
-    or an HTTP-date (see :func:`_parse_retry_after`).
+    ``exception.headers`` (aiohttp) — and parses it as a decimal-fraction
+    seconds value (``"120"``, ``"0.5"``) or an HTTP-date (see
+    :func:`_parse_retry_after`).
 
     Everything else returns ``None``: the declared policy governs, so a
     500 keeps its bounded transient budget and a 404 its non-retryable
