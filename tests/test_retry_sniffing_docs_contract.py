@@ -53,3 +53,43 @@ def test_retries_guide_keeps_the_taxonomy_conservative_default_contract() -> Non
     assert "DEFAULT_TRANSIENT_STATUSES" in text and "DEFAULT_NON_RETRYABLE_STATUSES" in text, (
         "retries.md must name the documented module constants the sets default to"
     )
+
+
+def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
+    """The claim-kind knob's contract (the §5 extension): the factory
+    name, the three modes with their bounds, and the haunt hazard per
+    mode must stay discoverable — a doc edit that drifts from the
+    shipped modes fails here."""
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "make_rate_limit_aware_classifier" in text, (
+        "retries.md §5 must document the factory behind the built-in"
+    )
+    assert 'claim_kind="transient"' in text and "max_attempts" in text, (
+        "retries.md must document the bounded mode: max_attempts stays the "
+        "stopper, the hint sets when"
+    )
+    assert "claim_kind=None" in text, "retries.md must document the never-claiming identity mode"
+
+
+def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
+    """The parser's finite-hint rules (the §5 extension): a finite hint
+    clamps to the operator's ceiling (never garbage), the decimal-fraction
+    grammar is documented, and the HTTP-date divergence choice point is
+    stated."""
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "A finite hint is never garbage" in text, (
+        "retries.md must state the clamp rule: an oversized-but-finite "
+        "hint is the operator's max_retry_backoff ceiling's input, not garbage"
+    )
+    assert "0.5" in text and "1,5" in text and "1e3" in text, (
+        "retries.md must document the decimal-fraction grammar and its "
+        "deliberate limits (comma decimals and scientific notation are garbage)"
+    )
+    assert (
+        "fences HTTP-date forms in their own classifier first" in text
+        and "parsedate_to_datetime" in text
+    ), (
+        "retries.md must state the divergence choice point: a consumer "
+        "preferring fallback-over-parse fences HTTP-date forms in their own "
+        "classifier first"
+    )

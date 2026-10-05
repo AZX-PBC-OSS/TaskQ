@@ -11,14 +11,14 @@ sniffing contract:
   aiohttp ``ClientResponseError`` shape, or any exception carrying
   headers directly);
 * header names ``retry-after`` and ``x-retry-after``, case-insensitive;
-* value forms: seconds-integer and HTTP-date
-  (``email.utils.parsedate_to_datetime``);
-* the citizen rules: ``Retry-After: 0`` / garbage / negative / absurd
-  (beyond one day) fall back to the curve (a kind-only override); a
-  recognized delay lands in ``RetryOverride.delay`` and is therefore
-  clamped by ``max_retry_backoff`` and floored by
-  ``MIN_DEFERRAL_INTERVAL`` downstream — the classifier itself adds no
-  second ceiling;
+* value forms: decimal-fraction seconds (``"120"``, ``"0.5"``) and
+  HTTP-date (``email.utils.parsedate_to_datetime``);
+* the citizen rules: ``Retry-After: 0`` / garbage / negative fall back
+  to the curve (a kind-only override); a recognized delay — however
+  large, finite hints are the CEILING's input, not garbage — lands in
+  ``RetryOverride.delay`` and is therefore clamped by
+  ``max_retry_backoff`` and floored by ``MIN_DEFERRAL_INTERVAL``
+  downstream — the classifier itself adds no second ceiling;
 * no header = the pre-sniffing behavior exactly (kind-only override);
   no header sniffing at all happens on an unclaimed signal.
 
@@ -37,7 +37,6 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from taskq.retry import (
-    _MAX_RETRY_AFTER_DELAY,
     JobRetryState,
     Retry,
     RetryClassifierHook,
@@ -229,23 +228,35 @@ class TestGarbageFallsBackToCurve:
         assert result == RetryOverride(kind="indefinite")
         assert result.delay is None
 
-    @pytest.mark.parametrize("value", ["soon", "30.5", "abc", "12 34", "NaN"])
+    @pytest.mark.parametrize("value", ["soon", "abc", "12 34", "NaN", "1,5", "1e3"])
     def test_garbage_text(self, value: str) -> None:
         result = rate_limit_aware_classifier(_with_retry_after(value), 1, now=_NOW)
         assert result is not None
         assert result == RetryOverride(kind="indefinite")
         assert result.delay is None
 
-    def test_absurd_beyond_one_day(self) -> None:
-        """100000s is ~27.8h, beyond the one-day parse cap: curve fallback
-        (the downstream max_retry_backoff clamp stays as defense-in-depth)."""
+    def test_beyond_the_old_one_day_cap_is_a_delay_not_garbage(self) -> None:
+        """100000s is ~27.8h, far beyond any sane rate-limit window — and
+        still a FINITE hint, so it is honored verbatim: bounding it is
+        the operator's ``max_retry_backoff`` ceiling's job (the knob that
+        exists to express exactly this), not a hard-coded parse cap. The
+        old one-day parse cap treated this as garbage and curve-fell-
+        back, stealing the clamp from the operator's knob."""
         result = rate_limit_aware_classifier(_with_retry_after("100000"), 1, now=_NOW)
         assert result is not None
-        assert result == RetryOverride(kind="indefinite")
-        assert result.delay is None
+        assert result == RetryOverride(kind="indefinite", delay=timedelta(seconds=100000))
+
+    def test_beyond_timedelta_range_saturates_never_crashes(self) -> None:
+        """A '1e20'-class hint cannot overflow the timedelta constructor:
+        the parse saturates at the documented representability bound and
+        the decision path's ceiling does the real bounding."""
+        result = rate_limit_aware_classifier(_with_retry_after("1" + "0" * 20), 1, now=_NOW)
+        assert result is not None
+        assert result.delay == timedelta.max
 
     def test_exactly_one_day_is_honoured(self) -> None:
-        """The cap boundary: exactly 86400s is not 'beyond one day'."""
+        """One day was the old parse cap's boundary; it is an ordinary
+        finite hint now, honored like any other."""
         result = rate_limit_aware_classifier(_with_retry_after("86400"), 1, now=_NOW)
         assert result is not None and result.delay == timedelta(days=1)
 
@@ -277,14 +288,16 @@ def test_http_date_in_the_past_falls_back_to_curve() -> None:
     assert result.delay is None
 
 
-def test_http_date_beyond_one_day_falls_back_to_curve() -> None:
+def test_http_date_beyond_one_day_is_a_delay_not_garbage() -> None:
+    """A date hint two days out is a finite hint like any other: parsed
+    verbatim (the ceiling clamps downstream — the seconds form and the
+    date form share one rule)."""
     header = _http_date(_NOW + timedelta(days=2))
 
     result = rate_limit_aware_classifier(_with_retry_after(header), 1, now=_NOW)
 
     assert result is not None
-    assert result == RetryOverride(kind="indefinite")
-    assert result.delay is None
+    assert result == RetryOverride(kind="indefinite", delay=timedelta(days=2))
 
 
 def test_parse_helper_assumes_utc_for_naive_dates() -> None:
@@ -328,17 +341,17 @@ def test_no_header_sniffing_on_unclaimed_signals() -> None:
 )
 def test_property_header_value_never_yields_out_of_band_delay(value: str) -> None:
     """Property: for ANY header value, a claimed 429 stays an indefinite
-    override and the delay, when present, lies in (0, one day] — garbage
-    must degrade to the curve (delay None), never to a bogus delay."""
+    override and the delay, when present, is a finite positive timedelta
+    (saturated at timedelta.max beyond the representable range) — garbage
+    must degrade to the curve (delay None), never to a bogus delay or a
+    crash."""
     exc = _with_retry_after(value)
 
     result = rate_limit_aware_classifier(exc, 1, now=_NOW)
 
     assert result is not None, "a claimed 429 must always classify"
     assert result.kind == "indefinite"
-    assert result.delay is None or (
-        result.delay > timedelta(0) and result.delay <= _MAX_RETRY_AFTER_DELAY
-    )
+    assert result.delay is None or (result.delay > timedelta(0) and result.delay <= timedelta.max)
 
 
 # ── end-to-end: the delay through the adapter, and its bounds ─────
