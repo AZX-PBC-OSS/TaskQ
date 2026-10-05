@@ -507,6 +507,52 @@ configuration says.
     requires. Pin:
     `tests/test_failure_taxonomy_classifier.py::test_taxonomy_never_returns_indefinite`.
 
+### Don't want 429 doing (indefinite) backoff? You have three explicit ways out
+
+Everything above gives 429s to the built-in's `indefinite` override because a rate
+limit usually means "wait it out". That is a default, never a requirement — and
+none of the ways out is silent. All three are configuration you write, in one
+place here:
+
+1. **Don't compose the built-in.** `rate_limit_aware_classifier` is opt-in by
+   construction: nothing registers it for you. Leave it out and a 429 is an
+   ordinary exception — your declared policy governs untouched. For the default
+   `transient` policy that is the trap restated, not escaped: a sustained 429
+   burns the budget (5s + 10s, the third failure is terminal — about 15 seconds,
+   the math computed above when introducing the built-in). This way out restores
+   exactly the death the built-in exists to prevent; take it only when "give up
+   quickly on 429s" is genuinely the intent for that actor.
+
+2. **Claim 429 in your taxonomy's `transient_status`.** Run the taxonomy without
+   the built-in and claim the 429s as bounded-transient yourself:
+
+       taxonomy = failure_taxonomy_classifier(
+           transient_status=frozenset({408, 425, 429, *range(500, 600)}),  # the defaults, plus 429
+       )
+       taxonomy(Http429Error(), 1)  # → RetryOverride(kind="transient"): max_attempts governs
+
+   Passing the set replaces the defaults wholesale (no implicit merge), so spell
+   out the whole set, defaults included. The claim is
+   `RetryOverride(kind="transient")`: the declared `max_attempts` governs and the
+   job dies when the budget does — bounded, never indefinite. (Composed with the
+   built-in anyway, order decides: the taxonomy must come first, or the built-in's
+   `indefinite` claim wins the 429.)
+
+3. **Fence with your own classifier first.** Composition order is the general
+   escape: register a classifier that claims 429s however you like — your own
+   `Retry-After` parsing, your own budget — before the built-in, and the built-in
+   never sees one (first override wins; the short-circuit is the same mechanism
+   [pinned above](#composing-classifiers-compose_retry_classifiers-and-rate_limit_aware_classifier)).
+
+       hook = compose_retry_classifiers(
+           my_rate_limit_fence,  # claims 429s on your terms
+           rate_limit_aware_classifier,  # never consulted for a 429 yours claimed
+       )
+
+And the runbook-exact case — retry at exactly the server's `Retry-After`, no
+spread — passes `jitter=0.0` on the declared policy (the
+[escape note above](#sniffing-the-servers-hint-retry-after-x-retry-after)).
+
 ---
 
 ## 6. `schedule_to_close` interaction
