@@ -454,7 +454,7 @@ After computing the raw delay, multiplicative jitter is applied: `delay = raw * 
 
 **Global backoff ceiling:** `TASKQ_MAX_RETRY_BACKOFF` (default `24h`) is applied as `effective_cap = min(policy.cap, max_retry_backoff)`. This prevents a misconfigured `cap=timedelta(days=365)` from stranding jobs silently.
 
-**Retry-delay floor:** every failure-retry, snooze, and non-consuming retry-after delay is floored at 1 second (`MIN_DEFERRAL_INTERVAL`), applied after the cap and the jitter draw, so a sub-second `base` (or a zero `Retry-After`) cannot produce a zero-period claim/run/fail loop monopolising a worker slot; for a `cap` below 1 second the floor, not the cap, is the binding bound on the stamped delay. The exception is a **consuming** `RetryAfter` (`consume_budget=True`), which keeps its raw delay: an immediate consuming retry is a real execution, bounded by the budget it spends.
+**Retry-delay floor:** every failure-retry, snooze, and non-consuming retry-after delay is floored at 1 second (`MIN_DEFERRAL_INTERVAL`), applied after the cap and — on the computed-curve path, the only one jittered — the jitter draw, so a sub-second `base` (or a zero `Retry-After`) cannot produce a zero-period claim/run/fail loop monopolising a worker slot; for a `cap` below 1 second the floor, not the cap, is the binding bound on the stamped delay. The exception is a **consuming** `RetryAfter` (`consume_budget=True`), which keeps its raw delay: an immediate consuming retry is a real execution, bounded by the budget it spends.
 
 **Control-flow exceptions:**
 
