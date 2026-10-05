@@ -9,6 +9,18 @@ over-claiming is the haunt class (an ``indefinite`` claim with no
 deadline retries forever; this classifier deliberately never returns
 ``indefinite``, so every claim it makes is bounded by ``max_attempts``).
 
+The timeout NAME signals are a contract: the default factory matches
+EXACT curated names only (``DEFAULT_TRANSIENT_EXCEPTION_NAMES``) — a
+class name ending in ``Timeout``/``TimeoutError`` is claimed ONLY if the
+exact name is listed. The suffix inference is opt-in
+(``infer_timeout_by_suffix=True``), documented with its counterexample:
+``pymongo.errors.ExecutionTimeout`` is a deadline-exceeded that MEANS
+failure (a re-run re-fails deterministically), and the suffix default
+burned retry budget claiming it transient. The builtin ``TimeoutError``
+``isinstance`` path is TYPE-based, not name-based — it stays default.
+Consumers who route these shapes narrowly (static-policy, pinned per
+class) are the supported shape.
+
 Configuration is by keyword: ``transient_status`` /
 ``non_retryable_status`` status sets and ``include_names`` /
 ``exclude_names`` exception-name lists; ``None`` means the documented
@@ -16,8 +28,10 @@ module constants (DEFAULT_* below). Status sets REPLACE the defaults
 entirely; name lists replace their defaults too. Precedence, documented
 in the factory's docstring and pinned here:
 
-1. ``exclude_names`` — an explicit exclusion wins over every signal;
-2. transient signals — connection/timeout shape or ``transient_status``;
+1. ``exclude_names`` — an explicit exclusion wins over every signal,
+   the opt-in suffix flag included;
+2. transient signals — connection/timeout shape (type-based or exact
+   curated name), the opt-in suffix inference, or ``transient_status``;
 3. ``non_retryable_status``;
 4. unsure → ``None``.
 
@@ -86,6 +100,19 @@ class VendorFlake(Exception):  # noqa: N818  Why: a consumer-defined name that i
     """A consumer-defined transient nobody's default set knows."""
 
 
+class ExecutionTimeout(Exception):  # noqa: N818  Why: the exact class name IS the signal under test (pymongo shape)
+    """``pymongo.errors.ExecutionTimeout``-shaped: a deadline-exceeded that
+    MEANS failure — the server killed the operation for exceeding
+    ``maxTimeMS`` and a re-run of the same query re-fails deterministically.
+    Name ends in ``Timeout``, no HTTP attrs, not a builtin ``TimeoutError``
+    subclass: exactly the shape the suffix heuristic over-claims."""
+
+
+class QueryDeadlineExceeded(TimeoutError):  # noqa: N818  Why: the name must NOT be Error-suffixed/suffix-matched — the isinstance signal's shape under test
+    """A builtin-``TimeoutError`` subclass with a name that is neither an
+    exact curated name nor suffix-matched: the isinstance signal's shape."""
+
+
 class MyConnError(ConnectionError):
     """A builtin-connection subclass with a non-default name."""
 
@@ -143,6 +170,86 @@ def test_builtin_timeout_via_socket_alias_shape() -> None:
     hook = failure_taxonomy_classifier()
 
     assert hook(TimeoutError("timed out"), 1) == RetryOverride(kind="transient")
+
+
+# ── the suffix inference is OPT-IN: exact curated names by default ─
+
+
+def test_suffix_inference_is_opt_in_execution_timeout_shape_returns_none() -> None:
+    """The adoption contract: the DEFAULT factory matches exact curated
+    names ONLY. ``ExecutionTimeout`` ends in ``Timeout`` but is not in the
+    curated set — a deadline-exceeded that MEANS failure (a re-run
+    re-fails deterministically), so the suffix heuristic's transient claim
+    burned retry budget on unwinnable work. Under default kwargs the
+    declared policy governs: None. Opt in with
+    ``infer_timeout_by_suffix=True`` only when the suffix is trusted."""
+    hook = failure_taxonomy_classifier()
+
+    assert hook(ExecutionTimeout("maxTimeMS exceeded"), 1) is None
+
+
+@settings(max_examples=200)
+@given(
+    prefix=st.text(alphabet=st.characters(min_codepoint=65, max_codepoint=90), min_size=1),
+    suffix=st.sampled_from(["Timeout", "TimeoutError"]),
+)
+def test_property_suffix_names_not_in_the_curated_set_stay_unclaimed(
+    prefix: str, suffix: str
+) -> None:
+    """Property: under default kwargs, a class name ending in
+    ``Timeout``/``TimeoutError`` is claimed ONLY if the exact name is in
+    the curated set — the suffix alone is never a signal."""
+    name = f"{prefix}{suffix}"
+    exc = type(name, (Exception,), {})
+
+    hook = failure_taxonomy_classifier()
+
+    if name in DEFAULT_TRANSIENT_EXCEPTION_NAMES:
+        assert hook(exc("x"), 1) == RetryOverride(kind="transient")
+    else:
+        assert hook(exc("x"), 1) is None, f"suffix over-claim for {name!r}"
+
+
+def test_infer_timeout_by_suffix_flag_restores_the_suffix_inference() -> None:
+    """The opt-in flag: today's suffix behavior, one keyword away — the
+    convenience flag, documented with its ExecutionTimeout cost."""
+    hook = failure_taxonomy_classifier(infer_timeout_by_suffix=True)
+
+    assert hook(ExecutionTimeout("maxTimeMS exceeded"), 1) == RetryOverride(kind="transient")
+
+
+@pytest.mark.parametrize("name", sorted(DEFAULT_TRANSIENT_EXCEPTION_NAMES))
+def test_every_curated_exact_name_claims_transient(name: str) -> None:
+    """Pin the curated set itself: each exact name in
+    DEFAULT_TRANSIENT_EXCEPTION_NAMES claims transient under DEFAULT
+    kwargs — and the parametrization doubles as the audit that the set
+    holds exact names (a suffix entry like 'Foo' claiming via endswith
+    would fail the ExecutionTimeout pin above while this still passes)."""
+    exc = type(name, (Exception,), {})
+    hook = failure_taxonomy_classifier()
+
+    assert hook(exc("x"), 1) == RetryOverride(kind="transient")
+
+
+def test_builtin_timeouterror_isinstance_path_is_type_based_and_stays_default() -> None:
+    """The isinstance path is type-based, not name-based: a builtin
+    ``TimeoutError`` subclass whose name is neither curated nor
+    suffix-shaped still claims transient under DEFAULT kwargs. The suffix
+    heuristic's removal from the default path does not touch it."""
+    hook = failure_taxonomy_classifier()
+
+    assert hook(QueryDeadlineExceeded("x"), 1) == RetryOverride(kind="transient")
+
+
+def test_exclude_names_outranks_the_opt_in_suffix_flag() -> None:
+    """Precedence re-pin: exclude_names outranks EVERYTHING — the
+    opt-in suffix flag included."""
+    hook = failure_taxonomy_classifier(
+        exclude_names={"ExecutionTimeout"},
+        infer_timeout_by_suffix=True,
+    )
+
+    assert hook(ExecutionTimeout("x"), 1) is None
 
 
 # ── transient: HTTP statuses ──────────────────────────────────────
