@@ -527,6 +527,87 @@ policy in that case, a broken hook can never crash the retry pipeline.
 """
 
 
+def compose_retry_classifiers(
+    *classifiers: RetryClassifierHook,
+) -> RetryClassifierHook:
+    """Compose classifier hooks into one, first-override-wins.
+
+    Each *classifier* is invoked in registration order with
+    ``(exception, attempt)``. The first classifier that returns a
+    :class:`RetryOverride` decides the outcome and later classifiers are
+    not consulted for that exception; a ``None`` falls through to the
+    next classifier; when every classifier returns ``None`` the
+    composition returns ``None`` so the actor's declared ``RetryPolicy``
+    governs, exactly as a single hook returning ``None`` does.
+
+    Order matters: put the most specific classifier first. A composed
+    classifier registered via ``@actor(retry_classifier=...)`` sits at
+    the same seam as a single hook, so the adapter's own precedence
+    contract is unchanged, ``non_retryable_exceptions`` and the built-in
+    unconditional-Fail classes still win over the whole composition.
+
+    Per-classifier isolation (the single-classifier contract, composed):
+    a classifier that raises is logged at WARNING and skipped, and
+    composition continues with the next classifier, never propagating;
+    likewise a classifier returning something that is not a
+    :class:`RetryOverride` nor ``None`` is logged and skipped. The
+    adapter's carve-out applies per classifier: ``KeyboardInterrupt`` and
+    ``asyncio.CancelledError`` are never a classifier outcome and
+    propagate raw. A classifier that raises is skipped rather than
+    aborting the composition because the classifiers are independent
+    observers of the same exception, one of them being broken says
+    nothing about the others, and falling back to the declared policy on
+    the first broken one would silently discard the overrides the healthy
+    classifiers were registered to provide.
+
+    ``compose_retry_classifiers()`` with no arguments returns a hook that
+    always returns ``None`` (the declared policy governs), so call sites
+    can compose a possibly-empty list without a special case.
+    """
+
+    def composed(exception: BaseException, attempt: int) -> RetryOverride | None:
+        for index, classifier in enumerate(classifiers):
+            try:
+                override = classifier(exception, attempt)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # The carve-out, exactly as the adapter's single-hook
+                # boundary applies it: interpreter/operator intent
+                # (KeyboardInterrupt) and shutdown cancellation
+                # (CancelledError) are never a classifier outcome; both
+                # propagate raw.
+                raise
+            except BaseException as exc:
+                # BaseException, not Exception: classifiers are user code
+                # invoked in this frame, and the isolation contract is
+                # that a buggy classifier is logged and skipped, never
+                # propagated (the same boundary the adapter applies to a
+                # single hook). Logged with repr so the record names the
+                # classifier's own exception.
+                logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
+                logger.warning(
+                    "retry-classifier-hook-failed",
+                    hook="retry_classifier",
+                    classifier_index=index,
+                    error=safe_repr(exc),
+                )
+                continue
+            if override is None:
+                continue
+            if not isinstance(override, RetryOverride):
+                logger_invalid: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
+                logger_invalid.warning(
+                    "retry-classifier-hook-invalid-return",
+                    hook="retry_classifier",
+                    classifier_index=index,
+                    return_type=type(override).__name__,
+                )
+                continue
+            return override
+        return None
+
+    return composed
+
+
 class RetryClassifier:
     """Pure classifier that maps an exception + policy to a RetryDecision.
 
