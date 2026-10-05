@@ -909,8 +909,13 @@ DEFAULT_NON_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset(
 #: default) and the major HTTP clients' exact timeout/transport class
 #: names, so httpx/requests/aiohttp outages claim without an import:
 #: ``ReadTimeout``/``ConnectError`` (httpx), ``ConnectTimeout``
-#: (requests), ``ServerTimeoutError`` (aiohttp), ``WriteTimeout``/
-#: ``PoolTimeout`` (httpx pools). ``Timeout`` exact matches the bare
+#: (requests — the name also covers httpx's ``ConnectTimeout``, exact
+#: matching needs no import), ``ServerTimeoutError`` (aiohttp),
+#: ``WriteTimeout``/``PoolTimeout`` (httpx pools),
+#: ``ReadTimeoutError``/``ConnectTimeoutError`` (urllib3 — requests'
+#: engine — and botocore, the AWS SDK; neither is a builtin
+#: ``TimeoutError`` subclass, so only the exact name claims them).
+#: ``Timeout`` exact matches the bare
 #: class name some AMQP/mqtt clients use. Exact-name matching is the
 #: contract: a name ending in ``Timeout`` that is not listed here (the
 #: audit's counterexample: ``pymongo.errors.ExecutionTimeout``) is NOT
@@ -925,6 +930,8 @@ DEFAULT_TRANSIENT_EXCEPTION_NAMES: Final[frozenset[str]] = frozenset(
         "WriteTimeout",
         "PoolTimeout",
         "ServerTimeoutError",
+        "ReadTimeoutError",
+        "ConnectTimeoutError",
         "ConnectionError",
         "ConnectionResetError",
         "ConnectionRefusedError",

@@ -453,7 +453,8 @@ get a hook) sniffs the mundane taxonomy:
   `ConnectionError` family), TimeoutError-shaped errors (`isinstance` of the builtin
   `TimeoutError` — which covers `socket.timeout` and `asyncio.TimeoutError` — or an
   **exact** class name in `DEFAULT_TRANSIENT_EXCEPTION_NAMES`, so `httpx.ReadTimeout`,
-  `requests.ConnectTimeout`, `aiohttp.ServerTimeoutError` claim without an import), and
+  `requests.ConnectTimeout`, `aiohttp.ServerTimeoutError`, and urllib3/botocore's
+  `ReadTimeoutError`/`ConnectTimeoutError` claim without an import), and
   HTTP `5xx` / `408` / `425` statuses;
 - **non-retryable** — any other `4xx` status;
 - **`None`** — everything else. Unsure → `None`: over-claiming is the haunt class, and
