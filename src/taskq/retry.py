@@ -627,10 +627,11 @@ def rate_limit_aware_classifier(
     signal propagate, the shape the cbre-pfc migration audit (W3.H/F1)
     found consumers hand-rolling: without it a declared ``transient``
     policy burns one attempt of ``max_attempts`` per 429 and the job dies
-    after a few tens of seconds (base=5s exponential: 5s + 10s + 20s is
-    about 35s), when the operator's intent for a rate limit is "wait it
-    out", the unbounded-in-attempts behaviour only an ``indefinite`` kind
-    provides.
+    after a few tens of seconds (base=5s exponential, max_attempts=3: two
+    delays, 5s + 10s — the 20s rung is never reached, the third failure is
+    terminal and schedules no delay), when the operator's intent for a rate
+    limit is "wait it out", the unbounded-in-attempts behaviour only an
+    ``indefinite`` kind provides.
 
     Recognized signals, in check order:
 
@@ -659,6 +660,16 @@ def rate_limit_aware_classifier(
     stays the single stopping condition, the same bound every
     ``indefinite`` job has. Kind only, because the trap being fixed is
     the attempt budget, not the curve.
+
+    Hazard: that stopping condition must exist. A ``transient`` actor is
+    never stamped with a ``schedule_to_close`` (``time_budget`` is only
+    honored for an ``indefinite``-declared policy; see
+    :func:`time_budget_as_interval`), so composing this classifier into a
+    ``transient`` actor makes a sustained 429 storm retry the job forever
+    — no attempt ceiling and no deadline. Give the actor a stopping
+    condition: declare it ``kind="indefinite"`` with a ``time_budget``,
+    put a domain classifier before this one that bounds the 429s, or pass
+    a per-enqueue ``schedule_to_close``.
 
     Compose it after your domain-specific classifiers:
     ``compose_retry_classifiers(my_domain_classifier, rate_limit_aware_classifier)``;

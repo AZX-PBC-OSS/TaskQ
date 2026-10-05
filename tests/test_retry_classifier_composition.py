@@ -19,16 +19,18 @@ import structlog
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from taskq.exceptions import ReservationUnavailable
+from taskq.exceptions import PayloadValidationError, ReservationUnavailable
 from taskq.retry import (
     Fail,
     JobRetryState,
     Retry,
+    RetryClassifier,
     RetryOverride,
     RetryPolicy,
     compose_retry_classifiers,
     decide_after_failure,
     rate_limit_aware_classifier,
+    time_budget_as_interval,
 )
 from taskq.testing.actor import StubActorConfig
 
@@ -450,8 +452,9 @@ def test_transient_policy_with_429_override_retries_past_max_attempts() -> None:
     attempt budget on 429s (attempt >= max_attempts lands Fail). With the
     built-in classifier composed in, the same occurrence at the same
     attempt is an indefinite override, so the failure path still retries
-    with the policy's own backoff; the only bound left is the job's
-    schedule_to_close (time_budget), arbitrated in SQL."""
+    with the policy's own backoff. The attempt ceiling is gone; the only
+    remaining bound is the job's schedule_to_close, arbitrated in SQL —
+    which a transient actor never has stamped (see the haunt pin below)."""
     policy = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
     actor_config = StubActorConfig(
         retry=policy,
@@ -515,3 +518,122 @@ def test_composed_classifier_wins_over_declared_transient_for_library_signal() -
     decision = decide_after_failure(actor_config, exc, job_state)
 
     assert isinstance(decision, Retry)
+
+
+# ── the unbounded haunt: an indefinite override needs a deadline ──
+
+
+def test_haunt_transient_without_deadline_retries_past_any_attempt() -> None:
+    """HAZARD PIN: a transient policy with no schedule_to_close (the
+    default: time_budget is only honored for indefinite-declared policies,
+    so the enqueue path stamps no deadline) composed with the built-in
+    retries a sustained 429 past ANY attempt number — no attempt ceiling
+    and no wall-clock bound. Documented in retries.md as the hazard of
+    composing this built-in into a transient actor; this test pins that
+    the hazard is real so the docs cannot drift from the behaviour."""
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=compose_retry_classifiers(rate_limit_aware_classifier),
+    )
+    job_state = _job_state(attempt=1_000_000, max_attempts=3, retry_kind="transient")
+
+    decision = decide_after_failure(actor_config, _HttpxStyleError(429), job_state)
+
+    assert isinstance(decision, Retry), (
+        "the haunt is documented: no attempt ceiling and no deadline means "
+        "the 429 path never terminates"
+    )
+
+
+def test_time_budget_deadline_is_stamped_only_for_indefinite_declared_policies() -> None:
+    """The bounded alternative to the haunt: a deadline exists (and the
+    enqueue path stamps it as schedule_to_close) only when the actor is
+    declared kind='indefinite' with a time_budget. A transient policy's
+    time_budget is dropped at enqueue — this is why the haunt above has
+    no stopping condition."""
+    assert time_budget_as_interval(
+        RetryPolicy(kind="indefinite", time_budget=timedelta(hours=1))
+    ) == timedelta(hours=1)
+    # A transient policy's time_budget is silently dropped (registration
+    # warns actor-config-time-budget-ignored); no deadline is ever stamped.
+    assert (
+        time_budget_as_interval(RetryPolicy(kind="transient", time_budget=timedelta(hours=1)))
+        is None
+    )
+
+
+def test_name_match_false_positive_is_an_indefinite_override() -> None:
+    """The name match requires nothing — no HTTP attributes, no 429 — so
+    an unrelated domain error that merely carries the name RateLimitError
+    is overridden to indefinite too. Pinned because retries.md documents
+    this as the loosest signal: the HTTP shapes at least require a 429;
+    this one requires only the class name."""
+    # A consumer's unrelated payments-domain class; the local definition
+    # shadows the test module's SDK-shape RateLimitError on purpose: the
+    # classifier matches on the class NAME alone.
+
+    class RateLimitError(Exception):
+        """A payments-domain error that happens to carry the name."""
+
+    override = rate_limit_aware_classifier(RateLimitError("payment gateway closed"), 1)
+
+    assert override == RetryOverride(kind="indefinite")
+
+
+def test_trap_math_default_transient_dies_after_two_delays_fifteen_seconds() -> None:
+    """Pins the trap arithmetic retries.md quotes: with the defaults
+    (max_attempts=3, base=5s, exponential) a 429 storm costs two delays,
+    5s + 10s = 15s — the 20s rung is never reached because the third
+    failure is terminal and schedules no delay."""
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+
+    decisions = [
+        RetryClassifier.classify(
+            policy=policy,
+            non_retryable_exceptions=(),
+            exception=RuntimeError("429-ish"),
+            attempt=attempt,
+            override=None,
+        )
+        for attempt in (1, 2, 3)
+    ]
+
+    assert isinstance(decisions[0], Retry) and decisions[0].retry_delay == timedelta(seconds=5)
+    assert isinstance(decisions[1], Retry) and decisions[1].retry_delay == timedelta(seconds=10)
+    assert isinstance(decisions[2], Fail), "attempt 3 is terminal: no 20s delay exists"
+
+
+def test_hook_override_cannot_resurrect_unconditional_fail_classes() -> None:
+    """SEAM ORDER: a hook — single or composed — is never consulted for
+    the adapter's unconditional-Fail classes, and even an override handed
+    straight to classify() cannot resurrect them: the isinstance checks
+    run before the override is applied. Matches retries.md's claim that
+    those classes 'still win over the whole composition'."""
+    hook_saw: list[BaseException] = []
+
+    def greedy(exc: BaseException, attempt: int) -> RetryOverride | None:
+        hook_saw.append(exc)
+        return RetryOverride(kind="non_retryable")
+
+    payload_error = PayloadValidationError("bad payload")
+    actor_config = StubActorConfig(
+        retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0),
+        retry_classifier=greedy,
+    )
+
+    decision = decide_after_failure(actor_config, payload_error, _job_state())
+
+    assert hook_saw == [], "the adapter must gate the hook on the Fail classes"
+    assert isinstance(decision, Fail) and decision.error_class == "PayloadValidationError"
+
+    # The classify()-level belt-and-braces: the override is a parameter
+    # there, and the Fail classes still win.
+    direct = RetryClassifier.classify(
+        policy=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0),
+        non_retryable_exceptions=(),
+        exception=payload_error,
+        attempt=1,
+        override=RetryOverride(kind="non_retryable"),
+    )
+    assert isinstance(direct, Fail) and direct.error_class == "PayloadValidationError"

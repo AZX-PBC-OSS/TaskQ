@@ -358,8 +358,9 @@ possibly-empty list.
 **`rate_limit_aware_classifier` fixes the 429-burns-the-budget trap.** Without a
 classifier, a declared `transient` policy burns one attempt of `max_attempts` per 429:
 with the defaults (`max_attempts=3`, `base=5s`, exponential) a sustained rate limit kills
-the job in about 35 seconds (5s + 10s + 20s), which is almost never the operator's intent
-— a rate limit means "wait it out", the unbounded-in-attempts behaviour only an
+the job after two delays — about 15 seconds (5s + 10s; the 20s rung is never reached, the
+third failure is terminal and schedules no delay) — which is almost never the operator's
+intent — a rate limit means "wait it out", the unbounded-in-attempts behaviour only an
 `indefinite` kind provides. The built-in recognizes:
 
 - TaskQ's own `ReservationUnavailable` raised with `source="rate_limit"` (a shared
@@ -370,16 +371,37 @@ the job in about 35 seconds (5s + 10s + 20s), which is almost never the operator
   `.response.status == 429` or a bare `.status == 429` (the `aiohttp`
   `ClientResponseError` shape), or a bare `.status_code == 429`.
 - An exception whose class is literally named `RateLimitError` (the openai/anthropic-style
-  SDK shape), even without HTTP attributes.
+  SDK shape), even without HTTP attributes. This is the loosest signal: the HTTP shapes at
+  least require a 429, but the name match requires nothing, so an unrelated domain error
+  that merely carries the name (no rate-limit semantics at all) is overridden to
+  `indefinite` too. If your domain has such a class, put a classifier that claims it
+  *before* the built-in in the composition, or rename it.
 
 Everything else returns `None`: a 500 keeps its bounded transient budget and a 404 its
 non-retryable verdict even when the built-in is composed in. The override sets
 `kind="indefinite"` only — the declared policy's backoff curve (jitter, cap,
-`max_retry_backoff`) keeps computing *when* to retry, and the job's `schedule_to_close`
-(`time_budget` on an indefinite policy) stays the single stopping condition, so
-"unbounded attempts" still means bounded wall-clock time. For a known-duration wait that
+`max_retry_backoff`) keeps computing *when* to retry. For a known-duration wait that
 spends no attempt budget, raise `RetryAfter(delay, consume_budget=False)` from the actor
 body instead ([§9](#9-control-flow-signals)).
+
+!!! danger "The override's only stopping condition is a deadline — give the job one"
+    `kind="indefinite"` has no attempt ceiling. Its single stopping condition is the job's
+    `schedule_to_close`, arbitrated in SQL — and **a `transient` actor never has one**:
+    `retry.time_budget` is only stamped as a `schedule_to_close` for actors declared
+    `kind="indefinite"` (setting it on a `transient` actor warns `actor-config-time-budget-ignored`
+    at registration and is dropped at enqueue), so a `transient` job's
+    `schedule_to_close` is `NULL` unless a per-enqueue `schedule_to_close=` was passed.
+    A `NULL` deadline never trips the deadline sweep and never blocks dispatch. Composing
+    this built-in into a `transient` actor therefore means: a sustained 429 storm retries
+    that job **forever** — unbounded attempts *and* unbounded wall-clock time, with no
+    warning at registration (the declared kind is `transient`, so
+    `actor-config-indefinite-no-budget` cannot fire) and no warning at override time. The
+    example at the top of this section is exactly this configuration. Give such an actor a
+    stopping condition: declare it `kind="indefinite"` with a `retry.time_budget` (the
+    deadline then exists and the registration warning stays honest), bound the 429s with a
+    domain classifier registered *before* the built-in (e.g. override to `transient` past
+    a budget you track yourself), or pass `schedule_to_close=` per enqueue (deprecated
+    form).
 
 ---
 
