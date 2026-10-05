@@ -11,18 +11,44 @@ classifier (raises, or returns a non-``RetryOverride``) is logged at
 WARNING and skipped, never propagated.
 """
 
-from datetime import timedelta
-
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 import structlog
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from taskq.retry import RetryOverride, compose_retry_classifiers
+from taskq.exceptions import ReservationUnavailable
+from taskq.retry import (
+    Fail,
+    JobRetryState,
+    Retry,
+    RetryOverride,
+    RetryPolicy,
+    compose_retry_classifiers,
+    decide_after_failure,
+    rate_limit_aware_classifier,
+)
+from taskq.testing.actor import StubActorConfig
+
+_NOW = datetime(2026, 1, 1)
 
 
-def _override(tag: str) -> RetryOverride:
-    return RetryOverride(kind="indefinite", delay=timedelta(seconds=1))
+def _job_state(
+    *,
+    attempt: int = 1,
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
+    schedule_to_close: datetime | None = None,
+) -> JobRetryState:
+    return JobRetryState(
+        attempt=attempt,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,  # type: ignore[arg-type]  # Why: test call sites only pass valid RetryKind literals
+        schedule_to_close=schedule_to_close,
+        start_to_close=None,
+    )
 
 
 # ── composition: first-override-wins ──────────────────────────────
@@ -220,3 +246,272 @@ def test_interrupt_grade_raise_propagates_raw(
         composed(RuntimeError("x"), 1)
 
     assert consulted == []
+
+
+# ── rate_limit_aware_classifier: recognition set ──────────────────
+
+
+class _FakeResponse:
+    """Duck-typed stand-in for an httpx/httpx2/requests response."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeAiohttpResponse:
+    """Duck-typed stand-in for an aiohttp response (``.status``, not ``.status_code``)."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+class _HttpxStyleError(Exception):
+    """The httpx.HTTPStatusError shape: ``.response.status_code``."""
+
+    def __init__(self, status_code: int) -> None:
+        self.response = _FakeResponse(status_code)
+        super().__init__(f"HTTP {status_code}")
+
+
+class _AiohttpStyleError(Exception):
+    """The aiohttp.ClientResponseError shape: ``.status`` on the exception."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"HTTP {status}")
+
+
+class _RequestsStyleError(Exception):
+    """The requests.HTTPError shape: ``.response.status_code`` (same duck-type as httpx)."""
+
+    def __init__(self, status_code: int) -> None:
+        self.response = _FakeResponse(status_code)
+        super().__init__(f"HTTP {status_code}")
+
+
+class _ResponseStatusStyleError(Exception):
+    """A response object exposing ``.status`` instead of ``.status_code``."""
+
+    def __init__(self, status: int) -> None:
+        self.response = _FakeAiohttpResponse(status)
+        super().__init__(f"HTTP {status}")
+
+
+class _ServiceRateLimitError(Exception):
+    """A consumer-defined rate-limit exception with no status attribute at all."""
+
+
+class RateLimitError(Exception):
+    """The common SDK shape (openai/anthropic-style class name), no HTTP attrs."""
+
+
+def test_library_rate_limit_signal_denial_maps_to_indefinite() -> None:
+    """The library's own rate-limit signal, ReservationUnavailable raised
+    with source='rate_limit' (a shared limiter's denial surfacing in the
+    actor's frame), classifies as an indefinite override."""
+    exc = ReservationUnavailable("partner-api", timedelta(seconds=30), source="rate_limit")
+
+    result = rate_limit_aware_classifier(exc, 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+def test_library_concurrency_reservation_denial_does_not_map() -> None:
+    """source='reservation' is a concurrency-slot denial, not a rate
+    limit: the classifier returns None so the declared policy governs."""
+    exc = ReservationUnavailable("worker-pool", timedelta(seconds=1), source="reservation")
+
+    assert rate_limit_aware_classifier(exc, 1) is None
+
+
+def test_httpx_shape_429_maps_to_indefinite() -> None:
+    """The httpx/httpx2/requests HTTPStatusError duck-type, an exception
+    carrying ``.response.status_code == 429``, classifies as indefinite."""
+
+    result = rate_limit_aware_classifier(_HttpxStyleError(429), 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 408, 500, 502, 503])
+def test_httpx_shape_non_429_status_passes_through(status_code: int) -> None:
+    """Any non-429 status returns None: the declared policy governs (a 500
+    keeps its bounded transient budget, a 404 its non-retryable verdict)."""
+
+    assert rate_limit_aware_classifier(_HttpxStyleError(status_code), 1) is None
+
+
+def test_aiohttp_shape_status_429_maps_to_indefinite() -> None:
+    """The aiohttp.ClientResponseError duck-type, ``.status == 429`` on the
+    exception itself (no ``.response`` indirection), classifies as indefinite."""
+
+    result = rate_limit_aware_classifier(_AiohttpStyleError(429), 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+def test_response_object_with_status_attr_429_maps_to_indefinite() -> None:
+    """The other response-object duck-type: ``.response.status == 429``
+    (responses exposing ``.status`` instead of ``.status_code``)."""
+
+    result = rate_limit_aware_classifier(_ResponseStatusStyleError(429), 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+def test_requests_shape_429_maps_to_indefinite() -> None:
+    """The requests.HTTPError duck-type is the same ``.response.status_code``
+    shape httpx exposes; it must classify identically."""
+
+    result = rate_limit_aware_classifier(_RequestsStyleError(429), 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+def test_exception_named_rate_limit_error_maps_to_indefinite() -> None:
+    """The common SDK shape (openai/anthropic-style): an exception whose
+    class is literally named RateLimitError classifies as indefinite even
+    without any HTTP status attribute."""
+    result = rate_limit_aware_classifier(RateLimitError("quota exceeded"), 1)
+
+    assert result == RetryOverride(kind="indefinite")
+
+
+def test_unnamed_statusless_exception_is_not_recognized() -> None:
+    """The complement of the name pin: an arbitrary statusless exception
+    class with a different name is not mistaken for a rate-limit signal."""
+    assert rate_limit_aware_classifier(_ServiceRateLimitError("x"), 1) is None
+
+
+def test_exception_with_no_rate_limit_signal_returns_none() -> None:
+    """An unrelated exception returns None: no status attributes, no
+    RateLimitError name, no library signal."""
+    assert rate_limit_aware_classifier(RuntimeError("x"), 1) is None
+    assert rate_limit_aware_classifier(ValueError("x"), 1) is None
+
+
+def test_rate_limit_override_carries_no_delay() -> None:
+    """The override changes kind only: the declared policy's backoff curve
+    and the schedule_to_close deadline keep governing the delay, so the
+    override can never schedule past the job's own budget."""
+    result = rate_limit_aware_classifier(_HttpxStyleError(429), 1)
+
+    assert result is not None
+    assert result.delay is None
+
+
+def test_rate_limit_classifier_recognizes_signals_at_any_attempt() -> None:
+    """Recognition is per-occurrence, not attempt-dependent: attempt 1 and
+    attempt 999 classify the same."""
+    assert rate_limit_aware_classifier(_HttpxStyleError(429), 1) is not None
+    assert rate_limit_aware_classifier(_HttpxStyleError(429), 999) is not None
+
+
+# ── rate_limit_aware_classifier: property shape ───────────────────
+
+
+@given(status=st.integers(min_value=100, max_value=599))
+@settings(max_examples=200)
+def test_property_http_status_shape_recognition(status: int) -> None:
+    """Property: the httpx-shaped duck-type recognizes exactly 429 and
+    passes through every other status the declared policy's way."""
+    result = rate_limit_aware_classifier(_HttpxStyleError(status), 1)
+
+    if status == 429:
+        assert result == RetryOverride(kind="indefinite")
+    else:
+        assert result is None
+
+
+@given(
+    payload=st.one_of(
+        st.integers(),
+        st.text(),
+        st.booleans(),
+        st.none(),
+    )
+)
+@settings(max_examples=100)
+def test_property_unrelated_exception_shapes_compose_to_none(payload: object) -> None:
+    """Property: classifiers that return None for arbitrary payloads compose
+    to None, whatever the exception payload; the declared policy governs."""
+    exc = RuntimeError(f"payload: {payload!r}")
+
+    composed = compose_retry_classifiers(rate_limit_aware_classifier)
+
+    assert composed(exc, 1) is None
+
+
+# ── adapter interaction: the 429-burns-the-budget trap, fixed ─────
+
+
+def test_transient_policy_with_429_override_retries_past_max_attempts() -> None:
+    """THE trap this helper fixes: a declared transient policy burns its
+    attempt budget on 429s (attempt >= max_attempts lands Fail). With the
+    built-in classifier composed in, the same occurrence at the same
+    attempt is an indefinite override, so the failure path still retries
+    with the policy's own backoff; the only bound left is the job's
+    schedule_to_close (time_budget), arbitrated in SQL."""
+    policy = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=compose_retry_classifiers(rate_limit_aware_classifier),
+    )
+    job_state = _job_state(attempt=2, max_attempts=2, retry_kind="transient")
+
+    decision = decide_after_failure(actor_config, _HttpxStyleError(429), job_state)
+
+    assert isinstance(decision, Retry), "429 must not burn the transient attempt budget"
+
+
+def test_transient_policy_governs_when_no_signal_matches() -> None:
+    """The complement: the same setup with a non-rate-limit exception at
+    attempt >= max_attempts still Fails, the declared budget enforced."""
+    policy = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=compose_retry_classifiers(rate_limit_aware_classifier),
+    )
+    job_state = _job_state(attempt=2, max_attempts=2, retry_kind="transient")
+
+    decision = decide_after_failure(actor_config, _HttpxStyleError(500), job_state)
+
+    assert isinstance(decision, Fail)
+
+
+def test_policy_backoff_delays_the_429_retry() -> None:
+    """No delay override: the 429 retry lands on the declared policy's own
+    backoff curve (jitter=0 pins the exact value), never on a
+    server-supplied value that could outrun schedule_to_close."""
+    policy = RetryPolicy(
+        kind="transient",
+        max_attempts=3,
+        base=timedelta(seconds=5),
+        jitter=0.0,
+    )
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=rate_limit_aware_classifier,
+    )
+
+    decision = decide_after_failure(actor_config, _HttpxStyleError(429), _job_state())
+
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == timedelta(seconds=5)
+
+
+def test_composed_classifier_wins_over_declared_transient_for_library_signal() -> None:
+    """The library's own rate-limit signal through the full adapter path:
+    ReservationUnavailable(source='rate_limit') at attempt == max_attempts
+    retries instead of failing."""
+    policy = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
+    actor_config = StubActorConfig(
+        retry=policy,
+        retry_classifier=compose_retry_classifiers(rate_limit_aware_classifier),
+    )
+    job_state = _job_state(attempt=2, max_attempts=2, retry_kind="transient")
+    exc = ReservationUnavailable("partner-api", timedelta(seconds=30), source="rate_limit")
+
+    decision = decide_after_failure(actor_config, exc, job_state)
+
+    assert isinstance(decision, Retry)

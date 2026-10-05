@@ -40,6 +40,7 @@ from taskq.constants import (
 )
 from taskq.exceptions import (
     PayloadValidationError,
+    ReservationUnavailable,
     ResultTooLarge,
     UnencodableValue,
     WorkerOwnershipMismatch,
@@ -63,11 +64,13 @@ __all__ = [
     "RetryOverride",
     "RetryPolicy",
     "apply_jitter",
+    "compose_retry_classifiers",
     "compute_backoff",
     "decide_after_failure",
     "invoke_on_cancel",
     "invoke_on_retry_exhausted",
     "invoke_on_success",
+    "rate_limit_aware_classifier",
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
@@ -593,7 +596,7 @@ def compose_retry_classifiers(
                 continue
             if override is None:
                 continue
-            if not isinstance(override, RetryOverride):
+            if not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the classifier's declared return type is RetryOverride | None, but a buggy classifier may return a dict or other type at runtime; this guard keeps the composition's return contract (RetryOverride | None) true at runtime, mirroring the adapter's single-hook guard.
                 logger_invalid: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
                 logger_invalid.warning(
                     "retry-classifier-hook-invalid-return",
@@ -606,6 +609,90 @@ def compose_retry_classifiers(
         return None
 
     return composed
+
+
+_HTTP_STATUS_429: Final[int] = 429
+
+
+def rate_limit_aware_classifier(
+    exception: BaseException,
+    attempt: int,
+) -> RetryOverride | None:
+    """Built-in classifier for *application-level* rate-limit raises.
+
+    TaskQ's own rate limiting denies at claim time (the job is
+    rescheduled, no attempt is charged) and never reaches this
+    classifier; what this classifier recognizes is the moment an
+    application's *outgoing* call is rate-limited and the actor lets the
+    signal propagate, the shape the cbre-pfc migration audit (W3.H/F1)
+    found consumers hand-rolling: without it a declared ``transient``
+    policy burns one attempt of ``max_attempts`` per 429 and the job dies
+    after a few tens of seconds (base=5s exponential: 5s + 10s + 20s is
+    about 35s), when the operator's intent for a rate limit is "wait it
+    out", the unbounded-in-attempts behaviour only an ``indefinite`` kind
+    provides.
+
+    Recognized signals, in check order:
+
+    * TaskQ's own :class:`~taskq.exceptions.ReservationUnavailable` raised
+      with ``source="rate_limit"``: a shared limiter's denial surfacing in
+      the actor's frame. A ``source="reservation"`` denial is a
+      concurrency-slot condition, not a rate limit, and is NOT recognized.
+    * Common HTTP 429 duck-types, no import required (nothing under
+      ``taskq`` imports an HTTP client): an exception carrying
+      ``.response.status_code == 429`` (httpx / httpx2 / requests'
+      ``HTTPStatusError``/``HTTPError`` shapes), ``.response.status == 429``
+      or a bare ``.status == 429`` on the exception (aiohttp's
+      ``ClientResponseError``), or a bare ``.status_code == 429``.
+    * An exception whose class is literally named ``RateLimitError`` (the
+      openai/anthropic-style SDK shape), even when it carries no HTTP
+      status attribute.
+
+    Everything else returns ``None``: the declared policy governs, so a
+    500 keeps its bounded transient budget and a 404 its non-retryable
+    verdict even when this classifier is composed in.
+
+    The override sets ``kind="indefinite"`` only, no ``delay``: the
+    declared policy's backoff curve (with jitter, cap, and
+    ``max_retry_backoff``) keeps computing *when* to retry, and the job's
+    ``schedule_to_close`` (``time_budget`` for an indefinite policy)
+    stays the single stopping condition, the same bound every
+    ``indefinite`` job has. Kind only, because the trap being fixed is
+    the attempt budget, not the curve.
+
+    Compose it after your domain-specific classifiers:
+    ``compose_retry_classifiers(my_domain_classifier, rate_limit_aware_classifier)``;
+    a more specific classifier registered before it wins by composition
+    order, and one registered after it never sees a 429 this classifier
+    claimed.
+    """
+    if isinstance(exception, ReservationUnavailable):
+        if exception.source == "rate_limit":
+            return RetryOverride(kind="indefinite")
+        return None
+
+    status: int | None = None
+    response = getattr(exception, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int):
+                status = value
+                break
+    if status is None:
+        for attr in ("status_code", "status"):
+            value = getattr(exception, attr, None)
+            if isinstance(value, int):
+                status = value
+                break
+
+    if status == _HTTP_STATUS_429:
+        return RetryOverride(kind="indefinite")
+
+    if type(exception).__name__ == "RateLimitError":
+        return RetryOverride(kind="indefinite")
+
+    return None
 
 
 class RetryClassifier:
