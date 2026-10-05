@@ -120,6 +120,9 @@ JobsClient(
 | `settings` | `TaskQSettings \| None` | `None` | Settings instance threaded through to `JobHandle` for features (e.g. Redis-backed progress fanout) that need config beyond the backend connection. |
 | `capacity_cache_ttl` | `float` | `5.0` (`DEFAULT_CAPACITY_CACHE_TTL`) | TTL in seconds of the per-actor `max_pending` capacity cache: how long a cached headroom reading is trusted before it is re-counted from the database. This is the TTL behind the "operator `max_pending` change takes effect fleet-wide within seconds" behavior. |
 
+`InMemoryBackend` and `FakeClock` come from the test-support namespace; see the
+[Testing API reference](../api-reference/testing.md) for its full surface.
+
 ### `invalidate_actor_capacity_cache()`
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
@@ -1723,6 +1726,11 @@ asyncio.run(main())
     `--queues media` consumes only `default`, so `handle.wait()` would time
     out with the job parked and nothing to claim it:
     `taskq worker --actors myapp.actors:registry --queues media`.
+
+This example is the spine of the fleet demo (`examples/fleet_demo/`; run with
+`uv run python -m examples.fleet_demo.run_demo`): it enqueues through the
+client, cancels through `taskq job cancel`, and reads the run back through
+`taskq insights` — on real containers, with a real worker subprocess.
 
 ---
 

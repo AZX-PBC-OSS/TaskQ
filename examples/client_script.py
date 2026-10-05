@@ -8,13 +8,13 @@ one-off job dispatch.
 Usage::
 
     # Enqueue a single job and wait for the result
-    uv run python examples/client_script.py
+    uv run python -m examples.client_script
 
     # Backfill: enqueue N jobs via enqueue_batch
-    uv run python examples/client_script.py --backfill 100
+    uv run python -m examples.client_script --backfill 100
 
     # Cancel a running job by ID
-    uv run python examples/client_script.py --cancel <job_id>
+    uv run python -m examples.client_script --cancel <job_id>
 
 Requires: Postgres running (``docker compose up -d postgres redis``) and
 migrations applied (``uv run taskq migrate up``).

@@ -573,6 +573,8 @@ See [Progress](progress.md) and [Cancellation](cancellation.md).
 
 Test the digest system without Postgres or Redis using `InMemoryBackend` and
 `FakeClock`. Register stubs, enqueue jobs, call `run_until_drained()`, assert.
+The full test-support surface is indexed in the
+[Testing API reference](../api-reference/testing.md).
 
 ```python no-exec — not executed: continues the user-local module the guide is building
 # tests/test_digest.py
@@ -662,3 +664,10 @@ See [Testing](testing.md) for the full toolkit.
 | 7 | Cron scheduling | `cron()`, `payload_factory` |
 | 8 | Progress & cancellation | `ctx.progress()`, `ctx.cancellation_requested`, `handle.cancel()` |
 | 9 | Testing | `InMemoryBackend`, `FakeClock`, `register_stub`, `run_until_drained` |
+
+Next steps: run the flagship fleet demo (narrated in
+`examples/fleet_demo/README.md`; run with
+`uv run python -m examples.fleet_demo.run_demo`) to watch these same
+patterns — dispatch, rate-limit denials, cancels, cron, shutdown — through a
+real worker's logs on real containers, and browse `examples/README.md` for
+the full example application (trigger UI, admin UI, worker entrypoints).

@@ -1258,7 +1258,6 @@ async def test_token_bucket_refill() -> None:
     for _ in range(10):
         r = await tb.acquire(clock=clock)
         assert r.allowed
-
     # 11th acquire is denied.
     r = await tb.acquire(clock=clock)
     assert not r.allowed
@@ -1270,7 +1269,7 @@ async def test_token_bucket_refill() -> None:
     assert r.allowed
 ```
 
-`FakeClock` is importable from `taskq.testing.clock`. `clock.advance(delta)` moves the clock forward without sleeping. Backward steps are safe; the implementation clamps elapsed time to zero.
+`FakeClock` is importable from `taskq.testing.clock`. `clock.advance(delta)` moves the clock forward without sleeping. Backward steps are safe; the implementation clamps elapsed time to zero. `taskq.testing.clock` and the canonical home `taskq.clock` re-export the same class object — see [Testing API reference](../api-reference/testing.md#fakeclock-one-class-four-import-paths).
 
 For sliding window tests:
 
@@ -1300,6 +1299,13 @@ async def test_sliding_window_deny_then_allow() -> None:
     r = await sw.acquire(clock=clock)
     assert r.allowed
 ```
+
+For the denial side against real Redis, the fleet demo
+(`examples/fleet_demo/`; run with
+`uv run python -m examples.fleet_demo.run_demo`) hammers two Redis-backed
+limiters and shows what a denial does to the job row: the dispatch rolls
+back, the row re-pends as `scheduled` at `now + retry_after_seconds`, and no
+retry budget is consumed (act 2 of its README).
 
 ---
 

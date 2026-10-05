@@ -69,7 +69,7 @@ local `http://localhost`. In any other environment, cookies are `Secure`
 | `session_max_age_seconds` | `int` | `28800` (8h) | `TASKQ_OIDC_SESSION_MAX_AGE_SECONDS` |
 | `scope` | `str` | `openid profile email` | `TASKQ_OIDC_SCOPE` |
 | `group_claim` | `str \| None` | `None` | `TASKQ_OIDC_GROUP_CLAIM` |
-| `allowed_groups` | `frozenset[str]` | `frozenset()` | `TASKQ_OIDC_ALLOWED_GROUPS` (comma-separated) |
+| `allowed_groups` | `str` | `""` (empty) | `TASKQ_OIDC_ALLOWED_GROUPS` (comma-separated) |
 | `group_resolver` | `Callable \| None` | `None` | _(programmatic only)_ |
 
 `session_secret` should be at least 32 bytes of random data. Rotating it
@@ -172,9 +172,9 @@ bundle = create_oidc_auth(config, base_path="/admin")
 | `sp_x509_cert` | `str \| None` | `None` | `TASKQ_SAML_SP_X509_CERT` |
 | `sp_private_key` | `str \| None` | `None` | `TASKQ_SAML_SP_PRIVATE_KEY` |
 | `session_secret` | `str` | n/a | `TASKQ_SAML_SESSION_SECRET` |
-| `session_max_age_seconds` | `int` | `28800` | _(same as OIDC)_ |
+| `session_max_age_seconds` | `int` | `28800` | `TASKQ_SAML_SESSION_MAX_AGE_SECONDS` (same default as OIDC) |
 | `group_attribute` | `str \| None` | `None` | `TASKQ_SAML_GROUP_ATTRIBUTE` |
-| `allowed_groups` | `frozenset[str]` | `frozenset()` | `TASKQ_SAML_ALLOWED_GROUPS` (comma-separated) |
+| `allowed_groups` | `str` | `""` (empty) | `TASKQ_SAML_ALLOWED_GROUPS` (comma-separated) |
 | `allow_cookieless_fallback` | `bool` | `false` | `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK` |
 
 ### Routes

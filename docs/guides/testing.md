@@ -171,7 +171,10 @@ archived_row = await backend.get_archived(job_id)
 `FakeClock` is a deterministic clock for tests. Its canonical home is
 `taskq.clock`, a production module that imports nothing from
 `taskq.testing`, so `import taskq` never pulls in the test-double backend.
-`taskq.testing.clock` re-exports it for backcompat.
+`taskq.testing.clock` re-exports it for backcompat. All four import paths
+(`taskq`, `taskq.clock`, `taskq.testing`, `taskq.testing.clock`) resolve to
+the same class object — see
+[FakeClock: one class, four import paths](../api-reference/testing.md#fakeclock-one-class-four-import-paths).
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -881,3 +884,8 @@ connection pressure of such a split.
 - [Observability: testing observability](observability.md#6-testing-observability): `setup_tracer`, `setup_meter`, trace-context propagation
 - [API Reference: Testing](../api-reference/testing.md): full `taskq.testing` API surface
 - [Workers](workers.md): worker lifecycle, `WorkerDeps`, maintenance leader
+- The fleet demo (`examples/fleet_demo/`): a runnable end-to-end tour on real
+  containers — enqueue → rate-limit denial → operator cancel → cron tick
+  budget → SIGTERM deploy → `taskq doctor` → `taskq insights` — run with
+  `uv run python -m examples.fleet_demo.run_demo`; its worker logs are the
+  proof for every guarantee this guide tests with fakes.

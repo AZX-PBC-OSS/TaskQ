@@ -1056,7 +1056,8 @@ is still flushed to Postgres at the end of the job.
 
 Use `InMemoryBackend` and `FakeClock` to test actor behaviour in unit tests without Postgres.
 `InMemoryBackend` simulates the full enqueue-dispatch-execute cycle including `unique_for` dedup,
-singleton enforcement, and `max_pending` backpressure.
+singleton enforcement, and `max_pending` backpressure. Both come from the test-support
+namespace; see the [Testing API reference](../api-reference/testing.md) for its full surface.
 
 ```python
 import pytest
@@ -1226,6 +1227,15 @@ async def submit_order(client, order_id: str, customer_id: str, amount_cents: in
     print(f"confirmed: {result.confirmation_number}")
     return handle.job_id
 ```
+
+A runnable companion: the `examples/actors/` package organizes a toy fleet by
+feature domain (one module per domain — basic, failure, ratelimit, chained,
+DI, batch, advanced, cron, progress, tags, sync, real-world), each with a
+docstring naming the feature and what to observe; see its README and run the
+stack with `docker compose up` in `examples/`. For the production tour of the
+same engine, `examples/fleet_demo/` narrates rate-limit denials, operator
+cancels, cron budgets, and SIGTERM deploys through a real worker's logs
+(`uv run python -m examples.fleet_demo.run_demo`).
 
 ---
 

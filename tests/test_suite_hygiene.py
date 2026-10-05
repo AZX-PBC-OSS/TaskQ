@@ -222,6 +222,100 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
     )
 
 
+# ── taskq.testing submodule __all__ contracts ────────────────────────────
+# The otel.py incident: the module's ``__all__`` was exactly inverted - it
+# advertised six underscore-private helpers (the ``_save_*`` snapshots,
+# ``_unpin_cached_loggers``, and the three autouse ``_*_guard`` fixtures)
+# while omitting the public ``attribute_str``. ``fixtures.py`` had the same
+# defect in miniature (``_create_worker`` listed; ``RUN_TOKEN_ENV_VAR`` /
+# ``run_isolation_token`` / ``RedisContainerLike`` missing). No star-import
+# consumer relied on the lie, so ``__all__`` itself was corrected; this pin
+# holds the two contract-carrying testing modules to the rule so the surface
+# cannot quietly rot again: ``__all__`` lists no underscore-private name and
+# misses no public module-level definition.
+#
+# The scan is deliberately static (no module import): importing would make
+# the pin's shape depend on the ``[otel]`` extra, and the existing guards
+# above set the precedent of reading source, not process state.
+
+
+def _testing_module_all_contract(module: str) -> tuple[set[str], set[str], set[str]]:
+    """(public module-level names, declared ``__all__``) for one module.
+
+    Public = ``def``/``class`` definitions and literal-constant assignments
+    (``RUN_TOKEN_ENV_VAR = "..."``) that lack the underscore prefix. Imports
+    are NOT public surface of the importing module - except when spelled in
+    ``__all__`` as a deliberate re-export (fixtures.py re-exports nothing
+    today, but the declared-side check below tolerates one). Top-level
+    ``if``/``else`` branches are scanned one level deep so the runtime
+    half of a ``if TYPE_CHECKING: ... else:`` split (fixtures.py's
+    ``JobsApp`` / ``ModulePgSchema`` NamedTuples) counts as a definition;
+    the typing-shim assignments in that same ``else`` branch
+    (``WorkerDeps = ... = object``, a non-literal multi-target assign)
+    fall outside "literal constant" and stay out of the contract.
+    """
+    path = _TESTING_PKG_DIR / f"{module}.py"
+    tree = ast.parse(path.read_text())
+    statements = [
+        branch
+        for node in tree.body
+        for branch in ([node, *node.body, *node.orelse] if isinstance(node, ast.If) else [node])
+    ]
+    defined: set[str] = set()
+    imported: set[str] = set()
+    for node in statements:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
+                    defined.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            imported.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+    declared: set[str] | None = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets
+        ):
+            declared = set(ast.literal_eval(node.value))
+    assert declared is not None, f"{path} does not declare __all__"
+    publics = {name for name in defined if not name.startswith("_")} - {"__all__"}
+    return publics, declared, imported
+
+
+@pytest.mark.parametrize("module", ["fixtures", "otel"])
+def test_testing_module_all_lists_public_surface_only(module: str) -> None:
+    """A testing module's ``__all__`` IS its contract: it must contain
+    every public module-level definition and no underscore-private name.
+
+    Confusion prevented: a private name in ``__all__`` invites
+    ``from taskq.testing.otel import _save_otel_enabled`` as sanctioned
+    usage and lands the helper in rendered API docs, while a public name
+    left out (``attribute_str``) is invisible to every tool that trusts
+    the contract. Both directions of the lie are pinned here.
+    """
+    publics, declared, imported = _testing_module_all_contract(module)
+    private_exported = sorted(name for name in declared if name.startswith("_"))
+    public_missing = sorted(publics - declared)
+    stale = sorted(declared - publics - imported)
+    assert not private_exported, (
+        f"taskq/testing/{module}.py __all__ exports underscore-private name(s) "
+        f"{private_exported} - private helpers are not part of the module's "
+        "contract; import them explicitly (with a reportPrivateUsage ignore) "
+        "if you must reach them."
+    )
+    assert not public_missing, (
+        f"taskq/testing/{module}.py omits public name(s) {public_missing} from "
+        "__all__ - the contract must list the module's full public surface."
+    )
+    assert not stale, (
+        f"taskq/testing/{module}.py __all__ lists name(s) {stale} that are "
+        "neither public definitions nor imports of the module - stale entries."
+    )
+
+
 # ── Direct os.environ writes in the test tree ────────────────────────
 # The atk_iso incident: a test wrote ``os.environ["TASKQ_SCHEMA_NAME"] = ...``
 # directly (no restore on the failure path), and the value leaked into the

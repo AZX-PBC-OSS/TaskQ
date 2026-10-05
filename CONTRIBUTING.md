@@ -412,6 +412,12 @@ Fixes <issue number>
 
 ### What to Expect
 
+The full process a change passes through — red-first proofs, red-team
+review, the weather rule for CI reds, the migration immutability law —
+is documented in the [landing doctrine](docs/design/landing-doctrine.md).
+Reviewers check those rules by name; reading the page first saves a
+round trip.
+
 - All changes must pass automated tests and type checking
 - Code reviewers will check for:
   - Implementation correctness
