@@ -40,6 +40,7 @@ from taskq.retry import (
     _MAX_RETRY_AFTER_DELAY,
     JobRetryState,
     Retry,
+    RetryClassifierHook,
     RetryOverride,
     RetryPolicy,
     _parse_retry_after,
@@ -425,30 +426,101 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 # ── performance pins ──────────────────────────────────────────────
 
 
-def test_miss_path_allocates_nothing() -> None:
-    """Zero allocation on the miss path: the classifier is invoked for
-    EVERY exception the actor raises (most are not rate limits), so the
-    not-claimed path must not allocate — and must not touch the header
-    parse path. Measured as GROWTH between two traced batches: the first
-    traced batch may catch one-off interpreter/tracer warm-up artifacts,
-    a per-call allocation would grow linearly and fail the second
-    batch."""
-    exc = RuntimeError("unrelated failure")
+#: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
+#: bookkeeping jitter observed on CI runners is tens of bytes over 10k
+#: calls (32B in red run 37263479699; 0B in 10 consecutive local runs) —
+#: noise, not signal. A genuine accumulating per-call allocation costs
+#: ≥ 32B/call ≈ 320KB/10k. The floor sits at one 4KiB page: 128x the
+#: observed CI noise ceiling and 80x below the smallest real signal, so
+#: a real per-call allocation still reds while bookkeeping jitter cannot
+#: (teeth drilled by ``test_allocation_pin_has_teeth`` below).
+TRACEMALLOC_NOISE_FLOOR_BYTES = 4 * 1024
+
+
+def _traced_batch_growth(classifier: RetryClassifierHook, exc: BaseException) -> tuple[int, int]:
+    """Run two traced 10k-call batches of *classifier*'s miss path and
+    return ``(first_batch_growth, second_batch_growth)``: how much traced
+    memory each batch grew over what came before it. The first traced
+    batch may catch one-off interpreter/tracer warm-up artifacts; only a
+    PER-CALL allocation grows the second batch linearly."""
     for _ in range(100):
-        rate_limit_aware_classifier(exc, 1)
+        classifier(exc, 1)
 
     tracemalloc.start()
     try:
         for _ in range(10_000):
-            rate_limit_aware_classifier(exc, 1)
-        _, steady_state = tracemalloc.get_traced_memory()  # absorbs one-off artifacts
+            classifier(exc, 1)
+        _, after_first = tracemalloc.get_traced_memory()
         for _ in range(10_000):
-            rate_limit_aware_classifier(exc, 1)
-        _, after_batch = tracemalloc.get_traced_memory()
+            classifier(exc, 1)
+        _, after_second = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
-    assert after_batch == steady_state, (
-        "the miss path must not allocate per call: traced memory grew from "
-        f"{steady_state} to {after_batch} bytes over 10,000 not-claimed calls"
+    return after_first, after_second - after_first
+
+
+def test_miss_path_allocates_nothing() -> None:
+    """No accumulating allocation on the miss path: the classifier is
+    invoked for EVERY exception the actor raises (most are not rate
+    limits), so the not-claimed path must not retain memory per call —
+    and must not touch the header parse path.
+
+    Measured as batch PROPORTIONALITY, not zero growth: traced growth
+    must scale with per-call work, and the per-call work here is zero —
+    so the second batch's growth must stay inside the MEASURED noise
+    band regardless of what the first batch absorbed. The once-pinned
+    zero-growth assertion over-tightened past the signal: tracemalloc's
+    own bookkeeping jitters by tens of bytes per batch on CI runners
+    (32B over 10k calls, red run 37263479699), which is noise. A
+    genuine per-call allocation grows linearly (~320KB over the same
+    calls) and still reds; the two-batch shape exists so one-off
+    interpreter/tracer warm-up artifacts land in the first batch and
+    cannot masquerade as a per-call signal."""
+    exc = RuntimeError("unrelated failure")
+
+    first_growth, second_growth = _traced_batch_growth(rate_limit_aware_classifier, exc)
+
+    assert second_growth <= TRACEMALLOC_NOISE_FLOOR_BYTES, (
+        "the miss path must not accumulate memory per call: the second "
+        f"traced batch grew {second_growth} bytes (noise floor "
+        f"{TRACEMALLOC_NOISE_FLOOR_BYTES} bytes; the first batch's "
+        f"{first_growth} are one-off warm-up artifacts) across 10,000 "
+        "not-claimed calls — a per-call allocation grows linearly, "
+        "bookkeeping jitter does not"
+    )
+
+
+def test_allocation_pin_has_teeth() -> None:
+    """Drill: the allocation pin must actually red on the defect it
+    exists for. A miss path that ALLOCATES AND RETAINS per call (the
+    leak class the pin's linear-growth signal detects: a lookup table
+    appended to per exception, never released) is run through the pin's
+    own harness — the drill asserts the pin's statistic EXCEEDS its
+    budget, i.e. the pin reds on this hardware, without depending on
+    absolute speed. (A transient per-call allocation is freed by
+    refcount before tracemalloc's current-size can see it — that class
+    belongs to the perf gate in tests/perf/, whose relative budget
+    trips on the cost-class change.)"""
+    leaked: list[dict[str, int]] = []
+
+    def leaky_miss_path(exc: BaseException, attempt: int) -> RetryOverride | None:
+        # The defect under drill: a fresh allocation RETAINED per miss.
+        leaked.append({"attempt": attempt})
+        return rate_limit_aware_classifier(exc, attempt)
+
+    _first_growth, second_growth = _traced_batch_growth(
+        leaky_miss_path, RuntimeError("unrelated failure")
+    )
+
+    print(
+        f"\n── drill: per-call-allocating miss path ──\n"
+        f"  second-batch growth {second_growth}B vs noise floor "
+        f"{TRACEMALLOC_NOISE_FLOOR_BYTES}B"
+    )
+    assert second_growth > TRACEMALLOC_NOISE_FLOOR_BYTES, (
+        "the allocation pin LOST ITS TEETH: a per-call-allocating miss "
+        f"path (second-batch growth {second_growth}B) did not exceed the "
+        f"{TRACEMALLOC_NOISE_FLOOR_BYTES}B noise floor — the pin can no "
+        "longer catch the allocation it exists for"
     )
