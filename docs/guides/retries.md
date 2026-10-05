@@ -317,6 +317,70 @@ consumer level (`asyncio.wait_for`), not used by the classifier. The row's
 `@actor` literal: a row/registration mismatch is re-validated loudly rather
 than silently trusted.
 
+### Composing classifiers: `compose_retry_classifiers` and `rate_limit_aware_classifier`
+
+An actor that needs both a domain-specific classifier and rate-limit awareness would
+otherwise hand-roll the "try mine, then fall back" chain inside one function. Two helpers
+(`taskq.retry`, re-exported from `taskq`) compose classifiers instead:
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import actor, rate_limit_aware_classifier
+from taskq.retry import RetryPolicy, compose_retry_classifiers
+
+
+@actor(
+    retry=RetryPolicy(kind="transient", max_attempts=5),
+    retry_classifier=compose_retry_classifiers(
+        classify_http_error,  # your domain classifier first...
+        rate_limit_aware_classifier,  # ...the built-in as the catch-all
+    ),
+)
+async def call_partner_api(payload: Payload) -> Result: ...
+```
+
+**Semantics: first override wins, order matters.** Each classifier is invoked in
+registration order with `(exception, attempt)`. The first classifier returning a
+`RetryOverride` decides and later classifiers are not consulted (short-circuit); a `None`
+falls through to the next; when every classifier returns `None` the composition returns
+`None` and the declared `RetryPolicy` governs, exactly as a single hook returning `None`
+does. Put the most specific classifier first — here `classify_http_error` claims 429s with
+a server-provided `Retry-After` delay before the built-in ever sees them.
+
+**A buggy classifier is isolated, not fatal.** The single-hook reliability guarantee
+composes per classifier: one that raises is logged at `WARNING` and skipped, and one that
+returns something that is not a `RetryOverride` is logged and skipped too — composition
+continues with the next classifier rather than discarding the healthy ones' overrides and
+falling back to the declared policy. `KeyboardInterrupt` and `asyncio.CancelledError` are
+never a classifier outcome and propagate raw. `compose_retry_classifiers()` with no
+arguments returns a hook that always returns `None`, so a call site can compose a
+possibly-empty list.
+
+**`rate_limit_aware_classifier` fixes the 429-burns-the-budget trap.** Without a
+classifier, a declared `transient` policy burns one attempt of `max_attempts` per 429:
+with the defaults (`max_attempts=3`, `base=5s`, exponential) a sustained rate limit kills
+the job in about 35 seconds (5s + 10s + 20s), which is almost never the operator's intent
+— a rate limit means "wait it out", the unbounded-in-attempts behaviour only an
+`indefinite` kind provides. The built-in recognizes:
+
+- TaskQ's own `ReservationUnavailable` raised with `source="rate_limit"` (a shared
+  limiter's denial surfacing in the actor's frame); a `source="reservation"` denial is a
+  concurrency-slot condition and is not recognized.
+- Common HTTP 429 duck-types, no import required: an exception carrying
+  `.response.status_code == 429` (the `httpx`/`httpx2`/`requests` shapes),
+  `.response.status == 429` or a bare `.status == 429` (the `aiohttp`
+  `ClientResponseError` shape), or a bare `.status_code == 429`.
+- An exception whose class is literally named `RateLimitError` (the openai/anthropic-style
+  SDK shape), even without HTTP attributes.
+
+Everything else returns `None`: a 500 keeps its bounded transient budget and a 404 its
+non-retryable verdict even when the built-in is composed in. The override sets
+`kind="indefinite"` only — the declared policy's backoff curve (jitter, cap,
+`max_retry_backoff`) keeps computing *when* to retry, and the job's `schedule_to_close`
+(`time_budget` on an indefinite policy) stays the single stopping condition, so
+"unbounded attempts" still means bounded wall-clock time. For a known-duration wait that
+spends no attempt budget, raise `RetryAfter(delay, consume_budget=False)` from the actor
+body instead ([§9](#9-control-flow-signals)).
+
 ---
 
 ## 6. `schedule_to_close` interaction
