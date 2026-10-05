@@ -24,7 +24,7 @@ import re
 import secrets
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal, NamedTuple, Protocol, Self
+from typing import Any, Final, Literal, NamedTuple, Protocol, Self, get_args
 from uuid import UUID
 
 import structlog
@@ -527,6 +527,57 @@ class RetryOverride(BaseModel):
         return v
 
 
+#: The :data:`RetryKind` vocabulary, derived from the alias itself (the
+#: ``_OUTCOME_BRANCHES`` pattern in ``taskq.backend._protocol``) so a new kind
+#: there is this guard's vocabulary automatically. Consumed only by
+#: :func:`_override_shape_error`'s runtime shape check — the ``Literal`` type
+#: cannot be consulted at runtime.
+_RETRY_KIND_VALUES: Final[frozenset[str]] = frozenset(get_args(RetryKind.__value__))
+
+
+def _override_shape_error(override: object) -> str | None:
+    """The field-shape error of a hook-returned override, or ``None`` when
+    the decision path can use it.
+
+    The seams' broken-hook guard (``compose_retry_classifiers`` and
+    ``decide_after_failure``) is two-layered: the isinstance half — folded
+    in here — catches a return that is not a :class:`RetryOverride` at
+    all, and this shape half catches a ``RetryOverride`` built through
+    :meth:`RetryOverride.model_construct`, which bypasses pydantic
+    validation while passing any isinstance check. A validated
+    construction can never fail here (the model's own validators enforce
+    both fields), so the check only ever rejects the bypass cases:
+
+    * a ``delay`` that is not a ``timedelta``/``None`` would raise
+      (``AttributeError``/``TypeError``) inside
+      :meth:`RetryClassifier._retry_decision`'s ceiling arithmetic —
+      an escape from the hook-isolation boundary, whose contract is that
+      a broken hook is logged and skipped, never propagated;
+    * a ``kind`` outside the :data:`RetryKind` vocabulary would fall
+      through the decision ladder's kind comparisons into its final
+      branch — silently governed as ``indefinite``, the haunt class —
+      instead of the declared-policy fallback.
+
+    The returned string names the offending field and what it carried
+    (via :func:`safe_repr`, the offending value's own repr can raise) so
+    the ``retry-classifier-hook-invalid-return`` warning is actionable.
+    """
+    if not isinstance(override, RetryOverride):
+        return f"not a RetryOverride, a {type(override).__name__}"
+    delay = override.delay
+    if delay is not None and not isinstance(delay, timedelta):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declared type is timedelta | None, but this guard exists precisely for a model_construct'd RetryOverride whose fields bypassed pydantic validation — at runtime delay can be anything; the isinstance IS the check.
+        return f"delay is a {type(delay).__name__}, not a timedelta | None"
+    kind = override.kind
+    if kind is None:
+        return None
+    # The str check first: membership over _RETRY_KIND_VALUES would raise
+    # TypeError on an unhashable kind (a list), the very escape this guard
+    # exists to absorb.
+    if isinstance(kind, str) and kind in _RETRY_KIND_VALUES:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: same model_construct bypass as the delay check above — the declared RetryKind | None is what an honest construction guarantees, not what a broken hook can deliver.
+        return None
+    return f"kind is {safe_repr(kind)}, not a RetryKind | None"  # pyright: ignore[reportArgumentType]  # Why: safe_repr is typed BaseException (its callers log hook failures), but repr() itself is object-safe; the guard renders arbitrary hostile field values and must not crash on a raising __repr__.
+
+
 type RetryClassifierHook = Callable[[BaseException, int], RetryOverride | None]
 """Optional per-actor hook for exception-*instance*-level retry classification.
 
@@ -548,6 +599,14 @@ pydantic ``ValidationError``, ``ResultTooLarge``, and
 occurrence. Exceptions raised by the hook itself are caught and logged by
 :func:`decide_after_failure`; classification falls back to the static
 policy in that case, a broken hook can never crash the retry pipeline.
+The returned override's runtime shape is verified too: an honestly
+constructed :class:`RetryOverride` always passes, but a
+``model_construct`` bypass of pydantic validation (a ``delay`` that is
+not a ``timedelta``, a ``kind`` outside the :data:`RetryKind`
+vocabulary) is logged under ``retry-classifier-hook-invalid-return`` and
+falls back to the declared policy like any other broken hook — a
+malformed override must never raise inside the decision arithmetic or
+silently govern as ``indefinite``.
 """
 
 
@@ -574,7 +633,9 @@ def compose_retry_classifiers(
     a classifier that raises is logged at WARNING and skipped, and
     composition continues with the next classifier, never propagating;
     likewise a classifier returning something that is not a
-    :class:`RetryOverride` nor ``None`` is logged and skipped. The
+    :class:`RetryOverride` nor ``None`` — or a ``RetryOverride`` whose
+    fields bypassed pydantic validation (``model_construct``), which the
+    decision path could not use safely — is logged and skipped. The
     adapter's carve-out applies per classifier: ``KeyboardInterrupt`` and
     ``asyncio.CancelledError`` are never a classifier outcome and
     propagate raw. A classifier that raises is skipped rather than
@@ -617,13 +678,21 @@ def compose_retry_classifiers(
                 continue
             if override is None:
                 continue
-            if not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the classifier's declared return type is RetryOverride | None, but a buggy classifier may return a dict or other type at runtime; this guard keeps the composition's return contract (RetryOverride | None) true at runtime, mirroring the adapter's single-hook guard.
+            # The two-layer return guard: not a RetryOverride at all, or a
+            # model_construct'd one whose fields bypass pydantic validation
+            # (see _override_shape_error for the two hostile shapes — a
+            # non-timedelta delay and an off-vocabulary kind — and why each
+            # must never reach the decision path). Logged and skipped, the
+            # composition continues with the next classifier.
+            shape_error = _override_shape_error(override)
+            if shape_error is not None:
                 logger_invalid: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
                 logger_invalid.warning(
                     "retry-classifier-hook-invalid-return",
                     hook="retry_classifier",
                     classifier_index=index,
                     return_type=type(override).__name__,
+                    detail=shape_error,
                 )
                 continue
             return override
@@ -995,7 +1064,20 @@ def make_rate_limit_aware_classifier(
 
     Validation is at construction: a ``claim_kind`` outside the three
     modes raises ``ValueError`` here — fail loud at build time, never a
-    silently-misclaiming classifier at override time.
+    silently-misclaiming classifier at override time. ``"non_retryable"``
+    is deliberately NOT a mode: a rate limit means "retry later" by
+    definition (§4), so stamping one non-retryable is the misclaim this
+    factory exists to make impossible — build that intent with a domain
+    classifier registered *before* this one (composition order), where
+    the decision is visible in your own code.
+
+    The returned hook carries the built-in's injectable ``now``
+    (keyword-only, defaulting to the real clock) so tests and custom
+    clock domains pin HTTP-date parsing exactly as they pin the
+    built-in's. The ``attempt`` argument is the
+    :data:`RetryClassifierHook` protocol's required arity and is
+    deliberately unread — the verdict never depends on the attempt
+    count (pinned by the identity battery's ``attempt`` sweep).
 
     Why the transient mode exists: the built-in's indefinite claim is
     the haunt class for a ``transient`` actor with no ``time_budget``
@@ -1484,7 +1566,16 @@ def decide_after_failure(
     ):
         try:
             override = actor_config.retry_classifier(exception, job_state.attempt)
-            if override is not None and not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the hook's declared return type is RetryOverride | None, but a buggy hook may return a dict or other type at runtime; this guard prevents AttributeError in RetryClassifier.classify.
+            # The two-layer return guard (see _override_shape_error): not a
+            # RetryOverride at all, or a model_construct'd one whose fields
+            # bypass pydantic validation. The shape half is what keeps a
+            # non-timedelta override delay out of _retry_decision's ceiling
+            # arithmetic (an AttributeError/TypeError mid-classify — the
+            # escape this boundary exists to absorb) and an off-vocabulary
+            # kind out of the decision ladder's final branch (which would
+            # silently govern it as indefinite, the haunt class).
+            shape_error = None if override is None else _override_shape_error(override)
+            if shape_error is not None:
                 logger: structlog.stdlib.BoundLogger = (
                     log if log is not None else structlog.get_logger("taskq.retry")
                 )
@@ -1492,6 +1583,7 @@ def decide_after_failure(
                     "retry-classifier-hook-invalid-return",
                     hook="retry_classifier",
                     return_type=type(override).__name__,
+                    detail=shape_error,
                 )
                 override = None
         except (KeyboardInterrupt, asyncio.CancelledError):

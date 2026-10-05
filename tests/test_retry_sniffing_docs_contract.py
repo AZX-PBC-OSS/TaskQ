@@ -70,6 +70,29 @@ def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
     )
     assert "claim_kind=None" in text, "retries.md must document the never-claiming identity mode"
 
+    # The #658 docs↔code sniff pattern: the doc's named kwarg must exist on
+    # the factory's signature, and the doc's "default" claim ("the built-in
+    # is the factory's claim_kind='indefinite' instance") must match the
+    # shipped default. Sniffed by PARAMETER NAME, not position: a refactor
+    # of kwarg order cannot silently break (or unbreak) this pin — only a
+    # rename or a default drift does, together with the doc it documents.
+    import inspect
+
+    import taskq.retry
+
+    parameters = inspect.signature(taskq.retry.make_rate_limit_aware_classifier).parameters
+    assert "claim_kind" in parameters, (
+        "retries.md §5 names claim_kind as the factory's knob: renaming the "
+        "parameter without updating the guide fails this pin rather than "
+        "shipping a doc that promises a keyword that isn't there"
+    )
+    assert parameters["claim_kind"].default == "indefinite", (
+        "the doc's claim that the built-in is the factory's "
+        'claim_kind="indefinite" instance pins the default: a default drift '
+        "changes the built-in's bounded-ness for every existing registration "
+        "and must update the guide in the same commit"
+    )
+
 
 def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
     """The parser's finite-hint rules (the §5 extension): a finite hint

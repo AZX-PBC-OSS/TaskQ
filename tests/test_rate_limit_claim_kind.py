@@ -31,6 +31,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.exceptions import ReservationUnavailable
 from taskq.retry import (
     Fail,
@@ -468,14 +469,44 @@ def test_decimal_fraction_end_to_end_floored_at_min_deferral() -> None:
     assert decision.retry_delay == timedelta(seconds=1)
 
 
-@pytest.mark.parametrize("value", ["30.5", "1.25", "00.5"])
+@pytest.mark.parametrize("value", ["30.5", "1.25", "00.5", "08"])
 def test_decimal_fraction_grammar_honored(value: str) -> None:
     """The fraction part of the grammar: digits, an optional dot, more
-    digits — the parsed value is the delay."""
+    digits — the parsed value is the delay. Leading zeros are ordinary
+    digits (``"08"`` is 8 s; there is no octal history in a
+    ``1*DIGIT`` grammar)."""
     result = rate_limit_aware_classifier(_with_retry_after(value), 1, now=_NOW)
 
     assert result is not None
     assert result.delay == timedelta(seconds=float(value))
+
+
+def test_edge_whitespace_is_stripped_then_honored() -> None:
+    """Leading/trailing whitespace is the HTTP framing's to strip, not the
+    grammar's: ``.strip()`` runs before the match, so ``"  120"`` and
+    ``"120 "`` (spaces, tabs, NBSP — anything ``str.strip`` trims) honor
+    120 s. Embedded whitespace (``"12 34"``) stays garbage — the pinned
+    distinction: strip is an edge trim, never an embedded-token license."""
+    for value in ("  120", "120 ", "\t120\n", " 120 ", "\u00a0120\u00a0"):
+        result = rate_limit_aware_classifier(_with_retry_after(value), 1, now=_NOW)
+
+        assert result is not None, f"{value!r} must classify"
+        assert result.delay == timedelta(seconds=120), f"{value!r}: edge whitespace stripped"
+
+
+@pytest.mark.parametrize(
+    "value", ["\uff11\uff12\uff13", "一二三", "12\x00", "\x00", "1\n2", "1.2.3"]
+)
+def test_non_ascii_nul_and_internal_newline_forms_are_garbage(value: str) -> None:
+    """Beyond the §١٢٣ pin: fullwidth digits, CJK numerals, embedded NUL,
+    an internal newline, and a double dot are all outside the closed
+    grammar — curve fallback, never a bogus delay, never a crash (the
+    seconds pattern admits ASCII ``[0-9]`` and one dot only; the NUL
+    forms also fail the HTTP-date parse and fall through)."""
+    result = rate_limit_aware_classifier(_with_retry_after(value), 1, now=_NOW)
+
+    assert result == RetryOverride(kind="indefinite")
+    assert result is not None and result.delay is None
 
 
 @pytest.mark.parametrize(
@@ -512,6 +543,130 @@ def test_zero_hint_keeps_the_curve_fallback_rule() -> None:
 
     assert result == RetryOverride(kind="indefinite")
     assert result is not None and result.delay is None
+
+
+# ── hardening: the hook-return guard sees through model_construct ──
+#
+# The seams (decide_after_failure, compose_retry_classifiers) guard a
+# broken hook's return with isinstance(override, RetryOverride) — but a
+# RetryOverride built through ``model_construct`` bypasses pydantic
+# validation while passing that isinstance. Two hostile shapes reached
+# the decision path before this hardening:
+#
+# * a non-timedelta ``delay`` raised AttributeError/TypeError inside
+#   ``RetryClassifier._retry_decision``'s ceiling arithmetic — OUT of
+#   ``decide_after_failure``, whose contract is that a broken hook is
+#   logged and skipped, never propagated (the dispatch loop's failure
+#   path died);
+# * an off-vocabulary ``kind`` fell through the decision ladder's kind
+#   comparisons into its final branch — silently governed as
+#   ``indefinite``, the haunt class — instead of the declared policy.
+#
+# A validated construction can never produce either shape (the model's
+# own validators enforce both fields), so the guard only rejects the
+# bypass; honest overrides pass unchanged, subclasses included.
+
+
+def test_model_construct_garbage_delay_never_escapes_the_adapter() -> None:
+    """A hook returning a ``model_construct``'d RetryOverride with a
+    non-timedelta delay is logged and skipped — the declared policy
+    governs — and the exception never escapes ``decide_after_failure``."""
+    from unittest.mock import Mock
+
+    for bad_delay in ("not-a-timedelta", Mock(), 90.0, object()):
+        bogus = RetryOverride.model_construct(kind="transient", delay=bad_delay)
+        actor = StubActorConfig(retry=_warden_policy(), retry_classifier=lambda e, a, _b=bogus: _b)
+
+        decision = decide_after_failure(actor, Exception("x"), _job_state())
+
+        assert isinstance(decision, Retry), f"delay={bad_delay!r}: the policy must govern"
+        assert decision.retry_delay == timedelta(seconds=5), (
+            "the curve fallback (transient, attempt 1, base 5 s, jitter 0)"
+        )
+
+
+def test_model_construct_garbage_kind_never_resolves_to_indefinite() -> None:
+    """A hook returning a ``model_construct``'d RetryOverride whose kind is
+    outside the RetryKind vocabulary is skipped: the declared policy
+    governs (transient at max_attempts → Fail), never the decision
+    ladder's final branch silently resolving garbage as ``indefinite`` —
+    the haunt."""
+    bogus = RetryOverride.model_construct(kind=42, delay=None)
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    actor = StubActorConfig(retry=policy, retry_classifier=lambda e, a: bogus)
+
+    decision = decide_after_failure(actor, Exception("x"), _job_state(attempt=3, max_attempts=3))
+
+    assert isinstance(decision, Fail), "an off-vocabulary kind must not govern as indefinite"
+
+
+@pytest.mark.parametrize(
+    "garbage_kind", [42, "nonsense", "INDEFINITE", ["transient"], None.__class__]
+)
+def test_model_construct_garbage_kinds_all_fall_back(garbage_kind: object) -> None:
+    """The kind half of the shape guard across the hostile spectrum —
+    including an unhashable kind (a list), which a naive frozenset
+    membership test would have crashed on with TypeError."""
+    bogus = RetryOverride.model_construct(kind=garbage_kind, delay=None)  # type: ignore[arg-type]  # Why: the test feeds deliberately off-contract values to pin the fail-closed guard
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    actor = StubActorConfig(retry=policy, retry_classifier=lambda e, a: bogus)
+
+    decision = decide_after_failure(actor, Exception("x"), _job_state(attempt=3, max_attempts=3))
+
+    assert isinstance(decision, Fail)
+
+
+def test_compose_skips_a_model_construct_garbage_override_and_falls_through() -> None:
+    """The composer's return contract is a RUNTIME-usable override: a
+    validation-bypassed one is logged and skipped, and the next
+    classifier in the composition still gets its say."""
+    from taskq.retry import compose_retry_classifiers
+
+    bogus = RetryOverride.model_construct(kind="transient", delay="nope")
+    composed = compose_retry_classifiers(lambda e, a: bogus, _BOUNDED)
+
+    result = composed(_with_retry_after("90"), 1)
+
+    assert result == RetryOverride(kind="transient", delay=timedelta(seconds=90)), (
+        "the healthy classifier after the broken one must decide"
+    )
+
+
+def test_the_shape_guard_never_rejects_an_honest_override() -> None:
+    """The guard's false-positive freedom: every shape a VALIDATED
+    RetryOverride can carry passes the seams untouched — kind set/delay
+    None, delay set/kind None, the timedelta.max saturation, the
+    explicit-zero floor, and a timedelta subclass (a hook's hand-rolled
+    delta type)."""
+
+    class MyDelta(timedelta):
+        pass
+
+    policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+    cases: list[RetryOverride] = [
+        RetryOverride(kind="transient"),
+        RetryOverride(kind=None, delay=timedelta(0)),
+        RetryOverride(kind="transient", delay=timedelta.max),
+        RetryOverride(kind="non_retryable"),
+        RetryOverride.model_construct(kind="transient", delay=MyDelta(seconds=90)),
+    ]
+    for override in cases:
+        actor = StubActorConfig(retry=policy, retry_classifier=lambda e, a, _o=override: _o)
+        decision = decide_after_failure(actor, Exception("x"), _job_state())
+        if override.kind == "non_retryable":
+            assert isinstance(decision, Fail)
+        elif override.delay is not None and override.delay > timedelta(0):
+            expected = min(override.delay, timedelta(days=1))  # default max_retry_backoff
+            assert isinstance(decision, Retry) and decision.retry_delay == max(
+                expected, MIN_DEFERRAL_INTERVAL
+            )
+        else:
+            # kind=transient, no delay (or the explicit zero, floored):
+            # the curve (5 s base, jitter 0) or the floor governs.
+            assert isinstance(decision, Retry)
+            assert decision.retry_delay >= MIN_DEFERRAL_INTERVAL
+        # (The timedelta.max case asserts the ceiling clamp: min(24 h, 24 h) —
+        # no overflow in the min/comparison arithmetic.)
 
 
 # ── property: the parse can never crash, only degrade ──────────────
