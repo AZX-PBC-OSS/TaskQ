@@ -65,10 +65,11 @@ _BUILTINS = frozenset(dir(builtins))
 _TASKQ_IMPORT_RE = re.compile(r"^\s*from (taskq(?:\.[A-Za-z_]\w*)*) import (.+?)\s*(?:#[^\"']*)?$")
 
 #: Defensive floor, not a target: the population at introduction was
-#: 236 no-exec fences across 26 pages (220 of them AST-parseable).
+#: 236 no-exec fences across 29 pages (227 of them AST-parseable; 7
+#: signature excerpts enforce through the line regex only).
 _NO_EXEC_FLOOR = 200
 _PAGES_FLOOR = 20
-#: Verified taskq-API references (rules 1-2) at introduction: 186 names.
+#: Verified taskq-API references (rules 1-4) at introduction: 198 names.
 _NAMES_FLOOR = 150
 
 
@@ -126,9 +127,9 @@ def _regex_imports(code: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _taskq_from_imports(tree: ast.AST) -> list[tuple[str, str]]:
-    """``(module, name)`` pairs from every ``from taskq... import ...``."""
-    pairs: list[tuple[str, str]] = []
+def _taskq_from_imports(tree: ast.AST) -> list[tuple[str, str, str | None]]:
+    """``(module, name, asname)`` from every ``from taskq... import ...``."""
+    pairs: list[tuple[str, str, str | None]] = []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.ImportFrom)
@@ -138,14 +139,15 @@ def _taskq_from_imports(tree: ast.AST) -> list[tuple[str, str]]:
         ):
             for alias in node.names:
                 if alias.name != "*":
-                    pairs.append((node.module, alias.name))
+                    pairs.append((node.module, alias.name, alias.asname))
     return pairs
 
 
-def _taskq_plain_imports(tree: ast.AST) -> list[str]:
-    """Every ``import taskq...`` module path spelled by the fence."""
+def _taskq_plain_imports(tree: ast.AST) -> list[tuple[str, str | None]]:
+    """``(module path, asname)`` for every ``import taskq...`` — ``asname`` is
+    ``None`` when unaliased."""
     return [
-        alias.name
+        (alias.name, alias.asname)
         for node in ast.walk(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
@@ -218,6 +220,31 @@ def _called_names(tree: ast.AST) -> set[str]:
     }
 
 
+def _star_bound_exports(tree: ast.AST) -> set[str]:
+    """Declared exports a taskq star-import in this fragment binds.
+
+    ``from taskq import *`` legitimately puts ``taskq.__all__`` in the
+    fragment's namespace; rule 4 must not red a call the fragment actually
+    bound. Only declared exports count — a star-import says nothing about
+    undeclared names, so enforcement stays exactly as strict for those.
+    """
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and node.module.startswith("taskq")
+            and any(alias.name == "*" for alias in node.names)
+        ):
+            try:
+                mod = importlib.import_module(node.module)
+            except ImportError:
+                continue
+            bound.update(getattr(mod, "__all__", ()))
+    return bound
+
+
 def _verify_fragment(
     example: DocsExample,
     module_aliases: dict[str, str],
@@ -244,16 +271,12 @@ def _verify_fragment(
         return {}
 
     contributions: dict[str, str] = {}
-    for module, name in _taskq_from_imports(tree):
+    for module, name, _asname in _taskq_from_imports(tree):
         report.names_verified += 1
         if not _import_resolves(module, name):
             report.failures.append(f"{where}: `from {module} import {name}` does not resolve")
-        elif _is_module(f"{module}.{name}"):
-            # The name IS a submodule (``from taskq import retry``): later
-            # fences may chain attributes through it.
-            contributions[name] = f"{module}.{name}"
 
-    for module in _taskq_plain_imports(tree):
+    for module, _asname in _taskq_plain_imports(tree):
         report.names_verified += 1
         try:
             importlib.import_module(module)
@@ -268,7 +291,7 @@ def _verify_fragment(
             )
 
     if _DELIBERATELY_BROKEN not in example.info:
-        bound_here = _store_bound_names(tree)
+        bound_here = _store_bound_names(tree) | _star_bound_exports(tree)
         for name in sorted(_called_names(tree) - bound_here - page_bound - _BUILTINS):
             if name in _DECLARED_EXPORTS:
                 report.failures.append(
@@ -278,17 +301,26 @@ def _verify_fragment(
 
     # Namespace contributions for later fences: every binding the fence
     # makes, plus the module aliases its taskq imports introduce.
-    for bound in _store_bound_names(tree):
+    for bound in _store_bound_names(tree) | _star_bound_exports(tree):
         page_bound.add(bound)
-    for module, name in _taskq_from_imports(tree):
+    for module, name, asname in _taskq_from_imports(tree):
         if _import_resolves(module, name) and _is_module(f"{module}.{name}"):
-            contributions[name] = f"{module}.{name}"
-    for plain in _taskq_plain_imports(tree):
-        head, _, rest = plain.partition(".")
-        if rest:
+            # The BINDING (asname if aliased) is what later fences chain through:
+            # ``from taskq import retry as tr2`` roots ``tr2.<attr>`` chains.
+            contributions[asname or name] = f"{module}.{name}"
+    for module, asname in _taskq_plain_imports(tree):
+        head, _, rest = module.partition(".")
+        if asname is not None:
+            # ``import taskq.retry as tr`` binds ``tr`` — the alias is the
+            # chain root later fences reach for.
+            contributions[asname] = module
+        elif rest:
             # ``import taskq.retry`` binds the ROOT name (``taskq``), not the
             # leaf; chains rooted there resolve natively, so record the head.
             contributions.setdefault(head, head)
+        else:
+            # ``import taskq`` — aliased or not, the bound name chains natively.
+            contributions.setdefault(asname or head, module)
     return contributions
 
 
@@ -392,3 +424,99 @@ def test_the_checker_reds_on_an_unbound_called_export() -> None:
     report = _PageReport()
     _verify_fragment(caller, {}, set(), report)
     assert any("RetryPolicy(...)" in f for f in report.failures), report.failures
+
+
+def test_the_checker_reds_on_a_broken_chain_through_an_aliased_taskq_module() -> None:
+    """Rule 3's alias forms are enforced, not silently dropped.
+
+    The module docstring promises ``import taskq.retry as tr`` then
+    ``tr.Delay(...)`` resolves attribute-by-attribute — which needs the
+    ASNAME (``tr``), not the module path, registered as a chain root. An
+    aliased chain whose tail does not exist must red exactly like the
+    unaliased form; a checker that skips it grants renames a free pass on
+    every fence that reached for the alias spelling.
+    """
+    fence_info = "python no-exec — not executed: fragment, names bound by an earlier fence"
+
+    def _fragment(code: str, open_line: int) -> DocsExample:
+        return DocsExample(
+            example_id=f"scratch-alias:{open_line}",
+            path="scratch-alias",
+            open_line=open_line,
+            close_line=open_line + 1,
+            info=fence_info,
+            code=code,
+        )
+
+    missing = "NameTaskqHasNeverExported"
+    assert not hasattr(taskq.retry, missing)
+
+    # Plain-import alias: ``import taskq.retry as tr`` roots ``tr`` chains.
+    report = _PageReport()
+    page_bound: set[str] = set()
+    module_aliases: dict[str, str] = {}
+    contributions = _verify_fragment(
+        _fragment("import taskq.retry as tr\n", 1), module_aliases, page_bound, report
+    )
+    module_aliases.update(contributions)
+    assert module_aliases.get("tr") == "taskq.retry", module_aliases
+    _verify_fragment(_fragment(f"tr.{missing}(x=1)\n", 2), module_aliases, page_bound, report)
+    assert any(f"taskq.retry.{missing}" in f for f in report.failures), report.failures
+
+    # From-import alias: ``from taskq import retry as tr2`` roots ``tr2`` chains.
+    report = _PageReport()
+    page_bound = set()
+    module_aliases = {}
+    contributions = _verify_fragment(
+        _fragment("from taskq import retry as tr2\n", 1), module_aliases, page_bound, report
+    )
+    module_aliases.update(contributions)
+    assert module_aliases.get("tr2") == "taskq.retry", module_aliases
+    _verify_fragment(_fragment(f"tr2.{missing}(x=1)\n", 2), module_aliases, page_bound, report)
+    assert any(f"taskq.retry.{missing}" in f for f in report.failures), report.failures
+
+
+def test_a_star_import_binds_only_the_declared_exports() -> None:
+    """``from taskq import *`` legitimately binds ``taskq.__all__`` — a call to
+    a declared export through the star form must NOT red (a checker that
+    flags a working idiom trains readers to ignore it), while a call to a
+    declared export the star could not have bound stays enforced."""
+    fence_info = "python no-exec — not executed: fragment, names bound by an earlier fence"
+
+    def _fragment(code: str, open_line: int) -> DocsExample:
+        return DocsExample(
+            example_id=f"scratch-star:{open_line}",
+            path="scratch-star",
+            open_line=open_line,
+            close_line=open_line + 1,
+            info=fence_info,
+            code=code,
+        )
+
+    exported = next(
+        name
+        for name in taskq.__all__
+        if not name.startswith("_") and callable(getattr(taskq, name, None))
+    )
+    # A taskq.retry-only declared export: `from taskq import *` does NOT bind
+    # it, so a bare call must stay enforced. Membership, not hasattr: the
+    # star's binding is __all__, and a stray module attribute (another
+    # test's leak) is irrelevant to what the star imports.
+    undeclared = next(
+        name
+        for name in taskq.retry.__all__
+        if name not in taskq.__all__ and callable(getattr(taskq.retry, name, None))
+    )
+    assert undeclared in _DECLARED_EXPORTS and undeclared not in taskq.__all__
+
+    report = _PageReport()
+    page_bound: set[str] = set()
+    _verify_fragment(_fragment("from taskq import *\n", 1), {}, page_bound, report)
+    _verify_fragment(_fragment(f"{exported}(x=1)\n", 2), {}, page_bound, report)
+    assert not report.failures, report.failures
+
+    report = _PageReport()
+    page_bound = set()
+    _verify_fragment(_fragment("from taskq import *\n", 1), {}, page_bound, report)
+    _verify_fragment(_fragment(f"{undeclared}(x=1)\n", 2), {}, page_bound, report)
+    assert any(f"{undeclared}(...)" in f for f in report.failures), report.failures
