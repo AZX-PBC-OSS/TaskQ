@@ -69,7 +69,14 @@ markdown_extensions:
   - attr_list
   - md_in_html
   - pymdownx.details
-  - pymdownx.superfences
+  # relaxed_headers: the docs' executable-example convention tags fragments as
+  # ```python no-exec — <reason>```. Superfences' default header parser rejects
+  # any info string it cannot tokenize (option keys allow no hyphens), so every
+  # tagged fence rendered as broken inline code and flipped fence parity for the
+  # rest of the page, swallowing whole sections into literal code blocks.
+  # relaxed_headers renders unrecognized headers as code blocks instead.
+  - pymdownx.superfences:
+      relaxed_headers: true
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
