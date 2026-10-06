@@ -638,6 +638,11 @@ class JobsClient:
             effective_max_pending = await self._capacity_cache.effective_max_pending(
                 ref.name, ref.max_pending
             )
+            # Zero-I/O verdict from the snapshot the resolve just refreshed:
+            # a queue no stored assignment routes to strands the row
+            # silently (pending forever), the note is the enqueue-time
+            # signal, warn-once per queue per TTL.
+            self._capacity_cache.maybe_warn_unserved_queue(resolved_queue, actor=ref.name)
             # An explicit trace_id/span_id overrides the ambient span, per
             # docs/guides/jobs-clients.md: "pass explicitly to override or
             # to propagate an external trace context". Explicit values
@@ -851,6 +856,10 @@ class JobsClient:
                 effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
                     ref.name, ref.max_pending
                 )
+                # Same snapshot verdict as the single arm, warn-once per
+                # queue per TTL; batch items carry no per-item queue, the
+                # ref's own assignment is what the row is written to.
+                self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Build per-item EnqueueArgs carrying the resolved limits for the
         # backend's per-actor admission check.
@@ -1131,6 +1140,11 @@ class JobsClient:
                     effective_mp[ref.name] = self._capacity_cache.peek_max_pending(
                         ref.name, ref.max_pending
                     )
+                    # Same snapshot verdict as the async arms, warn-once
+                    # per queue per TTL. Sync by design: the atomic arm's
+                    # generator runs mid-transaction where no await is
+                    # possible, and the verdict is a snapshot lookup.
+                    self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
                 try:
                     args = build_enqueue_args(
                         ref,
@@ -1212,6 +1226,7 @@ class JobsClient:
             effective_mp[first_ref.name] = await self._capacity_cache.effective_max_pending(
                 first_ref.name, first_ref.max_pending
             )
+            self._capacity_cache.maybe_warn_unserved_queue(first_ref.queue, actor=first_ref.name)
             all_rows = await self._backend.enqueue_batch_atomic(
                 _lazy_args(_chain()),
                 batch_id=resolved_batch_id,
@@ -1278,6 +1293,9 @@ class JobsClient:
                             ci.actor_ref.name
                         ] = await self._capacity_cache.effective_max_pending(
                             ci.actor_ref.name, ci.actor_ref.max_pending
+                        )
+                        self._capacity_cache.maybe_warn_unserved_queue(
+                            ci.actor_ref.queue, actor=ci.actor_ref.name
                         )
                 # The stream-global base for every per-item error this
                 # chunk can raise, captured BEFORE anything is built or
@@ -1505,6 +1523,7 @@ class JobsClient:
                 effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
                     ref.name, ref.max_pending
                 )
+                self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Phase 2: Build per-item EnqueueArgs
         args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)

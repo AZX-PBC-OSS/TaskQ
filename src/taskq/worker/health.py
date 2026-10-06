@@ -46,6 +46,40 @@ from taskq.worker.shutdown import ShutdownPhase
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
+def default_worker_health_socket_path(pid: int | None = None) -> str:
+    """The per-worker-unique default health socket path.
+
+    The ``health_socket_path`` SETTING keeps its static value
+    (``/tmp/taskq_health.sock``) as the cascade's fallback, but a worker
+    that was never given an explicit path (no ``--health-socket-path``,
+    no ``TASKQ_HEALTH_SOCKET_PATH`` in the process environment or the
+    .env cascade) binds THIS instead: the process pid in the path makes
+    the socket per-worker-unique, so a second worker on the same host
+    cannot collide with a live peer by default. The old shared default
+    was a global collision point: the second worker logged
+    ``health-server-unavailable`` and kept running, and ``taskq health``
+    then silently answered with the FIRST worker's state — the operator
+    checking the worker that just warned read a healthy report from a
+    different process.
+
+    Uniqueness by pid, not worker_id: the socket binds before fleet
+    registration, so the registration-issued worker_id does not exist
+    yet, while the pid is available at boot and is what distinguishes
+    two co-located processes. ``taskq health`` run without an explicit
+    path now finds no socket at the static default and exits 1 loudly
+    (the honest outcome) instead of cross-reporting; an operator points
+    it at a worker with the env override, the value the worker itself
+    logs in ``health-server-started``. A SIGKILLed worker can leave a
+    stale ``/tmp/taskq_health_<pid>.sock`` behind (the pid is not
+    reused within a boot cycle's window), harmless: the file names no
+    live listener and pid reuse re-binds over it.
+
+    *pid* defaults to ``os.getpid()``; the parameter exists for tests
+    that pin the construction without spawning a process.
+    """
+    return f"/tmp/taskq_health_{os.getpid() if pid is None else pid}.sock"  # noqa: S108  # Why: per-worker socket files live in /tmp, the same prefix the workgroup supervisor's child paths use (workgroup._health_socket_path); production deployments point TASKQ_HEALTH_SOCKET_PATH at tmpfs instead.
+
+
 async def _write_response(
     writer: asyncio.StreamWriter,
     status: int,

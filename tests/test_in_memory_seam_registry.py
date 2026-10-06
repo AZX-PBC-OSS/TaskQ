@@ -192,6 +192,7 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "expire_archived_jobs": "returns ArchiveExpiryResult - freshly built counts",
     "extend_reservation_leases": "returns a count",
     "get_actor_max_pending": "returns a freshly built dict of scalars",
+    "get_actor_queues": "returns a freshly built dict of scalars",
     "heartbeat_jobs": "returns a count",
     "increment_batch_failures": "returns a tuple of scalars",
     "mark_abandoned": "returns bool",
