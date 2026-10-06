@@ -20,7 +20,6 @@ F6 - FastAPI's APIRoute does not add HEAD to GET routes (Starlette's own
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
@@ -240,9 +239,9 @@ def test_sse_reconnect_with_replayable_progress_still_replays() -> None:
 # ── F6: HEAD answers on the GET routes ───────────────────────────────────
 
 
-def test_admin_pages_answer_head() -> None:
+def test_admin_pages_answer_head(monkeypatch: pytest.MonkeyPatch) -> None:
     """The monitor's check: HEAD /admin/queues must not 405."""
-    os.environ["TASKQ_ENVIRONMENT"] = "dev"
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     from taskq.web.admin import create_router, setup_admin_state
     from tests.web_admin import StubPool
 
