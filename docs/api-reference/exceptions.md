@@ -1,6 +1,13 @@
 # Exceptions
 
-`taskq.exceptions` is the single home for every class the library raises.
+`taskq.exceptions` is the single home for the classes the library raises on
+the job surface — the errors application code meets in ordinary operation
+(the tables below). Operator machinery keeps its own typed errors beside its
+code, not here: `taskq.migrate`'s `MigrationLockTimeoutError` /
+`ChecksumDriftError` (the CLI surfaces them as `SystemExit`), the worker
+health probes' bind errors, `OtelExporterConfigurationError`,
+`TimescaleDBUnavailableError`. None of them is a job-operation error.
+
 Import errors from it (or from `taskq` for the names the package re-exports;
 the [Package Overview](taskq.md) shows which) and catch `TaskQError` as the
 fallback in handlers that must never let a library error escape.
