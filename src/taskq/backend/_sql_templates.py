@@ -200,6 +200,7 @@ class SqlTemplates:
     count_pending_jobs: str
     count_active_jobs: str
     list_actor_max_pending: str
+    list_actor_queues: str
 
     # ── Admin operations ───────────────────────────────────────────
     retry_job: str
@@ -2035,6 +2036,7 @@ SELECT pruned_through_id FROM "{s}".job_events_prune_state WHERE singleton = tru
         # One row per actor, the client-side capacity cache reads the
         # whole table at most once per TTL window per process.
         list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
+        list_actor_queues=f'SELECT actor, queue FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
         # Monotonic attempt: admin-retry must leave the attempt counter at
         # its spent value and raise the ceiling instead. Resetting to 0

@@ -664,8 +664,10 @@ Get the live task stacks first; they name what every task is waiting on:
 kill -USR2 <worker-pid>
 
 # Same payload as JSON, when the endpoint is enabled:
-curl --unix-socket /tmp/taskq_health.sock http://localhost/tasks
+curl --unix-socket /tmp/taskq_health_<pid>.sock http://localhost/tasks
 ```
+
+The socket path is the worker's bound one: an unconfigured worker binds the per-process default `/tmp/taskq_health_<pid>.sock` (logged at boot as `health-server-started`'s `socket_path`); a worker with `TASKQ_HEALTH_SOCKET_PATH` set uses that value verbatim.
 
 - `GET /tasks` is privileged and disabled by default (`TASKQ_HEALTH_TASKS_ENABLED=false`): the dump reveals code structure, file paths, and task names (never locals or payload values). Enabling it also tightens the health socket to mode `0600`. While disabled, the endpoint returns 404, indistinguishable from a missing route.
 - Read `loop_tick_ages` and `shutdown_elapsed_seconds` in the `/ready` body to see which loop went silent and how long shutdown has been in progress.

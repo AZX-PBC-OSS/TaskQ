@@ -215,6 +215,10 @@ class SubJobEnqueuer:
                 actor_ref.max_pending,
                 per_call=max_pending,
             )
+            # The sub-job arm's slice of the enqueue-time unserved-queue
+            # note, the same snapshot verdict (zero I/O, warn-once per
+            # queue per TTL) JobsClient.enqueue applies.
+            self._capacity_cache.maybe_warn_unserved_queue(resolved_queue, actor=actor_ref.name)
             resolved_tags = self._resolve_tags(tags, inherit_tags)
             args = build_enqueue_args(
                 actor_ref,
@@ -420,6 +424,7 @@ class SubJobEnqueuer:
                     effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
                         ref.name, ref.max_pending
                     )
+                    self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
             args_list = build_batch_args(
                 items, resolved_batch_id, max_pending_by_actor=effective_mp
             )

@@ -592,7 +592,9 @@ Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termin
 
 ## Health server
 
-When `TASKQ_HEALTH_ENABLED=true` (the default), the worker binds a Unix-domain socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) and serves HTTP endpoints over it: `/live`, `/ready`, `/metrics`, and the opt-in `/tasks` stack-dump endpoint (see below).
+When `TASKQ_HEALTH_ENABLED=true` (the default), the worker binds a Unix-domain socket at `TASKQ_HEALTH_SOCKET_PATH` and serves HTTP endpoints over it: `/live`, `/ready`, `/metrics`, and the opt-in `/tasks` stack-dump endpoint (see below).
+
+A worker booted with no explicit path — no `--health-socket-path`, no `TASKQ_HEALTH_SOCKET_PATH` in the process environment or `.env` — binds a **per-process default**, `/tmp/taskq_health_<pid>.sock`, so two co-located workers cannot collide on one path (the second worker used to lose the bind and keep running with no socket). The setting's fallback value remains the shared `/tmp/taskq_health.sock`; it applies only when the variable IS set. Because the `taskq health` CLI runs in its own process and reads the same cascade, point it at an unconfigured worker explicitly: set `TASKQ_HEALTH_SOCKET_PATH` to the path the worker logs at boot (`health-server-started`'s `socket_path`).
 
 The Unix socket is not reachable via Kubernetes `httpGet` probes. Use `exec` probes:
 
@@ -1015,7 +1017,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_DEFAULT_START_TO_CLOSE` | `timedelta \| None` | `None` | Worker-wide fallback per-attempt execution timeout, applied only when neither the enqueue call nor the actor sets `start_to_close`. `None` = unbounded. See [retries.md: `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) |
 | `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED` | `bool` | `True` | Fall back to Postgres when Redis errors occur during rate limiting |
 | `TASKQ_HEALTH_ENABLED` | `bool` | `True` | Enable the health server, both transports (Unix socket and the optional TCP listener) |
-| `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Path for the health Unix socket |
+| `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Path for the health Unix socket (the field fallback; a worker booted with no explicit path binds the per-process default `/tmp/taskq_health_<pid>.sock` instead — see [Health server](#health-server)) |
 | `TASKQ_HEALTH_PORT` | `int \| None` | `None` | Optional TCP health listener (`/live`, `/ready`); off unless set, required on Azure Container Apps. See [Health server](#health-server) |
 | `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind host for both TCP listeners; pod-network default |
 | `TASKQ_HEALTH_TASKS_ENABLED` | `bool` | `False` | Expose the privileged `/tasks` stack dump on the Unix socket (mode `0600`); TCP answers `404` |

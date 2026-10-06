@@ -43,6 +43,7 @@ __all__ = [
     "_event_read_copy",
     "_get",
     "_get_actor_max_pending",
+    "_get_actor_queues",
     "_get_attempts",
     "_get_events",
     "_list_jobs",
@@ -258,6 +259,14 @@ async def _get_actor_max_pending(self: "InMemoryBackend") -> dict[str, int | Non
     """Mirror of the PG whole-table snapshot: registered actor_config
     meta plays the role of stored rows, including the NULL case."""
     return {actor: cfg.max_pending for actor, cfg in self._actor_configs_meta.items()}
+
+
+async def _get_actor_queues(self: "InMemoryBackend") -> dict[str, str]:
+    """Mirror of the PG whole-table assignment snapshot: registered
+    actor_config meta plays the role of stored rows, actor name -> its
+    queue assignment, so the in-memory enqueue path exercises the same
+    unserved-queue note the PG path signals."""
+    return {actor: cfg.queue for actor, cfg in self._actor_configs_meta.items()}
 
 
 async def _get_attempts(self: "InMemoryBackend", job_id: JobId) -> list[AttemptRow]:
