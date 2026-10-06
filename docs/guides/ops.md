@@ -112,6 +112,9 @@ export TASKQ_DEFAULT_START_TO_CLOSE=5m
 ```
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import actor
+
+
 @actor(start_to_close=timedelta(hours=1))  # opts this actor up
 async def reindex_bucket(payload: Payload) -> None: ...
 ```
@@ -1001,6 +1004,9 @@ TaskQ does **not** automatically honor any HTTP header; there is no setting or i
 does this. The supported pattern is to read the header yourself and translate it into a signal:
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import RetryAfter, RetryPolicy, actor
+
+
 @actor(retry=RetryPolicy(kind="transient", max_attempts=8))
 async def call_api(payload: Payload) -> Result:
     resp = await http_post(payload.url)
