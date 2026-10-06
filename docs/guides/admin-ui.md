@@ -1,6 +1,6 @@
 # Admin UI
 
-The TaskQ admin UI is a read-only-by-default observability dashboard built with FastAPI and Jinja2. It shows live job, queue, worker, schedule, rate-limit, and reservation state drawn from Postgres. CSRF-protected write operations are available for job cancellation, job retry, and cron schedule management (enable, disable, skip, run-now), but are gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false`; set to `true` to enable them). The rate-limit reset endpoint is additionally gated by `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true`.
+The TaskQ admin UI is a read-only-by-default observability dashboard built with FastAPI and Jinja2. It shows live job, queue, worker, schedule, rate-limit, and reservation state drawn from Postgres. CSRF-protected write operations are available for job cancellation, job retry, and cron schedule management (enable, disable, skip, run-now), gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false`; set to `true` to enable them). The rate-limit reset endpoint is not gated by that flag: it carries its own dedicated opt-in, `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true` (also default `false`) — enable just the reset knob without opening cancel/retry/run-now, or the reverse.
 
 !!! warning "Standalone `taskq ui serve` cannot cancel, retry, or run-now"
     The three backend-mediated mutation routes — `POST /admin/jobs/{job_id}/cancel`,
