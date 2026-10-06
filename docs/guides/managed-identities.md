@@ -503,7 +503,12 @@ The extra includes `azure-identity` **and `aiohttp`** (required by the
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 from azure.identity.aio import DefaultAzureCredential
-from taskq import make_pg_pool_factory, make_dedicated_conn_factory, make_redis_client_factory
+from taskq import (
+    WorkerConnections,
+    make_pg_pool_factory,
+    make_dedicated_conn_factory,
+    make_redis_client_factory,
+)
 from taskq.aad import EntraIdProvider
 
 cred = DefaultAzureCredential()
@@ -559,7 +564,7 @@ pip install 'taskq-py[aws]'
 ```
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
-from taskq import make_pg_pool_factory, make_dedicated_conn_factory
+from taskq import WorkerConnections, make_pg_pool_factory, make_dedicated_conn_factory
 from taskq.aws import RdsIamProvider
 
 provider = RdsIamProvider(settings.pg_dsn_direct, region="us-east-1")
@@ -598,7 +603,7 @@ pip install 'taskq-py[vault]'
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 import hvac
-from taskq import make_pg_pool_factory
+from taskq import WorkerConnections, make_pg_pool_factory
 from taskq.vault import VaultDynamicDbProvider
 
 client = hvac.Client(url="https://vault.example", token="...")
@@ -661,6 +666,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from google.cloud.sql.connector import create_async_connector
+from taskq import WorkerConnections
 
 
 def make_cloudsql_pool_factory(connector, instance: str, user: str, db: str):
@@ -703,6 +709,8 @@ Pass an `ssl.SSLContext` via a factory: no credential provider needed:
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 import ssl
+
+from taskq import WorkerConnections
 
 sslctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 sslctx.load_cert_chain("client.crt", "client.key")

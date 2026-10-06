@@ -1,0 +1,22 @@
+{% extends "_base.html" %}
+{% set active_page = "" %}
+{# The admin error page: one branded body for every rendered refusal —
+   the Postgres-unreachable 503 (U1) and the HTML-wanting 404/400/422s
+   (U2). `retry` keeps the meta refresh alive (the page retries itself
+   when the database returns); detail pages set suppress_refresh so a
+   settled error does not poll. #}
+
+{% block title %}{{ status_code }} — TaskQ Admin{% endblock %}
+
+{% block content %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center max-w-2xl mx-auto mt-8">
+    <p class="text-5xl font-bold tracking-tight text-slate-300 dark:text-slate-700">{{ status_code }}</p>
+    <h2 class="text-xl font-semibold tracking-tight mt-4">{{ heading }}</h2>
+    <p class="text-sm text-slate-500 dark:text-slate-400 mt-3">{{ message }}</p>
+    {% if retry %}
+    <p class="text-xs text-slate-400 mt-6">This page retries automatically — no action needed.</p>
+    {% else %}
+    <a href="{{ base_path }}/queues" class="inline-block mt-6 text-sm text-blue-600 dark:text-blue-400 hover:underline">Back to Queues</a>
+    {% endif %}
+</div>
+{% endblock %}

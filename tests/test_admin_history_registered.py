@@ -40,7 +40,7 @@ class _StubConn:
     async def fetchval(self, query: str, *args: object) -> object:
         # The router-level clock-offset dependency probes the database clock;
         # answer with a timestamp the way the real database does.
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         return False
 

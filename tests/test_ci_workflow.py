@@ -578,3 +578,52 @@ def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
         f"these jobs run the fast test suite without installing Node, so the admin.js "
         f"tests would fail under CI=true: {offenders}"
     )
+
+
+def test_every_extra_with_tagged_tests_has_a_test_extras_leg() -> None:
+    """The extra-gated families each get their own ``test-extras`` leg, and the
+    leg selects by marker — so an extra whose marker is used by no test, or a
+    marker whose extra has no leg, is a silent coverage hole wearing a green
+    checkmark: ``pytest -m "<marker>"`` deselects everything and the job still
+    passes (the [prometheus] incident — the extra shipped seven test modules
+    and CI had no leg that ran them, because the modules rode the ``otel``
+    marker and the otel leg's sync installs no prometheus exporter). Both
+    halves are pinned: an extra with tagged tests must have a leg whose sync
+    installs that extra, and a leg must not select a marker no test uses."""
+    import tomllib
+
+    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = set(pyproject["project"]["optional-dependencies"])
+
+    tagged: dict[str, list[str]] = {}
+    for path in sorted((_REPO_ROOT / "tests").rglob("test_*.py")):
+        text = path.read_text(encoding="utf-8")
+        for extra in extras:
+            if f"pytest.mark.{extra}" in text:
+                tagged.setdefault(extra, []).append(path.relative_to(_REPO_ROOT).as_posix())
+
+    ci = next(wf for wf in _WORKFLOWS if wf.name == "ci.yaml")
+    test_extras = next((job for name, job in _jobs(ci).items() if name == "test-extras"), None)
+    assert test_extras is not None, "ci.yaml no longer has a test-extras job; this pin is vacuous"
+    strategy = cast(_YamlMap, test_extras.get("strategy") or {})
+    matrix = cast(_YamlMap, strategy.get("matrix") or {})
+    include = cast("list[_YamlMap]", matrix.get("include") or [])
+    legs = {
+        str(leg.get("extra")): str(leg.get("sync") or "") for leg in include if leg.get("extra")
+    }
+
+    missing = sorted(set(tagged) - set(legs))
+    assert not missing, (
+        f"extras {missing} have tests tagged pytest.mark.<extra> but no test-extras leg "
+        f"selects them (`pytest -m <extra>` deselects everything and passes): the tagged "
+        f"files are {tagged}. Add a matrix include for each, with a sync that installs the extra."
+    )
+    uninstalled = {extra: legs[extra] for extra in tagged if f"--extra {extra}" not in legs[extra]}
+    assert not uninstalled, (
+        f"test-extras legs whose sync does not install their own extra: {uninstalled}"
+    )
+    legless = sorted(set(legs) - set(tagged))
+    assert not legless, (
+        f"test-extras legs {legless} select a marker no test file uses — the leg is a "
+        "fake gate (0 tests, green). Tag the extra's real tests with its marker, or delete the leg."
+    )

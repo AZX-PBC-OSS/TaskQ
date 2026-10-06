@@ -122,8 +122,8 @@ def test_trigger_app_enqueue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """TestClient(app) from examples.app: GET / returns 200 with
-    actor names; POST /enqueue/counter returns 200 with JSON body containing
-    a redirect URL."""
+    actor names; POST /enqueue/counter answers the ONE success envelope
+    (201 {"job_id","url"}, F3) whose url keys at the admin job page."""
     monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
     monkeypatch.setenv("TASKQ_REDIS_URL", redis_url)
     schema = f"tes_trigger_{new_base62()}".lower()
@@ -158,13 +158,14 @@ def test_trigger_app_enqueue(
             "/enqueue/counter",
             data={"n": "1"},
         )
-        assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType] # Why: response.status_code type is unknown due to upstream Any.
+        # F3's one envelope: a plain enqueue answers 201 {"job_id","url"}.
+        assert response.status_code == 201  # pyright: ignore[reportUnknownVariableType] # Why: response.status_code type is unknown due to upstream Any.
         body = response.json()  # pyright: ignore[reportUnknownMemberType] # Why: response.json() return is Any.
-        redirect = body.get("redirect", "")
+        url = body.get("url", "")
         assert re.match(
             r"(/taskq/jobs/[0-9a-f-]{36}|http://localhost:\d+/admin/jobs/[0-9a-f-]{36})",
-            redirect,
-        ), f"redirect {redirect!r} does not match expected pattern"
+            url,
+        ), f"url {url!r} does not match expected pattern"
 
 
 # ── FastAPI app smoke ──────────────────────────────────────────────────

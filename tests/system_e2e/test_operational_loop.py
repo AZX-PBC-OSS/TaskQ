@@ -183,6 +183,17 @@ _CANCEL_LAND_BOUND_S = (
 #: (60s) plus the settle bound above.
 _CRON_FIRE_BOUND_S = 60.0 + _SETTLE_BOUND_S
 
+#: The RECOVER phase's bounds: the killed worker's lease must lapse (the
+#: lock lease the claim rode) before the leader's sweep requeues, one or
+#: two dispatch cycles move the work, and the survivor's re-run of the
+#: body the kill caught adds the recovery mix's own runtime - all
+#: stretched by the tier's load factor. Measured under the contended
+#: shape (four hogs, -n 2 co-tenancy), the kill-to-reclaimed settle runs
+#: ~92s against the ~70s nominal arithmetic; the bare 30/60/120s these
+#: replace were 1.3-2x bets on the runner, not the tier's 2x stretch.
+_RECLAIM_LAND_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S) * TIER_LOAD_STRETCH
+_RECLAIM_SETTLE_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S + _SLOW_SLEEP) * TIER_LOAD_STRETCH
+
 #: The drain-cap's exposure window: how long the held backlog is given
 #: the chance to (wrongly) run. A broken ``max_concurrent = 0`` leaks a
 #: claim within one dispatch cycle; the window is two, stretched - and
@@ -954,7 +965,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 return row_now is not None and row_now["live_workers"] == 2
 
             try:
-                await _poll(_fleet_visible, 30.0, "the imbalance view seeing the deployed fleet")
+                await _poll(
+                    _fleet_visible,
+                    BOOT_READY_BOUND_S * TIER_LOAD_STRETCH,
+                    "the imbalance view seeing the deployed fleet",
+                )
             except AssertionError:
                 diag_workers = await conn.fetch(
                     f"""
@@ -1417,7 +1432,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                         return True
                 return False
 
-            await _poll(_victim_running, 60.0, "a recovery job claimed by a killable replica")
+            await _poll(
+                _victim_running,
+                _RECLAIM_LAND_S,
+                "a recovery job claimed by a killable replica",
+            )
             victim = victim_box[0]
             survivor = survivor_box[0]
 
@@ -1461,7 +1480,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 )
                 return int(row) == len(recovery_jobs)
 
-            await _poll(_recovered, 120.0, "the SIGKILLed worker's jobs reclaimed and re-run")
+            await _poll(
+                _recovered,
+                _RECLAIM_SETTLE_S,
+                "the SIGKILLed worker's jobs reclaimed and re-run",
+            )
 
             # No stuck leases - the sweep's OWN eligibility contract, not
             # a looser glance: a running row whose lease lapsed must have
@@ -1505,7 +1528,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             try:
                 await _poll(
                     _sweep_reclaimed_all_lapsed,
-                    120.0,
+                    _RECLAIM_LAND_S,
                     "the sweep to reclaim every lapsed-lease running row",
                 )
             except AssertionError:
@@ -1543,7 +1566,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             try:
                 await _poll(
                     _reclaim_visible_in_ledger,
-                    120.0,
+                    _RECLAIM_LAND_S,
                     "the reclaim's second attempt to land in the ledger",
                 )
             except AssertionError:
@@ -1563,7 +1586,9 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 page = await ui.get("/admin/workers")
                 return str(victim_pid) not in page.text
 
-            await _poll(_victim_forgotten, 120.0, "the dead worker row cleaned and off the pages")
+            await _poll(
+                _victim_forgotten, _RECLAIM_LAND_S, "the dead worker row cleaned and off the pages"
+            )
 
             # The leader's trail still names a live holder (a killed
             # leader's takeover re-fences the row; a killed follower's row
@@ -1577,7 +1602,9 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 )
                 return row is not None and int(row["pid"]) == survivor.proc.pid
 
-            await _poll(_leader_is_live, 60.0, "the leader row naming the surviving replica")
+            await _poll(
+                _leader_is_live, _RECLAIM_LAND_S, "the leader row naming the surviving replica"
+            )
 
             # ══ The balance ════════════════════════════════════════════
             counts = await assert_balanced(conn, schema, _TAG)

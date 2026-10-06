@@ -83,6 +83,7 @@ from taskq import (
 from taskq.migrate import apply_pending_locked
 from taskq.ratelimit import ConcurrencyReservation, RateLimitRegistry, SlidingWindow, TokenBucket
 from taskq.settings import TaskQSettings
+from taskq.web._routing import HeadForGetRoute
 from taskq.web.admin import create_router, setup_admin_state
 
 _SUMMER_RESULT_ADAPTER: TypeAdapter[SumResult] = TypeAdapter(SumResult)
@@ -181,12 +182,16 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         )
         application.state.tq = tq
 
+        # The Backend the client built reaches the admin router too: without
+        # it the admin UI's backend-mediated mutation buttons (job cancel,
+        # job retry, schedule run-now) render but every one answers 503.
         admin_bundle = create_router(
             pg_pool,
             schema=settings.schema_name,
             redis_client=redis_client,
             base_path="/taskq",
             rate_limit_registry=rl_registry,
+            backend=tq.backend,
         )
         setup_admin_state(application, admin_bundle)
         application.include_router(admin_bundle.router, prefix="/taskq")
@@ -194,7 +199,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         yield
 
 
+# F6: the monitor's HEAD check against the trigger app's GET routes
+# (/, /rate-limits) must not 405. Set BEFORE the routes register.
 app = FastAPI(lifespan=lifespan)
+app.router.route_class = HeadForGetRoute
 
 
 @app.get("/")
@@ -217,6 +225,10 @@ async def index(request: Request) -> Response:
                 "description": description,
                 "fields": fields,
                 "has_result": ref.result_ttl is not None,
+                # The demo progress toast subscribes to this actor's
+                # stream; the flag rides the CARD, never the response
+                # envelope (F3 keeps that {"job_id","url"} alone).
+                "has_progress": name == "file_processor",
                 "watch_queue_url": ("/taskq/queues/examples" if name == "batch_counter" else None),
             }
         )
@@ -229,15 +241,23 @@ async def index(request: Request) -> Response:
 
 @app.post("/enqueue/{actor_name}")
 async def enqueue_actor(actor_name: str, request: Request) -> Response:
+    """Enqueue one job; the ONE success envelope (F3): ``201`` (or ``202``
+    for a result-bearing actor's deferred result page) with ``{"job_id",
+    "url"}`` — the job id and the page that watches it — for every
+    trigger route. Every 4xx is JSON with the FastAPI ``{"detail": ...}``
+    shape; nothing answers raw text."""
     ref = ACTORS.get(actor_name)
     if ref is None:
-        return Response(content=f"unknown actor: {actor_name}", status_code=404)
+        return JSONResponse({"detail": f"unknown actor: {actor_name}"}, status_code=404)
 
     form = await request.form()
     try:
         payload = ref.payload_type.model_validate(dict(form))
     except ValidationError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"detail": f"invalid payload for {actor_name!r}: {_validation_error_detail(exc)}"},
+            status_code=400,
+        )
 
     tq: TaskQ = request.app.state.tq
     enqueue_kwargs: dict[str, Any] = {}
@@ -261,7 +281,7 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
     except SingletonCollisionError as exc:
         return JSONResponse(
             {
-                "error": (
+                "detail": (
                     f"A '{actor_name}' job is already active "
                     f"(job {exc.blocking_job_id}). Try again after it completes."
                 )
@@ -271,7 +291,7 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
     except MaxPendingExceededError as exc:
         return JSONResponse(
             {
-                "error": (
+                "detail": (
                     f"Too many pending '{actor_name}' jobs "
                     f"({exc.current_count} queued). Try again later."
                 )
@@ -280,20 +300,16 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
         )
 
     if ref.result_ttl is not None:
+        # 202: the result is not ready - the url is the result page that
+        # polls handle.wait().
         return JSONResponse(
-            {"result_url": f"/result/{handle.job_id}", "job_id": str(handle.job_id)},
+            {"job_id": str(handle.job_id), "url": f"/result/{handle.job_id}"},
             status_code=202,
         )
 
-    has_progress = actor_name == "file_processor"
-
     return JSONResponse(
-        {
-            "redirect": f"/taskq/jobs/{handle.job_id}",
-            "job_id": str(handle.job_id),
-            "has_progress": has_progress,
-        },
-        status_code=200,
+        {"job_id": str(handle.job_id), "url": f"/taskq/jobs/{handle.job_id}"},
+        status_code=201,
     )
 
 
@@ -312,7 +328,7 @@ async def stream_progress(job_id: UUID, request: Request) -> Response:
     tq: TaskQ = request.app.state.tq
     handle = await tq.get(JobId(job_id), result_adapter=_NONE_RESULT_ADAPTER)
     if handle is None:
-        return Response(content="job not found", status_code=404)
+        return JSONResponse({"detail": "job not found"}, status_code=404)
 
     async def _event_stream() -> AsyncGenerator[str, None]:
         try:
@@ -341,7 +357,7 @@ async def get_result(job_id: UUID, request: Request) -> Response:
 
     handle = await tq.get(JobId(job_id), result_adapter=_SUMMER_RESULT_ADAPTER)
     if handle is None:
-        return Response(content="job not found", status_code=404)
+        return JSONResponse({"detail": "job not found"}, status_code=404)
 
     # The row get() just fetched - no second backend read for the status.
     status = handle.row.status
@@ -373,6 +389,19 @@ async def get_result(job_id: UUID, request: Request) -> Response:
 # ── Cancel ───────────────────────────────────────────────────────────────
 
 
+def _validation_error_detail(exc: ValidationError) -> str:
+    """The compact one-line validation-error summary (F3).
+
+    Pydantic's str(exc) is a multi-line dump (header + one block per
+    error) — unusable in a toast/log line and wildly longer than the
+    ask. One line: ``field: message; field: message``.
+    """
+    return "; ".join(
+        f"{'.'.join(str(loc) for loc in error.get('loc', []))}: {error.get('msg', 'invalid')}"
+        for error in exc.errors()
+    )
+
+
 @app.post("/cancel/{job_id}")
 async def cancel_job(job_id: UUID, request: Request) -> JSONResponse:
     """Cancel a running or pending job by ID.
@@ -385,7 +414,7 @@ async def cancel_job(job_id: UUID, request: Request) -> JSONResponse:
     try:
         result = await tq.cancel(JobId(job_id), reason="user_requested")
     except KeyError:
-        return JSONResponse({"error": "job not found"}, status_code=404)
+        return JSONResponse({"detail": "job not found"}, status_code=404)
 
     return JSONResponse(
         {

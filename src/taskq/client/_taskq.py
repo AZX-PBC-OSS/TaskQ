@@ -60,6 +60,7 @@ from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_boun
 from taskq._forkguard import guarded_connection_class, install_fork_guard
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
+    Backend,
     BatchFilter,
     BatchRow,
     DstStrategy,
@@ -956,6 +957,21 @@ class TaskQ:
                 "TaskQ is not open. Call 'await tq.open()' or use 'async with TaskQ(...) as tq:'"
             )
         return self._actors_client
+
+    @property
+    def backend(self) -> Backend:
+        """The Postgres :class:`Backend` this client built, read-only.
+
+        The seam a host that embeds the admin UI needs: ``create_router``
+        takes the backend verbatim (``backend=tq.backend``) so the admin
+        portal's backend-mediated mutations (job cancel, job retry,
+        schedule run-now) serve from the SAME backend the trigger app
+        enqueues through, instead of the 503 "not configured" the router
+        answers when it has none. Raises RuntimeError if called before
+        ``open()`` or outside an ``async with`` block, like the other
+        accessors.
+        """
+        return self._require_open().backend
 
     # ── Job operations ─────────────────────────────────────────────────────
 

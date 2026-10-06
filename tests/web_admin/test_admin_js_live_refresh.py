@@ -66,7 +66,7 @@ global.document = {
         addEventListener(name, fn) { listeners[name] = fn; },
         removeEventListener(name, fn) { if (listeners[name] === fn) delete listeners[name]; },
     },
-    getElementById() { return { requestSubmit() { log.push("submit"); } }; },
+    getElementById() { return { requestSubmit() { log.push("submit"); }, querySelector() { return null; } }; },
     querySelector() { return null; },
     createElement() { return { querySelector() { return null; } }; },
 };

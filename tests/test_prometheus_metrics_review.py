@@ -52,7 +52,7 @@ from tests._prom_review import (
     run_worker_probe,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.otel]
+pytestmark = [pytest.mark.integration, pytest.mark.otel, pytest.mark.prometheus]
 
 RULES_PATH = (
     Path(__file__).parent.parent / "src" / "taskq" / "contrib" / "prometheus" / "rules.yaml"

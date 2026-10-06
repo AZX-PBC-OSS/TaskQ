@@ -34,6 +34,9 @@ the actor's payload and result types end-to-end.
 Supports both plain and parameterised forms:
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import RetryPolicy, actor
+
+
 # Plain: all options take their defaults.
 @actor
 async def send_email(payload: EmailPayload) -> EmailResult: ...
@@ -255,7 +258,7 @@ async def resize_image(payload: ResizePayload) -> ResizeResult:
 ### Payload and context
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
-from taskq import actor
+from taskq import Snooze, actor
 from taskq.context import JobContext
 
 
@@ -1249,6 +1252,8 @@ per-run deployments (e.g. `my-actor.<run-id>`), each run leaves a row behind.
 ### `client.actors.deregister()`
 
 ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
+from taskq import TaskQ
+
 async with TaskQ(dsn=...) as tq:
     result = await tq.actors.deregister("my-actor.run-123")
     # force=False: refuses if non-terminal jobs or enabled schedules exist

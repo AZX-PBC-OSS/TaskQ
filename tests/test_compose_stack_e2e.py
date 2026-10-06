@@ -343,7 +343,8 @@ async def completed_jobs(compose_stack: ComposeStack) -> CompletedJobs:
             response = await http.post(
                 f"{compose_stack.app_url}/enqueue/counter", data={"n": str(_COUNTER_N)}
             )
-            assert response.status_code == 200, response.text
+            # F3's one envelope: a plain enqueue answers 201 {"job_id","url"}.
+            assert response.status_code == 201, response.text
             counter_ids.append(response.json()["job_id"])
 
     from examples.actors.advanced import SumPayload, SumResult, summer
@@ -470,6 +471,59 @@ def test_admin_sidecar_shows_the_completed_jobs_and_counts_agree(
             )
             assert counts.status_code == 200
             assert counts.json() == {"count": len(ids)}, actor_name
+
+
+def test_a_job_cancels_live_through_the_admin_sidecar(
+    compose_stack: ComposeStack,
+) -> None:
+    """B1's live proof: the sidecar's Cancel button WORKS - a deferred job
+    (scheduled an hour out, safely pending) enqueued through the trigger
+    app is cancelled through the sidecar's own mutation route (the CSRF
+    round trip a browser's form makes), and the row lands `cancelled`.
+
+    The admin-sidecar container runs with TASKQ_ADMIN_ACTIONS_ENABLED=true
+    and the sidecar builds a Backend (the wave's B1 wiring): without
+    either, this button rendered dead — a 403 or a 503 on POST.
+    """
+    import re as _re
+
+    stack = compose_stack
+    with httpx.Client(timeout=30.0, follow_redirects=False) as http:
+        # The multi-step actor runs ~4s: there is a real window where the
+        # job is RUNNING and cancellable.
+        enqueue = http.post(f"{stack.app_url}/enqueue/file_processor", data={})
+        assert enqueue.status_code == 201, enqueue.text
+        job_id = enqueue.json()["job_id"]
+
+        def _status() -> str:
+            return stack.psql(f"SELECT status FROM taskq.jobs WHERE id = '{job_id}'")
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and _status() != "running":
+            time.sleep(0.5)
+        assert _status() == "running", f"the job never started running: {_status()}"
+
+        # The browser's round trip: GET the job page for the CSRF cookie,
+        # read the form's hidden token, POST the cancel with both.
+        page = http.get(f"{stack.admin_url}/jobs/{job_id}")
+        assert page.status_code == 200
+        match = _re.search(r'name="csrf_token" value="([^"]+)"', page.text)
+        assert match is not None, (
+            "the cancel form must render on the sidecar (a Backend + "
+            f"actions enabled): {page.text[page.text.find('Cancel') :][:200]}"
+        )
+        cancel = http.post(
+            f"{stack.admin_url}/jobs/{job_id}/cancel",
+            data={"csrf_token": match.group(1), "reason": "compose e2e live cancel"},
+        )
+        assert cancel.status_code == 303, cancel.text
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if _status() == "cancelled":
+                return
+            time.sleep(1.0)
+        pytest.fail(f"the job did not reach cancelled through the sidecar's cancel: {_status()}")
 
 
 def test_compose_project_holds_exactly_the_expected_objects_midrun(
