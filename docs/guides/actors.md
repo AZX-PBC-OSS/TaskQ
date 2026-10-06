@@ -939,6 +939,16 @@ transaction:
 This is the correct default for fan-out patterns where sub-jobs should only exist if the parent
 completes successfully.
 
+**The post-commit flush can still fail.** On the transactional path the actor's sub-enqueues are
+buffered and replayed against the backend only after the parent's transaction has committed and
+the parent has been marked succeeded. If one or more of those replayed enqueues fails
+(a batch row that went terminal mid-flight, a capacity refusal, a driver error),
+`flush_buffer()` collects every failure and raises `SubEnqueueError` — the parent job is already
+`succeeded`, so this is the signal that **child jobs were lost**: the caller believes work exists
+that was never durably enqueued. `SubEnqueueError.failed_items` carries each failed
+`EnqueueArgs` together with the exception that sank it; re-enqueue from it. See the
+[Exceptions API reference](../api-reference/exceptions.md).
+
 **Tag inheritance.** Sub-jobs enqueued via `ctx.jobs.enqueue()` inherit the parent
 job's tags by default. This makes sub-jobs findable by `JobFilter(tags=...)` and
 cancellable by `cancel_where`. Pass `inherit_tags=False` to suppress inheritance
@@ -1276,6 +1286,36 @@ deregistration.
 
 **Queue cleanup** (`purge_queue=True`): deletes the `queues` row if no other
 `actor_config` references the same queue. A shared queue is never purged.
+
+#### Refusal types and return types
+
+Every refusal subclasses `ActorDeregistrationError` (which itself subclasses
+`TaskQError`), so an `except ActorDeregistrationError` clause catches all
+three shapes; the full hierarchy renders on the
+[Exceptions API reference](../api-reference/exceptions.md).
+
+| Exception | Raised when | Machine-readable fields |
+|---|---|---|
+| `ActorHasActiveJobsError` | Non-terminal jobs reference the actor. With `force=True`, still raised when **running** jobs exist (they cannot be force-cancelled). | `actor`; `active_count` (int); `status_counts` (dict status → count) — decide "cancel them first" vs `force=True` from the fields, not the message. |
+| `ActorHasEnabledSchedulesError` | Enabled cron schedules reference the actor. | `actor`; `schedule_ids` (list of schedule ids) — disable or delete them first, or pass `force=True` to disable them automatically. |
+| `ActorNotFoundError` | No stored `actor_config` row exists — nothing to deregister (see [Idempotent deregistration](#idempotent-deregistration)). | `actor`. |
+
+On success `deregister()` returns a `DeregisterResult`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `actor` | `str` | The deregistered actor's name. |
+| `queue` | `str` | The actor's queue. |
+| `actor_config_deleted` | `bool` | Always `True` — a missing row raises `ActorNotFoundError` instead; the field is retained for API-contract clarity and consumer assertions. |
+| `schedules_disabled` | `int` | Enabled schedules disabled by this call (`force=True` only). |
+| `jobs_cancelled` | `int` | Pending/scheduled jobs cancelled by this call (`force=True` only). |
+| `terminal_jobs_remaining` | `int` | Terminal jobs left in place (history is never deleted). |
+| `queue_purged` | `bool` | Whether the `queues` row was deleted (`purge_queue=True` and no other actor_config shares the queue). |
+
+The row snapshot form (`ActorConfigRow`: `actor`, `max_concurrent`,
+`max_pending`, `queue`, `result_ttl`, `metadata`, `updated_at`) is what the
+`ActorsClient` read methods (`get`, `list`) return; both types are defined in
+`taskq.actor_config_ops`.
 
 ### Enqueue after deregistration
 

@@ -351,7 +351,7 @@ Worker fails to start, `taskq migrate up` reports errors, or queries raise `Unde
 |---|---|
 | Checksum mismatch | An applied migration file was modified after recording. Runner logs `migration-checksum-drift`. |
 | Forward-only constraint | No `down` operation. Reverting requires a database backup restore. |
-| Schema not migrated | `schema_migrations` table or TaskQ tables do not exist. |
+| Schema not migrated | `schema_migrations` table or TaskQ tables do not exist. Enqueue/get/list/cancel paths translate the raw `UndefinedTableError` into `SchemaNotMigratedError`, whose message carries the schema name and the fix; the original driver exception is chained via `__cause__`. |
 | Concurrent migration races | Two workers starting simultaneously both attempt migrations. |
 
 ### Diagnosis
@@ -369,7 +369,7 @@ Search worker logs for `migration-checksum-drift`.
 
 ### Fix
 
-- **Schema not migrated:** `taskq migrate up` against the correct `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME`.
+- **Schema not migrated:** `taskq migrate up` against the correct `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME`. Workers never self-migrate: run the migration from a pre-deploy job or init container (the `SchemaNotMigratedError` message says the same). The full when/why/what-to-do row for this class is in the [Exceptions API reference](../api-reference/exceptions.md).
 - **Checksum mismatch:** restore the original migration file from git. Migration files are append-only; never modify an applied migration. If intentional, restore the database from backup and re-apply. Checksums are SHA-256 of the rendered SQL; a mismatch risks silent query failures at runtime.
 - **Forward-only revert:** restore from a pre-migration backup snapshot. There is no rollback.
 - **Concurrent races:** `apply_pending_locked` serializes appliers on a schema-qualified advisory lock, `taskq:migrate:{schema}`, acquired with `pg_advisory_lock(hashtextextended($1, 0))` (`migration_lock_name` in `migrate.py`; the old shared fixed bigint key was deliberately removed - it made every schema in a database compete on one lock). The wait is bounded, not indefinite: `DEFAULT_MIGRATION_LOCK_TIMEOUT` is 120 s, and a loser raises `SystemExit` naming the contention instead of hanging until the container platform's startup probe kills it. A timeout message means another process held the lock - a wedged holder, or a deployment racing yours. Name the holder before touching anything:
@@ -837,3 +837,5 @@ become decisive when they persist across windows.
 - [admin-ui.md](admin-ui.md): admin UI routes and auth
 - [observability.md](observability.md): OTel metrics and logging
 - [architecture.md](../architecture.md): state machine, dispatch, leader election
+- [exceptions.md](../api-reference/exceptions.md): every exception the library raises — the when/why/what-to-do table
+- [retry.md](../api-reference/retry.md): the retry engine's module index (`RetryPolicy`, classifiers, backoff, hooks)
