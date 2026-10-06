@@ -404,15 +404,26 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
 
 
 @pytest.mark.asyncio
-async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_blackhole(
+async def test_recovery_below_the_cursor_on_a_terminal_row_answers_done(
     pool: asyncpg.Pool, redis_client: aioredis.Redis, server: str
 ) -> None:
-    """A durable row BELOW the recovery cursor: silent above it, live after.
+    """A durable row BELOW the recovery cursor on a TERMINAL row: the
+    reconnect answers ``event: done`` and EOFs - the F4 contract that
+    superseded this scenario's old premise ("the stream stays open for
+    the events that follow").
 
-    The subscriber saw deltas 5 and 6 on the wire but the flushes were
-    lost with the paused broker; the attempt died and the reclaim wrote
-    its own seq 4. The reconnect at cursor 6 must neither replay nor
-    rewind - and must keep the stream alive for the events that follow.
+    The supersession, on the record: a client that reconnects at a cursor
+    at-or-past a terminal row's seq has nothing to replay and - the old
+    arm - a stream that sat in the pub/sub loop emitting keepalives
+    forever when no retry ever came (the reconnect blackhole the audit's
+    F4 found). The client-level truth is unchanged: the page's POLL
+    (realtime.js bridges every drop with one) is the restorer that
+    downloads the terminal state - this scenario's own old docstring said
+    exactly that ("the corrected client's poll path is the only truthful
+    restorer"). The conservation halves that survive are pinned in the
+    first scenario below: below-the-cursor silence on a LIVE row (no
+    rewind, nothing spurious, the stream alive for the frames that
+    follow).
     """
     job_id = await _seed_running_job(pool, progress_seq=4, progress_state={"step": 4})
     await _update_progress(
@@ -427,19 +438,13 @@ async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_
     stream_established = asyncio.Event()
 
     async def _wire() -> None:
-        # Armed on the OBSERVED stream establishment (headers received =
-        # subscription live; the catch-up here is SILENT by design - the
-        # durable row sits below the recovery cursor - so a frame-based
-        # observable would starve), not a blind sleep that races the
-        # connect under runner load - a pre-subscribe publish would be
-        # lost to the broker, reding the exactly-once counter below with
-        # a missing frame the product never had a chance to deliver.
         await asyncio.wait_for(stream_established.wait(), timeout=10.0)
-        # A replay of what the subscriber already saw below the cursor...
+        # The retry attempt's own frames, published AFTER the reconnect:
+        # under the F4 contract the stream has already answered done - a
+        # stream that said done delivers nothing further, and the client's
+        # page-level recovery is the poll bridge (this scenario's old
+        # docstring's own words), not the dead stream.
         await redis_client.publish(channel, _pub(job_id, 5, step=5))
-        await redis_client.publish(channel, _pub(job_id, 6, step=6))
-        # ...then the live stream continues above it, and the retry
-        # attempt's terminal lands durably.
         await _update_progress(
             pool,
             job_id,
@@ -452,9 +457,6 @@ async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_
 
     async with asyncio.TaskGroup() as tg:
         tg.create_task(_wire())
-        # Read to EXHAUSTION: the terminal stream EOFs by itself right
-        # after `done`, so the chain closes itself and nothing is left
-        # for the finalizer cascade.
         frames, _elapsed, _failure = await _stream_frames(
             server,
             f"/jobs/api/job/{job_id}/progress/stream?last_event_id=6",
@@ -462,8 +464,55 @@ async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_
             on_connected=lambda: stream_established.set(),
         )
 
-    # No replay of 5/6, no rewind to the durable 4; 7 and the terminal 8
-    # flow - the recovery is silent below the cursor, never a blackhole.
-    assert _delivered_seq_multiset(frames) == Counter({7: 1, 8: 1}), frames
+    # NOTHING spurious: no replay of 5/6, no rewind to the durable 4 -
+    # and no blackhole: the stream SAYS done and EOFs, freeing the
+    # subscription and the SSE slot.
+    assert _delivered_seq_multiset(frames) == Counter(), frames
+    events = [f["event"] for f in frames if "event" in f]
+    assert events == ["done"], events
+
+
+@pytest.mark.asyncio
+async def test_recovery_below_the_cursor_on_a_live_row_stays_silent_then_delivers(
+    pool: asyncpg.Pool, redis_client: aioredis.Redis, server: str
+) -> None:
+    """The conservation half that survives F4: a LIVE row below the
+    cursor - the reconnect stays silent (no replay, no rewind, nothing
+    spurious) and the stream stays alive for the frames that follow,
+    delivering each exactly once."""
+    job_id = await _seed_running_job(pool, progress_seq=4, progress_state={"step": 4})
+    channel = progress_channel(SCHEMA_LABEL, job_id)
+
+    stream_established = asyncio.Event()
+
+    async def _wire() -> None:
+        await asyncio.wait_for(stream_established.wait(), timeout=10.0)
+        # The row is LIVE (running, seq 4 < cursor 6): the reconnect must
+        # neither replay nor rewind, and the live frames that follow flow.
+        await redis_client.publish(channel, _pub(job_id, 7, step=7))
+        await redis_client.publish(channel, _pub(job_id, 8, step=8))
+        # The attempt then settles: the stream EOFs itself on the terminal
+        # frame, so the read runs to exhaustion (the quiescent teardown
+        # every scenario in this file owes).
+        await _update_progress(
+            pool,
+            job_id,
+            progress_seq=9,
+            progress_state={"percent": 100},
+            status="succeeded",
+        )
+        await redis_client.publish(channel, _pub(job_id, 9, terminal=True, status="succeeded"))
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(_wire())
+        frames, _elapsed, _failure = await _stream_frames(
+            server,
+            f"/jobs/api/job/{job_id}/progress/stream?last_event_id=6",
+            until=lambda _fs: False,
+            on_connected=lambda: stream_established.set(),
+            overall_timeout=10.0,
+        )
+
+    assert _delivered_seq_multiset(frames) == Counter({7: 1, 8: 1, 9: 1}), frames
     events = [f["event"] for f in frames if "event" in f]
     assert events[-2:] == ["terminal", "done"], events

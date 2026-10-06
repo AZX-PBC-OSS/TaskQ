@@ -18,8 +18,7 @@ from typing import Any, Protocol, cast
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response
-from fastapi.routing import APIRoute
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from jinja2 import Environment, PackageLoader
 from starlette.middleware.gzip import GZipMiddleware as _GZipMiddleware
 from starlette.types import Receive, Scope, Send
@@ -33,7 +32,13 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as _rl_singleton
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._routing import HeadForGetRoute
 from taskq.web.admin import _static
+from taskq.web.admin._constants import (
+    BADGE_CHIP_BASE,
+    STATUS_CHIP_CLASSES,
+    STATUS_TEXT_CLASSES,
+)
 from taskq.web.admin.auth._session import current_sso_logout_token
 
 logger = structlog.get_logger("taskq.web.admin")
@@ -383,7 +388,33 @@ async def validate_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF token mismatch")
 
 
-class _CsrfRoute(APIRoute):
+# The refusal detail every disabled mutation route answers with: it names
+# the knob, so the operator (or the deployment reviewer reading the 403 in
+# a log) knows exactly what flips the route on - "Admin actions are
+# disabled" alone reads as a failure, not a configuration state.
+_ACTIONS_DISABLED_DETAIL: str = (
+    "Actions are disabled on this deployment (TASKQ_ADMIN_ACTIONS_ENABLED=false)"
+)
+
+
+async def require_actions_enabled(
+    settings: TaskQSettings = Depends(get_settings),
+) -> None:
+    """Dependency: refuses mutations on a deployment that disabled them.
+
+    Declared BEFORE ``validate_csrf`` on every mutation route (FastAPI
+    resolves dependencies in declaration order): whether actions are
+    enabled is a configuration state, safe to answer before any token
+    validation -- an operator who POSTs to a disabled deployment gets the
+    actionable config message, never a CSRF error that reads as a bug.
+    The token still guards every route when actions ARE enabled (the
+    enabled-check is a precondition, not a replacement).
+    """
+    if not settings.admin_actions_enabled:
+        raise HTTPException(status_code=403, detail=_ACTIONS_DISABLED_DETAIL)
+
+
+class _CsrfRoute(HeadForGetRoute):
     """Custom APIRoute that sets the CSRF cookie and the security headers.
 
     Uses the *synchronizer-token* pattern: the cookie is ``HttpOnly`` (JS
@@ -524,6 +555,16 @@ class _AppLike(Protocol):
     @property
     def state(self) -> Any: ...
 
+    def add_exception_handler(
+        self, exc_class_or_status_code: Any, handler: Any
+    ) -> None: ...  # Why: setup_admin_state installs the admin error handlers on the host app; the protocol carries the registry surface it needs.
+
+    middleware_stack: Any
+
+    def build_middleware_stack(
+        self,
+    ) -> Any: ...  # Why: the handlers must land in the stack a request is actually served by (see _install_admin_error_handlers).
+
 
 @dataclass
 class AdminBundle:
@@ -562,6 +603,16 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
 
     Call this in your FastAPI lifespan after creating the bundle and before
     the first request arrives.
+
+    This also installs the admin error handlers on the host app (U1/U2):
+    the Postgres-connection failure family becomes a 503 (the JSON
+    envelope ``{"detail": "postgres_unavailable"}`` with ``Retry-After``
+    for the machine routes, a branded self-retrying HTML page for the
+    operator routes) and the HTML-wanting 4xxs (a missing job's 404, a
+    refused filter's 400, an unparseable parameter's 422) render the
+    error page instead of a JSON wall. The API-ish routes (``/api/*``,
+    ``/jobs/count``, ``/sse/*``) always keep JSON, and a host route
+    outside the admin base path is never touched.
     """
     app.state.pg_pool = bundle.pg_pool
     app.state.schema = bundle.schema
@@ -575,6 +626,141 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     )
     app.state.actor_fire_policies = bundle.actor_fire_policies
     app.state.taskq_session_verifier = bundle.session_verifier
+    _install_admin_error_handlers(app, bundle)
+
+
+# The Postgres-unreachable family (U1): everything asyncpg raises when the
+# database cannot be SERVED (connection lost mid-flight, connect refused,
+# the server not accepting connections, the connection cap), plus the
+# socket-level shapes a dead host surfaces through. SQL-level errors
+# (PostgresError proper) are NOT here: a bad query is a bug (500), not an
+# outage (503).
+_PG_UNAVAILABLE_FAMILY: tuple[type[BaseException], ...] = (
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.CannotConnectNowError,
+    asyncpg.exceptions.TooManyConnectionsError,
+    asyncpg.exceptions.InterfaceError,
+    ConnectionError,
+    OSError,
+    TimeoutError,
+)
+
+_PG_UNAVAILABLE_DETAIL: str = "postgres_unavailable"
+
+_RETRY_AFTER_SECS: str = "2"
+
+
+def _error_wants_html(request: Request, base_path: str) -> bool:
+    """True when *request* is an operator (browser) hit on an admin page.
+
+    The API-ish routes the admin surface itself ships (the progress
+    bridge under ``/api/``, the ``/jobs/count`` feed the header wires to,
+    the SSE endpoints) always answer JSON - a script's error must stay
+    machine-readable. Outside the admin base path the host's own error
+    handling stands.
+    """
+    path = request.url.path
+    if base_path and not (path == base_path or path.startswith(f"{base_path}/")):
+        return False
+    if "/api/" in path or path.endswith("/jobs/count") or "/sse" in path:
+        return False
+    return "text/html" in request.headers.get("accept", "")
+
+
+def _install_admin_error_handlers(app: _AppLike, bundle: AdminBundle) -> None:
+    """Register the admin error handlers on the host app (see
+    :func:`setup_admin_state`)."""
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import HTMLResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    base_path = bundle.base_path
+    templates = bundle.templates
+
+    def _render_error(status: int, heading: str, message: str, *, retry: bool) -> HTMLResponse:
+        html = templates.get_template("error.html").render(
+            status_code=status,
+            heading=heading,
+            message=message,
+            retry=retry,
+        )
+        return HTMLResponse(content=html, status_code=status)
+
+    async def _pg_unavailable(request: Request, exc: BaseException) -> HTMLResponse | JSONResponse:
+        logger.warning(
+            "admin-postgres-unavailable",
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        if not _error_wants_html(request, base_path):
+            return JSONResponse(
+                {"detail": _PG_UNAVAILABLE_DETAIL},
+                status_code=503,
+                headers={"Retry-After": _RETRY_AFTER_SECS},
+            )
+        response = _render_error(
+            503,
+            "The queue database is unreachable",
+            "The admin pages read their live state from Postgres, and Postgres "
+            "could not be reached. Nothing was lost - the pages come back on "
+            "their own when the database does.",
+            retry=True,
+        )
+        response.headers["Retry-After"] = "5"
+        return response
+
+    async def _http_exception(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response | HTMLResponse | JSONResponse:
+        if _error_wants_html(request, base_path):
+            headings = {404: "Not found", 400: "Bad request", 422: "Invalid input"}
+            detail = str(exc.detail)
+            return _render_error(
+                exc.status_code,
+                headings.get(exc.status_code, "Request refused"),
+                detail,
+                retry=False,
+            )
+        # The host's default shape, outside the admin surface: the JSON
+        # envelope FastAPI itself would have answered.
+        return JSONResponse(
+            {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers
+        )
+
+    async def _validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> Response | HTMLResponse | JSONResponse:
+        if _error_wants_html(request, base_path):
+            summary = "; ".join(
+                f"{'.'.join(str(loc) for loc in err.get('loc', []))}: {err.get('msg', 'invalid')}"
+                for err in exc.errors()[:8]
+            )
+            return _render_error(
+                422,
+                "Invalid input",
+                f"The request could not be parsed: {summary}",
+                retry=False,
+            )
+        from fastapi.encoders import jsonable_encoder
+
+        return JSONResponse({"detail": jsonable_encoder(exc.errors())}, status_code=422)
+
+    for exc_type in _PG_UNAVAILABLE_FAMILY:
+        app.add_exception_handler(exc_type, _pg_unavailable)  # pyright: ignore[reportArgumentType]  # Why: the host app's handler registry accepts any exception type; the family is asyncpg/socket shapes.
+    app.add_exception_handler(StarletteHTTPException, _http_exception)  # pyright: ignore[reportArgumentType]  # Why: same registry.
+    app.add_exception_handler(RequestValidationError, _validation_error)  # pyright: ignore[reportArgumentType]  # Why: same registry.
+    # Starlette builds the middleware stack on the FIRST scope the app is
+    # handed -- and a real server (uvicorn) hands it the LIFESPAN scope
+    # before the host's lifespan body (where the setup_admin_state
+    # contract puts this registration) has run a line. The stack's
+    # ExceptionMiddleware snapshots app.exception_handlers at build time,
+    # so every handler above was invisible to any real deployment: the
+    # branded pages were dead code (live: PG-down answered the bare 500
+    # wall, a refused filter answered the JSON envelope). Rebuild the
+    # stack when a scope already built it; before the first scope this
+    # is a no-op and the first build picks the handlers up.
+    if app.middleware_stack is not None:
+        app.middleware_stack = app.build_middleware_stack()
 
 
 def _capture_principal_dependency(
@@ -748,6 +934,16 @@ def create_router(
     # be baked into the environment at startup. The chrome calls it to decide
     # whether the Sign out control renders at all.
     env.globals["sso_logout_token"] = current_sso_logout_token  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; a zero-arg callable is valid.
+    # One source for the disabled-actions banner text: the same string the
+    # mutation routes' 403 detail carries (require_actions_enabled), so a
+    # page and a refusal never tell two different stories about the knob.
+    env.globals["admin_actions_banner"] = _ACTIONS_DISABLED_DETAIL  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; str is valid.
+    # The status colors' single source (see _constants.STATUS_CHIP_CLASSES):
+    # the server renders badges from it and the page emits it as the JSON
+    # blob admin.js derives its maps from.
+    env.globals["status_chip_classes"] = STATUS_CHIP_CLASSES  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals.
+    env.globals["status_text_classes"] = STATUS_TEXT_CLASSES  # pyright: ignore[reportArgumentType]  # Why: same as above.
+    env.globals["badge_chip_base"] = BADGE_CHIP_BASE  # pyright: ignore[reportArgumentType]  # Why: same as above.
     env.filters["time_ago"] = _time_ago
     env.filters["iso_attr"] = _iso_attr
 

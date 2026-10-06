@@ -32,6 +32,7 @@ from taskq.web.admin._factory import (
     get_schema,
     get_settings,
     get_templates,
+    require_actions_enabled,
     validate_csrf,
 )
 
@@ -117,6 +118,7 @@ def register(router: APIRouter) -> None:
         csrf_token: str = Depends(get_csrf_token),
         notice: str | None = None,
         window: str | None = Query(default=None),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
         # Closed-set treatment (a typo must not silently fall back to
         # all-time while the URL claims a recency view).
@@ -141,6 +143,7 @@ def register(router: APIRouter) -> None:
             csrf_token=csrf_token,
             active_page="actors",
             notice=notice_text,
+            admin_actions_enabled=settings.admin_actions_enabled,
         )
         return HTMLResponse(content=html)
 
@@ -151,15 +154,13 @@ def register(router: APIRouter) -> None:
     async def actor_deregister(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         actor: str,
         request: Request,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
         # The actor name from the path binds as a text parameter - the same
         # NUL guard the list filters apply, or a %00 is an opaque driver 500.
         parse_text_filter(actor, "actor")

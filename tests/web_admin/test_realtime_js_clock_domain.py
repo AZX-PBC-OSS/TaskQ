@@ -354,10 +354,13 @@ def test_a_suspended_tab_resumes_with_one_catchup_poll_and_one_render() -> None:
     # never stealing the viewport.
     appends = [e for e in dom["resume"] if e.startswith("timeline-append:")]
     assert appends == [], f"the catch-up render must patch in place, never rebuild: {dom['resume']}"
+    # The B3 structure: bar width (div4), the percent readout (span5),
+    # the step span (span7); the detail/ts spans of the fresh snapshot
+    # agree with what the entry already renders.
     assert dom["resume"] == [
-        "width:div3=95%",
-        "text:div4=final",
-        "text:div5=95% · final",
+        "width:div4=95%",
+        "text:span5=95%",
+        "text:span7=final",
     ], f"the catch-up render must patch exactly the fresh snapshot's nodes: {dom['resume']}"
     assert not any(e.startswith("scroll:") for e in dom["resume"]), (
         f"the catch-up render must not jump the scroll position: {dom['resume']}"
@@ -451,15 +454,16 @@ def test_sse_replays_and_stale_seqs_write_nothing_and_meta_has_no_relative_time(
         f"an SSE event must apply locally, never refetch: {log['net']}"
     )
 
-    # Every meta line is percent · step · the snapshot's own instant:
-    # no 'ago', no 'in ', no negative anything - nothing the browser's
-    # clock could have computed.
-    meta_lines = [e.split("=", 1)[1] for e in log["dom"] if e.startswith("text:div") and "·" in e]
-    assert meta_lines, f"the replay must have rendered meta lines: {log['dom']}"
+    # Every rendered instant is the snapshot's own, locale-rendered by the
+    # browser (the B3 structure renders it on its own span): no 'ago', no
+    # 'in ', no negative anything - nothing the browser's clock DERIVED
+    # relative to now.
+    meta_lines = [e.split("=", 1)[1] for e in log["dom"] if e.startswith("text:span9=")]
+    assert meta_lines, f"the replay must have rendered the clock spans: {log['dom']}"
     for line in meta_lines:
-        assert line == f"50% · stage · {log['localTime']}" or line == (
-            f"75% · stage · {log['localTime']}"
-        ), f"the meta line must be the snapshot's own instant, got: {line}"
-        assert "ago" not in line and " in " not in line and "-" not in line, (
-            f"the meta line must carry no browser-clock-derived relative time: {line}"
+        assert line == log["localTime"], (
+            f"the rendered instant must be the snapshot's own, got: {line}"
+        )
+        assert "ago" not in line and " in " not in line, (
+            f"the render must carry no browser-clock-derived relative time: {line}"
         )
