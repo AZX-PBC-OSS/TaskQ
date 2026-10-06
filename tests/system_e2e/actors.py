@@ -317,6 +317,27 @@ async def sys_rated(payload: RatedPayload, ctx: JobContext[RatedPayload]) -> dic
     return {"tenant": payload.tenant}
 
 
+#: One token per twenty seconds: a denial's Retry-After hint prices the
+#: NEXT token, so the second and third concurrent enqueue are re-pended
+#: ~20s and ~40s out - a DEEP reprieve the compound-failure family's
+#: cancel-during-a-hint-wait scenario can sit inside (the fast bucket's
+#: ~2s hint re-claims before the operator can act).
+_SLOW_RATED_BUCKET = KeyedRateLimitRef.typed(
+    RatedPayload,
+    base_name="sys-rated-slow",
+    key_fn=lambda p: p.tenant,
+    capacity=1.0,
+    refill_per_second=0.05,
+    backend="postgres",
+)
+
+
+@actor(name="sys_rated_slow", queue=_QUEUE, rate_limits=[_SLOW_RATED_BUCKET])
+async def sys_rated_slow(payload: RatedPayload, ctx: JobContext[RatedPayload]) -> dict[str, str]:
+    await _record("done", "sys_rated_slow", ctx.job_id, ctx.attempt)
+    return {"tenant": payload.tenant}
+
+
 @actor(name="sys_retry_me", queue=_QUEUE, retry=_NO_RETRY)
 async def sys_retry_me(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
     """The admin-retry target: every attempt fails, no retry budget, so the
@@ -362,6 +383,7 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "sys_defiant": sys_defiant,
     "sys_winc": sys_winc,
     "sys_rated": sys_rated,
+    "sys_rated_slow": sys_rated_slow,
     "sys_retry_me": sys_retry_me,
     "sys_mover": sys_mover,
     "sys_drain": sys_drain,
