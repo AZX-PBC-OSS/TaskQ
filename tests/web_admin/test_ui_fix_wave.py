@@ -24,6 +24,8 @@ import json
 import re
 import shutil
 import subprocess
+from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -706,6 +708,99 @@ def test_pg_down_json_routes_get_the_503_envelope(
     assert resp.status_code == 503
     assert resp.json() == {"detail": "postgres_unavailable"}
     assert resp.headers.get("retry-after") is not None
+
+
+# ── The server boot order: the handlers must survive a REAL lifespan ─────
+# TestClient drives a lifespan through the router's context before any
+# scope reaches ``app.__call__``, so the handlers registered by
+# ``setup_admin_state`` are in place when the middleware stack builds. A
+# real server (uvicorn) hands the app the LIFESPAN scope first, and
+# Starlette builds the middleware stack on the FIRST scope it sees --
+# the ExceptionMiddleware snapshot is taken before the host's lifespan
+# body (where the setup_admin_state contract puts these registrations)
+# has run one line. These tests boot the app in the server's order and
+# pin the handlers' visibility in it.
+
+
+def _boot_like_a_server(app: FastAPI) -> None:
+    """Deliver the lifespan scope through ``app.__call__`` the way uvicorn does."""
+    import asyncio
+
+    async def _drive() -> None:
+        sent: list[dict[str, str]] = []
+
+        async def receive() -> dict[str, str]:
+            if not any(m["type"].startswith("lifespan.startup") for m in sent):
+                return {"type": "lifespan.startup"}
+            return {"type": "lifespan.shutdown"}
+
+        async def send(message: dict[str, str]) -> None:
+            sent.append(message)
+
+        await app({"type": "lifespan"}, receive, send)
+        assert any(
+            m["type"] == "lifespan.startup.complete" for m in sent
+        ), f"the lifespan did not complete: {sent}"
+
+    asyncio.run(_drive())
+
+
+def _make_server_ordered_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    """The wiring the embedding contract prescribes (docs + admin_app.py):
+    ``setup_admin_state`` runs INSIDE the host's lifespan."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    app = FastAPI()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
+        bundle = create_router(_DeadPgAppPool())
+        setup_admin_state(application, bundle)
+        application.include_router(bundle.router)
+        yield
+
+    app.router.lifespan_context = lifespan
+    return app
+
+
+def test_the_branded_400_survives_the_server_boot_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U2 under the server's boot order: the lifespan-scope middleware
+    snapshot must not strand the error handlers in dead code.
+
+    Live (compose sidecar, uvicorn): a refused status filter answered the
+    JSON envelope - every handler ``setup_admin_state`` registered was
+    invisible, because the stack had been built for the lifespan scope
+    before they existed. The registration must end up IN the stack a
+    request is served by.
+    """
+    app = _make_server_ordered_app(monkeypatch)
+    _boot_like_a_server(app)
+
+    # No `with`: the lifespan already ran in the server's order; the
+    # request must hit the stack that scope built.
+    client = TestClient(app)
+    resp = client.get("/jobs", params={"status": "pendng"}, headers={"Accept": "text/html"})
+    assert resp.headers.get("content-type", "").startswith("text/html"), (
+        f"a browser's bad filter must render the error page under the "
+        f"server's boot order, got: {resp.status_code} {resp.text[:200]}"
+    )
+    assert "pendng" in resp.text
+
+
+def test_the_branded_503_survives_the_server_boot_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1 under the server's boot order: PG unreachable + a browser ask
+    renders the self-retrying branded page, never the bare 500 wall."""
+    app = _make_server_ordered_app(monkeypatch)
+    _boot_like_a_server(app)
+
+    client = TestClient(app)
+    resp = client.get("/queues", headers={"Accept": "text/html"})
+    assert resp.status_code == 503, resp.text[:200]
+    assert resp.headers.get("content-type", "").startswith("text/html")
+    assert "unreachable" in resp.text
 
 
 # ── U2: HTML-wanting requests get rendered error pages ───────────────────

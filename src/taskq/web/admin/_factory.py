@@ -559,6 +559,10 @@ class _AppLike(Protocol):
         self, exc_class_or_status_code: Any, handler: Any
     ) -> None: ...  # Why: setup_admin_state installs the admin error handlers on the host app; the protocol carries the registry surface it needs.
 
+    middleware_stack: Any
+
+    def build_middleware_stack(self) -> Any: ...  # Why: the handlers must land in the stack a request is actually served by (see _install_admin_error_handlers).
+
 
 @dataclass
 class AdminBundle:
@@ -743,6 +747,18 @@ def _install_admin_error_handlers(app: _AppLike, bundle: AdminBundle) -> None:
         app.add_exception_handler(exc_type, _pg_unavailable)  # pyright: ignore[reportArgumentType]  # Why: the host app's handler registry accepts any exception type; the family is asyncpg/socket shapes.
     app.add_exception_handler(StarletteHTTPException, _http_exception)  # pyright: ignore[reportArgumentType]  # Why: same registry.
     app.add_exception_handler(RequestValidationError, _validation_error)  # pyright: ignore[reportArgumentType]  # Why: same registry.
+    # Starlette builds the middleware stack on the FIRST scope the app is
+    # handed -- and a real server (uvicorn) hands it the LIFESPAN scope
+    # before the host's lifespan body (where the setup_admin_state
+    # contract puts this registration) has run a line. The stack's
+    # ExceptionMiddleware snapshots app.exception_handlers at build time,
+    # so every handler above was invisible to any real deployment: the
+    # branded pages were dead code (live: PG-down answered the bare 500
+    # wall, a refused filter answered the JSON envelope). Rebuild the
+    # stack when a scope already built it; before the first scope this
+    # is a no-op and the first build picks the handlers up.
+    if app.middleware_stack is not None:
+        app.middleware_stack = app.build_middleware_stack()
 
 
 def _capture_principal_dependency(

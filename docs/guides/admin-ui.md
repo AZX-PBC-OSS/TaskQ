@@ -434,11 +434,6 @@ the jobs page's header ("Showing 1–N of M results") counts against this route 
 same filter parse the page's rows come from, and the page's own JS re-fetches it on every
 poll and filter submit.
 
-The endpoint is registered but has no consumer today: the jobs list page renders its
-"Showing N results" line from the page query's own row count, not from this route. Anything
-built against it should not rely on it surviving; use `GET /admin/jobs` and count the page,
-or the per-actor aggregate at `GET /admin/api/history/stats`, instead.
-
 ### `GET /admin/api/history/stats`
 
 Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs the fleet still has a record of (`jobs_archive` UNIONed with the terminal rows still live in `jobs`), grouped by `(actor, queue)`. A terminal row stays in `jobs` for its whole prune retention before the prune sweep archives it, so an archive-only aggregate would hide an actor's freshest failures for exactly as long as they matter most; the live side counts terminal rows only (running/pending work never inflates executor totals, and its population is capped by prune retention).
