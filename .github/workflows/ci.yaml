@@ -207,6 +207,13 @@ jobs:
           - { extra: saml, sync: "--extra saml --extra fastapi" }
           - { extra: oidc, sync: "--extra oidc --extra fastapi" }
           - { extra: otel, sync: "--extra otel --extra fastapi" }
+          # The prometheus leg needs fastapi too: the metrics-router suites
+          # (test_prometheus_metrics, test_prometheus_endpoint_e2e) drive
+          # create_metrics_router through FastAPI's TestClient. The extra's
+          # own contract test (test_prometheus_extra_contract) imports ONLY
+          # the [prometheus] extra's dependencies, so the extra's core
+          # surface is proven under this sync as well.
+          - { extra: prometheus, sync: "--extra prometheus --extra fastapi" }
           - { extra: vault, sync: "--extra vault" }
           - { extra: aws, sync: "--extra aws" }
           - { extra: redis, sync: "--extra redis --extra fastapi" }

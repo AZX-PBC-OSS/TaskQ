@@ -33,7 +33,7 @@ from tests._prom_review import (  # pyright: ignore[reportPrivateUsage]  # Why: 
     probe_env,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.otel]
+pytestmark = [pytest.mark.integration, pytest.mark.otel, pytest.mark.prometheus]
 
 _SUBPROCESS = '''
 """Fleet-shape cardinality probe: drive the real capped emitters at

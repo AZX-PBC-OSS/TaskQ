@@ -754,7 +754,7 @@ Raised by `wait_for_batch()` when the batch row has `status = 'aborted'` and
 all child jobs are terminal.
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
-from taskq import BatchAbortedError
+from taskq import BatchAbortedError, wait_for_batch
 
 try:
     status = await wait_for_batch(db, batch_id)
@@ -1304,6 +1304,8 @@ mid-operation failure leaves the batches that already committed as durable parti
 progress, and a re-run continues where it stopped; already-cancelled rows are skipped.
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import JobFilter
+
 result = await client.cancel_where(
     JobFilter(tags=("tenant-acme",), unfinished=True),
     reason="tenant offboarded",
@@ -1363,6 +1365,8 @@ Frozen dataclass. All fields are optional.
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
+from taskq import JobFilter
+
 # "Everything still in flight": pending + scheduled + running:
 page = await client.list(JobFilter(queue="payments", unfinished=True, limit=50))
 

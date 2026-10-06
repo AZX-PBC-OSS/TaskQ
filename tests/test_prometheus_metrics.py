@@ -45,7 +45,7 @@ from taskq.contrib.prometheus import create_metrics_router
 # ── isolated test environment ──────────────────────────────────────────────
 
 
-pytestmark = [pytest.mark.otel]
+pytestmark = [pytest.mark.otel, pytest.mark.prometheus]
 
 
 class _PromEnv:
