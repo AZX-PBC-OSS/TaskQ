@@ -30,9 +30,9 @@ pip install "taskq-py[redis,otel,fastapi]"  # full (add prometheus for scrapes)
 | Extra | Installs | When you need it |
 |-------|----------|-----------------|
 | `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout, Redis-backed rate limiters |
-| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | OTel provider setup, in-process test utilities |
-| `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI, SSE progress bridge |
-| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes |
+| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-instrumentation` | OTel provider setup, in-process test utilities |
+| `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn`, `humanize`, `python-multipart` | Admin UI, SSE progress bridge |
+| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus`, `prometheus-client` | Prometheus metric scrapes |
 | `taskq-py[oidc]` | `authlib>=1.8`, `httpx2`, `itsdangerous` | OIDC/SSO auth for the admin UI; see [SSO / SAML](../guides/sso.md) |
 | `taskq-py[saml]` | `python3-saml`, `itsdangerous` | SAML/SSO auth for the admin UI; see [SSO / SAML](../guides/sso.md) |
 | `taskq-py[aad]` | `azure-identity`, `aiohttp` | Azure Entra ID managed-identity DB auth; see [Managed Identities](../guides/managed-identities.md) |
@@ -377,8 +377,16 @@ The UI provides a live view of queues, jobs, workers, and actor configurations. 
 To run the admin UI as a standalone process:
 
 ```bash
-taskq ui serve --host 0.0.0.0 --port 8080
+TASKQ_ENVIRONMENT=development taskq ui serve --host 0.0.0.0 --port 8080
 ```
+
+> **Fail-closed auth gates outside dev:** without `TASKQ_ENVIRONMENT=dev` (or
+> `development`), `taskq ui serve` refuses to start — it raises `RuntimeError`
+> until you either set a `TASKQ_HEALTH_TOKEN` (for the health/metrics
+> endpoints) and an `auth_dependency` (for the admin UI), or explicitly opt
+> out (`TASKQ_HEALTH_REQUIRE_TOKEN=false`, `TASKQ_ADMIN_UI_REQUIRE_AUTH=false`).
+> The bundled Docker Compose sets `TASKQ_ENVIRONMENT=development` for you. See
+> [Admin UI](../guides/admin-ui.md#security).
 
 See [Admin UI](../guides/admin-ui.md) for the full reference.
 
