@@ -537,20 +537,32 @@ get a hook) sniffs the mundane taxonomy:
 
 - **transient** — connection-class errors (`isinstance` of the builtin
   `ConnectionError` family), TimeoutError-shaped errors (`isinstance` of the builtin
-  `TimeoutError` — which covers `socket.timeout` and `asyncio.TimeoutError` — or a
-  class name ending in `Timeout`/`TimeoutError`, so `httpx.ReadTimeout`,
+  `TimeoutError` — which covers `socket.timeout` and `asyncio.TimeoutError` — or an
+  **exact** class name in `DEFAULT_TRANSIENT_EXCEPTION_NAMES`, so `httpx.ReadTimeout`,
   `requests.ConnectTimeout`, `aiohttp.ServerTimeoutError` claim without an import), and
   HTTP `5xx` / `408` / `425` statuses;
 - **non-retryable** — any other `4xx` status;
 - **`None`** — everything else. Unsure → `None`: over-claiming is the haunt class, and
   a taxonomy that guesses sends work where the declared policy never agreed to go.
 
-The timeout name-suffix match is a name heuristic, not a semantics check. A real-world
-counterexample: `pymongo.errors.ExecutionTimeout` — the *server* killed an operation for
-exceeding its `maxTimeMS`, and re-running the same query re-fails deterministically —
-ends in `Timeout` and is claimed `transient` by the defaults (bounded by `max_attempts`,
-so the cost is a spent retry budget, not a runaway). Where a timeout means "this work can
-never succeed", exclude it by exact name: `exclude_names={"ExecutionTimeout"}`.
+The matching rule is a contract: **exact curated names by default; the suffix
+inference is opt-in and documented with its counterexample.** The default never
+widens a consumer's semantics — consumers who route timeout-shaped classes narrowly
+(static-policy, pinned per class) are the supported shape, and the library's defaults
+never override that explicit direction.
+
+The suffix inference is exactly that stance's counter-case, which is why it is behind
+a flag. `infer_timeout_by_suffix=True` claims `transient` for any class name *ending*
+in `Timeout`/`TimeoutError` — the convenience for consumers who don't want to
+enumerate names. Its documented cost is `pymongo.errors.ExecutionTimeout`: the
+*server* killed an operation for exceeding its `maxTimeMS`, and re-running the same
+query re-fails deterministically — a deadline-exceeded that MEANS failure. Its name
+ends in `Timeout`, so the suffix flag claims it `transient` and every such retry
+burns budget on unwinnable work (bounded by `max_attempts` — a spent budget, not a
+runaway — but spent on work no retry can win). Under the default exact-name matching
+the taxonomy returns `None` for it and the declared policy governs. Opt in only when
+your timeout-shaped names are genuinely transient-by-construction; pin narrow
+otherwise.
 
 The defaults are documented module constants (`taskq.retry`):
 `DEFAULT_TRANSIENT_STATUSES` (`408`, `425`, and the `5xx` band),
@@ -578,8 +590,10 @@ and this fragment's names are bound by the earlier fences):
     )
 
 Precedence, pinned by tests: `exclude_names` → transient signals (connection class,
-timeout shape, name include-set, `transient_status`) → `non_retryable_status` →
-`None`. A status present in both sets is transient ("retry later" is the safer wrong
+TimeoutError `isinstance`, name include-set, the opt-in suffix inference,
+`transient_status`) → `non_retryable_status` → `None`. `exclude_names` outranks
+everything, the suffix flag included. A status present in both sets is transient
+("retry later" is the safer wrong
 answer than killing a retryable job). Passing a set replaces the default entirely —
 there is no implicit merge, so what a classifier claims is always exactly what its
 configuration says.

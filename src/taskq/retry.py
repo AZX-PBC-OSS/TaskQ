@@ -1131,10 +1131,20 @@ DEFAULT_NON_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset(
     status for status in range(400, 500) if status not in {408, 425, 429}
 )
 
-#: Exception class names the taxonomy claims ``transient`` by name: the
-#: stdlib connection/timeout shapes (also matched structurally — see the
-#: factory docstring) and the major HTTP clients' timeout/transport names,
-#: so httpx/requests/aiohttp outages claim without an import.
+#: Exception class names the taxonomy claims ``transient`` by EXACT name
+#: (never by suffix — the suffix inference is opt-in via
+#: ``infer_timeout_by_suffix=True``): the stdlib timeout/connection names
+#: (``TimeoutError``, the builtin ``ConnectionError`` family — also
+#: matched structurally by ``isinstance``, which is type-based and stays
+#: default) and the major HTTP clients' exact timeout/transport class
+#: names, so httpx/requests/aiohttp outages claim without an import:
+#: ``ReadTimeout``/``ConnectError`` (httpx), ``ConnectTimeout``
+#: (requests), ``ServerTimeoutError`` (aiohttp), ``WriteTimeout``/
+#: ``PoolTimeout`` (httpx pools). ``Timeout`` exact matches the bare
+#: class name some AMQP/mqtt clients use. Exact-name matching is the
+#: contract: a name ending in ``Timeout`` that is not listed here (the
+#: audit's counterexample: ``pymongo.errors.ExecutionTimeout``) is NOT
+#: claimed unless the consumer opts into the suffix inference.
 DEFAULT_TRANSIENT_EXCEPTION_NAMES: Final[frozenset[str]] = frozenset(
     {
         "Timeout",
@@ -1164,6 +1174,7 @@ def failure_taxonomy_classifier(
     non_retryable_status: Iterable[int] | None = None,
     include_names: Iterable[str] | None = None,
     exclude_names: Iterable[str] | None = None,
+    infer_timeout_by_suffix: bool = False,
 ) -> RetryClassifierHook:
     """Configurable classifier for the common failure shapes, the
     conservative default the §4 table describes.
@@ -1181,21 +1192,32 @@ def failure_taxonomy_classifier(
        every signal, status included).
     2. ``transient`` → :class:`RetryOverride(kind="transient")` — claimed
        by any of:
-       * connection-class: ``isinstance`` of the builtin ``ConnectionError``
-         family (``ConnectionResetError``, ``ConnectionRefusedError``, …);
+       * connection-class: ``isinstance`` of the builtin
+         ``ConnectionError`` family (``ConnectionResetError``,
+         ``ConnectionRefusedError``, …);
        * TimeoutError-shaped: ``isinstance`` of the builtin
          ``TimeoutError`` (covers ``socket.timeout`` and, since 3.11,
-         ``asyncio.TimeoutError``) or a class name ending in ``Timeout``/
-         ``TimeoutError`` (the httpx/requests/aiohttp shapes). The suffix
-         match is a name heuristic, not a semantics check: a real-world
-         counterexample is ``pymongo.errors.ExecutionTimeout`` — the
-         server killed the operation for exceeding ``maxTimeMS``, and a
-         re-run of the same query re-fails deterministically — whose name
-         ends in ``Timeout`` and is claimed ``transient`` by the defaults;
-         where a timeout means "this work can never succeed", exclude it
-         by exact name (``exclude_names={"ExecutionTimeout"}``);
-       * class name in ``include_names`` (exact match) or in the
-         ``DEFAULT_TRANSIENT_EXCEPTION_NAMES`` defaults;
+         ``asyncio.TimeoutError``) — a TYPE-based signal, always on — or
+         an exact class name in ``include_names`` or the
+         ``DEFAULT_TRANSIENT_EXCEPTION_NAMES`` curated set;
+       * ``infer_timeout_by_suffix=True`` → additionally, a class name
+         ENDING in ``Timeout``/``TimeoutError`` claims transient. This is
+         the opt-in convenience flag — OFF by default, and the default is
+         a contract: defaults never override explicit direction, so the
+         library will not widen a consumer's narrowly pinned semantics.
+         The cost the flag buys: it is a name heuristic, not a semantics
+         check, and its proven counterexample is
+         ``pymongo.errors.ExecutionTimeout`` — the server killed the
+         operation for exceeding ``maxTimeMS``, and a re-run of the same
+         query re-fails deterministically — whose name ends in ``Timeout``
+         but whose meaning is "this work can never succeed". Under the
+         default exact-name matching the taxonomy returns ``None`` for it
+         (the declared policy governs); with the flag on it is claimed
+         ``transient`` and every such retry burns budget on unwinnable
+         work. Consumers who route these shapes narrowly (static-policy,
+         pinned per class) keep the default; consumers who want the
+         httpx/requests/aiohttp-style convenience without enumerating
+         names take the flag knowingly;
        * status in ``transient_status`` (defaults:
          ``DEFAULT_TRANSIENT_STATUSES`` = 408, 425, and the 5xx band),
          duck-typed through the same status shapes the built-in reads.
@@ -1247,6 +1269,11 @@ def failure_taxonomy_classifier(
     exclude = (
         DEFAULT_EXCLUDED_EXCEPTION_NAMES if exclude_names is None else frozenset(exclude_names)
     )
+    # Opt-in only: the default path matches exact curated names. The
+    # suffix heuristic widens retry verdicts for shapes consumers
+    # deliberately route narrowly (the ExecutionTimeout counterexample in
+    # the docstring), so it never runs unless asked for.
+    infer_suffix = infer_timeout_by_suffix
 
     def classify(exception: BaseException, attempt: int) -> RetryOverride | None:
         name = type(exception).__name__
@@ -1256,7 +1283,7 @@ def failure_taxonomy_classifier(
         if (
             isinstance(exception, (ConnectionError, TimeoutError))
             or name in include
-            or name.endswith(("Timeout", "TimeoutError"))
+            or (infer_suffix and name.endswith(("Timeout", "TimeoutError")))
             or (status is not None and status in transient)
         ):
             return RetryOverride(kind="transient")
