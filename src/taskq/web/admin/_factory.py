@@ -561,7 +561,9 @@ class _AppLike(Protocol):
 
     middleware_stack: Any
 
-    def build_middleware_stack(self) -> Any: ...  # Why: the handlers must land in the stack a request is actually served by (see _install_admin_error_handlers).
+    def build_middleware_stack(
+        self,
+    ) -> Any: ...  # Why: the handlers must land in the stack a request is actually served by (see _install_admin_error_handlers).
 
 
 @dataclass

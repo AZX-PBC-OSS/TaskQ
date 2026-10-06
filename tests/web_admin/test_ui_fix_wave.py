@@ -24,8 +24,8 @@ import json
 import re
 import shutil
 import subprocess
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -738,9 +738,9 @@ def _boot_like_a_server(app: FastAPI) -> None:
             sent.append(message)
 
         await app({"type": "lifespan"}, receive, send)
-        assert any(
-            m["type"] == "lifespan.startup.complete" for m in sent
-        ), f"the lifespan did not complete: {sent}"
+        assert any(m["type"] == "lifespan.startup.complete" for m in sent), (
+            f"the lifespan did not complete: {sent}"
+        )
 
     asyncio.run(_drive())
 
