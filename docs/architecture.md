@@ -1784,6 +1784,110 @@ compared against)**:
 
 ---
 
+## Data model
+
+Source of truth: `src/taskq/migrations/` (the `CREATE TABLE` statements and
+the `COMMENT ON` annotations the migrations carry; the tables below match
+those comments exactly). The three core tables' roles and the archive tiers
+are described in [Schema Design Decisions](#schema-design-decisions); this
+section is the column-level reference.
+
+### `jobs` (the hot table)
+
+Current snapshot of every job, live and terminal (until pruned to
+`jobs_archive`). `status` is the `{schema}.job_status` enum — the eight
+values and their transitions are in [State Machine](#state-machine).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` | Primary key (UUIDv7). |
+| `actor` | `text NOT NULL` | Actor name. Plain text, no FK to `actor_config` (deregistration keeps terminal history queryable). |
+| `queue` | `text NOT NULL` | Queue assignment. |
+| `identity_key` | `text` | "User-derived logical work unit. Used for serialization and unique-for. NOT idempotency." |
+| `fairness_key` | `text` | "User-derived cohort key. NULL collapses to one cohort via COALESCE in dispatch." |
+| `payload` | `jsonb NOT NULL` | The actor's input. |
+| `payload_schema_ver` | `int NOT NULL DEFAULT 1` | Payload discriminator version. |
+| `status` | `job_status NOT NULL DEFAULT 'pending'` | See [State Machine](#state-machine). |
+| `priority` | `smallint NOT NULL DEFAULT 0` | Dispatch order within a queue. |
+| `attempt` | `smallint NOT NULL DEFAULT 0` | The displayed, saturating retry counter. |
+| `claim_epoch` | `bigint NOT NULL DEFAULT 0` (migration `01.00.18_02`) | "Non-saturating claim-epoch fence. Bumped by exactly 1 on every successful dispatch claim"; every terminal/ownership write fences on it. |
+| `max_attempts` | `smallint NOT NULL` | Retry budget; ceiling `MAX_ATTEMPTS_SMALLINT_CEILING` (32767). |
+| `retry_kind` | `text NOT NULL` | `transient` / `indefinite` / `non_retryable` (CHECK-constrained). |
+| `retry_base_seconds`, `retry_cap_seconds`, `retry_backoff`, `retry_jitter` | migration `01.00.12_03` | The actor's retry curve, stamped on the row so a reclaim can reconstruct the policy. |
+| `schedule_to_close` | `timestamptz` | Total-deadline, enforced in SQL at the retry write. |
+| `start_to_close` | `interval` | Per-attempt deadline. |
+| `heartbeat_timeout` | `interval` | Holder-liveness promise enforced by the reclaim sweep. |
+| `created_at`, `scheduled_at` | `timestamptz NOT NULL DEFAULT now()` | `scheduled_at` is when the attempt *became due*; deferrals and retries re-stamp it (see [Operational Insights](guides/insights.md#what-every-consumer-must-know-first)). |
+| `started_at`, `finished_at` | `timestamptz` | Current attempt's start / terminal time. |
+| `last_heartbeat_at` | `timestamptz` | Worker heartbeat. |
+| `locked_by_worker` | `uuid` | Owning worker. No FK to `workers(id)` (see [Schema Design Decisions](#no-fk-on-locked_by_worker)). |
+| `lock_expires_at` | `timestamptz` | Lease expiry; the reclaim sweep reads it. |
+| `cancel_requested_at` | `timestamptz` | When cooperative cancellation was requested. |
+| `cancel_phase` | `smallint NOT NULL DEFAULT 0` | "0 = no cancellation; 1 = cooperative cancel requested; 2 = force cancel issued." |
+| `error_class`, `error_message`, `error_traceback` | `text` | Terminal failure verdict; "Last attempt error only. Full per-attempt history in job_attempts table." |
+| `progress_state` | `jsonb NOT NULL DEFAULT '{}'` | Last progress snapshot written by the worker. |
+| `progress_seq` | `bigint NOT NULL DEFAULT 0` (widened from `int` by `01.00.20_03`) | Strictly-monotone progress sequence. |
+| `result` | `jsonb` | The actor's return value, TTL-governed by `result_expires_at`. |
+| `result_size_bytes`, `result_expires_at` | `int` / `timestamptz` | Result size and TTL stamp. |
+| `idempotency_key` | `text` | "Caller-provided. Used to make enqueue idempotent. Distinct from identity." |
+| `idempotency_scope` | `text NOT NULL DEFAULT ''` (migration `01.00.03`) | "Namespacing scope for idempotency_key"; NOT NULL because Postgres unique indexes treat NULL as distinct. |
+| `trace_id`, `span_id` | `text` | OTel trace correlation. |
+| `metadata` | `jsonb NOT NULL DEFAULT '{}'` | Row-contract dict (`batch_id`, `singleton`, `awaiting`, ...); GIN-indexed. |
+| `tags` | `text[] NOT NULL DEFAULT '{}'` | Free-form labels for filtering and `cancel_where`; GIN-indexed. |
+| `snooze_count` | `int NOT NULL DEFAULT 0` (migration `01.00.08`) | "Coalesced count of non-consuming deferrals (Snooze, RetryAfter(consume_budget=False)) since enqueue." |
+| `rate_limit_blocked_count` | `int NOT NULL DEFAULT 0` (migration `01.00.08`) | "Coalesced count of admission denials (reservation/rate-limit) since enqueue." |
+| `interrupt_count` | `int NOT NULL DEFAULT 0` (migration `01.00.12_02`) | "Times a running attempt of this job was released back to the queue by a worker shutdown, with the claim's attempt increment refunded." |
+| `assignment_routed` | `boolean NOT NULL DEFAULT false` (migration `01.00.12_05`) | Workgroup assignment-routing marker. |
+
+### `job_attempts` (per-attempt history)
+
+"Full history of every execution attempt of every job. Pruned with parent
+job via ON DELETE CASCADE." Primary key `(job_id, attempt)`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `job_id` | `uuid NOT NULL` | FK to `jobs(id)` ON DELETE CASCADE. |
+| `attempt` | `smallint NOT NULL` | 1-indexed attempt number. |
+| `started_at` | `timestamptz NOT NULL` | Attempt start. |
+| `finished_at` | `timestamptz` | Attempt end (`NULL` while running). |
+| `outcome` | `text` | "Valid values: succeeded, failed, snoozed, cancelled, crashed. Error class distinguishes sub-types (e.g. DeadlineExceeded, WorkerCrashed, MaxAttemptsExceeded)." — the outcome vocabulary every attempt-quality query groups by. |
+| `error_class`, `error_message`, `error_traceback` | `text` | This attempt's failure, redacted. |
+| `duration_ms` | `int` | Attempt wall-clock duration. |
+| `worker_id` | `uuid` | FK to `workers(id)` ON DELETE SET NULL. |
+| `metadata` | `jsonb NOT NULL DEFAULT '{}'` | Attempt-level detail. |
+| `due_at` | `timestamptz` (migration `01.00.20_04`) | The claim-time due time this attempt was dispatched against; `NULL` = a pre-migration attempt (historical due times are unrecoverable). A retry chain reconstructs as `due_at(k) → started_at(k) → due_at(k+1)`. |
+
+### `job_events` (the audit log)
+
+Immutable, append-only; "Event type; one of: state_change | cancel_request |
+heartbeat_miss | progress" (`job_events.kind`). Rows are deleted by cascade
+when the parent job is pruned and are NOT archived. The events-prune
+watermark (`job_events_prune_state`, migration `01.00.20_02`) bounds what
+retention may delete — a resumed stream cursor behind it raises
+`EventRetentionGapError` rather than silently skipping the hole.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `bigserial` | Primary key; the cursor `watch_reclaims` resumes from. |
+| `job_id` | `uuid NOT NULL` | FK to `jobs(id)` ON DELETE CASCADE. |
+| `occurred_at` | `timestamptz NOT NULL DEFAULT now()` | Server-side time. |
+| `kind` | `text NOT NULL` | `state_change` / `cancel_request` / `heartbeat_miss` / `progress`. |
+| `detail` | `jsonb NOT NULL DEFAULT '{}'` | Kind-specific payload. |
+
+### The read models
+
+Two Python projections mirror these tables; neither is the storage shape:
+
+- `EventRow` (`taskq.backend._protocol`) — the backend-level read model of a
+  `job_events` row: `event_id`, `job_id`, `occurred_at`, `kind` (the
+  transport-level kinds the watcher consumes: `state_change` /
+  `cancel_request`), `detail`.
+- `JobEvent` (`taskq.client._taskq`, a frozen pydantic model) — the
+  point-in-time snapshot `TaskQ.stream()` yields: `job_id`, `status`,
+  `progress_state`, `progress_seq`, `terminal` (the final event always has
+  `terminal=True`). Fields are deliberately flat so callers can forward the
+  event as JSON without transformation.
+
 ## Schema Design Decisions
 
 Source: `src/taskq/migrations/`.

@@ -147,6 +147,12 @@ async for event in handle.progress_stream():
 `progress_stream()` yields `ProgressEvent` objects and stops automatically when a
 `terminal=True` event is received.
 
+**Failure budget.** On the Postgres poll transport, a blip shorter than the transport's failure
+budget is retried silently (beyond a warning per failed poll). If every fetch fails for longer
+than the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
+cannot wait forever on a database that is not coming back; the last failure is chained as
+`__cause__`. See the [Exceptions API reference](../api-reference/exceptions.md).
+
 ### `ProgressEvent` fields
 
 | Field | Type | Description |
