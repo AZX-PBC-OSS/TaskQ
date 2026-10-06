@@ -210,6 +210,61 @@ def test_property_suffix_names_not_in_the_curated_set_stay_unclaimed(
         assert hook(exc("x"), 1) is None, f"suffix over-claim for {name!r}"
 
 
+def _instantiate_client_exception(cls: type[BaseException]) -> BaseException:
+    """Instantiate a real client exception without knowing its __init__
+    arity (urllib3's RequestError takes ``(pool, url, message)``; botocore's
+    timeout errors format ``endpoint_url`` into their message)."""
+    for args, kwargs in (
+        ((), {}),
+        (("x",), {}),
+        (("x", "y"), {}),
+        (("pool", "url", "message"), {}),
+        ((), {"endpoint_url": "https://s3.us-east-1.amazonaws.invalid"}),
+    ):
+        try:
+            return cls(*args, **kwargs)
+        except (TypeError, KeyError):
+            # botocore's message templates KeyError on missing format
+            # fields rather than TypeError on arity — both mean "wrong
+            # shape for this constructor", try the next.
+            continue
+    raise AssertionError(f"could not instantiate {cls.__module__}.{cls.__qualname__}")
+
+
+@pytest.mark.parametrize(
+    ("module_path", "class_name"),
+    [
+        ("urllib3.exceptions", "ReadTimeoutError"),
+        ("urllib3.exceptions", "ConnectTimeoutError"),
+        ("botocore.exceptions", "ReadTimeoutError"),
+        ("botocore.exceptions", "ConnectTimeoutError"),
+    ],
+)
+def test_major_client_timeout_names_claim_transient_under_default(
+    module_path: str, class_name: str
+) -> None:
+    """The curated set's provenance promise is audited against the real
+    clients: ``ReadTimeoutError``/``ConnectTimeoutError`` are what urllib3
+    (requests' engine, the most-installed HTTP stack) and botocore (the
+    AWS SDK) raise on a read/connect timeout. Neither is a builtin
+    ``TimeoutError`` subclass (urllib3's own ``TimeoutError`` and
+    botocore's ``BotoCoreError`` bases), so ONLY the exact curated name
+    claims them — a set that dropped them would under-claim exactly the
+    majors the constant's provenance comment promises, and the pre-#658
+    suffix heuristic's only remaining real-world benefit would be lost
+    with nothing to show for it (``ExecutionTimeout`` is a synthetic
+    shape; these four are the shapes shipping code actually raises)."""
+    import importlib
+
+    pytest.importorskip(module_path.split(".")[0])
+    cls = getattr(importlib.import_module(module_path), class_name)
+    instance = _instantiate_client_exception(cls)
+
+    hook = failure_taxonomy_classifier()
+
+    assert hook(instance, 1) == RetryOverride(kind="transient")
+
+
 def test_infer_timeout_by_suffix_flag_restores_the_suffix_inference() -> None:
     """The opt-in flag: today's suffix behavior, one keyword away — the
     convenience flag, documented with its ExecutionTimeout cost."""
