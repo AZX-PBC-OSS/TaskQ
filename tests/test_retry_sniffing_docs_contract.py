@@ -116,3 +116,39 @@ def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
         "preferring fallback-over-parse fences HTTP-date forms in their own "
         "classifier first"
     )
+
+
+def test_retries_guide_keeps_the_taxonomy_matching_rule_contract() -> None:
+    """§5's matching rule is a CONTRACT, not prose: exact curated names by
+    default, the suffix inference opt-in behind
+    ``infer_timeout_by_suffix`` with the ``ExecutionTimeout``
+    counterexample, and the curated constant named. The code-side sniff
+    keeps the doc honest — a rename or removal of the flag fails this pin
+    together with the doc it documents (the docs-contract pin pattern)."""
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "exact curated names by default" in text and "infer_timeout_by_suffix" in text, (
+        "retries.md §5 must state the taxonomy's matching rule as the shipped "
+        "contract: the default path matches exact curated names only, and the "
+        "suffix inference is opt-in — a doc edit that drifts back to describing "
+        "suffix-on-by-default behavior (or drops the flag's existence) fails here"
+    )
+    assert "DEFAULT_TRANSIENT_EXCEPTION_NAMES" in text, (
+        "retries.md must name the curated constant the default matching rule "
+        "reads: the provenance audit lives on the constant, and the doc's "
+        "promise is that exact name"
+    )
+    assert "ExecutionTimeout" in text, (
+        "retries.md must keep the counterexample: the suffix flag's documented "
+        "cost is the deadline-exceeded that MEANS failure — without it the "
+        "opt-in reads as a free convenience, not a trade"
+    )
+
+    import taskq.retry
+
+    assert "infer_timeout_by_suffix" in (
+        taskq.retry.failure_taxonomy_classifier.__kwdefaults__ or {}
+    ), (
+        "the doc's named flag must exist on the factory: the contract pin is "
+        "docs ↔ code, so renaming the kwarg without updating the guide fails "
+        "here rather than shipping a doc that promises a keyword that isn't there"
+    )
