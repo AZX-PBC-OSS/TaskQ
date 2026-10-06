@@ -59,7 +59,7 @@
       {% if actor.has_result %}<span class="tag">returns result</span>{% endif %}
     </h2>
     <p>{{ actor.description }}</p>
-    <form data-actor="{{ actor.name }}" data-has-result="{{ actor.has_result | lower }}">
+    <form data-actor="{{ actor.name }}" data-has-result="{{ actor.has_result | lower }}" data-has-progress="{{ actor.has_progress | lower }}">
       {% for field_name, input_type, default_val, label in actor.fields %}
       <div>
         <label for="{{ actor.name }}-{{ field_name }}">{{ label }}</label>
@@ -207,6 +207,7 @@
         e.preventDefault();
         const actorName = form.dataset.actor;
         const hasResult = form.dataset.hasResult === 'true';
+        const hasProgress = form.dataset.hasProgress === 'true';
         const body = new URLSearchParams(new FormData(form));
 
         let resp;
@@ -219,25 +220,27 @@
 
         const data = await resp.json().catch(() => ({}));
 
+        // The ONE envelope (F3): {"job_id", "url"} on 201/202; errors are
+        // {"detail": "..."} on every 4xx.
         if (resp.status === 409) {
-          showToast(data.error || 'Enqueue blocked', 'error');
+          showToast(data.detail || 'Enqueue blocked', 'error');
           return;
         }
         if (!resp.ok) {
-          showToast(data.error || 'Enqueue failed', 'error');
+          showToast(data.detail || 'Enqueue failed', 'error');
           return;
         }
 
-        if (hasResult && data.result_url) {
-          window.open(data.result_url, '_blank');
-          showToast('Job enqueued — result page opened', 'success');
-        } else if (data.has_progress && data.job_id) {
-          showProgressToast(data.job_id, actorName);
-        } else if (data.redirect) {
-          showToast('Job enqueued — opening admin page', 'success');
-          window.open(data.redirect, '_blank');
-        } else {
+        if (!data.url || !data.job_id) {
           showToast('Job enqueued', 'success');
+        } else if (data.url.startsWith('/result/')) {
+          window.open(data.url, '_blank');
+          showToast('Job enqueued — result page opened', 'success');
+        } else if (hasProgress) {
+          showProgressToast(data.job_id, actorName);
+        } else {
+          showToast('Job enqueued — opening admin page', 'success');
+          window.open(data.url, '_blank');
         }
       });
     });

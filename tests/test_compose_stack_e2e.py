@@ -343,7 +343,8 @@ async def completed_jobs(compose_stack: ComposeStack) -> CompletedJobs:
             response = await http.post(
                 f"{compose_stack.app_url}/enqueue/counter", data={"n": str(_COUNTER_N)}
             )
-            assert response.status_code == 200, response.text
+            # F3's one envelope: a plain enqueue answers 201 {"job_id","url"}.
+            assert response.status_code == 201, response.text
             counter_ids.append(response.json()["job_id"])
 
     from examples.actors.advanced import SumPayload, SumResult, summer

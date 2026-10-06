@@ -19,7 +19,6 @@ import asyncpg
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from fastapi.routing import APIRoute
 from jinja2 import Environment, PackageLoader
 from starlette.middleware.gzip import GZipMiddleware as _GZipMiddleware
 from starlette.types import Receive, Scope, Send
@@ -33,6 +32,7 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as _rl_singleton
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._routing import HeadForGetRoute
 from taskq.web.admin import _static
 from taskq.web.admin._constants import (
     BADGE_CHIP_BASE,
@@ -414,7 +414,7 @@ async def require_actions_enabled(
         raise HTTPException(status_code=403, detail=_ACTIONS_DISABLED_DETAIL)
 
 
-class _CsrfRoute(APIRoute):
+class _CsrfRoute(HeadForGetRoute):
     """Custom APIRoute that sets the CSRF cookie and the security headers.
 
     Uses the *synchronizer-token* pattern: the cookie is ``HttpOnly`` (JS
