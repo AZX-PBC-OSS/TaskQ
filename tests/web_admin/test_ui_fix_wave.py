@@ -98,7 +98,9 @@ class _JobDetailPool(StubPool):
 
     async def _maybe_job(self, query: str, *args: object) -> dict[str, Any] | None:
         if 'FROM "taskq".jobs WHERE id = $1' in query:
-            return self.job
+            # The fetch binds the requested id: only THAT id resolves to
+            # the canned row, so a foreign uuid is a genuine miss.
+            return self.job if str(args[0]) == str(_JOB_ID) else None
         return None
 
 
@@ -645,3 +647,127 @@ def test_row_view_action_carries_an_accessible_name(
     bundle = create_router(StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     source = bundle.templates.loader.get_source(bundle.templates, "_partials/job_table.html")[0]  # pyright: ignore[reportOptionalMemberAccess]  # Why: PackageLoader.get_source is not None for a bundled template.
     assert 'aria-label="View job {{ job.id }}"' in source
+
+
+# ── U1: the Postgres-unreachable handler ─────────────────────────────────
+
+
+class _DeadPoolConnection:
+    """Connection whose every checkout dies with an asyncpg connection error."""
+
+    async def __aenter__(self) -> None:
+        import asyncpg.exceptions
+
+        raise asyncpg.exceptions.ConnectionDoesNotExistError("server closed the connection")
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _DeadPgAppPool:
+    """A pool whose acquire raises, the docker-stop-PG shape."""
+
+    def acquire(self, **kwargs: object) -> _DeadPoolConnection:
+        return _DeadPoolConnection()
+
+
+def _make_broken_pg_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """An admin app whose PG is unreachable, the deployment U1's proof runs."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    pool = _DeadPgAppPool()
+    bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_pg_down_html_routes_render_the_branded_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1: with Postgres unreachable, an HTML page request renders the
+    branded error page (a 503 that says the queue database is unreachable
+    and retries itself), never a bare wall."""
+    client = _make_broken_pg_app(monkeypatch)
+    resp = client.get("/queues", headers={"Accept": "text/html"})
+    assert resp.status_code == 503
+    assert "unreachable" in resp.text
+    assert '<meta http-equiv="refresh"' in resp.text, "the branded page must retry itself"
+    assert "TaskQ Admin" in resp.text, "the branded page must be the portal's own chrome"
+
+
+def test_pg_down_json_routes_get_the_503_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1: a JSON route answers the machine envelope + Retry-After, so
+    monitors and scripts get a status to react to."""
+    client = _make_broken_pg_app(monkeypatch)
+    resp = client.get("/jobs/count")
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "postgres_unavailable"}
+    assert resp.headers.get("retry-after") is not None
+
+
+# ── U2: HTML-wanting requests get rendered error pages ───────────────────
+
+
+def test_missing_job_renders_a_404_page_not_a_json_wall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U2: a job id that does not exist renders the error page for a
+    browser; the JSON shape stays for the API-ish routes."""
+    from datetime import UTC, datetime
+
+    client = _make_job_detail_app(monkeypatch, backend=None)
+    # _JobDetailPool answers no job for a DIFFERENT id (the fetch keys on
+    # the canned row's id): request a foreign uuid.
+    missing = new_uuid()
+    assert missing != _JOB_ID
+    resp = client.get(f"/jobs/{missing}", headers={"Accept": "text/html"})
+    assert resp.status_code == 404
+    assert "TaskQ Admin" in resp.text
+    assert "Job not found" in resp.text
+    # The JSON contract is intact for non-HTML wants:
+    resp_json = client.get(f"/jobs/{missing}")
+    assert resp_json.status_code == 404
+    assert resp_json.json() == {"detail": "Job not found"}
+
+
+def test_bad_filter_renders_a_400_page_naming_the_accepted_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U2: a bogus status filter renders the 400 page whose body carries
+    the refusal's detail (which already names the accepted set)."""
+    client = _make_job_detail_app(monkeypatch, backend=None)
+    resp = client.get("/history", params={"status": "bogus"}, headers={"Accept": "text/html"})
+    assert resp.status_code == 400
+    assert resp.headers.get("content-type", "").startswith("text/html"), (
+        "a browser's bad filter must render the error page, not a JSON wall"
+    )
+    assert "bogus" in resp.text
+    assert "succeeded" in resp.text, "the accepted status list must ride the page"
+
+
+def test_malformed_uuid_renders_a_422_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U2: a path parameter FastAPI cannot parse (a non-UUID job id) is a
+    rendered 422 page for a browser, not the raw JSON validation dump."""
+    client = _make_job_detail_app(monkeypatch, backend=None)
+    resp = client.get("/jobs/not-a-uuid", headers={"Accept": "text/html"})
+    assert resp.status_code == 422
+    assert "TaskQ Admin" in resp.text
+
+
+def test_api_ish_routes_stay_json_on_validation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U2's boundary: the machine routes (/jobs/count, /jobs/api/*) never
+    render HTML - a script's 422 stays JSON."""
+    client = _make_job_detail_app(monkeypatch, backend=None)
+    resp = client.get("/jobs/count", params={"tab": "bogus-tab-value"})
+    # tab is a free str... hit the 422 through a non-int last_event_id on
+    # the progress state route instead: it is under /api/.
+    resp = client.get("/jobs/api/job/not-a-uuid/state")
+    assert resp.status_code == 422
+    assert resp.headers.get("content-type", "").startswith("application/json")
