@@ -35,6 +35,15 @@
        second; ``//`` keeps the default (2000 ms) at 2. #}
     <meta http-equiv="refresh" content="{{ [poll_interval_ms // 1000, 1] | max }}">
     {% endif %}
+    {# The status colors' single source (admin/_constants.py), rendered as
+       the JSON blob admin.js derives its STATUS_COLORS / CHIP_COLORS /
+       BADGE_CLASSES maps from - four hand-maintained copies died; a status
+       color changes HERE or nowhere. #}
+    <script>window.__taskqStatusClasses = {
+        chip: {{ status_chip_classes | tojson }},
+        text: {{ status_text_classes | tojson }},
+        badgeBase: {{ badge_chip_base | tojson }}
+    };</script>
     <title>{% block title %}TaskQ Admin{% endblock %}</title>
     <link rel="stylesheet" href="{{ base_path }}/static/admin.css">
     {# Alpine loads from the SAME local /static dir as htmx: an air-gapped

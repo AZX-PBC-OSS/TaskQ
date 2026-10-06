@@ -442,8 +442,10 @@ def test_a_changed_field_patches_exactly_its_own_nodes() -> None:
     """A changed field must patch the nodes that display it and touch
     nothing else: no rebuild, no fresh entry, the unchanged detail node
     unwritten. Percent feeds exactly two nodes (the bar's width and the
-    meta line); the second poll's mutation log must be exactly those two
-    writes."""
+    percent readout beside it); the second poll's mutation log must be
+    exactly those two writes. (The B3 wave moved the entry to the server
+    template's structure: the percent left the joined meta line for its
+    own readout span, so the two writes are width + the percent span.)"""
     out = _drive("changed-field")
     dom, segments = out["dom"], _segments(out["dom"])
 
@@ -452,9 +454,10 @@ def test_a_changed_field_patches_exactly_its_own_nodes() -> None:
         f"the first poll renders the entry: {first}"
     )
 
-    # The changed tick: percent 50 -> 75. The bar width and the meta line
-    # (which renders the percentage) change; nothing else does.
-    assert segments[2] == ["width:div3=75%", "text:div5=75% · stage"], (
+    # The changed tick: percent 50 -> 75. The bar width and the percent
+    # readout change; nothing else does (the step/detail/ts nodes are
+    # unchanged by this snapshot).
+    assert segments[2] == ["width:div4=75%", "text:span5=75%"], (
         f"a changed field must patch exactly its own nodes: {segments[2]}"
     )
     _no_scroll(dom)
@@ -534,7 +537,7 @@ def test_a_seq_at_the_double_precision_boundary_still_renders() -> None:
     assert any(entry.startswith("timeline-append:") for entry in first), (
         f"the first poll (seq 2^53) renders the entry: {first}"
     )
-    assert segments[2] == ["width:div3=75%", "text:div4=more", "text:div5=75% · stage"], (
+    assert segments[2] == ["width:div4=75%", "text:span5=75%", "text:span8=more"], (
         f"the tick at seq 2^53 + 1 must advance the exact cursor and patch "
         f"its nodes, not be dropped as a duplicate of 2^53: {segments[2]}"
     )

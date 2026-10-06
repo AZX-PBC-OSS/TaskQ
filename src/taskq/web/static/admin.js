@@ -9,38 +9,22 @@
     var TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "crashed", "abandoned"];
     var ALL_STATUSES = ACTIVE_STATUSES.concat(TERMINAL_STATUSES);
 
-    var STATUS_COLORS = {
-        pending: "text-gray-600 dark:text-gray-400",
-        scheduled: "text-purple-600 dark:text-purple-400",
-        running: "text-yellow-600 dark:text-yellow-400",
-        succeeded: "text-green-600 dark:text-green-400",
-        failed: "text-red-600 dark:text-red-400",
-        cancelled: "text-orange-600 dark:text-orange-400",
-        crashed: "text-red-600 dark:text-red-400",
-        abandoned: "text-gray-500 dark:text-gray-500",
-    };
+    // ── The status colors' single client-side source ────────────────────
+    // The server emits the maps as JSON (window.__taskqStatusClasses,
+    // rendered from admin/_constants.py - the same map job_card's
+    // status_badge macro renders badges from). The three maps below are
+    // DERIVED views of it, never hand-maintained: a status color changes
+    // in the Python dict or nowhere.
+    var SERVER_CLASSES = window.__taskqStatusClasses || { chip: {}, text: {}, badgeBase: "" };
 
-    var CHIP_COLORS = {
-        pending: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
-        scheduled: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
-        running: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
-        succeeded: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
-        failed: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-        cancelled: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
-        crashed: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-        abandoned: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
-    };
-
-    var BADGE_CLASSES = {
-        pending: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
-        scheduled: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
-        running: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
-        succeeded: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
-        failed: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-        cancelled: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
-        crashed: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-        abandoned: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
-    };
+    var STATUS_COLORS = {};
+    var CHIP_COLORS = {};
+    var BADGE_CLASSES = {};
+    Object.keys(SERVER_CLASSES.chip).forEach(function (s) {
+        CHIP_COLORS[s] = SERVER_CLASSES.chip[s];
+        STATUS_COLORS[s] = SERVER_CLASSES.text[s] || "";
+        BADGE_CLASSES[s] = SERVER_CLASSES.badgeBase + SERVER_CLASSES.chip[s];
+    });
 
     document.addEventListener("alpine:init", function () {
 
@@ -123,7 +107,18 @@
                     if (this.tab === t) return;
                     this.tab = t;
                     var form = document.getElementById("job-filters");
-                    if (form) form.requestSubmit();
+                    if (form) {
+                        // The tab race: Alpine's :value binding on the hidden
+                        // input flushes asynchronously, but requestSubmit()
+                        // below runs synchronously - the submitted form would
+                        // carry the PREVIOUS tab (the server then renders the
+                        // tab the operator just left, and the next poll
+                        // yanks the table back to it). The value is set
+                        // directly; the binding agrees on its next flush.
+                        var tabInput = form.querySelector('input[name="tab"]');
+                        if (tabInput) tabInput.value = t;
+                        form.requestSubmit();
+                    }
                 },
 
                 toggleLive: function () {
@@ -134,7 +129,14 @@
                         // next poll tick.
                         this.startLive();
                         var form = document.getElementById("job-filters");
-                        if (form) form.requestSubmit();
+                        if (form) {
+                            // Same race as switchTab above: the hidden live
+                            // flag's :value binding would submit the stale
+                            // value.
+                            var liveInput = form.querySelector('input[name="live"]');
+                            if (liveInput) liveInput.value = "on";
+                            form.requestSubmit();
+                        }
                     } else {
                         this.stopLive();
                     }

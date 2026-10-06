@@ -7,17 +7,11 @@
 {% endmacro %}
 
 {% macro status_badge(status) %}
-    {% set colors = {
-        'pending': 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
-        'scheduled': 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300',
-        'running': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300',
-        'succeeded': 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300',
-        'failed': 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
-        'cancelled': 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300',
-        'crashed': 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
-        'abandoned': 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
-    } %}
-    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ colors.get(status, 'bg-gray-100 text-gray-700') }}">
+    {# The color set is the server's single source (admin/_constants.py,
+       registered as a Jinja global), the same map admin.js derives its
+       live-badge classes from - the macro's own hand-maintained copy died. #}
+    {% set colors = status_chip_classes %}
+    <span class="{{ badge_chip_base }}{{ colors.get(status, 'bg-gray-100 text-gray-700') }}">
         {{ status }}
     </span>
 {% endmacro %}

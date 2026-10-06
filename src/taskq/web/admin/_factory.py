@@ -34,6 +34,11 @@ from taskq.ratelimit.registry import registry as _rl_singleton
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web.admin import _static
+from taskq.web.admin._constants import (
+    BADGE_CHIP_BASE,
+    STATUS_CHIP_CLASSES,
+    STATUS_TEXT_CLASSES,
+)
 from taskq.web.admin.auth._session import current_sso_logout_token
 
 logger = structlog.get_logger("taskq.web.admin")
@@ -778,6 +783,12 @@ def create_router(
     # mutation routes' 403 detail carries (require_actions_enabled), so a
     # page and a refusal never tell two different stories about the knob.
     env.globals["admin_actions_banner"] = _ACTIONS_DISABLED_DETAIL  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; str is valid.
+    # The status colors' single source (see _constants.STATUS_CHIP_CLASSES):
+    # the server renders badges from it and the page emits it as the JSON
+    # blob admin.js derives its maps from.
+    env.globals["status_chip_classes"] = STATUS_CHIP_CLASSES  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals.
+    env.globals["status_text_classes"] = STATUS_TEXT_CLASSES  # pyright: ignore[reportArgumentType]  # Why: same as above.
+    env.globals["badge_chip_base"] = BADGE_CHIP_BASE  # pyright: ignore[reportArgumentType]  # Why: same as above.
     env.filters["time_ago"] = _time_ago
     env.filters["iso_attr"] = _iso_attr
 
