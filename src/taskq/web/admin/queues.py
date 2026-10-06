@@ -116,23 +116,38 @@ _QUEUE_HAS_ALIVE_WORKER_SQL = (
     ")"
 )
 
+_QUEUE_DETAIL_COLS = (
+    "id, queue, actor, status, scheduled_at, attempt, max_attempts, retry_kind, created_at"
+)
+
 _QUEUE_DETAIL_SQL_FIRST = (
-    "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
-    "retry_kind, "
-    "created_at "
+    f"SELECT {_QUEUE_DETAIL_COLS} "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "
     "ORDER BY scheduled_at, id LIMIT {limit}"
 )
 
+# The forward (next) fetch past a cursor.
 _QUEUE_DETAIL_SQL_CURSOR = (
-    "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
-    "retry_kind, "
-    "created_at "
+    f"SELECT {_QUEUE_DETAIL_COLS} "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "
     "AND (scheduled_at, id) > ($3, $4) "
     "ORDER BY scheduled_at, id LIMIT {limit}"
+)
+
+# The backward (prev) fetch: the REVERSED seam and ordering take the rows
+# NEAREST the cursor from the other side; the wrapper re-sorts into the
+# page's display (ASC) order and the caller's truncation keeps the LAST
+# page-worth (the overfetch row is the one nearest the cursor).
+_QUEUE_DETAIL_SQL_CURSOR_BACKWARD = (
+    "SELECT * FROM ("
+    f"SELECT {_QUEUE_DETAIL_COLS} "
+    'FROM "{schema}".jobs '
+    "WHERE queue = $1 AND status = $2 "
+    "AND (scheduled_at, id) < ($3, $4) "
+    "ORDER BY scheduled_at DESC, id DESC LIMIT {limit}"
+    ") sub ORDER BY scheduled_at, id"
 )
 
 
@@ -213,11 +228,12 @@ def register(router: APIRouter) -> None:
         status: str = Query(default="pending"),
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
+        cursor_dir: str = Query(default="next"),
     ) -> HTMLResponse:
         # The undeclared-param refusal first (the /queues overview's own
         # contract): a param this signature does not name would be dropped
         # and the page served 200 as if the ask did not exist.
-        reject_unknown_query_params(request, ("status", "cursor_at", "cursor_id"))
+        reject_unknown_query_params(request, ("status", "cursor_at", "cursor_id", "cursor_dir"))
         # The queue name from the path binds as a text parameter in every
         # query below - the same NUL guard the list filters apply, or a
         # %00 in the URL is an opaque driver 500.
@@ -226,7 +242,9 @@ def register(router: APIRouter) -> None:
             raise HTTPException(status_code=400, detail=f"invalid status filter: {status!r}")
 
         detail_first_sql = _QUEUE_DETAIL_SQL_FIRST.format(schema=schema, limit=_FETCH_SIZE)
-        detail_cursor_sql = _QUEUE_DETAIL_SQL_CURSOR.format(schema=schema, limit=_FETCH_SIZE)
+        detail_cursor_sql = (
+            _QUEUE_DETAIL_SQL_CURSOR_BACKWARD if cursor_dir == "prev" else _QUEUE_DETAIL_SQL_CURSOR
+        ).format(schema=schema, limit=_FETCH_SIZE)
         has_worker_sql = _QUEUE_HAS_ALIVE_WORKER_SQL.format(
             schema=schema, live_secs=settings.admin_worker_liveness_seconds
         )
@@ -279,15 +297,33 @@ def register(router: APIRouter) -> None:
                     status,
                 )
 
-        has_next = len(rows) > _PAGE_SIZE
-        display_rows = list(rows[:_PAGE_SIZE])
+        # Direction-aware truncation and flags (the jobs page's shape): a
+        # forward fetch serves its FIRST page-worth; a backward fetch (the
+        # wrapper re-sorted it into display order) serves its LAST, the
+        # rows nearest the cursor.
+        backward = cursor_dir == "prev"
+        overfetched = len(rows) > _PAGE_SIZE
+        paged_in = parsed_at is not None and parsed_id is not None
+        display_rows = list(rows[:_PAGE_SIZE] if not backward else rows[-_PAGE_SIZE:])
+        if backward:
+            has_prev = overfetched
+            has_next = True
+        else:
+            has_next = overfetched
+            has_prev = paged_in
         next_cursor_at: str | None = None
         next_cursor_id: str | None = None
-        if has_next and display_rows:
+        prev_cursor_at: str | None = None
+        prev_cursor_id: str | None = None
+        if display_rows:
             last = display_rows[-1]
             if last["scheduled_at"] is not None:
                 next_cursor_at = last["scheduled_at"].isoformat()
                 next_cursor_id = str(last["id"])
+            first = display_rows[0]
+            if first["scheduled_at"] is not None:
+                prev_cursor_at = first["scheduled_at"].isoformat()
+                prev_cursor_id = str(first["id"])
 
         jobs = [dict(r) for r in display_rows]
         for j in jobs:
@@ -299,8 +335,12 @@ def register(router: APIRouter) -> None:
             status=status,
             jobs=jobs,
             has_next=has_next,
+            has_prev=has_prev,
             next_cursor_at=next_cursor_at,
             next_cursor_id=next_cursor_id,
+            prev_cursor_at=prev_cursor_at,
+            prev_cursor_id=prev_cursor_id,
+            cursor_dir="prev" if backward else "next",
             allowed_statuses=sorted(_ALLOWED_STATUSES),
             has_alive_worker=has_alive_worker,
             realtime_mode=realtime_mode,

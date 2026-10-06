@@ -2180,6 +2180,7 @@ def _ui_serve(
             "Install it with: pip install 'taskq-py[fastapi]'"
         ) from exc
 
+    from taskq.web._routing import HeadForGetRoute
     from taskq.web.admin import create_router, setup_admin_state
 
     sso_bundle = _build_sso_bundle(settings, base_path="/admin")
@@ -2372,6 +2373,9 @@ def _ui_serve(
                 prefix="/jobs/health",
                 tags=["health"],
                 dependencies=health_deps,
+                # F6: the monitors' HEAD checks against the health
+                # endpoints must not 405.
+                route_class=HeadForGetRoute,
             )
 
             @health_router.get("/live")

@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
-from . import StubRecord
+from . import StubBackend, StubRecord
 
 pytestmark = [pytest.mark.fastapi]
 
@@ -59,7 +59,7 @@ class _ClockConn:
         return self._fetchrow
 
     async def fetchval(self, query: str, *args: object) -> object:
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         return None
 
@@ -106,7 +106,7 @@ def _force_realtime(modules: list[Any], monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _make_client(pool: Any) -> TestClient:
-    bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    bundle = create_router(pool, backend=StubBackend())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
@@ -366,12 +366,33 @@ def test_rate_limit_reset_confirm_never_interpolates_the_bucket_name_into_inline
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
 
+    # U5: the reset form renders only for buckets this process's registry
+    # knows, so the hostile name rides a REGISTERED primitive (the pool's
+    # PG row adds the same name as worker-published state, read-only
+    # there - the form is the registry bucket's).
+    from datetime import timedelta as _td
+
+    from taskq.ratelimit.registry import RateLimitRegistry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    hostile_name = "emails'); alert(1); ('"
+    rl_registry = RateLimitRegistry()
+    rl_registry.register(
+        TokenBucket(
+            name=hostile_name,
+            capacity=3,
+            refill_per_second=1.0,
+            backend="memory",
+            ttl=_td(seconds=10),
+        )
+    )
+
     class _BucketsConn(_ClockConn):
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "rate_limit_buckets" in query:
                 return [
                     StubRecord(
-                        bucket_name="emails'); alert(1); ('",
+                        bucket_name=hostile_name,
                         kind="token_bucket",
                         state={},
                         updated_at=datetime(2026, 9, 27, 12, 0, tzinfo=UTC),
@@ -379,7 +400,11 @@ def test_rate_limit_reset_confirm_never_interpolates_the_bucket_name_into_inline
                 ]
             return []
 
-    client = _make_client(_ClockPool(_BucketsConn()))
+    bundle = create_router(_ClockPool(_BucketsConn()), rate_limit_registry=rl_registry)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
     html = client.get("/rate-limits").text
     assert "onclick=" not in html, (
         "the reset confirm must not be an inline JS handler: attribute-entity "

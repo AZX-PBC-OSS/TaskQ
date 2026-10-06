@@ -678,7 +678,12 @@ _NEXT_LINK_RE = re.compile(r'<a href="([^"]+)"[^>]*>\s*Next(?: page)?\s*<')
 _PREV_LINK_RE = re.compile(
     r'<a href="([^"]+)"[^>]*>\s*<i data-lucide="chevron-left"[^>]*>\s*</i>\s*Previous'
 )
-_SHOWING_RE = re.compile(r"Showing (\d+) results")
+# The count lives in the page header (U4): "Showing 1-50 of M results",
+# the range's upper bound the page-size pin reads.
+# The count lives in the page header (U4): "Showing 1-50 of M results",
+# the range's upper bound the page-size pin reads (the dash in the
+# markup is an en-dash; the match tolerates the span tag Alpine replaces).
+_SHOWING_RE = re.compile(r"Showing(?:\s|<span[^>]*>)+1\u2013(\d+) of ([\d,]+)</span> results")
 # Relative/absolute timestamps the Jinja filters render from the database
 # clock: identical across the two engines for FIXED seeded stamps, but
 # now()-seeded stamps (worker heartbeats) can cross a humanize boundary
@@ -851,8 +856,12 @@ async def test_jobs_list_live_tab_is_row_identical_and_ordered(lab: _Lab) -> Non
 
     showing = _SHOWING_RE.search(ht)
     assert showing is not None, "the jobs page must carry its Showing line"
-    # The page size constant, pinned here as the walk's premise.
+    # The page size constant, pinned here as the walk's premise (the
+    # range's upper bound on a full first page).
     assert int(showing.group(1)) == 50
+    assert int(showing.group(2).replace(",", "")) >= 50, (
+        "the header's count must be the filtered set (from /jobs/count's own builder)"
+    )
     full_van = await _walk(lab.vanilla.app, "/admin/jobs?tab=live")
     full_ht = await _walk(lab.ht.app, "/admin/jobs?tab=live")
     _diff("jobs live walk", full_van, full_ht)

@@ -568,6 +568,9 @@ class RateLimitRegistry:
   accepts primitive *instances* alongside names and keyed refs:
 
   ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
+  from taskq import actor
+
+
   @actor(
       queue="io",
       rate_limits=[TokenBucket("graph", capacity=300, refill_per_second=5, backend="redis")],

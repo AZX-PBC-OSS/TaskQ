@@ -90,18 +90,31 @@ document.addEventListener('submit', function(e) {
                             {% endif %}
                         </td>
                         {% if redis_available %}
-                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono max-w-[200px] truncate" title="{{ redis_state.get(b.bucket_name, {}) }}">{{ redis_state.get(b.bucket_name, {}) }}</td>
+                        {# U6: no live Redis state is an em-dash - the dict
+                           repr that leaked here ({}) is a debugging
+                           artifact, not a value. #}
+                        {% set rs = redis_state.get(b.bucket_name) if redis_state else none %}
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono max-w-[200px] truncate"{% if rs %} title="{{ rs }}"{% endif %}>{{ rs or "—" }}</td>
                         {% endif %}
                         <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ b.pg_state or "—" }}</td>
                         <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.updated_at or "—" }}</td>
                         {% if allow_reset %}
                         <td class="px-4 py-2.5">
+                            {# U5: the reset route serves only primitives
+                               this process's registry knows - a bucket
+                               that exists here as worker-published PG
+                               state alone renders read-only, never a
+                               Reset button that answers 404. #}
+                            {% if b.in_registry %}
                             <form method="post" action="{{ base_path }}/rate-limits/{{ b.bucket_name }}/reset" class="inline reset-form" data-bucket-name="{{ b.bucket_name }}">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                 <button type="submit" class="px-2 py-1 text-xs font-medium bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors">
                                     Reset
                                 </button>
                             </form>
+                            {% else %}
+                            <span class="text-xs text-slate-400" title="The bucket is not registered in this process; its state is published by the worker">managed by the worker process</span>
+                            {% endif %}
                         </td>
                         {% endif %}
                     </tr>

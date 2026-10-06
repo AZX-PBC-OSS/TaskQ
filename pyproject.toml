@@ -714,6 +714,7 @@ markers = [
     "saml: tests for the [saml] extra / python3-saml (skip with -m 'not saml')",
     "oidc: tests for the [oidc] extra / authlib (skip with -m 'not oidc')",
     "otel: tests for the [otel] extra / opentelemetry (skip with -m 'not otel')",
+    "prometheus: tests for the [prometheus] extra / opentelemetry-exporter-prometheus (skip with -m 'not prometheus'); importorskip guards stay as the safety net",
     "vault: tests for the [vault] extra (skip with -m 'not vault')",
     "aws: tests for the [aws] extra (skip with -m 'not aws')",
     "fastapi: tests for the [fastapi] extra: the web admin/progress suites (skip with -m 'not fastapi')",

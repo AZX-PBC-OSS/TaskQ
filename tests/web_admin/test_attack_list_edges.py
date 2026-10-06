@@ -221,6 +221,17 @@ def _admin_env() -> Any:
     env.filters["iso_attr"] = _iso_attr
     env.globals["base_path"] = ""
     env.globals["sso_logout_token"] = lambda: None
+    # The status colors' single source (D2): the factory registers these as
+    # globals; this hand-built env mirrors that so the macro renders.
+    from taskq.web.admin._constants import (
+        BADGE_CHIP_BASE,
+        STATUS_CHIP_CLASSES,
+        STATUS_TEXT_CLASSES,
+    )
+
+    env.globals["status_chip_classes"] = STATUS_CHIP_CLASSES
+    env.globals["status_text_classes"] = STATUS_TEXT_CLASSES
+    env.globals["badge_chip_base"] = BADGE_CHIP_BASE
     _ = _db_now  # Why: imported for symmetry with the factory's env setup.
     return env
 

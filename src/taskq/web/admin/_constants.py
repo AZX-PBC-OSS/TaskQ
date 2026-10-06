@@ -22,6 +22,42 @@ _ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _ACTIVE_STATUSES
 _PAGE_SIZE: int = 50
 _FETCH_SIZE: int = _PAGE_SIZE + 1
 
+# ── The ONE source for the status colors ────────────────────────────────
+# Both renderers of a status's color read these: the server (job_card's
+# ``status_badge`` macro, via the Jinja globals the factory registers) and
+# the client (admin.js derives its STATUS_COLORS / CHIP_COLORS /
+# BADGE_CLASSES maps from the JSON blob _base.html emits). Four
+# hand-maintained copies - three in admin.js, one in the macro - drifted
+# exactly the way copies do; a status whose chip the JS knows but the
+# server does not renders two different colors on one page. A new status
+# gains an entry HERE or nowhere.
+STATUS_CHIP_CLASSES: dict[str, str] = {
+    "pending": "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
+    "scheduled": "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+    "running": "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+    "succeeded": "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+    "failed": "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+    "cancelled": "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+    "crashed": "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+    "abandoned": "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
+}
+
+STATUS_TEXT_CLASSES: dict[str, str] = {
+    "pending": "text-gray-600 dark:text-gray-400",
+    "scheduled": "text-purple-600 dark:text-purple-400",
+    "running": "text-yellow-600 dark:text-yellow-400",
+    "succeeded": "text-green-600 dark:text-green-400",
+    "failed": "text-red-600 dark:text-red-400",
+    "cancelled": "text-orange-600 dark:text-orange-400",
+    "crashed": "text-red-600 dark:text-red-400",
+    "abandoned": "text-gray-500 dark:text-gray-500",
+}
+
+# The badge chip's structural classes, prefixed to the status's color set
+# wherever a status renders as a rounded badge (the macro and the JS map
+# derive identically from it).
+BADGE_CHIP_BASE: str = "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium "
+
 
 def parse_job_statuses(raw: list[str], *, default: list[str] | None = None) -> list[str]:
     """Validate and return the requested status list; raises HTTPException on bad input.

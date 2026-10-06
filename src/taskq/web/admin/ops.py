@@ -62,6 +62,7 @@ from taskq.web.admin._factory import (
     get_schema,
     get_settings,
     get_templates,
+    require_actions_enabled,
     validate_csrf,
 )
 
@@ -253,6 +254,8 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        backend: Backend | None = Depends(get_backend),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
         schedules_sql = _SCHEDULES_SQL.format(schema=schema)
 
@@ -277,22 +280,21 @@ def register(router: APIRouter) -> None:
             realtime_mode=realtime_mode,
             mode_label=mode_label,
             csrf_token=csrf_token,
+            admin_actions_enabled=settings.admin_actions_enabled,
+            backend_configured=backend is not None,
         )
         return HTMLResponse(content=html)
 
     @router.post("/schedules/{schedule_id}/enable")
     async def schedule_enable(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
-
         enable_sql = _SCHEDULE_ENABLE_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
@@ -325,16 +327,13 @@ def register(router: APIRouter) -> None:
     @router.post("/schedules/{schedule_id}/disable")
     async def schedule_disable(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
-
         disable_sql = _SCHEDULE_DISABLE_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
@@ -364,16 +363,13 @@ def register(router: APIRouter) -> None:
     @router.post("/schedules/{schedule_id}/skip")
     async def schedule_skip(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
-
         fetch_sql = _SCHEDULE_FETCH_FOR_SKIP_SQL.format(schema=schema)
         skip_sql = _SCHEDULE_SKIP_SQL.format(schema=schema)
 
@@ -448,18 +444,15 @@ def register(router: APIRouter) -> None:
     @router.post("/schedules/{schedule_id}/run")
     async def schedule_run_now(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         backend: Backend | None = Depends(get_backend),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
         fire_policies: Mapping[str, Any] | None = Depends(get_actor_fire_policies),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
-
         if backend is None:
             raise HTTPException(
                 status_code=503, detail="Backend not configured for admin operations"
@@ -657,17 +650,14 @@ def register(router: APIRouter) -> None:
     @router.post("/jobs/{job_id}/retry")
     async def job_retry(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         job_id: UUID,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         backend: Backend | None = Depends(get_backend),
-        settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(status_code=403, detail="Admin actions are disabled")
-
         if backend is None:
             raise HTTPException(
                 status_code=503, detail="Backend not configured for admin operations"
@@ -749,6 +739,10 @@ def register(router: APIRouter) -> None:
                     "kind": kind,
                     "backend": backend,
                     "config_summary": config_summary,
+                    # U5: the reset route can only serve primitives THIS
+                    # process's registry knows; a rendered Reset for a
+                    # registry-absent bucket is a dead button (it 404s).
+                    "in_registry": True,
                 }
             )
             if backend in ("redis", "postgres"):
@@ -872,6 +866,9 @@ def register(router: APIRouter) -> None:
                         "kind": pg_row["kind"],
                         "backend": "postgres",
                         "config_summary": "",
+                        # U5: worker-published state only - the registry
+                        # in this process has no primitive to reset.
+                        "in_registry": False,
                         "pg_state": pg_row["state"],
                         "updated_at": pg_row["updated_at"],
                     }

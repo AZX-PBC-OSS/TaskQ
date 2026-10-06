@@ -408,9 +408,19 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
             # Narrowing this to the shared flag would report a correctly
             # gated route as ungated - a false positive that trains readers
             # to ignore the guard.
+            # The gate either consults the setting in the body (the
+            # original shape) or hangs the shared
+            # ``require_actions_enabled`` dependency (the B2 wave's shape:
+            # the gate declared BEFORE validate_csrf, so a disabled
+            # deployment's refusal names the knob, never CSRF). Both are
+            # the fail-safe opt-in; the dependency is matched by name.
             if not any(
                 gate in body
-                for gate in ("admin_actions_enabled", "admin_ui_allow_rate_limit_reset")
+                for gate in (
+                    "admin_actions_enabled",
+                    "admin_ui_allow_rate_limit_reset",
+                    "require_actions_enabled",
+                )
             ):
                 ungated.append(qualname)
             if "validate_csrf" not in body:

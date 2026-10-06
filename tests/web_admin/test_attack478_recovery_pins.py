@@ -139,8 +139,9 @@ const timeline = {
         this.children.push(entry);
         // The entry is built once and patched in place: hand back the
         // live nodes so the patch writes land in THIS object.
-        const barWrap = entry.children.find((c) => c.className === "progress-bar-wrap");
-        const bar = barWrap.children[0];
+        const barRow = entry.children.find((c) => String(c.className).includes("flex items-center gap-2"));
+        const track = barRow.children[0];
+        const bar = track.children[0];
         let width = "";
         Object.defineProperty(bar.style, "width", {
             get() { return width; },

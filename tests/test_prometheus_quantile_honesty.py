@@ -53,7 +53,7 @@ pytest.importorskip("opentelemetry.exporter.prometheus")
 
 from tests._prom_review import Exposition, parse_exposition, probe_env
 
-pytestmark = [pytest.mark.integration, pytest.mark.otel]
+pytestmark = [pytest.mark.integration, pytest.mark.otel, pytest.mark.prometheus]
 
 
 # ── the served-side quantile algorithm (Prometheus's own) ───────────
