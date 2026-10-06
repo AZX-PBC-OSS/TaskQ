@@ -72,6 +72,8 @@ this resolver can.
 import asyncio
 import math
 import time
+from collections.abc import Coroutine
+from typing import Any, Protocol, cast
 
 import structlog
 
@@ -81,6 +83,20 @@ from taskq.obs import record_capacity_refresh_failure
 __all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "DEFAULT_CAPACITY_READ_TIMEOUT", "ActorCapacityCache"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+
+class _ActorQueueReader(Protocol):
+    """The OPTIONAL backend capability the unserved-queue note reads.
+
+    ``get_actor_max_pending`` is protocol v3's pinned read (its absence
+    is a hard ``TypeError`` at first use); ``get_actor_queues`` is the
+    staged, optional sibling — detected by attribute, so backends built
+    before it existed (and test doubles) keep working with the note
+    simply off. The protocol types the BOUND METHOD that ``getattr``
+    retrieves, so the call is ``reader()``."""
+
+    def __call__(self) -> Coroutine[Any, Any, dict[str, str]]: ...
+
 
 DEFAULT_CAPACITY_CACHE_TTL: float = 5.0
 """Seconds a snapshot is reused before the next read refreshes it."""
@@ -120,6 +136,14 @@ class ActorCapacityCache:
         self._ttl = ttl
         self._read_timeout = read_timeout
         self._rows: dict[str, int | None] = {}
+        # Actor name -> queue assignment from the same actor_config table,
+        # refreshed on the same TTL cadence when the backend implements the
+        # optional get_actor_queues read (None: no snapshot, the
+        # unserved-queue note stays off — see maybe_warn_unserved_queue).
+        self._queues: dict[str, str] | None = None
+        # queue -> monotonic timestamp of the last unserved-queue warning,
+        # the warn-once-per-TTL state maybe_warn_unserved_queue reads.
+        self._unserved_warned_at: dict[str, float] = {}
         self._refreshed_at: float | None = None
         # True once a refresh has succeeded and been stored, independent
         # of row count, because a successful read of an EMPTY
@@ -178,12 +202,110 @@ class ActorCapacityCache:
                 if epoch == self._epoch:
                     self._rows = rows
                     self._has_snapshot = True
+                    # The served-queue set rides the same refresh cadence:
+                    # one small whole-table read per TTL, beside the
+                    # max_pending read, never per enqueue (the enqueue hot
+                    # path pays no round trip for the unserved-queue note,
+                    # see maybe_warn_unserved_queue).
+                    await self._refresh_queues(epoch)
             if epoch != self._epoch:
                 # invalidate() fired while the read was in flight: the
                 # result may predate the change the caller wanted
                 # re-read. Do not stamp, the next read refreshes.
                 return
             self._refreshed_at = time.monotonic()
+
+    async def _refresh_queues(self, epoch: int) -> None:
+        """Refresh the served-queue snapshot, best-effort, fail-open.
+
+        ``get_actor_queues`` is an OPTIONAL backend capability: a backend
+        built against an older protocol (or a test double) simply does not
+        carry the method, and the unserved-queue note stays off for that
+        backend (silent by design, the same staged-protocol shape
+        ``get_actor_max_pending`` itself had before version 3 pinned it).
+        A backend that HAS the method but whose read fails degrades the
+        same way every other cache read does: keep serving, warn once per
+        TTL, never turn the enqueue path into a failing-query storm.
+        """
+        reader = cast("_ActorQueueReader | None", getattr(self._backend, "get_actor_queues", None))
+        if reader is None:
+            self._queues = None
+            return
+        try:
+            queues = await asyncio.wait_for(reader(), timeout=self._read_timeout)
+            if not isinstance(queues, dict):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker (mock auto-vivification, contract drift) — the same discipline _build_ref's runtime guards follow.
+                # Contract-drift guard, the same fail-open warning the
+                # read-failure path uses. Test doubles auto-vivify the
+                # attribute into a mock whose "return" is not a dict (a
+                # MagicMock's awaited call), and a backend bug could hand
+                # back anything: storing a non-dict would turn the note's
+                # snapshot lookup into a TypeError on the hot enqueue
+                # path, the enqueue-quiet failure the note exists to
+                # prevent.
+                raise TypeError(
+                    f"get_actor_queues returned {type(queues).__name__}, expected dict[str, str]"
+                )
+        except Exception as exc:
+            self._queues = None
+            logger.warning(
+                "actor-queue-snapshot-refresh-failed",
+                error_class=type(exc).__name__,
+                error=str(exc),
+                ttl_seconds=self._ttl,
+            )
+            return
+        if epoch == self._epoch:
+            self._queues = queues
+
+    def maybe_warn_unserved_queue(self, queue: str, *, actor: str) -> None:
+        """Warn when no registered actor routes to *queue*.
+
+        The enqueue-time half of the stranded-jobs detection: an enqueue
+        onto a queue no ``actor_config`` row routes to strands the row
+        (``pending`` forever, nothing dispatches it), and before this
+        note NOTHING signaled at enqueue time. Zero I/O: the verdict
+        reads the current in-process snapshot, the hot path pays no round
+        trip for it.
+
+        The predicate is the snapshot's, so it carries the cache's
+        documented bounds: a worker registered fewer than ``ttl`` seconds
+        ago (default 5) is not yet in the set, and a failed or
+        never-succeeded refresh (or a backend without
+        ``get_actor_queues``) disables the note entirely, fail-open. The
+        TASKQ_QUEUES corner (a worker consuming a queue via
+        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes) reads
+        as unserved here — the predicate is the stored-assignment set, and
+        the client cannot see workers' consumed-queue lists. The note's
+        reason therefore states only what it tested (no stored assignment
+        routes the queue) and names the ``--queues``/``TASKQ_QUEUES`` escape,
+        so the corner's false positive is self-explaining instead of
+        asserting a stranded row that does not exist.
+
+        Warn-once per queue per ``ttl`` window (the stranded sweep's
+        non-set doctrine: a condition that starts small and grows must
+        keep re-warning, but a hot producer enqueuing thousands of rows
+        onto one typo'd queue must not flood the log).
+        """
+        if not self._has_snapshot or self._queues is None:
+            return
+        if queue in self._queues.values():
+            return
+        now = time.monotonic()
+        last = self._unserved_warned_at.get(queue)
+        if last is not None and (now - last) < self._ttl:
+            return
+        self._unserved_warned_at[queue] = now
+        logger.warning(
+            "enqueue-unserved-queue",
+            kind="enqueue_unserved_queue",
+            actor=actor,
+            queue=queue,
+            reason="no registered actor_config row routes this queue to any actor; "
+            "unless a worker consumes this queue via --queues/TASKQ_QUEUES, the "
+            "job stays unserved until an actor whose queue is this name is "
+            "registered on a worker (snapshot is TTL-bounded, a worker registered "
+            "seconds ago may not be in it yet)",
+        )
 
     async def effective_max_pending(
         self, actor: str, literal: int | None, *, per_call: int | None = None
@@ -267,3 +389,8 @@ class ActorCapacityCache:
         """
         self._refreshed_at = None
         self._epoch += 1
+        # The queue snapshot rides the same epoch: a stale assignment set
+        # must not survive an explicit invalidation (an operator who just
+        # registered the actor calls this to make the note go quiet NOW).
+        self._queues = None
+        self._unserved_warned_at.clear()
