@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import signal
 import socket
@@ -194,6 +195,19 @@ _CRON_FIRE_BOUND_S = 60.0 + _SETTLE_BOUND_S
 _RECLAIM_LAND_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S) * TIER_LOAD_STRETCH
 _RECLAIM_SETTLE_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S + _SLOW_SLEEP) * TIER_LOAD_STRETCH
 
+#: The exec probes' retry budget (the health live/ready loop and the
+#: Prometheus probe). The ATTEMPTS are the test-side lever: the CLI's
+#: per-request bound is the product's hardcoded 2.0s (``Final`` — not
+#: ours to move), so under box load the probe's tolerance is the ATTEMPT
+#: COUNT. Four attempts ≈ 12s of tolerance lost the DEPLOY-phase probes
+#: on the cross-contended runner (the review's contended runs: F, F, P
+#: with the worker logs clean — the box, not the fleet; the same
+#: 1.3-2x runner-bet the recover-phase bounds cured, left un-cured
+#: here). The attempts price off the tier doctrine: the base 4 stretched
+#: by the tier's load factor, ceil'd — 8 attempts ≈ 24s of tolerance,
+#: the probe's window moving with the fleet's own weather knob.
+_PROBE_ATTEMPTS = 4 * math.ceil(TIER_LOAD_STRETCH)
+
 #: The drain-cap's exposure window: how long the held backlog is given
 #: the chance to (wrongly) run. A broken ``max_concurrent = 0`` leaks a
 #: claim within one dispatch cycle; the window is two, stretched - and
@@ -313,10 +327,14 @@ async def _worker_metrics(sock_path: str) -> dict[str, float]:
     Retried: the CLI's own request bound is 2.0s, and a probe against a
     just-booted worker on a loaded box can lose one request to the
     bootstrap's work - the way a Kubernetes exec probe's
-    failureThreshold absorbs a slow first tick.
+    failureThreshold absorbs a slow first tick. The attempt budget is
+    _PROBE_ATTEMPTS (the tier doctrine's stretch of the base 4): the
+    cross-contended runner's loss (the review's F, F, P record, worker
+    logs clean) ate the base budget's ~12s; the stretched budget's ~24s
+    is the tolerance that survives it.
     """
     proc: subprocess.CompletedProcess[bytes] | None = None
-    for _attempt in range(4):
+    for _attempt in range(_PROBE_ATTEMPTS):
         proc = await asyncio.to_thread(
             run_cli,
             ["health", "metrics"],
@@ -685,10 +703,15 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # ready, per replica. Retried, the way an orchestrator's
             # failureThreshold absorbs a probe that loses its request to
             # a busy bootstrap tick (the CLI's own request bound is 2s).
+            # The attempt budget is _PROBE_ATTEMPTS (the tier doctrine's
+            # stretch of the base 4, the test-side lever - the 2s request
+            # bound is the product's): the cross-contended runner's loss
+            # (the review's F, F, P record, worker logs clean) ate the
+            # base budget's ~12s; the stretched budget's ~24s survives it.
             for worker in (worker_a, worker_b):
                 for probe in ("live", "ready"):
                     health: subprocess.CompletedProcess[bytes] | None = None
-                    for _attempt in range(4):
+                    for _attempt in range(_PROBE_ATTEMPTS):
                         health = await asyncio.to_thread(
                             run_cli,
                             ["health", probe],
