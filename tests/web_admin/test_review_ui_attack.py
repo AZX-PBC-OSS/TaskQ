@@ -49,7 +49,7 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
-from . import StubRecord
+from . import StubBackend, StubRecord
 from .test_review_ui_pins import _ClockConn, _ClockPool
 
 pytestmark = [pytest.mark.fastapi]
@@ -94,7 +94,7 @@ _BATCH_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _make_client(pool: Any, *, base_path: str = "") -> TestClient:
-    bundle = create_router(pool, base_path=base_path)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    bundle = create_router(pool, base_path=base_path, backend=StubBackend())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)

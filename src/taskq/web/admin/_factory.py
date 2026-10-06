@@ -383,6 +383,32 @@ async def validate_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF token mismatch")
 
 
+# The refusal detail every disabled mutation route answers with: it names
+# the knob, so the operator (or the deployment reviewer reading the 403 in
+# a log) knows exactly what flips the route on - "Admin actions are
+# disabled" alone reads as a failure, not a configuration state.
+_ACTIONS_DISABLED_DETAIL: str = (
+    "Actions are disabled on this deployment (TASKQ_ADMIN_ACTIONS_ENABLED=false)"
+)
+
+
+async def require_actions_enabled(
+    settings: TaskQSettings = Depends(get_settings),
+) -> None:
+    """Dependency: refuses mutations on a deployment that disabled them.
+
+    Declared BEFORE ``validate_csrf`` on every mutation route (FastAPI
+    resolves dependencies in declaration order): whether actions are
+    enabled is a configuration state, safe to answer before any token
+    validation -- an operator who POSTs to a disabled deployment gets the
+    actionable config message, never a CSRF error that reads as a bug.
+    The token still guards every route when actions ARE enabled (the
+    enabled-check is a precondition, not a replacement).
+    """
+    if not settings.admin_actions_enabled:
+        raise HTTPException(status_code=403, detail=_ACTIONS_DISABLED_DETAIL)
+
+
 class _CsrfRoute(APIRoute):
     """Custom APIRoute that sets the CSRF cookie and the security headers.
 
@@ -748,6 +774,10 @@ def create_router(
     # be baked into the environment at startup. The chrome calls it to decide
     # whether the Sign out control renders at all.
     env.globals["sso_logout_token"] = current_sso_logout_token  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; a zero-arg callable is valid.
+    # One source for the disabled-actions banner text: the same string the
+    # mutation routes' 403 detail carries (require_actions_enabled), so a
+    # page and a refusal never tell two different stories about the knob.
+    env.globals["admin_actions_banner"] = _ACTIONS_DISABLED_DETAIL  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; str is valid.
     env.filters["time_ago"] = _time_ago
     env.filters["iso_attr"] = _iso_attr
 

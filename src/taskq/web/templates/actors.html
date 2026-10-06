@@ -100,7 +100,10 @@ document.addEventListener('submit', function(e) {
           <td class="px-4 py-2 text-sm">{{ a.enabled_schedule_count }}</td>
           <td class="px-4 py-2 text-sm">{{ a.updated_at | time_ago }}</td>
           <td class="px-4 py-2 text-sm">
-            {% if a.has_config %}
+            {# Deregister is an admin action: on a deployment with actions
+               disabled it renders read-only, the same contract the job
+               and schedule pages follow. #}
+            {% if a.has_config and admin_actions_enabled %}
             <form method="POST" action="{{ base_path }}/actors/{{ a.actor | urlencode }}/deregister"
                   data-actor="{{ a.actor }}"
                   class="deregister-form">

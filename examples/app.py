@@ -181,12 +181,16 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         )
         application.state.tq = tq
 
+        # The Backend the client built reaches the admin router too: without
+        # it the admin UI's backend-mediated mutation buttons (job cancel,
+        # job retry, schedule run-now) render but every one answers 503.
         admin_bundle = create_router(
             pg_pool,
             schema=settings.schema_name,
             redis_client=redis_client,
             base_path="/taskq",
             rate_limit_registry=rl_registry,
+            backend=tq.backend,
         )
         setup_admin_state(application, admin_bundle)
         application.include_router(admin_bundle.router, prefix="/taskq")

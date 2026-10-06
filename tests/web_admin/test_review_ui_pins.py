@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
-from . import StubRecord
+from . import StubBackend, StubRecord
 
 pytestmark = [pytest.mark.fastapi]
 
@@ -106,7 +106,7 @@ def _force_realtime(modules: list[Any], monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _make_client(pool: Any) -> TestClient:
-    bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    bundle = create_router(pool, backend=StubBackend())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)

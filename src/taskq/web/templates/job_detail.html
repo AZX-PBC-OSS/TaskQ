@@ -6,6 +6,13 @@
 
 {% block content %}
 <div class="space-y-6">
+    {# The disabled-actions banner: a deployment that cannot act must SAY
+       so where the forms would have been, not silently render nothing.
+       One banner, one text, shared with the mutation routes' 403 detail
+       (the actionable-refusal contract). #}
+    {% if not admin_actions_enabled %}
+    <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300" role="status">{{ admin_actions_banner }}</div>
+    {% endif %}
     {% if error_text %}
     <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-300" role="alert">{{ error_text }}</div>
     {% endif %}
@@ -27,6 +34,12 @@
             </div>
         </div>
         <div class="flex gap-2 items-start">
+            {# The backend-mediated mutations render only when the deployment
+               can actually serve them: with no Backend on the bundle every
+               one of these posts to a 503, so a rendered button is a dead
+               button (the templates read the bundle off the render
+               context). #}
+            {% if admin_actions_enabled and backend_configured %}
             {% if job.status not in terminal_statuses %}
             <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/cancel" class="inline-flex items-center gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -51,6 +64,7 @@
                     Retry Job
                 </button>
             </form>
+            {% endif %}
             {% endif %}
         </div>
     </div>

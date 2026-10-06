@@ -46,6 +46,7 @@ from taskq.web.admin._factory import (
     get_schema,
     get_settings,
     get_templates,
+    require_actions_enabled,
     validate_csrf,
 )
 from taskq.web.admin._jsonb import decode_jsonb
@@ -814,6 +815,8 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        backend: Backend | None = Depends(get_backend),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
         job_sql = _JOB_SQL.format(schema=schema)
         attempts_sql = _ATTEMPTS_SQL.format(schema=schema)
@@ -899,6 +902,8 @@ def register(router: APIRouter) -> None:
             realtime_mode=realtime_mode,
             mode_label=mode_label,
             csrf_token=csrf_token,
+            admin_actions_enabled=settings.admin_actions_enabled,
+            backend_configured=backend is not None,
             error_text=error_text,
             # realtime.js is this page's transport in EVERY mode (the
             # script block below: the stream in real-time mode, the state
@@ -913,26 +918,20 @@ def register(router: APIRouter) -> None:
     async def job_cancel(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         job_id: uuid.UUID,
         request: Request,
+        _actions: None = Depends(require_actions_enabled),
         _csrf: None = Depends(validate_csrf),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         backend: Backend | None = Depends(get_backend),
-        settings: TaskQSettings = Depends(get_settings),
         base_path: str = Depends(get_base_path),
         principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
-        if not settings.admin_actions_enabled:
-            raise HTTPException(
-                status_code=403,
-                detail="Admin actions are disabled. Set TASKQ_ADMIN_ACTIONS_ENABLED=true to enable.",
-            )
         if backend is None:
             raise HTTPException(
                 status_code=503, detail="Backend not configured for admin operations"
             )
 
-        # reason is the one mutation text this route binds: it reaches the
-        # job_events ``detail`` jsonb insert via write_cancel_request, and
+        # reason is the one mutation text this route binds: it reaches the        # job_events ``detail`` jsonb insert via write_cancel_request, and
         # PostgreSQL rejects \u0000 in jsonb strings, the same
         # opaque-driver-error class the list filters reject with
         # parse_text_filter, so reason gets the same clean 400 here.
