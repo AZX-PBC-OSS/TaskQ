@@ -28,7 +28,8 @@ window.__taskqJobConfig = {
     liveOn: {{ 'true' if live == 'on' else 'false' }},
     selectedStatuses: {{ statuses | tojson }},
     allStatuses: {{ all_statuses | tojson }},
-    totalRows: {{ total_rows }}
+    totalRows: {{ total_rows }},
+    totalCount: {{ total_count }}
 };
 </script>
 <script src="{{ base_path }}/static/admin.js"></script>
@@ -39,7 +40,12 @@ window.__taskqJobConfig = {
 
     <div class="flex items-center justify-between">
         <h2 class="text-xl font-semibold tracking-tight">Jobs</h2>
-        <span class="text-xs text-slate-500 dark:text-slate-400">Showing <span x-text="totalRows"></span> results</span>
+        {# The header owns the count (U4): the "of N" comes from the
+           server's COUNT over the SAME filters (total_count), refreshed
+           live from /jobs/count by admin.js. The old footer duplicated a
+           page-only count; it is gone. The inner span's text is the
+           no-JS render; Alpine replaces it on boot. #}
+        <span class="text-xs text-slate-500 dark:text-slate-400">Showing <span x-text="rangeText()">1–{{ total_rows | default(0) }} of {{ "{:,}".format(total_count | default(0)) }}</span> results</span>
     </div>
 
     {# Tabs #}

@@ -168,7 +168,11 @@
     {# Pagination #}
     {% if has_next or has_prev %}
     <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400">
-        <span>Showing {{ jobs | length }} results</span>
+        {# The count lives in the page HEADER (jobs.html: "1–N of M", wired
+           to /jobs/count) — this footer carries the paging controls only;
+           a second "Showing …" here read as a different number (the page's
+           rows) than the header's (the filtered set). #}
+        <span></span>
         <div class="flex gap-1">
             {% if has_prev %}
             <a href="{{ page_url(prev_cursor_at, prev_cursor_id, 'prev') }}"

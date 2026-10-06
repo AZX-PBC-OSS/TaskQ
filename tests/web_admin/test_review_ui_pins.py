@@ -59,7 +59,7 @@ class _ClockConn:
         return self._fetchrow
 
     async def fetchval(self, query: str, *args: object) -> object:
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         return None
 

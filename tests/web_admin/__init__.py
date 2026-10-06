@@ -60,7 +60,7 @@ class StubConnection:
         return None
 
     async def fetchval(self, query: str, *args: object) -> object:
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             # Postgres answers a server-clock read with a timestamp
             # unconditionally. Returning the generic False here handed the
             # admin factory's clock-offset probe a bool where the real

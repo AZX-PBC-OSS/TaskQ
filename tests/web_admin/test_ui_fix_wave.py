@@ -124,7 +124,7 @@ class _JobDetailConnection:
     async def fetchval(self, query: str, *args: object) -> Any:
         from datetime import UTC, datetime
 
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             # The clock-offset probe must see a datetime, the shape the
             # real database answers with (see StubConnection.fetchval).
             return datetime.now(UTC)
@@ -716,7 +716,6 @@ def test_missing_job_renders_a_404_page_not_a_json_wall(
 ) -> None:
     """U2: a job id that does not exist renders the error page for a
     browser; the JSON shape stays for the API-ish routes."""
-    from datetime import UTC, datetime
 
     client = _make_job_detail_app(monkeypatch, backend=None)
     # _JobDetailPool answers no job for a DIFFERENT id (the fetch keys on
@@ -771,3 +770,224 @@ def test_api_ish_routes_stay_json_on_validation_errors(
     resp = client.get("/jobs/api/job/not-a-uuid/state")
     assert resp.status_code == 422
     assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+# ── U3: the direction-aware prev/next pair on history + queue detail ─────
+
+
+class _HistoryRowsConnection:
+    """Connection stub answering the history walk's fetch with PAGE+1 rows."""
+
+    def __init__(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        self.rows: list[dict[str, Any]] = [
+            {
+                "id": new_uuid(),
+                "actor": f"actor_{i}",
+                "queue": "default",
+                "status": "succeeded",
+                "finished_at": base + timedelta(minutes=i),
+                "created_at": base + timedelta(minutes=i),
+                "started_at": base + timedelta(minutes=i),
+                "duration_ms": 10.0,
+                "attempt": 1,
+                "max_attempts": 3,
+                "retry_kind": "transient",
+                "is_archived": i % 2 == 0,
+            }
+            for i in range(51)  # _PAGE_SIZE + 1: the overfetch marker
+        ]
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        # The list walk (and only it) is a wrapped UNION of full rows; the
+        # summary's UNION projects status/cnt only, so the shape check
+        # keeps them apart.
+        if query.startswith("SELECT * FROM (") and "jobs_archive" in query:
+            return self.rows
+        return []
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
+        return None
+
+    async def fetchval(self, query: str, *args: object) -> Any:
+        from datetime import UTC, datetime
+
+        if query.strip() == "SELECT clock_timestamp()":
+            return datetime.now(UTC)
+        return 0
+
+    async def execute(self, query: str, *args: object) -> str:
+        return ""
+
+    def transaction(self) -> Any:
+        from . import StubTransaction
+
+        return StubTransaction()
+
+
+class _HistoryRowsAcquire:
+    async def __aenter__(self) -> _HistoryRowsConnection:
+        return _HistoryRowsConnection()
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _HistoryRowsPool:
+    def acquire(self, **kwargs: object) -> _HistoryRowsAcquire:
+        return _HistoryRowsAcquire()
+
+
+def _make_history_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_HistoryRowsPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return TestClient(app)
+
+
+def test_history_page_reached_by_a_cursor_renders_a_previous_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U3 (history): a paged-into page carries a Previous link that walks
+    BACKWARD (cursor_dir=prev). The one-way pagination finding: the page
+    only ever rendered Next, so an operator who paged deep had to walk
+    the browser back button through stale filters to return."""
+    client = _make_history_app(monkeypatch)
+    cursor = f"cursor_at=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_created=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_id={new_uuid()}"
+    resp = client.get(f"/history?{cursor}&cursor_dir=next", headers={"Accept": "text/html"})
+    assert resp.status_code == 200
+    assert "cursor_dir=prev" in resp.text, (
+        "a paged-into history page must render a Previous link (the "
+        "direction-aware pair), got a one-way page"
+    )
+
+
+def test_first_history_page_renders_previous_as_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U3: the unpaged first page has no previous - the control renders
+    disabled, not absent (the pair's shape matches the jobs table's)."""
+    client = _make_history_app(monkeypatch)
+    resp = client.get("/history", headers={"Accept": "text/html"})
+    assert resp.status_code == 200
+    assert 'aria-disabled="true"' in resp.text
+
+
+# ── U4: the jobs-table header counts the filtered set ────────────────────
+
+
+def test_jobs_header_shows_the_range_with_the_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U4: the header renders the "1-N of M" range server-side (the count
+    over the SAME filters the rows came from) instead of a bare page-row
+    number the footer duplicated."""  # Why: the header's own glyph is an en-dash; the docstring names it plainly.
+    client = _make_history_app(monkeypatch)
+    resp = client.get("/jobs", headers={"Accept": "text/html"})
+    assert resp.status_code == 200
+    assert "1\u20130 of 0" in resp.text, "the header must carry the 1-N of M range from the count"
+
+
+def test_jobs_footer_no_longer_duplicates_the_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U4: the pagination footer's page-only "Showing N results" is gone
+    (the header owns the count; two numbers read as two contradicting
+    counts)."""
+    client = _make_history_app(monkeypatch)
+    resp = client.get("/jobs", headers={"Accept": "text/html"})
+    assert resp.status_code == 200
+    assert "Showing 0 results" not in resp.text
+
+
+def test_jobs_count_route_applies_the_tag_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U4: /jobs/count honors EVERY filter the /jobs page honors - the
+    header's "of N" must describe the filtered set. A NUL in a tag is the
+    clean 400 the shared parser gives (before the route grew the filter,
+    the parameter was dropped in silence)."""
+    client = _make_history_app(monkeypatch)
+    resp = client.get("/jobs/count", params={"tags": "\x00"})
+    assert resp.status_code == 400, (
+        "the count route dropped the tags filter (the header's 'of N' "
+        "would have counted the UNFILTERED set)"
+    )
+
+
+_U4_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[process.argv.length - 1], "utf8");
+
+const log = [];
+const components = {};
+
+const tabInput = { name: "tab", value: "live" };
+const liveInput = { name: "live", value: "on" };
+const form = {
+    requestSubmit() {},
+    querySelector() { return null; },
+};
+
+global.window = { __taskqJobConfig: { tab: "live", liveOn: true, pollIntervalMs: 1000, basePath: "/admin", totalCount: 0 }, htmx: {} };
+global.document = {
+    addEventListener(name, fn) { if (name === "alpine:init") fn(); },
+    body: { addEventListener() {}, removeEventListener() {} },
+    getElementById(id) {
+        if (id === "job-filters") return form;
+        if (id === "job-table-container") return { outerHTML: "" };
+        return null;
+    },
+    querySelector() { return null; },
+    createElement() { return { querySelector() { return null; } }; },
+};
+global.Alpine = { data(name, factory) { components[name] = factory; } };
+global.FormData = class { *[Symbol.iterator]() {} };
+global.EventSource = class { addEventListener() {} close() {} };
+global.setInterval = () => 1;
+global.clearInterval = () => {};
+
+global.fetch = (url) => {
+    log.push("fetch:" + url.split("?")[0]);
+    log.push("qs:" + (url.split("?")[1] || ""));
+    const body = url.includes("/jobs/count") ? { count: 3210 } : {};
+    return { then(f1) { const v = f1({ text() { return ""; }, json() { return body; } }); return { then(f2) { if (f2) f2(v); return { catch() {} }; }, catch() { return { catch() {} }; } }; }, catch() { return { catch() {} }; } };
+};
+
+async function main() {
+    new Function(src)();
+    const page = components["jobsPage"]();
+    page.init();
+    page.refreshTable();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    process.stdout.write(JSON.stringify({ log, range: page.rangeText(), total: page.totalCount }));
+}
+
+main();
+"""
+
+
+@requires_node
+def test_admin_js_refreshes_the_count_from_the_count_route() -> None:
+    """U4's live half: after every table refresh the header's count comes
+    from /jobs/count with the SAME filter query string, and the range
+    text renders "1-N of M" from it."""
+    node = shutil.which("node")
+    assert node is not None
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and path are this file's own constants.
+        [node, "-e", _U4_HARNESS, "--", str(_ADMIN_JS)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    out = json.loads(result.stdout)
+    log = out["log"]
+    assert "fetch:/admin/jobs/count" in log, log
+    idx = log.index("fetch:/admin/jobs/count")
+    assert "tab=" in log[idx + 1], "the count request must carry the same filters"
+    assert out["total"] == 3210, "the count response must land on the component"
+    assert out["range"] == "1\u20130 of 3,210", out["range"]

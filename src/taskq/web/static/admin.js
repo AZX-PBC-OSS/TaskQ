@@ -48,6 +48,13 @@
                 selectedStatuses: cfg.selectedStatuses || [],
                 allStatuses: cfg.allStatuses || [],
                 totalRows: cfg.totalRows || 0,
+                // The filtered set's size, from /jobs/count (the header's
+                // "of N"). Seeded from the server render; refreshed on
+                // every poll and filter submit.
+                totalCount: cfg.totalCount || 0,
+                // The CURRENT page's row count, synced from the swapped
+                // table after every refresh (the range's upper bound).
+                pageRows: cfg.totalRows || 0,
                 eventSource: null,
                 pollTimer: null,
                 // The page the operator is on, as the cursor of the last
@@ -61,6 +68,31 @@
                     // is neither, so the table stays exactly as the operator
                     // left it until they resume or act on it themselves.
                     if (this.liveOn) this.startLive();
+                },
+
+                rangeText: function () {
+                    if (!this.totalCount) return "0";
+                    return "1\u2013" + this.pageRows + " of " + this.totalCount.toLocaleString();
+                },
+
+                refreshCount: function () {
+                    // The header's "of N" counts against /jobs/count with
+                    // the SAME filters the table polls with (the route
+                    // builds its count from the page's own filter parse).
+                    // Failure is non-fatal: the header keeps its last
+                    // value, the poll's table refresh is the truth.
+                    var self = this;
+                    var form = document.getElementById("job-filters");
+                    if (!form) return;
+                    var fd = new FormData(form);
+                    var params = new URLSearchParams(fd);
+                    params.set("tab", this.tab);
+                    fetch(this.basePath + "/jobs/count?" + params.toString())
+                        .then(function (r) { return r.json(); })
+                        .then(function (body) {
+                            if (body && typeof body.count === "number") self.totalCount = body.count;
+                        })
+                        .catch(function () {});
                 },
 
                 startLive: function () {
@@ -228,6 +260,13 @@
                             var el = tmp.querySelector("#job-table-container");
                             if (el) { container.outerHTML = el.outerHTML; }
                             if (window.lucide) lucide.createIcons();
+                            // The range's upper bound follows the table the
+                            // operator is actually reading (a tail page
+                            // shows fewer rows than 50), and the "of N"
+                            // refreshes alongside it.
+                            var swapped = document.querySelector("#job-table-container tbody");
+                            if (swapped) self.pageRows = swapped.querySelectorAll("tr").length;
+                            self.refreshCount();
                         })
                         .catch(function () {});
                 },

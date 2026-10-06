@@ -737,7 +737,7 @@ class _ScriptedConn:
         # raise TypeError whenever the 30 s TTL boundary landed on a request
         # served by this stub (the package StubConnection answers it the
         # same way).
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         return 0
 

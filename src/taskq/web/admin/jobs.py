@@ -537,6 +537,64 @@ def _blob_display_text(value: Any) -> str | None:
     return _truncate_traceback(value if isinstance(value, str) else str(value))
 
 
+async def _resolve_filter_args(
+    schema: str,
+    *,
+    tab: str,
+    raw_statuses: list[str],
+    raw_actor: str | None,
+    raw_queue: str | None,
+    time_range: str | None,
+    raw_time_from: str | None,
+    raw_time_to: str | None,
+    raw_identity_key: str | None = None,
+    raw_fairness_key: str | None = None,
+    raw_search: str | None = None,
+    raw_tags: str | None = None,
+) -> tuple[str, list[Any], str, list[str]]:
+    """Parse the /jobs filter query the SAME way for the page and the count.
+
+    Both routes answer from one WHERE (the page's rows and the header's
+    "of N" must describe the same set), so the parse lives here: the NUL
+    guards, the closed-set status parse, the time-window parse, and the
+    shared ``_build_where``. Returns ``(where, params, resolved_tab)``.
+    """
+    if tab not in ("live", "archived"):
+        tab = "live"
+    actor = parse_text_filter(raw_actor, "actor")
+    queue = parse_text_filter(raw_queue, "queue")
+    identity_key = parse_text_filter(raw_identity_key, "identity_key")
+    fairness_key = parse_text_filter(raw_fairness_key, "fairness_key")
+    search = parse_text_filter(raw_search, "search")
+    t_from = parse_text_filter(raw_time_from, "time_from")
+    t_to = parse_text_filter(raw_time_to, "time_to")
+    default_statuses = sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
+    statuses = (
+        parse_job_statuses(raw_statuses, default=default_statuses)
+        if raw_statuses
+        else default_statuses
+    )
+    t_from, t_to, within = _parse_time_range(
+        time_range,
+        parse_time_filter(t_from, "time_from"),
+        parse_time_filter(t_to, "time_to"),
+    )
+    tag_list: list[str] | None = parse_job_tags(raw_tags)
+    where, params = _build_where(
+        statuses,
+        actor,
+        queue,
+        t_from,
+        t_to,
+        identity_key,
+        fairness_key,
+        search,
+        tags=tag_list,
+        within=within,
+    )
+    return where, params, tab, statuses
+
+
 def register(router: APIRouter) -> None:
     """Attach job detail, cancel, list, count, and SSE routes to *router*."""
 
@@ -595,50 +653,22 @@ def register(router: APIRouter) -> None:
                 "live",
             ),
         )
-        if tab not in ("live", "archived"):
-            tab = "live"
-
-        # NUL guard before the text binds: each of these reaches a `text`
-        # (or `text::timestamptz`) parameter, which asyncpg rejects with an
-        # opaque 22021, the same class the client path's JobFilter guards.
-        actor = parse_text_filter(actor, "actor")
-        queue = parse_text_filter(queue, "queue")
-        identity_key = parse_text_filter(identity_key, "identity_key")
-        fairness_key = parse_text_filter(fairness_key, "fairness_key")
-        search = parse_text_filter(search, "search")
-        time_from = parse_text_filter(time_from, "time_from")
-        time_to = parse_text_filter(time_to, "time_to")
-
-        default_statuses = sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
-        statuses = (
-            parse_job_statuses(status, default=default_statuses) if status else default_statuses
-        )
-        # Absolute windows parse to datetimes (parse_time_filter: asyncpg's
-        # timestamptz encoder binds only datetime instances, and garbage is
-        # the family's clean 400, never an opaque driver 500); the raw
-        # strings stay in scope for the form's round-trip below.
-        t_from, t_to, within = _parse_time_range(
-            time_range,
-            parse_time_filter(time_from, "time_from"),
-            parse_time_filter(time_to, "time_to"),
-        )
-
-        # Shared parser: dedupes, caps per-item length (the enqueue-side tag
-        # contract; the item count is deliberately uncapped, see
-        # parse_job_tags), and 400s on abuse.
-        tag_list: list[str] | None = parse_job_tags(tags)
-
-        where, params = _build_where(
-            statuses,
-            actor,
-            queue,
-            t_from,
-            t_to,
-            identity_key,
-            fairness_key,
-            search,
-            tags=tag_list,
-            within=within,
+        # The page's filters and the header's count parse through ONE
+        # resolver (the count endpoint's too), so the "of N" always
+        # describes the same set the table's rows came from.
+        where, params, tab, statuses = await _resolve_filter_args(
+            schema,
+            tab=tab,
+            raw_statuses=status,
+            raw_actor=actor,
+            raw_queue=queue,
+            time_range=time_range,
+            raw_time_from=time_from,
+            raw_time_to=time_to,
+            raw_identity_key=identity_key,
+            raw_fairness_key=fairness_key,
+            raw_search=search,
+            raw_tags=tags,
         )
 
         sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
@@ -671,8 +701,15 @@ def register(router: APIRouter) -> None:
                 order,
             )
 
+        count_table = f'"{schema}".jobs' if tab == "live" else f'"{schema}".jobs_archive'
+        count_sql = f"SELECT COUNT(*) FROM {count_table} WHERE {where}"
         async with pool.acquire() as conn:
             rows = await conn.fetch(query_sql, *query_params)
+            # The header's "of N": the whole filtered set's size, from the
+            # SAME where the page's rows came from (the /jobs/count route
+            # builds its count from this same resolver - one filter parse,
+            # one truth). One extra query per page view, the admin cadence.
+            total_count = int(await conn.fetchval(count_sql, *params) or 0)
 
         # The walk direction resolves ONCE, before the display truncation,
         # because the truncation itself is direction-aware -- see
@@ -747,6 +784,7 @@ def register(router: APIRouter) -> None:
             "sort": sort,
             "order": order,
             "total_rows": len(display_rows),
+            "total_count": total_count,
             "realtime_mode": realtime_mode,
             "mode_label": mode_label,
             "suppress_refresh": True,
@@ -776,26 +814,27 @@ def register(router: APIRouter) -> None:
         time_range: str | None = Query(default=None),
         time_from: str | None = Query(default=None),
         time_to: str | None = Query(default=None),
+        identity_key: str | None = Query(default=None),
+        fairness_key: str | None = Query(default=None),
+        search: str | None = Query(default=None, max_length=128),
+        tags: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        # Same NUL guard as /jobs: the count query binds the same text params.
-        actor = parse_text_filter(actor, "actor")
-        queue = parse_text_filter(queue, "queue")
-        time_from = parse_text_filter(time_from, "time_from")
-        time_to = parse_text_filter(time_to, "time_to")
-        statuses = (
-            parse_job_statuses(status)
-            if status
-            else sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
-        )
-        # Same parse as /jobs: the count binds through the shared
-        # _build_where, so the window must be datetimes here too.
-        t_from, t_to, within = _parse_time_range(
-            time_range,
-            parse_time_filter(time_from, "time_from"),
-            parse_time_filter(time_to, "time_to"),
-        )
-        where, params = _build_where(
-            statuses, actor, queue, t_from, t_to, None, None, None, within=within
+        # The jobs-table header counts against THIS route (the same
+        # filters): every filter /jobs itself honors must narrow the
+        # count too, or the header's "of N" lies about the filtered set.
+        where, params, tab, _statuses = await _resolve_filter_args(
+            schema,
+            tab=tab,
+            raw_statuses=status,
+            raw_actor=actor,
+            raw_queue=queue,
+            time_range=time_range,
+            raw_time_from=time_from,
+            raw_time_to=time_to,
+            raw_identity_key=identity_key,
+            raw_fairness_key=fairness_key,
+            raw_search=search,
+            raw_tags=tags,
         )
         table = f'"{schema}".jobs' if tab == "live" else f'"{schema}".jobs_archive'
         count_sql = f"SELECT COUNT(*) FROM {table} WHERE {where}"

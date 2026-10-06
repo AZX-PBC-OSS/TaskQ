@@ -95,9 +95,23 @@ _HISTORY_SEAM_PREDICATE = (
     "created_at, id) < ($4, $5, $6)"
 )
 
+# The prev walk's arms: the REVERSED seam and ordering (the walk moves
+# from the cursor toward the top of the DESC display order), the wrapper
+# re-sorted into the display order - the same direction-aware pair the
+# jobs page walks with.
+_HISTORY_SEAM_PREDICATE_BACKWARD = (
+    "  AND (COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz), "
+    "created_at, id) > ($4, $5, $6)"
+)
+
 _HISTORY_ORDER_BY = (
     "ORDER BY COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz) DESC, "
     "created_at DESC, id DESC"
+)
+
+_HISTORY_ORDER_BY_BACKWARD = (
+    "ORDER BY COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz) ASC, "
+    "created_at ASC, id ASC"
 )
 
 _HISTORY_UNION_TEMPLATE = """\
@@ -121,8 +135,35 @@ UNION ALL
 {order_by}
 LIMIT {limit}"""
 
+# The backward (prev) fetch: each branch takes the rows NEAREST the
+# cursor in the reversed order ({branch_order_by} ASC), and the WRAPPER
+# re-sorts into the display (newest-first) order ({wrapper_order_by}
+# DESC) - two different orders, bound separately. No outer limit: the
+# branches are already limited to the fetch, and the display truncation
+# takes the page from the END of the re-sorted list (the overfetch row is
+# the one nearest the cursor).
+_HISTORY_UNION_TEMPLATE_BACKWARD = """\
+SELECT * FROM (
+  (SELECT {cols}
+      FROM "{schema}".jobs_archive
+      WHERE status = ANY($1)
+        AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
+        AND ($3::text IS NULL OR queue = $3){seam}
+      {branch_order_by}
+      LIMIT {limit})
+UNION ALL
+  (SELECT {cols_live}
+      FROM "{schema}".jobs
+      WHERE status = ANY($1)
+        AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
+        AND ($3::text IS NULL OR queue = $3){seam}
+      {branch_order_by}
+      LIMIT {limit})
+) sub
+{wrapper_order_by}"""
 
-def _history_list_sql(schema: str, *, cursor: bool, limit: int) -> str:
+
+def _history_list_sql(schema: str, *, cursor: bool, limit: int, backward: bool = False) -> str:
     """Return the history list SELECT for *schema*, paged or not.
 
     ``cursor=True`` binds the keyset seam ($4 finished-or-ceiling, $5
@@ -133,7 +174,25 @@ def _history_list_sql(schema: str, *, cursor: bool, limit: int) -> str:
     merges the two pages under the same tuple -- the union of the two
     branches' top-``limit`` rows contains the global top-``limit`` rows,
     so the page is identical to sorting the whole union.
+
+    ``backward=True`` walks from the cursor TOWARD the top of the display
+    order (the prev turn): the seam and the per-branch ordering reverse
+    together, the wrapper re-sorts into the display order, and the
+    caller's display truncation takes the page from the END of the fetch
+    (the overfetch row is the one nearest the cursor).
     """
+    if backward:
+        seam = f"\n{_HISTORY_SEAM_PREDICATE_BACKWARD}" if cursor else ""
+        union = _HISTORY_UNION_TEMPLATE_BACKWARD.format(
+            schema=schema,
+            seam=seam,
+            cols=_SELECT_COLS,
+            cols_live=_SELECT_COLS_LIVE,
+            branch_order_by=_HISTORY_ORDER_BY_BACKWARD,
+            wrapper_order_by=_HISTORY_ORDER_BY,
+            limit=limit,
+        )
+        return union
     seam = f"\n{_HISTORY_SEAM_PREDICATE}" if cursor else ""
     union = _HISTORY_UNION_TEMPLATE.format(
         schema=schema,
@@ -189,6 +248,7 @@ def register(router: APIRouter) -> None:
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
         cursor_created: str | None = Query(default=None),
+        cursor_dir: str = Query(default="next"),
     ) -> HTMLResponse:
         if actor == "":
             actor = None
@@ -252,8 +312,14 @@ def register(router: APIRouter) -> None:
                     detail=f"cursor_id is not a valid UUID: {cursor_id!r}",
                 ) from None
 
+        # The walk resolves ONCE: a cursor-less request is the unpaged
+        # first page and walks forwards whatever the query string said (a
+        # reversed unpaged query would serve the tail as page one).
+        backward = parsed_at is not None and cursor_dir == "prev"
         list_first_sql = _history_list_sql(schema, cursor=False, limit=_FETCH_SIZE)
-        list_cursor_sql = _history_list_sql(schema, cursor=True, limit=_FETCH_SIZE)
+        list_cursor_sql = _history_list_sql(
+            schema, cursor=True, limit=_FETCH_SIZE, backward=backward
+        )
         summary_sql = _SUMMARY_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
@@ -271,13 +337,33 @@ def register(router: APIRouter) -> None:
                 rows = await conn.fetch(list_first_sql, statuses, actor, queue)
             summary_rows = await conn.fetch(summary_sql, statuses, actor, queue)
 
-        has_next = len(rows) > _PAGE_SIZE
-        display_rows = list(rows[:_PAGE_SIZE])
+        overfetched = len(rows) > _PAGE_SIZE
+        # Direction-aware display truncation (the jobs page's
+        # _display_slice shape): a forward fetch serves its FIRST page
+        # worth of rows; a backward fetch is the rows NEAREST the cursor
+        # in display order, so the page is the LAST page-worth of the
+        # fetch. Backward fetches arrive re-sorted into display order by
+        # the wrapper.
+        display_rows = list(rows[:_PAGE_SIZE] if not backward else rows[-_PAGE_SIZE:])
+
+        # Direction-aware page flags: a forward page knows a next page
+        # exists iff it overfetched and has a previous iff a cursor was
+        # applied; a backward page mirrors both.
+        paged_in = parsed_at is not None and parsed_id is not None and parsed_created is not None
+        if backward:
+            has_prev = overfetched
+            has_next = True
+        else:
+            has_next = overfetched
+            has_prev = paged_in
 
         next_cursor_at: str | None = None
         next_cursor_id: str | None = None
         next_cursor_created: str | None = None
-        if has_next and display_rows:
+        prev_cursor_at: str | None = None
+        prev_cursor_id: str | None = None
+        prev_cursor_created: str | None = None
+        if display_rows:
             last = display_rows[-1]
             next_cursor_at = (
                 _CURSOR_NULL_SENTINEL
@@ -286,6 +372,14 @@ def register(router: APIRouter) -> None:
             )
             next_cursor_created = last["created_at"].isoformat()
             next_cursor_id = str(last["id"])
+            first = display_rows[0]
+            prev_cursor_at = (
+                _CURSOR_NULL_SENTINEL
+                if first["finished_at"] is None
+                else first["finished_at"].isoformat()
+            )
+            prev_cursor_created = first["created_at"].isoformat()
+            prev_cursor_id = str(first["id"])
 
         summary: dict[str, int] = {r["status"]: r["cnt"] for r in summary_rows}
         total_shown = sum(summary.values())
@@ -305,9 +399,14 @@ def register(router: APIRouter) -> None:
             actor_filter=actor,
             queue_filter=queue,
             has_next=has_next,
+            has_prev=has_prev,
             next_cursor_at=next_cursor_at,
             next_cursor_created=next_cursor_created,
             next_cursor_id=next_cursor_id,
+            prev_cursor_at=prev_cursor_at,
+            prev_cursor_created=prev_cursor_created,
+            prev_cursor_id=prev_cursor_id,
+            cursor_dir="prev" if backward else "next",
             summary=summary,
             total_display=total_display,
             success_rate=success_rate,
