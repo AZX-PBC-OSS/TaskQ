@@ -17,6 +17,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
 
+from taskq import TaskQ
 from taskq.migrate import apply_pending_locked
 from taskq.settings import TaskQSettings
 from taskq.web.admin import create_router, setup_admin_state
@@ -45,12 +46,27 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
 
         schema = settings.schema_name
 
+        # The sidecar owns a TaskQ client so the admin router gets a real
+        # Backend: without one, the backend-mediated mutation buttons
+        # (job cancel, job retry, schedule run-now) render but every one
+        # answers 503 "Backend not configured". The client is constructed
+        # against the SAME pool (caller-owned; close() will not close it),
+        # so the sidecar adds no second connection pool.
+        tq = await stack.enter_async_context(
+            TaskQ(
+                pool=pg_pool,
+                schema=schema,
+                redis_client=redis_client,
+            ),
+        )
+
         bundle = create_router(
             pg_pool,
             schema=schema,
             redis_client=redis_client,
             auth_dependency=None,
             base_path="/admin",
+            backend=tq.backend,
         )
         setup_admin_state(application, bundle)
         application.include_router(bundle.router, prefix="/admin")

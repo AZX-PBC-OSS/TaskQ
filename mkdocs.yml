@@ -127,6 +127,8 @@ nav:
       - Package Overview: api-reference/taskq.md
       - Actor: api-reference/actor.md
       - Client: api-reference/client.md
+      - Exceptions: api-reference/exceptions.md
+      - Retry: api-reference/retry.md
       - Worker: api-reference/worker.md
       - Rate Limiting: api-reference/ratelimit.md
       - Dependency Injection: api-reference/di.md

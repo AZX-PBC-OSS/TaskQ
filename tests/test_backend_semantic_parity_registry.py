@@ -112,6 +112,7 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     "get": "caller supplies the job id; no selection or ordering",
     "get_batch": "caller supplies the batch id; no selection or ordering",
     "get_actor_max_pending": "caller supplies the actor; scalar return",
+    "get_actor_queues": "whole-table read, no caller-named selection or ordering",
     "enqueue": "caller supplies the row; dedup predicates pinned separately",
     "enqueue_with_conn": "caller supplies the row and the connection",
     "mark_succeeded": "keyed single row named by job id",

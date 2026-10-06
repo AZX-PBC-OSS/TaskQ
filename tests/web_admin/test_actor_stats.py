@@ -55,7 +55,7 @@ class _FetchConn:
         return None
 
     async def fetchval(self, query: str, *args: object) -> object:
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             # The router's clock-offset probe: answer like Postgres would.
             return datetime.now(UTC)
         return None

@@ -155,16 +155,19 @@ async def test_sse_429_when_semaphore_exhausted(
 # ── SSE template scaffold ──────────────────────────────────────────────
 
 
-def test_sse_console_template_has_htmx_sse_attributes(
+def test_sse_console_partial_is_deleted_not_bundled(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """sse_console.html scaffold includes hx-ext and sse-connect attributes."""
+    """The sse_console partial is DELETED (the D1 finding): it was never
+    included by any page and advertised a console that cannot work - a
+    resurrection is the regression."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     env = bundle.templates
-    source = env.loader.get_source(env, "_partials/sse_console.html")[0]  # pyright: ignore[reportOptionalMemberAccess, reportUnknownMemberType]  # Why: loader is set by create_router.
-    assert 'hx-ext="sse"' in source
-    assert "sse-connect" in source
+    from jinja2 import TemplateNotFound
+
+    with pytest.raises(TemplateNotFound):
+        env.loader.get_source(env, "_partials/sse_console.html")  # pyright: ignore[reportOptionalMemberAccess]  # Why: the PackageLoader's get_source is not None for the bundled tree; the pin is the deletion itself.
 
 
 # ── SSE module: no worker imports, no future annotations ───────────────

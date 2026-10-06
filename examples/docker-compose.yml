@@ -120,6 +120,15 @@ services:
       TASKQ_ENVIRONMENT: dev
       TASKQ_ADMIN_HOST: "0.0.0.0"
       TASKQ_ADMIN_PORT: "8001"
+      # The example stack is a dev deployment: the action buttons (cancel,
+      # retry, run-now) WORK here - the sidecar builds a Backend (the
+      # embedding contract) and the setting opts the mutations in. The
+      # CSRF cookie's Secure flag comes off too: this stack is plain http
+      # on a published port, and a Secure cookie is refused there (the
+      # flag's own doc: http-only local development). The compose e2e
+      # drives a live cancel through these buttons.
+      TASKQ_ADMIN_ACTIONS_ENABLED: "true"
+      TASKQ_ADMIN_UI_SECURE_COOKIES: "false"
       TASKQ_MIGRATE_ON_START: "true"
 
   fastapi-app:

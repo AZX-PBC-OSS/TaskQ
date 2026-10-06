@@ -14,12 +14,15 @@ The claim is scoped, and one family is deliberately outside it: the credential-r
 
 ## 1. RetryPolicy: field reference
 
-`RetryPolicy` is a frozen Pydantic model imported from `taskq.retry`.
+`RetryPolicy` is a frozen Pydantic model imported from `taskq.retry` (the
+module's full surface — classifiers, backoff computation, lifecycle-hook
+invokers, the attempt ceilings — is indexed on the
+[Retry API reference](../api-reference/retry.md)).
 
 | Field | Type | Default | Semantics |
 |---|---|---|---|
 | `kind` | `"transient" \| "indefinite" \| "non_retryable"` | `"transient"` | Controls the retry strategy; see [Retry kinds](#2-retry-kinds). |
-| `max_attempts` | `int` | `3` | Maximum total attempts for `"transient"`. Must be >= 1. Ignored by `"indefinite"`. |
+| `max_attempts` | `int` | `3` | Maximum total attempts for `"transient"`. Must be >= 1 and <= 32767 (the `smallint` `jobs.max_attempts` column ceiling, `MAX_ATTEMPTS_SMALLINT_CEILING`); a fresh enqueue or policy may carry at most 32766 (`MAX_ENQUEUABLE_MAX_ATTEMPTS`, one below the column ceiling so reclaim bookkeeping keeps headroom to add one). Ignored by `"indefinite"`. |
 | `time_budget` | `timedelta \| None` | `None` | Only active when `kind="indefinite"`. Passed to the enqueue path to auto-compute `schedule_to_close = now + time_budget`. Ignored for other kinds (a warning is emitted at decoration time if set on a non-indefinite actor). |
 | `backoff` | `"exponential" \| "linear" \| "fixed"` | `"exponential"` | Backoff algorithm; see [Backoff algorithms](#3-backoff-algorithms). |
 | `base` | `timedelta` | `timedelta(seconds=5)` | Starting delay for the chosen backoff algorithm. Must be > 0. |

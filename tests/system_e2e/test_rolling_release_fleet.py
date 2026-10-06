@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import signal
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
@@ -177,6 +178,15 @@ _CORPSE_PREMISE_BOUND = (
 #: fleet that never serves at all.
 _PROBE_STRETCH = 20.0
 _PROBE_STALL_MARGIN = _POLL_FLOOR * _PROBE_STRETCH
+
+#: The flap scenario's premise hang guard: one claim cycle (the poll
+#: floor plus the leader's dispatch tick) stretched by the 20x co-tenancy
+#: factor - the same shape the #651 cure gave this file's premise waits
+#: (a hang guard only: the defiant job's first claim is near-instant on a
+#: healthy fleet, and a fleet that NEVER claims reds here instead of
+#: hanging). Re-anchored from a bare 30.0 so the guard derives from the
+#: file's own stall-band factors.
+_FLAP_PREMISE_BOUND_S = (_POLL_FLOOR + _SWEEP_INTERVAL) * _PROBE_STRETCH
 
 
 # ── Fixtures and fleet plumbing ──────────────────────────────────────────
@@ -1417,8 +1427,20 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
         # One defiant job: it will still be running when the flap kills
         # its pod (the body outlasts the 95%-of-grace kill), plus
         # ordinary backlog for the survivors to carry.
-        defiant_handle = await sys_client.enqueue(sys_defiant, SysPayload(sleep=20.0), tags=[_TAG])
-        deadline = time.monotonic() + 30.0
+        # One defiant job: it will still be running when the flap kills
+        # its pod (the body outlasts the 95%-of-grace kill), plus
+        # ordinary backlog for the survivors to carry. The body's own
+        # duration is DERIVED from the scenario's arithmetic: the kill
+        # lands by 0.95 of the grace plus the co-tenancy slack the
+        # post-premise enqueues can eat (_PROBE_STALL_MARGIN), so the
+        # body gets that bound plus two poll floors of margin - the
+        # premise "the drain was unfinished at the kill" is then built
+        # in, not raced.
+        _defiant_sleep_s = 0.95 * _GRACE + _PROBE_STALL_MARGIN + _POLL_FLOOR * 2
+        defiant_handle = await sys_client.enqueue(
+            sys_defiant, SysPayload(sleep=_defiant_sleep_s), tags=[_TAG]
+        )
+        deadline = time.monotonic() + _FLAP_PREMISE_BOUND_S
         defiant = defiant_handle.job_id
         holder_id: str | None = None
         while time.monotonic() < deadline:
@@ -1442,9 +1464,40 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
         await asyncio.sleep(0.95 * _GRACE)
         t_kill = time.monotonic()
         fleet[victim].proc.kill()
-        await asyncio.to_thread(fleet[victim].proc.wait, 30)
+        kill_rc = await asyncio.to_thread(fleet[victim].proc.wait, 30)
         drained.add(victim)
-        assert time.monotonic() - t_kill < 1.0
+        # The flap's receipt is DURABLE STATE, not a clock (the #651
+        # doctrine: a bare wall-clock assert here bet on the runner - the
+        # SIGKILL's reap is the OS's, but the starved test process's
+        # observation of it is not).
+        #
+        # 1. The process died BY THE KILL (rc = -SIGKILL): a pod whose
+        #    drain had FINISHED would have exited graceful (rc = 0)
+        #    before this kill - the grace-edge premise is exactly "the
+        #    drain was unfinished when the budget's 95% came up".
+        # 2. The defiant row is still NON-terminal: the body the corpse
+        #    held never completed - the kill caught real work mid-flight,
+        #    which is what the new identity's pickup below has to
+        #    recover.
+        assert kill_rc == -int(signal.SIGKILL), (
+            f"the grace-edge pod exited rc={kill_rc} before its SIGKILL - "
+            "its drain finished inside the budget, so the flap premise "
+            "(killed at 95% of the budget WITH THE DRAIN UNFINISHED) is void"
+        )
+        flap_state = await conn.fetchrow(
+            f'SELECT status::text AS status FROM "{schema}".jobs WHERE id = $1',
+            defiant,
+        )
+        assert flap_state is not None and flap_state["status"] not in (
+            "succeeded",
+            "failed",
+            "cancelled",
+            "crashed",
+            "abandoned",
+        ), (
+            f"the defiant row went terminal ({flap_state}) before/with the kill - "
+            "the flap killed a pod that was no longer holding unfinished work"
+        )
 
         # The rest of the OLD generation goes down WITH it (the deploy
         # rolled the whole generation): each survivor's drain runs in
