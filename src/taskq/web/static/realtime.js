@@ -187,36 +187,51 @@
         renderProgressEvent(progressState(rawState));
     }
 
-    function progressMetaText(state) {
-        const percent = typeof state.percent === "number" ? state.percent : 0;
-        const stepText = state.step ? `${state.step}` : "";
-        const tsText = state.ts ? new Date(state.ts).toLocaleTimeString() : "";
-        const percentText = `${percent}%`;
-        return [percentText, stepText, tsText].filter(Boolean).join(" · ");
-    }
-
     function buildProgressEntry() {
+        // The SAME Tailwind classes the server template renders the
+        // snapshot entry with (job_detail.html's progress block): a live
+        // node built with different (or none) popped in unstyled the
+        // moment the first event landed - an invisible bar where the
+        // server-rendered page showed a visible track + fill.
         const entry = document.createElement("div");
-        entry.className = "progress-event";
+        entry.className =
+            "progress-event bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded p-3";
 
-        const barWrap = document.createElement("div");
-        barWrap.className = "progress-bar-wrap";
+        const barRow = document.createElement("div");
+        barRow.className = "flex items-center gap-2 mb-2";
+
+        const track = document.createElement("div");
+        track.className = "flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden";
 
         const bar = document.createElement("div");
-        bar.className = "progress-bar";
-        barWrap.appendChild(bar);
+        bar.className = "progress-bar h-full bg-blue-500 rounded-full";
+        track.appendChild(bar);
 
-        const detail = document.createElement("div");
-        detail.className = "progress-detail";
+        const percent = document.createElement("span");
+        percent.className = "text-xs font-mono text-slate-500 dark:text-slate-400";
+
+        barRow.appendChild(track);
+        barRow.appendChild(percent);
 
         const meta = document.createElement("div");
-        meta.className = "progress-meta";
+        meta.className = "flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400";
 
-        entry.appendChild(barWrap);
-        entry.appendChild(detail);
+        const step = document.createElement("span");
+        step.className = "font-medium text-slate-700 dark:text-slate-300";
+
+        const detail = document.createElement("span");
+
+        const ts = document.createElement("span");
+        ts.className = "text-slate-400";
+
+        meta.appendChild(step);
+        meta.appendChild(detail);
+        meta.appendChild(ts);
+
+        entry.appendChild(barRow);
         entry.appendChild(meta);
 
-        return { entry, bar, detail, meta, dataWrap: null, dataPre: null };
+        return { entry, bar, percent, step, detail, ts, dataWrap: null, dataPre: null };
     }
 
     // The data <pre>'s text: pretty-printed JSON, bounded by the same
@@ -236,11 +251,19 @@
         if (!timeline) return;
 
         if (!renderedEntry) {
-            // First render: build the entry's nodes once and append it.
-            // Nothing is rebuilt afterwards; later ticks patch the nodes.
+            // First live render: REPLACE the server-rendered snapshot. The
+            // snapshot entry (or the "No progress recorded." placeholder)
+            // is stale the moment a live event lands - appending next to it
+            // showed the twin: the snapshot frozen at boot above the live
+            // bar. Nothing is rebuilt afterwards; later ticks patch nodes.
             // No scrollIntoView, here or on any patch: the driver never
             // steals the viewport (a poll tick landing while the operator
             // reads the page must not yank the scroll position).
+            if (typeof timeline.querySelectorAll === "function") {
+                timeline.querySelectorAll(".progress-event").forEach(function (el) {
+                    el.remove();
+                });
+            }
             renderedEntry = buildProgressEntry();
             timeline.appendChild(renderedEntry.entry);
         }
@@ -253,15 +276,24 @@
         if (renderedEntry.bar.style.width !== width) {
             renderedEntry.bar.style.width = width;
         }
+        const percentText = `${percent}%`;
+        if (renderedEntry.percent.textContent !== percentText) {
+            renderedEntry.percent.textContent = percentText;
+        }
 
-        const detailText = state.detail ?? state.step ?? "";
+        const stepText = state.step ?? "";
+        if (renderedEntry.step.textContent !== stepText) {
+            renderedEntry.step.textContent = stepText;
+        }
+
+        const detailText = state.detail ?? "";
         if (renderedEntry.detail.textContent !== detailText) {
             renderedEntry.detail.textContent = detailText;
         }
 
-        const metaText = progressMetaText(state);
-        if (renderedEntry.meta.textContent !== metaText) {
-            renderedEntry.meta.textContent = metaText;
+        const tsText = state.ts ? new Date(state.ts).toLocaleTimeString() : "";
+        if (renderedEntry.ts.textContent !== tsText) {
+            renderedEntry.ts.textContent = tsText;
         }
 
         const dataText = state.data == null
@@ -271,11 +303,12 @@
                 : stringifyDataBounded(state.data);
         if (dataText !== null && !renderedEntry.dataWrap) {
             const details = document.createElement("details");
+            details.className = "mt-2";
             const summary = document.createElement("summary");
-            summary.className = "progress-meta";
+            summary.className = "text-xs text-slate-400 cursor-pointer hover:text-slate-600";
             summary.textContent = "data";
             const pre = document.createElement("pre");
-            pre.className = "progress-meta";
+            pre.className = "mt-1 p-2 bg-slate-100 dark:bg-slate-800 rounded text-xs overflow-x-auto";
             pre.style.whiteSpace = "pre-wrap";
             pre.style.wordBreak = "break-all";
             details.appendChild(summary);

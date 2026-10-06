@@ -73,6 +73,7 @@ from taskq.constants import (
 from taskq.obs import get_meter
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._routing import HeadForGetRoute
 from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
@@ -340,6 +341,19 @@ async def _event_generator(
                 if is_terminal:
                     yield _make_done_event()
                     return
+            elif is_terminal:
+                # The reconnect blackhole: the row went terminal while the
+                # client was away and the durable progress_seq never
+                # advanced past the client's cursor (the terminal write's
+                # GREATEST() expression can stand still), so there is
+                # NOTHING to replay - the old arm fell through into the
+                # pub/sub loop, which only ever forwards NEW events: the
+                # reconnecting EventSource subscribed to a finished job
+                # and received keepalives forever. The client cannot learn
+                # the job is over from any frame; tell it directly - the
+                # replay contract is "catch up OR say done", not "be quiet".
+                yield _make_done_event()
+                return
             else:
                 last_emitted_seq = max(0, resolved_last_event_id)
 
@@ -607,7 +621,12 @@ def create_router(
             ),
         )
 
-    router_kwargs: dict[str, Any] = {"tags": ["progress"]}
+    router_kwargs: dict[str, Any] = {
+        "tags": ["progress"],
+        # F6: the monitor's HEAD check against the stream/state routes
+        # must not 405 (the same route class the admin router's pages use).
+        "route_class": HeadForGetRoute,
+    }
     if auth_dependency is not None:
         router_kwargs["dependencies"] = [Depends(auth_dependency)]
 

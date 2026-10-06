@@ -673,7 +673,7 @@ global.document = {
     },
     getElementById(id) {
         if (id === "job-table-container") return container;
-        if (id === "job-filters") return { requestSubmit() { dom.push("submit"); } };
+        if (id === "job-filters") return { requestSubmit() { dom.push("submit"); }, querySelector() { return null; } };
         return null;
     },
     querySelector(sel) {
@@ -1288,7 +1288,11 @@ async def test_the_progress_cadence_on_served_bodies_is_calm_and_identical(lab: 
     # once (the appends) and patches exactly the nodes the change feeds.
     poll3 = _seg(ht_log, "poll:3")
     assert any(e.startswith("timeline-append:") for e in poll3)
-    assert "width:div3=55%" in poll3 and "text:div5=55% · upload" in poll3
+    # The B3 wave moved the entry onto the server template's structure:
+    # the percent renders through its own readout span (span5), the step
+    # through the meta line's leading span (span7).
+    assert "width:div4=55%" in poll3 and "text:span5=55%" in poll3
+    assert "text:span7=upload" in poll3
     assert f'inm:"{base_seq}"' in _seg(ht_log, "poll:2", which="net"), (
         "the 304 tick must not advance the conditional-GET cursor: poll 2 "
         "still asks about the rendered sequence"
@@ -1356,8 +1360,11 @@ async def test_frames_render_dedup_and_gate_identically(lab: _Lab) -> None:
     assert _seg(ht_log, "frame:2") == [], "a duplicate fingerprint must write nothing"
     # The meta line renders the frame's own ts (excluded from the FINGERPRINT,
     # not from the render): percent · step · the frame's clock.
-    assert _seg(ht_log, "frame:3")[:2] == ["width:div3=70%", "text:div4=index"]
-    assert _seg(ht_log, "frame:3")[2].startswith("text:div5=70% · index · ")
+    # The B3 structure: width + the percent readout (span5), the step
+    # (span7), and the frame's own clock (span9, locale-rendered).
+    frame3 = _seg(ht_log, "frame:3")
+    assert frame3[0] == "width:div4=70%" and "text:span5=70%" in frame3
+    assert "text:span7=index" in frame3 and frame3[-1].startswith("text:span9=")
     assert _seg(ht_log, "frame:4") == [], "a trailing sequence must be dropped by the cursor gate"
 
 
@@ -1419,7 +1426,7 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
     _diff_logs("terminal render", van_log, ht_log)
 
     writes = _seg(ht_log, "poll:1")
-    assert "width:div3=100%" in writes and "text:div4=finalize" in writes, (
+    assert "width:div4=100%" in writes and "text:span7=finalize" in writes, (
         "the terminal transition must render through the poll"
     )
     # Three ticks ran (the stub repeats the scripted poll), but the machine
@@ -1509,9 +1516,9 @@ async def test_the_bigint_cursor_boundary_renders_identically(lab: _Lab) -> None
     _diff_logs("bigint boundary", van_log, ht_log)
 
     assert _seg(ht_log, "poll:2") == [
-        "width:div3=75%",
-        "text:div4=more",
-        "text:div5=75% · stage",
+        "width:div4=75%",
+        "text:span5=75%",
+        "text:span8=more",
     ], (
         "the tick at seq 2^53 + 1 must advance the exact cursor and render, "
         "not be dropped as a duplicate of 2^53"

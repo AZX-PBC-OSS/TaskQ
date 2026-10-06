@@ -215,7 +215,7 @@ class _BatchDetailConnection(StubConnection):
         return []
 
     async def fetchval(self, query: str, *args: object) -> object:
-        if "clock_timestamp()" in query:
+        if query.strip() == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         if "jobs_archive" in query:
             return self._archived_members
