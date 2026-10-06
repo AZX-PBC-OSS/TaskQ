@@ -54,6 +54,32 @@ permissions:
 # lock like everything else.
 
 jobs:
+  admin-css-drift:
+    # The compiled admin.css cannot go stale (B4): Tailwind compiles
+    # nothing at runtime, so a class added to a template or the static JS
+    # while this file stayed as-built ships dead styles with no failing
+    # test anywhere. This job recompiles from src/taskq/web/static/
+    # tailwind.css and refuses a dirty tree - the same compile → diff
+    # contract a lockfile check uses. The in-suite scanner
+    # (tests/web_admin/test_admin_css_drift.py) is the belt to these
+    # braces: it reds locally without Node, and its known-token floor
+    # would catch this job being silently dropped.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Recompile admin.css and refuse a dirty tree
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          git diff --exit-code -- src/taskq/web/static/admin.css
+
   lint:
     runs-on: ubuntu-latest
     steps:
