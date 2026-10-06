@@ -12,7 +12,7 @@ sweeps need, so this module has no dependency on ``leader.py``.
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Final, cast
@@ -23,6 +23,7 @@ import structlog
 
 from taskq.backend._protocol import ConnLike
 from taskq.backend._sweeps import SweepBatchSizer
+from taskq.backend.clock import SystemClock
 from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -37,19 +38,27 @@ from taskq.obs import (
     update_actor_backlog_cache,
     update_actor_oldest_pending_age_cache,
     update_actor_oldest_running_age_cache,
+    update_cancel_pending_cache,
     update_jobs_by_status_cache,
+    update_jobs_retry_headroom_cache,
+    update_jobs_retrying_cache,
     update_jobs_running_cache,
     update_oldest_due_age_cache,
+    update_queue_depth_by_status_cache,
     update_queue_depth_cache,
     update_queue_live_workers_cache,
     update_queue_utilization_cache,
+    update_ratelimit_bucket_tokens_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
     update_scheduled_count_cache,
+    update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
 )
+from taskq.ratelimit.decision import RateLimitState
 from taskq.ratelimit.registry import (
     _KEYED_IDLE_THRESHOLD,  # pyright: ignore[reportPrivateUsage]  # Why: shared constant, centralised in registry.py so the sweep and the opportunistic eviction path never drift.
+    RateLimitRegistry,
 )
 from taskq.ratelimit.registry import (
     registry as rl_registry,
@@ -57,9 +66,13 @@ from taskq.ratelimit.registry import (
 from taskq.worker._leader_shared import (
     _EK2,
     _EK3,
+    _QUERY_CANCEL_PENDING_SQL_TEMPLATE,
+    _QUERY_JOBS_RETRYING_SQL_TEMPLATE,
+    _QUERY_QUEUE_DEPTH_BY_STATUS_SQL_TEMPLATE,
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,
     _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
+    _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
     _dbg,
@@ -82,6 +95,7 @@ __all__ = [
     "_backlog_detection_loop",
     "_prune_loop",
     "_queue_depth_loop",
+    "_ratelimit_buckets_loop",
     "_reservation_slots_loop",
     "_stranded_jobs_loop",
     "_sweep_duration_hist",
@@ -1488,9 +1502,11 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
+    by_status_sql = _QUERY_QUEUE_DEPTH_BY_STATUS_SQL_TEMPLATE.format(schema=schema)
     live_workers_sql = _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE.format(schema=schema)
     capacity_sql = _QUERY_QUEUE_ACTOR_CAPACITY_SQL_TEMPLATE.format(schema=schema)
     due_depth_sql = _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
+    cancel_pending_sql = _QUERY_CANCEL_PENDING_SQL_TEMPLATE.format(schema=schema)
     liveness_secs = ctx.deps.settings.admin_worker_liveness_seconds
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
@@ -1503,11 +1519,34 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_rows = await conn.fetch(live_workers_sql, liveness_secs)
                     capacity_rows = await conn.fetch(capacity_sql)
                     due_rows = await conn.fetch(due_depth_sql)
+                    by_status_rows = await conn.fetch(by_status_sql)
+                    # The DURABLE cancel surface: sampled in this same
+                    # tick so a cancel's scrape trace moves on the same
+                    # cadence (and the same leader authority) as the
+                    # queue gauges it is read beside. An isolated read
+                    # behind its own try (the actor-backlog pattern): a
+                    # count this cheap must not cost the tick the four
+                    # established gauges above, and a failed read
+                    # reports 0 rather than freezing — a cancel gauge
+                    # frozen at a stale level reads as "still pending",
+                    # the opposite of the truth.
+                    try:
+                        cancel_pending: int = int(await conn.fetchval(cancel_pending_sql) or 0)
+                        update_cancel_pending_cache(cancel_pending)
+                    except Exception as exc:
+                        _sampler_read_failed(
+                            ctx, "cancel_pending", "cancel-pending-sampling-failed", exc
+                        )
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 live_workers = {str(row["queue"]): int(row["count"]) for row in worker_rows}
                 capacity = {str(row["queue"]): int(row["actor_capacity"]) for row in capacity_rows}
                 due_depth = {str(row["queue"]): int(row["count"]) for row in due_rows}
+                depth_by_status = {
+                    (str(row["queue"]), str(row["status"])): int(row["count"])
+                    for row in by_status_rows
+                }
                 update_queue_depth_cache(cache)
+                update_queue_depth_by_status_cache(depth_by_status)
                 update_queue_live_workers_cache(live_workers)
                 # All four reads share the tick's connection, so the ratio
                 # describes the same moment its due-depth and live-worker
@@ -1757,6 +1796,8 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     expired_lease_sql = _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema)
     actor_backlog_sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)
     running_by_actor_sql = _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE.format(schema=schema)
+    retrying_sql = _QUERY_JOBS_RETRYING_SQL_TEMPLATE.format(schema=schema)
+    scheduled_horizon_sql = _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
             "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
@@ -1771,6 +1812,25 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 status_rows = await conn.fetch(by_status_sql)
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
                 expired_lease: int | None = await conn.fetchval(expired_lease_sql)
+                # The retry ladder's per-actor read: isolated like the
+                # running-by-actor read below and for the same reason —
+                # a haunt read that fails must not cost the tick the
+                # fleet-wide samples already taken, and the empty
+                # fallback clears the series rather than freezing it.
+                # Both gauges are built from ONE statement, so count and
+                # headroom can never describe two moments.
+                try:
+                    retrying_snapshot = [
+                        (str(row["actor"]), int(row["retrying"]), int(row["min_headroom"]))
+                        for row in await conn.fetch(retrying_sql)
+                    ]
+                except Exception as exc:
+                    _sampler_read_failed(ctx, "retry_ladder", "retry-ladder-sampling-failed", exc)
+                    retrying_snapshot = []
+                # NULL (nothing scheduled) is 0.0, not a missing sample —
+                # the same not-a-missing-sample convention
+                # oldest_due_age follows at its own empty arm.
+                scheduled_horizon: float | None = await conn.fetchval(scheduled_horizon_sql)
                 # Isolated like the per-actor backlog read below, and for the
                 # same reason: a grouped per-actor read that fails must not
                 # cost the tick its fleet-wide samples. The empty fallback
@@ -1831,6 +1891,20 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             update_running_lease_expired_cache(
                 int(expired_lease) if expired_lease is not None else 0
             )
+            update_scheduled_horizon_cache(
+                float(scheduled_horizon) if scheduled_horizon is not None else 0.0
+            )
+            # Rebuilt whole from the snapshot: an actor whose retrying
+            # rows all resolved (succeeded or gone terminal) vanishes
+            # from both series instead of freezing at its last depth.
+            # Both caches are built before EITHER is written, the same
+            # mixed-state guard the per-actor backlog pair below pins.
+            retrying_counts = {actor: count for actor, count, _headroom in retrying_snapshot}
+            retry_headrooms = {
+                actor: max(0, headroom) for actor, _count, headroom in retrying_snapshot
+            }
+            update_jobs_retrying_cache(retrying_counts)
+            update_jobs_retry_headroom_cache(retry_headrooms)
             # Rebuilt whole from the snapshot: an actor that finished its
             # last running job vanishes from both series instead of freezing.
             # MIN(started_at) is NULL only when every running row of the
@@ -2142,3 +2216,101 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                     kind="stranded_jobs_cleared",
                     actor=actor,
                 )
+
+
+def _rate_limit_kind(prim: object) -> str:
+    """The ``kind`` label for a rate-limit primitive, the admin page's own
+    derivation (``web/admin/ops.py``'s ``rate_limits_page``): a
+    ``TokenBucket`` is ``token_bucket``; a primitive exposing
+    ``style``/``limit``/``window`` (``SlidingWindow`` and any future
+    sibling) is ``sliding_window_<style>`` with style bounded to
+    ``log``/``gcra``. Bounded by construction — the derivation is a
+    closed enum, never caller text — and shared with the page so the
+    gauge's kind values and the page's rows cannot drift.
+    """
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    if isinstance(prim, TokenBucket):
+        return "token_bucket"
+    style = getattr(prim, "style", None)
+    if style is not None:
+        return f"sliding_window_{style}"
+    return "unknown"
+
+
+def _bucket_tokens_by_kind(
+    rl: "RateLimitRegistry",
+    states: Mapping[str, "RateLimitState"],
+) -> dict[tuple[str, str], float]:
+    """Partition peeked bucket states into the gauge's (bucket, kind) series.
+
+    Statically-registered buckets (``is_keyed_rate_limit(name)`` False —
+    the operator's own ``register`` calls, bounded by the code the user
+    ships) keep a named series. Keyed-materialised buckets
+    (``base_name:key``, caller-controlled cardinality) are summed PER
+    KIND onto one ``('_other_', kind)`` aggregate — the
+    ``taskq.ratelimit.reclaim_pending`` precedent: keyed values NEVER
+    become labels. The state's own remaining budget is
+    ``tokens_remaining`` for a token bucket and ``remaining`` for a
+    sliding window, the two fields the peek contract populates.
+    """
+    series: dict[tuple[str, str], float] = {}
+    keyed_totals: dict[str, float] = {}
+    for name, state in states.items():
+        prim = rl.get_rate_limit(name)
+        kind = _rate_limit_kind(prim)
+        value = float(state.tokens_remaining if kind == "token_bucket" else state.remaining)
+        if rl.is_keyed_rate_limit(name):
+            keyed_totals[kind] = keyed_totals.get(kind, 0.0) + value
+        else:
+            series[(name, kind)] = value
+    for kind, total in keyed_totals.items():
+        series[("_other_", kind)] = total
+    return series
+
+
+async def _ratelimit_buckets_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Sample every registered rate-limit bucket's live token state every
+    ``reservation_slots_interval`` on the leader.
+
+    Reuses the admin page's own peek (``RateLimitRegistry.peek_all`` —
+    the exact call ``web/admin/ops.py``'s rate-limits page renders from),
+    so the scrape and the page can never disagree about what a bucket's
+    level is. Before this loop that state was page-render-only: a bucket
+    parked at zero tokens was invisible in metrics, its denial rate the
+    only trace. Static buckets get named series; keyed buckets are
+    aggregated per kind under ``_other_`` (``_bucket_tokens_by_kind``).
+    The whole pass is bounded by ``dispatcher_command_timeout`` (the
+    loop's convention for every backend wait): a black-holed broker
+    degrades the tick into a counted sampler failure
+    (``_sampler_read_failed``) instead of parking the leader.
+
+    Non-leader processes run no peek and clear nothing: the series is
+    simply absent (the leader-observable pattern — a demoted pod's
+    frozen series would claim authority over buckets it no longer
+    samples; ``_demote`` clears the cache on the way down).
+    """
+    rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry
+    clock = SystemClock()
+    while not shutdown.is_set():
+        ctx.deps.liveness.tick(
+            "leader.ratelimit_buckets", period=ctx.deps.settings.reservation_slots_interval
+        )
+        if ctx.deps.leading() and rl.rate_limits:
+            try:
+                states = await rl.peek_all(
+                    redis_client=ctx.deps.redis_client,
+                    pg_pool=ctx.deps.dispatcher_pool,
+                    clock=clock,
+                    settings=ctx.deps.settings,
+                    # The same bound every other backend wait in the
+                    # sweep loops takes (dispatcher_command_timeout);
+                    # peek_all raises TimeoutError through it.
+                    timeout=ctx.deps.settings.dispatcher_command_timeout,
+                )
+                update_ratelimit_bucket_tokens_cache(_bucket_tokens_by_kind(rl, states))
+            except Exception as exc:
+                _sampler_read_failed(
+                    ctx, "ratelimit_buckets", "ratelimit-buckets-sampling-failed", exc
+                )
+        await _sleep_interruptible(shutdown, ctx.deps.settings.reservation_slots_interval)

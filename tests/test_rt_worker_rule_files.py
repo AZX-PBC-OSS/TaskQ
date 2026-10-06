@@ -501,6 +501,15 @@ _SERIES_LABELS: dict[str, frozenset[str]] = {
     "taskq_maintenance_leader_lease_expires_in_seconds": frozenset(),
     "taskq_queue_depth": frozenset({"queue"}),
     "taskq_queue_live_workers": frozenset({"queue"}),
+    "taskq_queue_depth_by_status": frozenset({"queue", "status"}),
+    "taskq_jobs_retrying": frozenset({"actor"}),
+    "taskq_jobs_retry_headroom": frozenset({"actor"}),
+    "taskq_jobs_cancel_pending": frozenset(),
+    "taskq_jobs_scheduled_horizon_seconds": frozenset(),
+    "taskq_ratelimit_bucket_tokens": frozenset({"bucket", "kind"}),
+    "taskq_admin_sse_connections": frozenset({"topic", "surface"}),
+    "taskq_admin_sse_rejections_total": frozenset({"topic", "surface"}),
+    "taskq_jobs_cancels_actored_total": frozenset({"actor"}),
     "taskq_jobs_stranded": frozenset({"actor", "reason"}),
 }
 

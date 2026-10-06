@@ -384,6 +384,21 @@ class RateLimitRegistry:
     def has_keyed_rate_limits(self) -> bool:
         return bool(self._keyed_rate_limit_last_used)
 
+    def is_keyed_rate_limit(self, name: str) -> bool:
+        """Whether *name* is a keyed-MATERIALISED rate-limit entry.
+
+        A keyed ref's first acquire derives ``base_name:key`` and lazily
+        registers a primitive tracked in ``_keyed_rate_limit_last_used``;
+        a STATICALLY pre-registered entry is deliberately never stamped
+        there (the idle-eviction sweep must not evict it). This
+        predicate is that same discrimination, published for the
+        metrics sampler: named series are for statically-registered
+        buckets only (bounded by the code the user ships), keyed
+        materialisations — whose names embed caller-controlled keys —
+        are aggregated so they can never become label cardinality.
+        """
+        return name in self._keyed_rate_limit_last_used
+
     @property
     def has_pending_reservation_reclaims(self) -> bool:
         """Whether any evicted keyed bucket still awaits its row deletion.

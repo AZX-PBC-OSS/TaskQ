@@ -283,6 +283,66 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
     "WHERE job_id IS NOT NULL GROUP BY bucket_name"
 )
 
+#: Per-(queue, status) depth: the depth read's own GROUP BY extended with
+#: ``status`` — the JOINABLE status split. Sampled by the leader in the
+#: same tick (and on the same connection) as the depth gauge, so the two
+#: describe one moment. Kept on a separate instrument
+#: (``taskq.queue.depth_by_status``) rather than relabeling
+#: ``taskq.queue.depth`` because the shipped alert set
+#: (``TaskQQueueUnserved``'s ``on(queue)`` join) and the cardinality
+#: proofs pin the depth gauge's one-series-per-queue label set.
+#: statement_timestamp() vs clock_timestamp(): no time bound here (the
+#: two statuses ARE the population), matching the depth read above.
+_QUERY_QUEUE_DEPTH_BY_STATUS_SQL_TEMPLATE = (
+    'SELECT queue, status, count(*) FROM "{schema}".jobs '
+    "WHERE status IN ('pending', 'scheduled') GROUP BY queue, status"
+)
+
+#: The retry ladder's per-actor read: ONE grouped aggregate over the
+#: non-terminal population past its first attempt, producing BOTH haunt
+#: gauges' inputs — ``retrying`` (the population count) and
+#: ``min_headroom`` (MIN(max_attempts - attempt), how close the actor's
+#: worst live row is to its ceiling). The three live statuses are
+#: served by their per-status partial indexes (the same serving path
+#: the exact by_status counts use); ``attempt > 0`` is a post-scan
+#: Filter over that already-bounded live population — bounded by the
+#: fleet's outstanding work, never by history, which is the exactness
+#: contract the by-status sampler's design note pins for its alert
+#: operands. NULL min over an empty set cannot occur (GROUP BY emits no
+#: row for an empty population).
+_QUERY_JOBS_RETRYING_SQL_TEMPLATE = (
+    "SELECT actor, count(*) AS retrying, "
+    "min(max_attempts - attempt)::int AS min_headroom "
+    'FROM "{schema}".jobs '
+    "WHERE status IN ('pending', 'scheduled', 'running') AND attempt > 0 "
+    "GROUP BY actor"
+)
+
+#: Non-terminal jobs with a cancel in flight: the DURABLE cancel
+#: surface a scrape can see. cancel_phase is NOT NULL DEFAULT 0, and
+#: only the cancel ladder's writes move it off 0, so the count is the
+#: number of rows the protocol owes a terminal write. The status bound
+#: keeps a hypothetical terminal row with a stale phase (none exists
+#: today; the terminal writes clear the ladder) from pinning the gauge.
+#: The partial cancel indexes serve the running share.
+_QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
+    'SELECT count(*) FROM "{schema}".jobs '
+    "WHERE cancel_phase > 0 "
+    "AND status IN ('pending', 'scheduled', 'running')"
+)
+
+#: The scheduled wave's horizon: MAX(scheduled_at) over the scheduled
+#: population minus now, in seconds. statement_timestamp() (STABLE) for
+#: the two-clock rule every sampler here follows; the measured
+#: difference itself stays on the server clock (one expression, one
+#: moment). NULL over an empty population — the caller expresses "no
+#: scheduled work" as 0.0, the same convention oldest_due_age follows.
+_QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE = (
+    "SELECT EXTRACT(EPOCH FROM (MAX(scheduled_at) - statement_timestamp()))::float8 "
+    'FROM "{schema}".jobs '
+    "WHERE status = 'scheduled'"
+)
+
 # Explicit (not `j.*` / `ja.*`) column lists for the jobs -> jobs_archive and
 # job_attempts -> job_attempts_archive INSERTs below. `jobs_archive` mirrors
 # every `jobs` column plus two archive-only trailing columns (archived_at,

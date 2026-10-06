@@ -443,6 +443,7 @@ async def test_sse_endpoint_returns_event_stream(
         resolve_pool: Callable[[], Any],
         schema: str | None,
         session_verifier: Callable[[], Awaitable[bool]] | None = None,
+        topic: str = "",
     ) -> AsyncIteratorStr[str]:
         try:
             yield 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
