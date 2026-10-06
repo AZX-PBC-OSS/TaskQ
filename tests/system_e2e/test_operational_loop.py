@@ -19,17 +19,21 @@ The four phases, per test:
    exec probes, the leader elected, the standalone admin UI (``taskq ui
    serve``) showing the fleet on ``/admin/workers`` and the elected
    leader on ``/admin/leader``.
-2. **OBSERVE** - a realistic traffic mix (fast jobs, slow jobs, a
-   per-tenant rate-limited actor, an every-minute cron schedule), then
-   the operator's read sweep: the admin pages' rendered values, the
-   ``taskq.insights`` SQL layer, and the workers' Prometheus exposition
-   (``taskq health metrics``) must all agree with the seed.
+2. **OBSERVE** - a realistic traffic mix (fast jobs, a per-tenant
+   rate-limited actor, a running pair the scenario OWNS (the
+   ``sys_hang`` deadline workload, running until the operator acts - a
+   durable premise no read sweep can outrun), an every-minute cron
+   schedule), then the operator's read sweep: the admin pages' rendered
+   values, the ``taskq.insights`` SQL layer, and the workers' Prometheus
+   exposition (``taskq health metrics``) must all agree with the seed.
 3. **ACT** - cancel a RUNNING job through the embedded admin router
    (``create_router`` + a real ``PostgresBackend``: the admin-ui.md
-   embedding contract), retry a failed job (``taskq job retry``), move an
-   actor's queue (``taskq actor-config move-queue``), drain an actor
-   (``taskq actor-config set --max-concurrent 0``, the documented drain
-   mode). Each action lands in the ledger and renders back.
+   embedding contract) and its pair through the CLI (``taskq job
+   cancel`` - the runbook's surface), retry a failed job (``taskq job
+   retry``), move an actor's queue (``taskq actor-config move-queue``),
+   drain an actor (``taskq actor-config set --max-concurrent 0``, the
+   documented drain mode). Each action lands in the ledger and renders
+   back.
 4. **RECOVER** - ``kill -9`` a worker mid-job: the surviving fleet
    reclaims and re-runs the work, the stale worker row is cleaned, no
    lease is left stuck, and the event trail shows the reclaim's second
@@ -89,11 +93,14 @@ from taskq.insights import (
 from taskq.testing.assertions import plain_cli_output
 from taskq.web.admin import create_router, setup_admin_state
 from tests.system_e2e._harness import (
+    BOOT_READY_BOUND_S,
     DEPLOYMENT_CANCELLATION_GRACE_S,
     DEPLOYMENT_CLEANUP_GRACE_S,
     DEPLOYMENT_HEARTBEAT_INTERVAL_S,
     DEPLOYMENT_LOCK_LEASE_S,
     DEPLOYMENT_TERMINATION_GRACE_S,
+    SWEEP_INTERVAL_S,
+    TIER_LOAD_STRETCH,
     WorkerProc,
     reap,
     spawn_joined_worker,
@@ -109,6 +116,7 @@ from tests.system_e2e.actors import (
     sys_cron,
     sys_drain,
     sys_fast,
+    sys_hang,
     sys_mover,
     sys_rated,
     sys_retry_me,
@@ -133,10 +141,54 @@ _CANCEL_REASON = "ops-loop cancel: the operator stopped this one"
 #: read them, so the limbo contract here reads the same numbers).
 _CANCELLATION_GRACE_S = DEPLOYMENT_CANCELLATION_GRACE_S
 _CLEANUP_GRACE_S = DEPLOYMENT_CLEANUP_GRACE_S
-#: The slow workload's simulated runtime: long enough that the OBSERVE
-#: probes and the ACT cancel land mid-run (the read sweep spends seconds,
-#: not tens of seconds), short enough to keep the loop under its timeout.
+#: The recovery workload's simulated runtime: long enough that the
+#: kill -9 lands mid-run (the RECOVER phase's reclaim has a body to
+#: catch), short enough to keep the loop under its timeout.
 _SLOW_SLEEP = 40.0
+
+# ── The derived bounds (#651's doctrine, in-code) ────────────────────────
+# Every deadline below derives from the fleet's own knobs - the tier's
+# dispatch cadence and the deployment-shaped pair this file's workers boot
+# with - multiplied by the tier's load stretch. A bare wall-clock number
+# is a bet against the runner; a derived bound moves with the fleet and
+# the runner instead of reding a healthy loop on a starved box.
+
+#: The dispatch cadence the loop's workers run (the harness's sweep tick
+#: plus the poll floor every wait budgets).
+_POLL_FLOOR_S = 1.0
+_CLAIM_CYCLE_S = SWEEP_INTERVAL_S + _POLL_FLOOR_S
+
+#: One job's claim → terminal chain on this fleet: a boot-readiness
+#: ceiling (the slowest legal first beat), one claim cycle, and the lock
+#: lease the claim rides, stretched by the tier's load factor. The
+#: fast-mix, rated-mix and neighbor settles all wait on THIS bound; a
+#: fleet that never serves still reds inside it.
+_SETTLE_BOUND_S = (
+    BOOT_READY_BOUND_S + _CLAIM_CYCLE_S + DEPLOYMENT_LOCK_LEASE_S
+) * TIER_LOAD_STRETCH
+
+#: The operator-cancel bound: the cancel ladder's full arithmetic - the
+#: worker observes the phase-1 flag on its heartbeat poll (three beats of
+#: slack), the cooperative grace and the cleanup grace lapse, the force
+#: cancel interrupts the body, the terminal write lands - all stretched.
+#: A cancel that never wins reds here (the escalation ladder's abandoned,
+#: not cancelled, names the broken mechanism in the failure).
+_CANCEL_LAND_BOUND_S = (
+    DEPLOYMENT_HEARTBEAT_INTERVAL_S * 3
+    + DEPLOYMENT_CANCELLATION_GRACE_S
+    + DEPLOYMENT_CLEANUP_GRACE_S
+) * TIER_LOAD_STRETCH
+
+#: The every-minute cron's first-fire bound: the next minute boundary
+#: (60s) plus the settle bound above.
+_CRON_FIRE_BOUND_S = 60.0 + _SETTLE_BOUND_S
+
+#: The drain-cap's exposure window: how long the held backlog is given
+#: the chance to (wrongly) run. A broken ``max_concurrent = 0`` leaks a
+#: claim within one dispatch cycle; the window is two, stretched - and
+#: the assertion after it is STATE (pending rows, zero running), not a
+#: clock, so the exposure's length carries no tooth of its own.
+_DRAIN_EXPOSURE_S = 2 * _CLAIM_CYCLE_S * TIER_LOAD_STRETCH
 _TIMESCALE_IMAGE = (
     os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or "timescale/timescaledb:2.30.1-pg18"
 )
@@ -230,6 +282,15 @@ def _parse_metrics(text: str) -> dict[str, float]:
         except ValueError:
             continue
     return values
+
+
+async def _job_succeeded(conn: asyncpg.Connection, schema: str, job_id: Any) -> bool:
+    """The durable receipt of one job's terminal success (the ledger's row)."""
+    row = await conn.fetchval(
+        f"SELECT count(*) FROM \"{schema}\".jobs WHERE id = $1 AND status = 'succeeded'",
+        job_id,
+    )
+    return int(row) == 1
 
 
 async def _worker_metrics(sock_path: str) -> dict[str, float]:
@@ -332,7 +393,7 @@ async def spawn_admin_ui(dsn: str, schema: str) -> tuple[AdminUI, httpx.AsyncCli
             return False
         return resp.status_code == 200
 
-    await _poll(_ready, 30.0, "taskq ui serve readiness")
+    await _poll(_ready, BOOT_READY_BOUND_S, "taskq ui serve readiness")
     return AdminUI(client, proc), client
 
 
@@ -630,14 +691,21 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                         f"{health.stderr.decode(errors='replace') if health else 'no attempt'}"
                     )
 
-            # Worker registration: both replicas heartbeating.
+            # Worker registration: both replicas heartbeating. The wait's
+            # bound is the harness's own boot-readiness ceiling stretched
+            # by the tier's load factor - registration is the boot's last
+            # DB step, so the bound that gates readiness gates the row.
             pids = {worker_a.proc.pid, worker_b.proc.pid}
 
             async def _fleet_registered() -> bool:
                 rows = await conn.fetch(f'SELECT pid FROM "{schema}".workers')
                 return pids <= {r["pid"] for r in rows}
 
-            await _poll(_fleet_registered, 30.0, "both workers registered in the fleet table")
+            await _poll(
+                _fleet_registered,
+                BOOT_READY_BOUND_S * TIER_LOAD_STRETCH,
+                "both workers registered in the fleet table",
+            )
 
             # The leader elected, and it is one of OUR workers.
             leader_pid_box: list[int] = []
@@ -655,7 +723,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 leader_pid_box.append(int(row["pid"]))
                 return leader_pid_box[0] in pids
 
-            await _poll(_leader_elected, 30.0, "a leader elected from the deployed fleet")
+            await _poll(
+                _leader_elected,
+                BOOT_READY_BOUND_S * TIER_LOAD_STRETCH,
+                "a leader elected from the deployed fleet",
+            )
             leader_pid = leader_pid_box[0]
 
             # The admin UI serves the fleet: the workers page shows BOTH
@@ -692,9 +764,15 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 await client.enqueue(sys_rated, RatedPayload(tenant="t0"), tags=[_TAG])
                 for _ in range(3)
             ]
-            slow_jobs = [
-                await client.enqueue(sys_slow, SysPayload(sleep=_SLOW_SLEEP), tags=[_TAG])
-                for _ in range(2)
+            # The running pair the OBSERVE surfaces must read: the hold
+            # actor runs UNTIL the operator's cancel lands, so "two rows
+            # running" is a state the scenario owns for as long as the
+            # read sweep needs - not a 40s sleep the sweep can outrun on a
+            # loaded runner (the timing premise the #651 doctrine
+            # retires: the seeded truth is durable, the clock is not a
+            # participant).
+            hold_jobs = [
+                await client.enqueue(sys_hang, SysPayload(), tags=[_TAG]) for _ in range(2)
             ]
             retry_me = await client.enqueue(sys_retry_me, SysPayload(), tags=[_TAG])
             mover_jobs = [
@@ -717,11 +795,22 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 )
                 return int(row) >= n
 
-            # The fast mix completes; the slow pair runs on.
+            async def _actor_running(actor: str, n: int) -> bool:
+                row = await conn.fetchval(
+                    f"""
+                    SELECT count(*) FROM "{schema}".jobs
+                    WHERE tags @> ARRAY[$1::text] AND actor = $2 AND status = 'running'
+                    """,
+                    _TAG,
+                    actor,
+                )
+                return int(row) >= n
+
+            # The fast mix completes; the hold pair runs on.
             try:
                 await _poll(
                     lambda: _actor_succeeded("sys_fast", len(fast_jobs)),
-                    120.0,
+                    _SETTLE_BOUND_S,
                     "all seeded fast jobs reached succeeded",
                 )
             except AssertionError:
@@ -742,8 +831,6 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                     f"the fast mix never completed. job states: {[dict(r) for r in diag_jobs]} "
                     f"workers: {[dict(r) for r in diag_workers]}"
                 ) from None
-            for handle in fast_jobs:
-                await handle.wait(timeout=5)
 
             # The rate-limited actor: with a 1-token bucket refilling at
             # half a token per second, the SECOND and THIRD concurrent
@@ -751,7 +838,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # insights layer counts.
             await _poll(
                 lambda: _actor_succeeded("sys_rated", len(rated_jobs)),
-                60.0,
+                _SETTLE_BOUND_S,
                 "the rate-limited mix drained through the 1-token bucket",
             )
             blocked = await conn.fetchval(
@@ -769,12 +856,43 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
 
             # The running pair is on the surfaces while it runs: the
             # admin count endpoint, the depth CLI, the Prometheus
-            # exposition, the insights layer.
-            running_slow = await ui.get("/admin/jobs/count", actor="sys_slow", status="running")
+            # exposition, the insights layer. The premise itself is a
+            # DURABLE receipt first (the hold pair is running - the state
+            # the scenario owns, waited out on the ledger), then every
+            # surface is reconciled against the ledger's count - a
+            # surface that lies reds even when the premise holds.
+            try:
+                await _poll(
+                    lambda: _actor_running("sys_hang", len(hold_jobs)),
+                    _SETTLE_BOUND_S,
+                    "the hold pair reached running",
+                )
+            except AssertionError:
+                diag = await conn.fetch(
+                    f"""
+                    SELECT actor, status::text AS status, count(*)::int AS n
+                    FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]
+                    GROUP BY actor, status::text ORDER BY actor
+                    """,
+                    _TAG,
+                )
+                raise AssertionError(f"the hold pair never started: {diag}") from None
+
+            running_now = await conn.fetchval(
+                f"""
+                SELECT count(*) FROM "{schema}".jobs
+                WHERE tags @> ARRAY[$1::text] AND actor = 'sys_hang' AND status = 'running'
+                """,
+                _TAG,
+            )
+            running_slow = await ui.get("/admin/jobs/count", actor="sys_hang", status="running")
             assert running_slow.status_code == 200
-            assert running_slow.json() == {"count": 2}, (
-                f"the admin count endpoint does not tell the slow pair's truth: "
-                f"{running_slow.json()}"
+            assert running_slow.json() == {"count": int(running_now)}, (
+                f"the admin count endpoint does not tell the hold pair's truth "
+                f"(ledger: {running_now}): {running_slow.json()}"
+            )
+            assert int(running_now) >= 2, (
+                f"the hold pair's running receipt does not hold: {running_now}"
             )
 
             depth = await asyncio.to_thread(run_cli, ["queues", "depth"], cli_env)
@@ -821,9 +939,10 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # Insights: the SQL layer's reads agree with the seed.
             backlog = await fetch_actor_backlog(conn, schema=schema)
             by_actor = {r["actor"]: r for r in backlog}
-            slow_row = by_actor.get("sys_slow")
-            assert slow_row is not None and slow_row["running"] == 2, (
-                f"the actor backlog does not tell the slow pair's truth: {slow_row}"
+            hold_row = by_actor.get("sys_hang")
+            assert hold_row is not None and hold_row["running"] == int(running_now), (
+                f"the actor backlog does not tell the hold pair's truth "
+                f"(ledger: {running_now}): {hold_row}"
             )
 
             imbalance = await fetch_queue_imbalance(conn, schema=schema)
@@ -885,14 +1004,16 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # ══ 3. ACT ═════════════════════════════════════════════════
             # Through the real surfaces, each action verified in the
             # ledger AND rendered back. The running-job cancel goes
-            # FIRST: it acts on the slow pair while it is still mid-run;
-            # the cron wait trails the actions (its minute boundary is
+            # FIRST: it acts on the hold pair, which runs until the
+            # operator acts (the premise is the scenario's own durable
+            # state, not a sleep the read sweep could have outrun); the
+            # cron wait trails the actions (its minute boundary is
             # already ticking while the operator works).
 
             embedded, embedded_pool = await open_embedded_admin(dsn, schema)
 
             # (a) Cancel a RUNNING job through the admin route.
-            cancel_target = slow_jobs[0]
+            cancel_target = hold_jobs[0]
             still_running = await conn.fetchval(
                 f'SELECT status::text FROM "{schema}".jobs WHERE id = $1',
                 cancel_target.job_id,
@@ -919,7 +1040,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 return row == "cancelled"
 
             try:
-                await _poll(_cancel_landed, 30.0, "the running job reached cancelled")
+                await _poll(
+                    _cancel_landed,
+                    _CANCEL_LAND_BOUND_S,
+                    "the running job reached cancelled",
+                )
             except AssertionError:
                 diag = await conn.fetch(
                     f"""
@@ -975,7 +1100,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             assert "cancelled" in detail_after.text, (
                 "the job page does not render the operator's cancel"
             )
-            ui_cancelled = await ui.get("/admin/jobs/count", actor="sys_slow", status="cancelled")
+            ui_cancelled = await ui.get("/admin/jobs/count", actor="sys_hang", status="cancelled")
             assert ui_cancelled.json() == {"count": 1}, (
                 f"the standalone admin UI does not reflect the operator's cancel: "
                 f"{ui_cancelled.json()}"
@@ -992,6 +1117,53 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 "the standalone taskq ui serve mutation route changed behavior (got "
                 f"{ui_pin.status_code}): if the missing-Backend gap was fixed, drive the "
                 "ACT phase's cancels through this surface and drop this pin"
+            )
+
+            # (a2) The pair's second hold through the CLI - the operator's
+            # other surface (the same `taskq job cancel` a runbook calls).
+            # The loop's population must terminalise through operator
+            # action, and the hold actor gives the cancel a target that is
+            # running BY CONSTRUCTION. Same receipt: the row terminalises
+            # 'cancelled' inside the derived bound, the event carries the
+            # reason, and the cooperative cancel - not the escalation
+            # ladder - is what landed it.
+            cli_cancel_target = hold_jobs[1]
+            cli_cancel = await asyncio.to_thread(
+                run_cli,
+                ["job", "cancel", str(cli_cancel_target.job_id), "--reason", _CANCEL_REASON],
+                cli_env,
+            )
+            assert cli_cancel.returncode == 0, (
+                f"taskq job cancel failed: {cli_cancel.stderr.decode(errors='replace')}"
+            )
+
+            async def _cli_cancel_landed() -> bool:
+                row = await conn.fetchval(
+                    f'SELECT status::text FROM "{schema}".jobs WHERE id = $1',
+                    cli_cancel_target.job_id,
+                )
+                return row == "cancelled"
+
+            await _poll(
+                _cli_cancel_landed,
+                _CANCEL_LAND_BOUND_S,
+                "the CLI cancel terminalised the second hold",
+            )
+            cli_event = await conn.fetchrow(
+                f"""
+                SELECT detail FROM "{schema}".job_events
+                WHERE job_id = $1 AND kind = 'cancel_request'
+                ORDER BY occurred_at DESC LIMIT 1
+                """,
+                cli_cancel_target.job_id,
+            )
+            assert cli_event is not None, "the CLI cancel wrote no cancel_request event"
+            cli_detail = cli_event["detail"]
+            if isinstance(cli_detail, str):  # Why: asyncpg returns jsonb as text uncoded.
+                cli_detail = json.loads(cli_detail)
+            assert cli_detail.get("reason") == _CANCEL_REASON, (
+                f"the CLI cancel's cancel_request event does not carry the operator's "
+                f"reason: {cli_detail}"
             )
 
             # (b) Retry the failed job through the CLI.
@@ -1016,7 +1188,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 )
                 return row is not None and row["status"] == "failed" and int(row["attempt"]) >= 2
 
-            await _poll(_retried_ran, 60.0, "the operator retry re-ran the failed job")
+            await _poll(
+                _retried_ran,
+                _SETTLE_BOUND_S,
+                "the operator retry re-ran the failed job",
+            )
             failed_transitions = await conn.fetchval(
                 f"""
                 SELECT count(*) FROM "{schema}".job_events
@@ -1057,9 +1233,15 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             )
             # The move's dispatch-side effect: jobs enqueued after it are
             # served through the target's consumers - nothing strands on
-            # the retired queue (ops.md's no-strays contract).
+            # the retired queue (ops.md's no-strays contract). The
+            # settle is the ledger's receipt (the durable row), not a
+            # client-side wait on a starved process's clock.
             for handle in post_move:
-                await handle.wait(timeout=60)
+                await _poll(
+                    lambda h=handle: _job_succeeded(conn, schema, h.job_id),
+                    _SETTLE_BOUND_S,
+                    "the post-move job completed through the moved queue",
+                )
             backlog_after_move = await fetch_actor_backlog(conn, schema=schema)
             mover_row = next((r for r in backlog_after_move if r["actor"] == "sys_mover"), None)
             assert mover_row is not None and mover_row["queue"] == _MOVE_TARGET_QUEUE, (
@@ -1105,14 +1287,34 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 assert row is not None
                 return int(row["pending"]) == len(held_ids) and int(row["running"]) == 0
 
-            await asyncio.sleep(2.0)
-            await _poll(_drain_holds, 10.0, "the drained actor's backlog held pending")
-            await asyncio.sleep(1.0)
-            await _poll(_drain_holds, 10.0, "the drained actor's backlog STILL held pending")
+            # Two exposures, each a derived window (a broken cap leaks a
+            # claim within one dispatch cycle; the window gives it two,
+            # stretched), each followed by the SAME state assertion - the
+            # teeth are the pending rows and the zero running count, not
+            # the clock.
+            await asyncio.sleep(_DRAIN_EXPOSURE_S)
+            await _poll(
+                _drain_holds,
+                _CLAIM_CYCLE_S * TIER_LOAD_STRETCH,
+                "the drained actor's backlog held pending",
+            )
+            await asyncio.sleep(_DRAIN_EXPOSURE_S)
+            await _poll(
+                _drain_holds,
+                _CLAIM_CYCLE_S * TIER_LOAD_STRETCH,
+                "the drained actor's backlog STILL held pending",
+            )
 
-            # The rest of the fleet is alive through the drain.
+            # The rest of the fleet is alive through the drain: the
+            # neighbor's completion is read off the LEDGER (the durable
+            # row), on the settle bound - not a client-side wait whose
+            # clock a starved runner owns.
             neighbor = await client.enqueue(sys_fast, SysPayload(sleep=0.05), tags=[_TAG])
-            await neighbor.wait(timeout=30)
+            await _poll(
+                lambda: _job_succeeded(conn, schema, neighbor.job_id),
+                _SETTLE_BOUND_S,
+                "the fleet's neighbor job survived the drain and completed",
+            )
             ui_pending = await ui.get("/admin/jobs/count", actor="sys_drain", status="pending")
             assert ui_pending.json() == {"count": len(held_ids)}, (
                 f"the admin UI does not render the drain's held backlog: {ui_pending.json()}"
@@ -1145,7 +1347,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
 
             await _poll(
                 _drain_flushed,
-                60.0,
+                _SETTLE_BOUND_S,
                 "the undrained backlog completed after the cap cleared",
             )
 
@@ -1163,7 +1365,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 )
                 return int(row) >= 1
 
-            await _poll(_cron_fired, 120.0, "the every-minute cron schedule's first fire landed")
+            await _poll(
+                _cron_fired,
+                _CRON_FIRE_BOUND_S,
+                "the every-minute cron schedule's first fire landed",
+            )
             ledger = await fetch_cron_ledger(conn, schema=schema, window=timedelta(hours=1))
             ledger_row = next(
                 (r for r in ledger if str(r.get("schedule_id")) == str(schedule.schedule_id)),
@@ -1386,7 +1592,10 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 + 1  # the cron fire
                 + len(recovery_jobs)
             ), f"the loop's delivered work is missing from the balance: {counts}"
-            assert counts.get("cancelled", 0) == 1, counts
+            assert counts.get("cancelled", 0) == 2, (
+                f"the loop performed exactly two operator cancels (the embedded router's "
+                f"and the CLI's); the ledger names a different count: {counts}"
+            )
             assert counts.get("failed", 0) >= 1, counts
 
             # Teardown inside the client scope: the schedule must stop
