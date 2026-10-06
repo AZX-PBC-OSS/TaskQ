@@ -1281,7 +1281,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `max_concurrent=0` set as a "disable" | actor silently stops dispatching; jobs pile up `pending` | `0` is drain mode: use it deliberately, drain with it, then restore |
 | Redis-backed limiter without `TASKQ_REDIS_URL` | worker refuses to start | fail-fast by design: configure Redis or use `backend="postgres"` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Suppressing `asyncio.CancelledError` in an actor | cancel phase escalates to `abandoned` | never catch it; see [cancellation.md](cancellation.md) |
-| Two workers, same health socket path | second worker's health server fails | unique `TASKQ_HEALTH_SOCKET_PATH` per process |
+| Two workers pinned to the same `TASKQ_HEALTH_SOCKET_PATH` | second worker's health server fails | the default is per-process unique (`/tmp/taskq_health_<pid>.sock`); give explicitly pinned paths unique values |
 | `leader_lease` below `4 * heartbeat_interval` | no error, no boot refusal | silently raised to the floor: the same `lock_lease >= 4 x heartbeat_interval` invariant, honoured rather than enforced, so raising `heartbeat_interval` alone raises the effective lease instead of shortening the renewal margin ([architecture.md](../architecture.md#leader-election)) |
 | Cancel expected to survive a crash-retry | retried attempt runs uncancelled | retry arms reset cancel state by design; re-cancel if still needed |
 | Exporter env var set, telemetry expected | nothing collected, silently | exporter must be configured in-process; see [§8](#8-observability-and-alerting) |

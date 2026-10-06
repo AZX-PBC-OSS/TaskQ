@@ -22,7 +22,9 @@ This policy covers the TaskQ Python package and its CI/CD pipeline. Vulnerabilit
 
 TaskQ's worker-side health transports are unauthenticated by design and are
 meant for the pod network: the health Unix socket
-(`TASKQ_HEALTH_SOCKET_PATH`, default `/tmp/taskq_health.sock`, plus the
+(`TASKQ_HEALTH_SOCKET_PATH` — the field fallback is `/tmp/taskq_health.sock`,
+while a worker booted with no explicit path binds the per-process default
+`/tmp/taskq_health_<pid>.sock` — plus the
 optional TCP listener `TASKQ_HEALTH_PORT`) serves three process gauges, and
 the worker's Prometheus scrape (`TASKQ_METRICS_PORT` with the
 `[prometheus]` extra) serves metric series naming actors, queues, and

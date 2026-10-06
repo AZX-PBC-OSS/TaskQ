@@ -113,6 +113,29 @@ async def test_served_queue_enqueue_stays_silent(
     assert _warnings(log_events) == []
 
 
+async def test_note_reason_names_the_queues_consumer_escape(
+    log_events: list[structlog.types.EventDict],
+) -> None:
+    """Red: the predicate is the stored-assignment set, so a worker
+    consuming the queue via ``--queues``/``TASKQ_QUEUES`` (no stored
+    assignment routes there) makes the note fire on a job that WILL be
+    dispatched. The note may not fire at all in that corner (the
+    docstring owns that trade), but its reason must not assert certain
+    stranding: it names the consumer escape so the false positive is
+    self-explaining instead of sending an operator hunting for a
+    stranded row that does not exist."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    client = JobsClient(backend)
+    ref = _make_ref()
+    await client.enqueue(ref, _Payload(), queue="ghost_queue")
+    (warning,) = _warnings(log_events)
+    reason = str(warning["reason"])
+    assert "--queues" in reason
+    assert "TASKQ_QUEUES" in reason
+    # The stranded claim is conditional, never absolute.
+    assert "stays pending until" not in reason
+
+
 async def test_warn_once_per_queue_per_ttl(
     log_events: list[structlog.types.EventDict],
 ) -> None:

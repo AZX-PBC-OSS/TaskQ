@@ -1909,6 +1909,26 @@ async def _health_request(settings: WorkerSettings, path: str) -> int:
         )
     except (TimeoutError, FileNotFoundError, ConnectionRefusedError, OSError) as exc:
         typer.echo(f"health socket unreachable: {exc}", err=True)
+        if (
+            WorkerSettings.resolve_cascade_value("TASKQ_HEALTH_SOCKET_PATH") is None
+            and settings.health_socket_path
+            == WorkerSettings.get_fields()["health_socket_path"][1].default  # pyright: ignore[reportAttributeAccessIssue,reportIndexIssue]  # Why: the field's static fallback literal, read rather than restated so the two cannot drift (get_fields is the settings base's own reflection API; [1] is the FieldInfo).
+        ):
+            # The probe ran with NO explicit path anywhere in the cascade,
+            # so it aimed at the static fallback that an unconfigured
+            # worker no longer binds (it mints /tmp/taskq_health_<pid>.sock
+            # at boot). The unreachable line alone would send the operator
+            # hunting for a worker that is perfectly healthy; the hint is
+            # the per-pid discovery contract's other half. An operator who
+            # DID set an explicit path (here or in the cascade) gets the
+            # plain line: their value was honored verbatim.
+            typer.echo(
+                "hint: with no explicit path an unconfigured worker binds a "
+                "per-process default (/tmp/taskq_health_<pid>.sock — the path its "
+                "boot logs as health-server-started's socket_path); point "
+                "TASKQ_HEALTH_SOCKET_PATH at that file and re-run.",
+                err=True,
+            )
         return 1
     try:
         async with asyncio.timeout(_REQUEST_TIMEOUT_S):

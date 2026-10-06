@@ -360,7 +360,7 @@ taskq health ready    # returns 0 if the worker can reach the database
 taskq health metrics  # returns current worker metrics
 ```
 
-All health commands connect to the worker's Unix socket (default `/tmp/taskq_health.sock`) and return exit code 0 on success, 1 on failure. The commands must be run on the same host as the worker. The socket path is configured via `TASKQ_HEALTH_SOCKET_PATH`.
+All health commands connect to the worker's Unix socket and return exit code 0 on success, 1 on failure. The commands must be run on the same host as the worker. An unconfigured worker binds the per-process default `/tmp/taskq_health_<pid>.sock` (logged at boot as `health-server-started`'s `socket_path`), so set `TASKQ_HEALTH_SOCKET_PATH` to that path before probing it.
 
 ---
 

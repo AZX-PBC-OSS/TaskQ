@@ -76,9 +76,9 @@ EXPOSE 8600
 
 # The worker serves /live and /ready on its Unix health socket
 # (pinned to /tmp/taskq_health.sock via TASKQ_HEALTH_SOCKET_PATH above).
-# `taskq health
-# ready` is the same exec probe the Kubernetes and Compose recipes use; the
-# readiness ping covers the dispatcher pool's Postgres reachability.
+# `taskq health ready` is the same exec probe the Kubernetes and Compose
+# recipes use; the readiness ping covers the dispatcher pool's Postgres
+# reachability.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
     CMD ["taskq", "health", "ready"]
 

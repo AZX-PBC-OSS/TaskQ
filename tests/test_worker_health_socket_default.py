@@ -13,6 +13,7 @@ instead; every explicit spelling stays authoritative verbatim.
 """
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from typer.testing import CliRunner
 from taskq import actor
 from taskq.cli import app
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import plain_cli_output
 from taskq.worker.health import default_worker_health_socket_path
 
 runner = CliRunner()
@@ -108,3 +110,33 @@ def test_static_default_still_exists_as_the_settings_fallback() -> None:
     'health socket unreachable' loudly rather than cross-reporting."""
     settings = WorkerSettings.load_from_dict({"TASKQ_PG_DSN": "postgresql://x:x@localhost/x"})
     assert settings.health_socket_path == _STATIC_DEFAULT
+
+
+def test_unreachable_without_env_hints_at_the_per_pid_discovery_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Red: with no env override, an unreachable probe printed a bare
+    ENOENT — no pointer to the per-pid default the worker now binds, nor
+    to the env var that finds it. ``taskq health`` is the discovery
+    surface for the minted path, so its loudest failure must teach the
+    contract: name the per-pid default shape and the override."""
+    monkeypatch.delenv("TASKQ_HEALTH_SOCKET_PATH", raising=False)
+    Path(_STATIC_DEFAULT).unlink(missing_ok=True)
+    result = runner.invoke(app, ["health", "ready"])
+    assert result.exit_code == 1
+    err = plain_cli_output(result.stderr)
+    assert "health socket unreachable" in err
+    assert "taskq_health_<pid>" in err
+    assert "TASKQ_HEALTH_SOCKET_PATH" in err
+
+
+def test_unreachable_with_env_override_stays_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hint is the NO-CONFIG discovery contract's other half only: an
+    operator who set an explicit path (here, one that does not exist)
+    gets the plain unreachable line, no per-pid noise."""
+    monkeypatch.setenv("TASKQ_HEALTH_SOCKET_PATH", "/nonexistent-rt667/probe.sock")
+    result = runner.invoke(app, ["health", "ready"])
+    assert result.exit_code == 1
+    err = plain_cli_output(result.stderr)
+    assert "health socket unreachable" in err
+    assert "taskq_health_<pid>" not in err

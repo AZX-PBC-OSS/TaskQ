@@ -272,10 +272,14 @@ class ActorCapacityCache:
         ago (default 5) is not yet in the set, and a failed or
         never-succeeded refresh (or a backend without
         ``get_actor_queues``) disables the note entirely, fail-open. The
-        TASKQ_QUEUES corner (a worker subscribed to a queue no stored
-        assignment routes) reads as unserved here; the note's wording
-        says exactly what it tested, no stored assignment routes the
-        queue, which is true.
+        TASKQ_QUEUES corner (a worker consuming a queue via
+        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes) reads
+        as unserved here — the predicate is the stored-assignment set, and
+        the client cannot see workers' consumed-queue lists. The note's
+        reason therefore states only what it tested (no stored assignment
+        routes the queue) and names the ``--queues``/``TASKQ_QUEUES`` escape,
+        so the corner's false positive is self-explaining instead of
+        asserting a stranded row that does not exist.
 
         Warn-once per queue per ``ttl`` window (the stranded sweep's
         non-set doctrine: a condition that starts small and grows must
@@ -297,7 +301,8 @@ class ActorCapacityCache:
             actor=actor,
             queue=queue,
             reason="no registered actor_config row routes this queue to any actor; "
-            "the job stays pending until an actor whose queue is this name is "
+            "unless a worker consumes this queue via --queues/TASKQ_QUEUES, the "
+            "job stays unserved until an actor whose queue is this name is "
             "registered on a worker (snapshot is TTL-bounded, a worker registered "
             "seconds ago may not be in it yet)",
         )
