@@ -34,18 +34,6 @@
     {{ job.attempt }} / {% if job.retry_kind == 'indefinite' %}— (indefinite){% else %}{{ job.max_attempts }}{% endif %}
 {% endmacro %}
 
-{% macro time_ago(ts) %}
-    {% if ts is none or ts == 'None' or ts == '' %}—{% else %}
-    {% set now_ts = now().timestamp() if now is defined else 0 %}
-    {% if ts is string %}
-        {% set job_ts = ts %}
-    {% else %}
-        {% set job_ts = ts %}
-    {% endif %}
-    {{ ts[:19] if ts is string and ts | length >= 19 else ts }}
-    {% endif %}
-{% endmacro %}
-
 {% macro job_row(job) %}
 <tr>
     <td><a href="{{ base_path }}/jobs/{{ job.id }}" class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{{ job.id }}</a></td>

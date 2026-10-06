@@ -991,3 +991,238 @@ def test_admin_js_refreshes_the_count_from_the_count_route() -> None:
     assert "tab=" in log[idx + 1], "the count request must carry the same filters"
     assert out["total"] == 3210, "the count response must land on the component"
     assert out["range"] == "1\u20130 of 3,210", out["range"]
+
+
+# ── U5: rate-limit buckets outside this process's registry render read-only ─
+
+
+class _RLRedisPipeline:
+    """Pipeline stub: every command queues, execute answers empty results."""
+
+    def hgetall(self, key: str) -> _RLRedisPipeline:
+        return self
+
+    def get(self, key: str) -> _RLRedisPipeline:
+        return self
+
+    def zcard(self, key: str) -> _RLRedisPipeline:
+        return self
+
+    async def execute(self) -> list[dict[str, str]]:
+        # One result per queued command (the page's strict zip demands it).
+        return [{}]
+
+
+class _RLRedis:
+    """Redis stub whose every read comes back empty (the bucket-has-no-
+    live-state shape): redis_available stays true, redis_state empty."""
+
+    def pipeline(self) -> _RLRedisPipeline:
+        return _RLRedisPipeline()
+
+
+def _make_rate_limits_app(
+    monkeypatch: pytest.MonkeyPatch, *, allow_reset: bool, redis: object | None = None
+) -> TestClient:
+    from taskq.ratelimit.registry import RateLimitRegistry
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", str(allow_reset).lower())
+    pool = _JobDetailPool()
+
+    class _RLConn(_JobDetailConnection):
+        async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+            if "rate_limit_buckets" in query:
+                # A worker-published keyed bucket that exists ONLY as a PG
+                # row in this process (the registry has no primitive for
+                # it) - the dead-Reset-button shape.
+                return [
+                    {
+                        "bucket_name": "keyed:worker-published",
+                        "kind": "token_bucket",
+                        "state": "active",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            return []
+
+    class _RLAcquire:
+        async def __aenter__(self) -> _RLConn:
+            return _RLConn(pool)
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+    pool.acquire = lambda **kwargs: _RLAcquire()  # type: ignore[method-assign]
+
+    bundle = create_router(
+        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        rate_limit_registry=RateLimitRegistry(),
+        backend=None,
+        redis_client=redis,
+    )
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return TestClient(app)
+
+
+def test_rate_limit_reset_disabled_renders_no_reset_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reset gate itself: without TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET
+    no Reset control renders at all (the regression control)."""
+    client = _make_rate_limits_app(monkeypatch, allow_reset=False)
+    resp = client.get("/rate-limits")
+    assert resp.status_code == 200
+    assert "/reset" not in resp.text
+
+
+def test_registry_absent_bucket_renders_read_only_no_dead_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U5: a bucket that exists only as worker-published PG state (the
+    registry in THIS process has no primitive) renders read-only - the
+    reset route answers 404 for it, so a rendered button is a dead one."""
+    client = _make_rate_limits_app(monkeypatch, allow_reset=True)
+    resp = client.get("/rate-limits")
+    assert resp.status_code == 200
+    row = resp.text[resp.text.index("keyed:worker-published") :]
+    assert "/reset" not in row[:2000], (
+        "a bucket not in this process's registry must not render a Reset "
+        "button (the route would answer 404)"
+    )
+    assert "managed by the worker process" in row[:2000]
+
+
+# ── U6: the empty redis-state cell is an em-dash ─────────────────────────
+
+
+def test_empty_redis_state_cell_renders_an_em_dash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U6: a bucket with no Redis state renders an em-dash in the cell -
+    the Python dict repr ({}) that leaked before is a debugging artifact,
+    not a value."""
+    client = _make_rate_limits_app(monkeypatch, allow_reset=False, redis=_RLRedis())
+    resp = client.get("/rate-limits")
+    assert resp.status_code == 200
+    assert "Redis State" in resp.text, "the control: the redis column rendered"
+    assert "{}" not in resp.text, "the raw dict repr must not render as a cell value"
+
+
+# ── U7: the job-detail timestamps are humanized, absolute in title ────────
+
+
+class _EventsPool(_JobDetailPool):
+    """Adds event-log and audit-trail rows to the job-detail stub."""
+
+    async def _events(self, query: str) -> list[dict[str, Any]]:
+        if "job_events" in query:
+            return [
+                {"occurred_at": "2026-01-01T00:00:00+00:00", "kind": "state_change", "detail": None}
+            ]
+        if "admin_audit" in query:
+            return [
+                {
+                    "occurred_at": "2026-01-01T00:00:00+00:00",
+                    "principal_subject": "op@example.com",
+                    "action": "job.cancel",
+                    "reason": "operator",
+                    "detail": "{}",
+                }
+            ]
+        return []
+
+
+class _EventsConnection(_JobDetailConnection):
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        pool = self._pool
+        assert isinstance(pool, _EventsPool)
+        return await pool._events(query)  # pyright: ignore[reportPrivateUsage]  # Why: the stub's own canned rows.
+
+
+class _EventsAcquire(_JobDetailAcquire):
+    async def __aenter__(self) -> _EventsConnection:
+        return _EventsConnection(self._pool)  # pyright: ignore[reportArgumentType]  # Why: the stub's connection takes the pool.
+
+
+def _make_events_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.delenv("TASKQ_ADMIN_ACTIONS_ENABLED", raising=False)
+    pool = _EventsPool()
+
+    class _Acq(_EventsAcquire):
+        pass
+
+    pool.acquire = lambda **kwargs: _Acq(pool)  # type: ignore[method-assign]
+
+    bundle = create_router(pool, backend=None)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return TestClient(app)
+
+
+def test_job_detail_humanizes_the_event_log_and_audit_trail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U7: the event log and the audit trail render the humanized age
+    (the same time_ago filter the lists use) with the absolute instant in
+    the title attribute - the two raw ISO columns read as noise where
+    every other page says '9 months ago'."""
+    client = _make_events_app(monkeypatch)
+    resp = client.get(f"/jobs/{_JOB_ID}")
+    assert resp.status_code == 200
+    html = resp.text
+    assert html.count('title="2026-01-01T00:00:00') >= 2, (
+        "the absolute instant must ride the title attribute (the tooltip)"
+    )
+    assert re.search(r">\d+ months? ago<", html), (
+        "the event log / audit trail cells must render the humanized age"
+    )
+
+
+def test_job_card_dead_time_ago_macro_is_deleted() -> None:
+    """U7's cleanup: the dead time_ago MACRO in job_card.html (a shadow of
+    the factory's real time_ago FILTER every template actually uses) is
+    gone - a second definition of the same name is a drift trap."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "taskq"
+        / "web"
+        / "templates"
+        / "_partials"
+        / "job_card.html"
+    ).read_text()
+    assert "{% macro time_ago(ts) %}" not in source
+
+
+def test_dead_sse_console_partial_is_deleted() -> None:
+    """D1: the never-included SSE console partial is gone; nothing
+    extends or includes it."""
+    from pathlib import Path
+
+    partial = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "taskq"
+        / "web"
+        / "templates"
+        / "_partials"
+        / "sse_console.html"
+    )
+    assert not partial.exists(), (
+        "the dead sse_console partial must be deleted (it was never "
+        "included by any page and advertised a console that cannot work)"
+    )
+    templates_root = Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "templates"
+    for path in templates_root.rglob("*.html"):
+        if path.name == "sse_console.html":
+            continue
+        assert "sse_console" not in path.read_text(), (
+            f"{path.name} still references the deleted partial"
+        )

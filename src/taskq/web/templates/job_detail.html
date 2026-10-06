@@ -401,7 +401,8 @@
                     <tbody class="divide-y divide-slate-200 dark:divide-slate-800">
                     {% for e in events %}
                         <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                            <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ e.occurred_at }}</td>
+                            {# U7: the humanized age, the absolute in the title - the same pair timestamp_cell renders everywhere else. #}
+                            <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap" title="{{ e.occurred_at | iso_attr }}">{{ e.occurred_at | time_ago }}</td>
                             <td class="px-3 py-2 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">{{ e.kind }}</span></td>
                             <td class="px-3 py-2 text-xs">
                                 <pre class="text-xs max-h-20 overflow-y-auto">{{ e.detail }}</pre>
@@ -440,7 +441,7 @@
                     <tbody class="divide-y divide-slate-200 dark:divide-slate-800">
                     {% for e in audit_entries %}
                         <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                            <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ e.occurred_at }}</td>
+                            <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap" title="{{ e.occurred_at | iso_attr }}">{{ e.occurred_at | time_ago }}</td>
                             <td class="px-3 py-2 text-xs font-mono">{{ e.principal_subject }}</td>
                             <td class="px-3 py-2 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">{{ e.action }}</span></td>
                             <td class="px-3 py-2 text-xs">{{ e.reason or '—' }}</td>

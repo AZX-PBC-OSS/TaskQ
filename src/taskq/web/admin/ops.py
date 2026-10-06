@@ -739,6 +739,10 @@ def register(router: APIRouter) -> None:
                     "kind": kind,
                     "backend": backend,
                     "config_summary": config_summary,
+                    # U5: the reset route can only serve primitives THIS
+                    # process's registry knows; a rendered Reset for a
+                    # registry-absent bucket is a dead button (it 404s).
+                    "in_registry": True,
                 }
             )
             if backend in ("redis", "postgres"):
@@ -862,6 +866,9 @@ def register(router: APIRouter) -> None:
                         "kind": pg_row["kind"],
                         "backend": "postgres",
                         "config_summary": "",
+                        # U5: worker-published state only - the registry
+                        # in this process has no primitive to reset.
+                        "in_registry": False,
                         "pg_state": pg_row["state"],
                         "updated_at": pg_row["updated_at"],
                     }
