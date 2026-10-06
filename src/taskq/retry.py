@@ -20,10 +20,11 @@ import email.utils
 import hashlib
 import inspect
 import random
+import re
 import secrets
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal, NamedTuple, Protocol, Self
+from typing import Any, Final, Literal, NamedTuple, Protocol, Self, get_args
 from uuid import UUID
 
 import structlog
@@ -77,6 +78,7 @@ __all__ = [
     "invoke_on_cancel",
     "invoke_on_retry_exhausted",
     "invoke_on_success",
+    "make_rate_limit_aware_classifier",
     "rate_limit_aware_classifier",
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
@@ -525,6 +527,57 @@ class RetryOverride(BaseModel):
         return v
 
 
+#: The :data:`RetryKind` vocabulary, derived from the alias itself (the
+#: ``_OUTCOME_BRANCHES`` pattern in ``taskq.backend._protocol``) so a new kind
+#: there is this guard's vocabulary automatically. Consumed only by
+#: :func:`_override_shape_error`'s runtime shape check — the ``Literal`` type
+#: cannot be consulted at runtime.
+_RETRY_KIND_VALUES: Final[frozenset[str]] = frozenset(get_args(RetryKind.__value__))
+
+
+def _override_shape_error(override: object) -> str | None:
+    """The field-shape error of a hook-returned override, or ``None`` when
+    the decision path can use it.
+
+    The seams' broken-hook guard (``compose_retry_classifiers`` and
+    ``decide_after_failure``) is two-layered: the isinstance half — folded
+    in here — catches a return that is not a :class:`RetryOverride` at
+    all, and this shape half catches a ``RetryOverride`` built through
+    :meth:`RetryOverride.model_construct`, which bypasses pydantic
+    validation while passing any isinstance check. A validated
+    construction can never fail here (the model's own validators enforce
+    both fields), so the check only ever rejects the bypass cases:
+
+    * a ``delay`` that is not a ``timedelta``/``None`` would raise
+      (``AttributeError``/``TypeError``) inside
+      :meth:`RetryClassifier._retry_decision`'s ceiling arithmetic —
+      an escape from the hook-isolation boundary, whose contract is that
+      a broken hook is logged and skipped, never propagated;
+    * a ``kind`` outside the :data:`RetryKind` vocabulary would fall
+      through the decision ladder's kind comparisons into its final
+      branch — silently governed as ``indefinite``, the haunt class —
+      instead of the declared-policy fallback.
+
+    The returned string names the offending field and what it carried
+    (via :func:`safe_repr`, the offending value's own repr can raise) so
+    the ``retry-classifier-hook-invalid-return`` warning is actionable.
+    """
+    if not isinstance(override, RetryOverride):
+        return f"not a RetryOverride, a {type(override).__name__}"
+    delay = override.delay
+    if delay is not None and not isinstance(delay, timedelta):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declared type is timedelta | None, but this guard exists precisely for a model_construct'd RetryOverride whose fields bypassed pydantic validation — at runtime delay can be anything; the isinstance IS the check.
+        return f"delay is a {type(delay).__name__}, not a timedelta | None"
+    kind = override.kind
+    if kind is None:
+        return None
+    # The str check first: membership over _RETRY_KIND_VALUES would raise
+    # TypeError on an unhashable kind (a list), the very escape this guard
+    # exists to absorb.
+    if isinstance(kind, str) and kind in _RETRY_KIND_VALUES:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: same model_construct bypass as the delay check above — the declared RetryKind | None is what an honest construction guarantees, not what a broken hook can deliver.
+        return None
+    return f"kind is {safe_repr(kind)}, not a RetryKind | None"  # pyright: ignore[reportArgumentType]  # Why: safe_repr is typed BaseException (its callers log hook failures), but repr() itself is object-safe; the guard renders arbitrary hostile field values and must not crash on a raising __repr__.
+
+
 type RetryClassifierHook = Callable[[BaseException, int], RetryOverride | None]
 """Optional per-actor hook for exception-*instance*-level retry classification.
 
@@ -546,6 +599,14 @@ pydantic ``ValidationError``, ``ResultTooLarge``, and
 occurrence. Exceptions raised by the hook itself are caught and logged by
 :func:`decide_after_failure`; classification falls back to the static
 policy in that case, a broken hook can never crash the retry pipeline.
+The returned override's runtime shape is verified too: an honestly
+constructed :class:`RetryOverride` always passes, but a
+``model_construct`` bypass of pydantic validation (a ``delay`` that is
+not a ``timedelta``, a ``kind`` outside the :data:`RetryKind`
+vocabulary) is logged under ``retry-classifier-hook-invalid-return`` and
+falls back to the declared policy like any other broken hook — a
+malformed override must never raise inside the decision arithmetic or
+silently govern as ``indefinite``.
 """
 
 
@@ -572,7 +633,9 @@ def compose_retry_classifiers(
     a classifier that raises is logged at WARNING and skipped, and
     composition continues with the next classifier, never propagating;
     likewise a classifier returning something that is not a
-    :class:`RetryOverride` nor ``None`` is logged and skipped. The
+    :class:`RetryOverride` nor ``None`` — or a ``RetryOverride`` whose
+    fields bypassed pydantic validation (``model_construct``), which the
+    decision path could not use safely — is logged and skipped. The
     adapter's carve-out applies per classifier: ``KeyboardInterrupt`` and
     ``asyncio.CancelledError`` are never a classifier outcome and
     propagate raw. A classifier that raises is skipped rather than
@@ -615,13 +678,21 @@ def compose_retry_classifiers(
                 continue
             if override is None:
                 continue
-            if not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the classifier's declared return type is RetryOverride | None, but a buggy classifier may return a dict or other type at runtime; this guard keeps the composition's return contract (RetryOverride | None) true at runtime, mirroring the adapter's single-hook guard.
+            # The two-layer return guard: not a RetryOverride at all, or a
+            # model_construct'd one whose fields bypass pydantic validation
+            # (see _override_shape_error for the two hostile shapes — a
+            # non-timedelta delay and an off-vocabulary kind — and why each
+            # must never reach the decision path). Logged and skipped, the
+            # composition continues with the next classifier.
+            shape_error = _override_shape_error(override)
+            if shape_error is not None:
                 logger_invalid: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.retry")
                 logger_invalid.warning(
                     "retry-classifier-hook-invalid-return",
                     hook="retry_classifier",
                     classifier_index=index,
                     return_type=type(override).__name__,
+                    detail=shape_error,
                 )
                 continue
             return override
@@ -637,18 +708,38 @@ _HTTP_STATUS_429: Final[int] = 429
 #: case-insensitive (see :func:`_header_lookup`).
 _RETRY_AFTER_HEADERS: Final[tuple[str, str]] = ("retry-after", "x-retry-after")
 
-#: A parsed ``Retry-After`` delay beyond one day is treated as garbage and
-#: falls back to the curve (kind-only override): a server asking for more
-#: than a day of silence is either broken or hostile, and the operator's
-#: ``max_retry_backoff`` — not a remote header — should shape a wait that
-#: long. One day also dwarfs every sane rate-limit window while still
-#: honouring the hour-scale hints real providers send. The seconds form is
-#: checked against the seconds bound BEFORE the ``timedelta`` is built — a
-#: ``timedelta(seconds=10**18)`` overflows, and an OverflowError escaping
-#: a classifier is exactly the crash the isolation contract exists to
-#: absorb.
-_MAX_RETRY_AFTER_DELAY: Final[timedelta] = timedelta(days=1)
-_MAX_RETRY_AFTER_DELAY_SECONDS: Final[int] = _MAX_RETRY_AFTER_DELAY // timedelta(seconds=1)
+#: The seconds-form grammar of a ``Retry-After`` value: digits with an
+#: optional ``.``-fraction (``"120"``, ``"0.5"``). A comma decimal
+#: (``"1,5"``), a sign (``"+30"``, ``"-30"``), scientific notation
+#: (``"1e3"``), and embedded whitespace (``"12 34"``) are NOT the grammar
+#: and degrade to the curve fallback like every other garbage value. The
+#: grammar is deliberately this small: a rate-limit hint is a human-scale
+#: count of seconds, and every parser trick beyond the fraction (locale
+#: decimals, exponents) is a divergence surface between consumers, not a
+#: feature — a consumer wanting a richer grammar fences the header in
+#: their own classifier first (composition order, §5). This grammar is a
+#: TIGHTENING of the previous ``int()`` parse, not a preservation: the
+#: old parse silently honored a leading sign (``"+30"`` → 30 s), an
+#: underscore digit separator (``"1_000"`` → 1000 s), and non-ASCII
+#: decimal digits (``"١٢٣"`` → 123 s) — none of them an RFC 9110
+#: delta-seconds form (``1*DIGIT``, ASCII); all three are curve-fallback
+#: garbage now. Pinned in ``tests/test_rate_limit_claim_kind.py``.
+_RETRY_AFTER_SECONDS_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+#: The parse-level saturation for a finite hint whose value exceeds
+#: ``timedelta``'s representable range (a ``timedelta(seconds=10**20)``
+#: overflows, and an OverflowError escaping a classifier is exactly the
+#: crash the isolation contract exists to absorb). This is NOT a semantic
+#: cap: bounding a hint is the operator's ``max_retry_backoff`` ceiling's
+#: job (applied to every override delay by the decision path — "a malicious
+#: or malformed header cannot strand a job"), and a hint beyond the ceiling
+#: CLAMPS there. ``timedelta.max`` is beyond every ceiling a fleet will
+#: ever run, so the saturation only keeps the parse crash-free while the
+#: operator's knob does the real bounding. (The former one-day parse cap
+#: is gone: it misclassified an oversized-but-finite hint as garbage —
+#: curve fallback — stealing the clamp from the one knob that exists to
+#: express it.)
+_REPRESENTABLE_DELAY_MAX: Final[timedelta] = timedelta.max
 
 
 def _extract_http_status(exception: BaseException) -> int | None:
@@ -732,32 +823,38 @@ def _extract_retry_after_header(exception: BaseException) -> str | None:
 def _parse_retry_after(value: str, *, now: datetime) -> timedelta | None:
     """Parse a ``Retry-After`` header value into a delay.
 
-    Recognized forms: the seconds-integer (``"120"``) and the HTTP-date
-    (RFC 9110 IMF-fixdate, via ``email.utils.parsedate_to_datetime``; a
-    naive date — the ``-0000`` zone — is read as UTC). ``*now`` turns the
-    date form into a delay; the classifier injects
-    ``datetime.now(UTC)`` so tests (and callers with their own
-    clock domain) can pin it.
+    Recognized forms: the decimal-fraction seconds form (``"120"``,
+    ``"0.5"`` — see :data:`_RETRY_AFTER_SECONDS_PATTERN` for the exact
+    grammar and its deliberate limits) and the HTTP-date (RFC 9110
+    IMF-fixdate, via ``email.utils.parsedate_to_datetime``; a naive
+    date — the ``-0000`` zone — is read as UTC). ``*now`` turns the date
+    form into a delay; the classifier injects ``datetime.now(UTC)`` so
+    tests (and callers with their own clock domain) can pin it.
 
     Returns ``None`` — the curve-fallback signal — for every unusable
-    value: empty or unparsable text, a negative or zero delay (zero would
-    otherwise degenerate into the monopolisation loop the decision floor
-    exists to prevent), and the absurd (beyond
-    :data:`_MAX_RETRY_AFTER_DELAY`, one day). The caller degrades a
-    ``None`` to the kind-only override, so garbage can never *break* the
-    classification, only remove the delay half of it.
+    value: empty or unparsable text, and a zero or negative delay (zero
+    would otherwise degenerate into the monopolisation loop the decision
+    floor exists to prevent). A FINITE usable hint is always returned,
+    however large — bounding it is not this parse's job: the operator's
+    ``max_retry_backoff`` ceiling clamps every override delay at the
+    decision path (a hint beyond the ceiling clamps to the ceiling), and
+    a value beyond ``timedelta``'s own range saturates at
+    :data:`_REPRESENTABLE_DELAY_MAX` so the parse can never crash a
+    classifier. Garbage can never *break* the classification, only
+    remove the delay half of it.
     """
     text = value.strip()
     if not text:
         return None
-    try:
-        seconds = int(text)
-    except ValueError:
-        seconds = None
-    if seconds is not None:
-        if seconds <= 0 or seconds > _MAX_RETRY_AFTER_DELAY_SECONDS:
-            return None
-        delay = timedelta(seconds=seconds)
+    if _RETRY_AFTER_SECONDS_PATTERN.fullmatch(text) is not None:
+        # The pattern admits only digits and one dot, so float() yields a
+        # finite float or inf and never raises here; the timedelta
+        # constructor raises OverflowError beyond its representable range
+        # (inf included) and the parse saturates instead of escaping.
+        try:
+            delay = timedelta(seconds=float(text))
+        except OverflowError:
+            delay = _REPRESENTABLE_DELAY_MAX
     else:
         try:
             when = email.utils.parsedate_to_datetime(text)
@@ -765,8 +862,11 @@ def _parse_retry_after(value: str, *, now: datetime) -> timedelta | None:
             return None
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        delay = when - now
-    if delay <= timedelta(0) or delay > _MAX_RETRY_AFTER_DELAY:
+        try:
+            delay = when - now
+        except OverflowError:  # a date beyond timedelta's range: saturate, never crash
+            delay = _REPRESENTABLE_DELAY_MAX
+    if delay <= timedelta(0):
         return None
     return delay
 
@@ -810,8 +910,9 @@ def rate_limit_aware_classifier(
     On a claimed signal the classifier sniffs the server's retry hint —
     the ``retry-after`` and ``x-retry-after`` headers, case-insensitive,
     on ``exception.response.headers`` (httpx/requests) or a bare
-    ``exception.headers`` (aiohttp) — and parses it as a seconds-integer
-    or an HTTP-date (see :func:`_parse_retry_after`).
+    ``exception.headers`` (aiohttp) — and parses it as a decimal-fraction
+    seconds value (``"120"``, ``"0.5"``) or an HTTP-date (see
+    :func:`_parse_retry_after`).
 
     Everything else returns ``None``: the declared policy governs, so a
     500 keeps its bounded transient budget and a 404 its non-retryable
@@ -826,17 +927,25 @@ def rate_limit_aware_classifier(
     ``docs/guides/retries.md`` §5):
 
     * a parsed hint → ``RetryOverride(kind="indefinite", delay=hint)``:
-      the hint is honored EXACTLY (no jitter draw — an explicit delay is
-      an explicit direction, the library never mutates a value the
-      classifier specified) and clamped to ``max_retry_backoff`` by
+      the hint flows through as the override delay VERBATIM (honored
+      EXACTLY — no jitter draw: an explicit delay is an explicit
+      direction, the library never mutates a value the classifier
+      specified) and meets the documented bounds on the decision path —
+      clamped to ``max_retry_backoff`` by
       :meth:`RetryClassifier._retry_decision` (verified, not assumed —
-      the same path any ``RetryOverride.delay`` takes), then floored at
-      ``MIN_DEFERRAL_INTERVAL``. The classifier
-      adds no ceiling of its own; the parse-level cap (one day) plus the
-      clamp are the two layers a malformed header meets.
+      the same path any ``RetryOverride.delay`` takes; the clamp reads
+      the verbatim raw value), then floored at
+      ``MIN_DEFERRAL_INTERVAL``. A finite hint beyond the ceiling CLAMPS
+      to it — the ceiling's documented job ("a malicious or malformed
+      header cannot strand a job"), the operator's knob doing the
+      bounding. The parse treats only garbage shapes as garbage (zero,
+      negative, or no grammar match — the closed decimal-fraction
+      grammar is a deliberate tightening of the former ``int()`` parse's
+      accidents); an oversized-but-finite hint is the ceiling's input,
+      not garbage. The classifier adds no ceiling of its own.
     * a claimed signal with no usable hint (no header, or the
-      curve-fallback garbage cases: zero / negative / unparsable / beyond
-      one day) → ``RetryOverride(kind="indefinite")`` with no ``delay``:
+      curve-fallback garbage cases: zero / negative / unparsable) →
+      ``RetryOverride(kind="indefinite")`` with no ``delay``:
       the declared policy's backoff curve (with jitter, cap, and
       ``max_retry_backoff``) keeps computing *when* to retry, and the
       job's ``schedule_to_close`` (``time_budget`` for an indefinite
@@ -855,7 +964,18 @@ def rate_limit_aware_classifier(
     deadline still fails the job terminally in the deadline path. Give
     the actor a stopping condition: declare it ``kind="indefinite"`` with
     a ``time_budget``, put a domain classifier before this one that
-    bounds the 429s, or pass a per-enqueue ``schedule_to_close``.
+    bounds the 429s, pass a per-enqueue ``schedule_to_close``, or use the
+    factory's bounded mode —
+    :func:`make_rate_limit_aware_classifier(claim_kind="transient")`
+    keeps ``max_attempts`` as the stopper while still honoring the
+    server's hint.
+
+    This built-in is the ``claim_kind="indefinite"`` instance of
+    :func:`make_rate_limit_aware_classifier`, the factory for consumers
+    whose intent differs: ``claim_kind="transient"`` for 429 → BOUNDED
+    retry (the server's hint honored, ``max_attempts`` the stopper), and
+    ``claim_kind=None`` for a never-claiming identity that slots into a
+    composition unchanged.
 
     Compose it after your domain-specific classifiers:
     ``compose_retry_classifiers(my_domain_classifier, rate_limit_aware_classifier)``;
@@ -868,9 +988,28 @@ def rate_limit_aware_classifier(
     ``datetime.now(UTC)`` — this is the module's one clock read,
     never touched on the miss path.
     """
+    return _rate_limit_claim(exception, claim_kind="indefinite", now=now)
+
+
+def _rate_limit_claim(
+    exception: BaseException,
+    *,
+    claim_kind: Literal["indefinite", "transient"] | None,
+    now: datetime | None,
+) -> RetryOverride | None:
+    """The one claim implementation behind the built-in and the factory:
+    recognition, hint sniffing, and parsing are SHARED (never forked per
+    mode) — ``claim_kind`` only decides the kind stamped on the override.
+    A ``None`` claim kind claims nothing, the identity for composition.
+    """
+    if claim_kind is None:
+        # The identity mode: no claims, so a composition slot holding
+        # this classifier behaves exactly like an empty slot.
+        return None
+
     if isinstance(exception, ReservationUnavailable):
         if exception.source == "rate_limit":
-            return RetryOverride(kind="indefinite")
+            return RetryOverride(kind=claim_kind)
         return None
 
     status = _extract_http_status(exception)
@@ -883,8 +1022,90 @@ def rate_limit_aware_classifier(
     if header is not None:
         delay = _parse_retry_after(header, now=now if now is not None else datetime.now(UTC))
         if delay is not None:
-            return RetryOverride(kind="indefinite", delay=delay)
-    return RetryOverride(kind="indefinite")
+            return RetryOverride(kind=claim_kind, delay=delay)
+    return RetryOverride(kind=claim_kind)
+
+
+def make_rate_limit_aware_classifier(
+    claim_kind: Literal["indefinite", "transient"] | None = "indefinite",
+) -> RetryClassifierHook:
+    """Build a rate-limit classifier whose CLAIM is configurable — the
+    factory behind :func:`rate_limit_aware_classifier` (which is exactly
+    ``make_rate_limit_aware_classifier()`` at the default, kept as a
+    module-level name so existing registrations and pins are untouched).
+
+    The recognition surface is identical for every mode — TaskQ's own
+    :class:`~taskq.exceptions.ReservationUnavailable` with
+    ``source="rate_limit"``, the HTTP 429 duck-types, and the
+    ``RateLimitError``-named shape — and so are the hint parsing, the
+    garbage rules, and the bounds (the operator's ``max_retry_backoff``
+    ceiling and the ``MIN_DEFERRAL_INTERVAL`` floor, applied by the
+    decision path to every override delay). Only the override's KIND
+    changes; see the mode table:
+
+    ================  =============================================  =============================================  =========================================
+    ``claim_kind``    Override on a claimed signal                   What bounds it                                 The haunt hazard (per mode)
+    ================  =============================================  =============================================  =========================================
+    ``"indefinite"``  ``RetryOverride(kind="indefinite")``,          ``schedule_to_close`` — the delay schedules    A ``transient`` actor has no
+                      ``delay=hint`` when the server sent one        *when*, never *whether*: a deadline is         ``schedule_to_close`` (``time_budget`` is
+                                                                     REQUIRED. Declare the actor                    only honored for an ``indefinite``-declared
+                                                                     ``kind="indefinite"`` with a ``time_budget``,  policy), so a sustained 429 storm retries
+                                                                     or pass ``schedule_to_close=`` per enqueue.    the job FOREVER — no attempt ceiling, no
+                                                                                                                    deadline. This mode's intent is "wait it
+                                                                                                                    out"; a stopping condition must exist.
+    ``"transient"``   ``RetryOverride(kind="transient")``,           ``max_attempts`` — the budget STAYS the        None: the attempt budget terminates the
+                      ``delay=hint`` when the server sent one        stopper; the hint (when present) sets          storm even with no deadline. The intent
+                                                                     *when* within it. The bounded AND              this mode exists for: "429 → bounded
+                                                                     server-honoring shape.                         retry, and honor the server's when".
+    ``None``          never claims — returns ``None`` for every      the declared policy governs everything         None: the classifier contributes no claims
+                      input                                          (the identity for composition)                 to compose over; it only reserves the
+                                                                                                                    recognition surface for future modes.
+    ================  =============================================  =============================================  =========================================
+
+    Validation is at construction: a ``claim_kind`` outside the three
+    modes raises ``ValueError`` here — fail loud at build time, never a
+    silently-misclaiming classifier at override time. ``"non_retryable"``
+    is deliberately NOT a mode: a rate limit means "retry later" by
+    definition (§4), so stamping one non-retryable is the misclaim this
+    factory exists to make impossible — build that intent with a domain
+    classifier registered *before* this one (composition order), where
+    the decision is visible in your own code.
+
+    The returned hook carries the built-in's injectable ``now``
+    (keyword-only, defaulting to the real clock) so tests and custom
+    clock domains pin HTTP-date parsing exactly as they pin the
+    built-in's. The ``attempt`` argument is the
+    :data:`RetryClassifierHook` protocol's required arity and is
+    deliberately unread — the verdict never depends on the attempt
+    count (pinned by the identity battery's ``attempt`` sweep).
+
+    Why the transient mode exists: the built-in's indefinite claim is
+    the haunt class for a ``transient`` actor with no ``time_budget``
+    (the §5 danger block). A consumer who wants 429 → BOUNDED retry must
+    not have to hand-roll a classifier to say so — build this mode, keep
+    the shared parsing and bounds, and ``max_attempts`` does the
+    stopping.
+
+    Example::
+
+        bounded_rate_limit = make_rate_limit_aware_classifier(claim_kind="transient")
+        compose_retry_classifiers(my_domain_classifier, bounded_rate_limit)
+    """
+    if claim_kind not in ("indefinite", "transient", None):
+        raise ValueError(
+            f"claim_kind must be 'indefinite', 'transient', or None, got {claim_kind!r}; "
+            "a typo would silently misclaim every 429 the classifier sees"
+        )
+
+    def classify(
+        exception: BaseException,
+        attempt: int,
+        *,
+        now: datetime | None = None,
+    ) -> RetryOverride | None:
+        return _rate_limit_claim(exception, claim_kind=claim_kind, now=now)
+
+    return classify
 
 
 # ── failure taxonomy: the configurable common-shapes classifier ────────
@@ -1345,7 +1566,16 @@ def decide_after_failure(
     ):
         try:
             override = actor_config.retry_classifier(exception, job_state.attempt)
-            if override is not None and not isinstance(override, RetryOverride):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the hook's declared return type is RetryOverride | None, but a buggy hook may return a dict or other type at runtime; this guard prevents AttributeError in RetryClassifier.classify.
+            # The two-layer return guard (see _override_shape_error): not a
+            # RetryOverride at all, or a model_construct'd one whose fields
+            # bypass pydantic validation. The shape half is what keeps a
+            # non-timedelta override delay out of _retry_decision's ceiling
+            # arithmetic (an AttributeError/TypeError mid-classify — the
+            # escape this boundary exists to absorb) and an off-vocabulary
+            # kind out of the decision ladder's final branch (which would
+            # silently govern it as indefinite, the haunt class).
+            shape_error = None if override is None else _override_shape_error(override)
+            if shape_error is not None:
                 logger: structlog.stdlib.BoundLogger = (
                     log if log is not None else structlog.get_logger("taskq.retry")
                 )
@@ -1353,6 +1583,7 @@ def decide_after_failure(
                     "retry-classifier-hook-invalid-return",
                     hook="retry_classifier",
                     return_type=type(override).__name__,
+                    detail=shape_error,
                 )
                 override = None
         except (KeyboardInterrupt, asyncio.CancelledError):

@@ -53,3 +53,66 @@ def test_retries_guide_keeps_the_taxonomy_conservative_default_contract() -> Non
     assert "DEFAULT_TRANSIENT_STATUSES" in text and "DEFAULT_NON_RETRYABLE_STATUSES" in text, (
         "retries.md must name the documented module constants the sets default to"
     )
+
+
+def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
+    """The claim-kind knob's contract (the §5 extension): the factory
+    name, the three modes with their bounds, and the haunt hazard per
+    mode must stay discoverable — a doc edit that drifts from the
+    shipped modes fails here."""
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "make_rate_limit_aware_classifier" in text, (
+        "retries.md §5 must document the factory behind the built-in"
+    )
+    assert 'claim_kind="transient"' in text and "max_attempts" in text, (
+        "retries.md must document the bounded mode: max_attempts stays the "
+        "stopper, the hint sets when"
+    )
+    assert "claim_kind=None" in text, "retries.md must document the never-claiming identity mode"
+
+    # The #658 docs↔code sniff pattern: the doc's named kwarg must exist on
+    # the factory's signature, and the doc's "default" claim ("the built-in
+    # is the factory's claim_kind='indefinite' instance") must match the
+    # shipped default. Sniffed by PARAMETER NAME, not position: a refactor
+    # of kwarg order cannot silently break (or unbreak) this pin — only a
+    # rename or a default drift does, together with the doc it documents.
+    import inspect
+
+    import taskq.retry
+
+    parameters = inspect.signature(taskq.retry.make_rate_limit_aware_classifier).parameters
+    assert "claim_kind" in parameters, (
+        "retries.md §5 names claim_kind as the factory's knob: renaming the "
+        "parameter without updating the guide fails this pin rather than "
+        "shipping a doc that promises a keyword that isn't there"
+    )
+    assert parameters["claim_kind"].default == "indefinite", (
+        "the doc's claim that the built-in is the factory's "
+        'claim_kind="indefinite" instance pins the default: a default drift '
+        "changes the built-in's bounded-ness for every existing registration "
+        "and must update the guide in the same commit"
+    )
+
+
+def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
+    """The parser's finite-hint rules (the §5 extension): a finite hint
+    clamps to the operator's ceiling (never garbage), the decimal-fraction
+    grammar is documented, and the HTTP-date divergence choice point is
+    stated."""
+    text = _normalized(_DOCS / "guides" / "retries.md")
+    assert "A finite hint is never garbage" in text, (
+        "retries.md must state the clamp rule: an oversized-but-finite "
+        "hint is the operator's max_retry_backoff ceiling's input, not garbage"
+    )
+    assert "0.5" in text and "1,5" in text and "1e3" in text, (
+        "retries.md must document the decimal-fraction grammar and its "
+        "deliberate limits (comma decimals and scientific notation are garbage)"
+    )
+    assert (
+        "fences HTTP-date forms in their own classifier first" in text
+        and "parsedate_to_datetime" in text
+    ), (
+        "retries.md must state the divergence choice point: a consumer "
+        "preferring fallback-over-parse fences HTTP-date forms in their own "
+        "classifier first"
+    )

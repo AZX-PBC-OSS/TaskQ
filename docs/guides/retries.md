@@ -386,6 +386,27 @@ non-retryable verdict even when the built-in is composed in. The override sets
 spends no attempt budget, raise `RetryAfter(delay, consume_budget=False)` from the actor
 body instead ([§9](#9-control-flow-signals)).
 
+**The claim is configurable: `make_rate_limit_aware_classifier(claim_kind=...)`.** The
+built-in is the factory's `claim_kind="indefinite"` instance, kept as a module-level name
+so existing registrations are untouched. The factory accepts:
+
+- `claim_kind="indefinite"` (default) — the built-in exactly as documented here;
+- `claim_kind="transient"` — `RetryOverride(kind="transient")`, `delay=hint` when the
+  server sent one: `max_attempts` stays the stopper and the hint sets *when* within it —
+  the bounded AND server-honoring shape;
+- `claim_kind=None` — the classifier never claims: the identity for composition.
+
+Validation is at construction: a `claim_kind` outside the three modes raises `ValueError`
+(fail loud at build time, never a silently-misclaiming classifier at override time). The
+recognition surface, the hint parsing, the garbage rules, and the bounds are identical for
+every mode — only the kind stamped on the override changes:
+
+| `claim_kind` | Override on a claimed signal | What bounds it | The haunt hazard (per mode) |
+|---|---|---|---|
+| `"indefinite"` (default) | `kind="indefinite"`, `delay=hint` when present | `schedule_to_close` — the delay schedules *when*, never *whether* | a `transient` actor has no `schedule_to_close` (a `time_budget` is only honored for an `indefinite`-declared policy), so a sustained 429 storm retries the job forever — a deadline is REQUIRED in this mode |
+| `"transient"` | `kind="transient"`, `delay=hint` when present | `max_attempts` — the budget stays the stopper; the hint sets *when* | none: the budget terminates the storm even with no deadline |
+| `None` | never claims | the declared policy governs everything | none: the classifier contributes no claims to compose over |
+
 !!! danger "The override's only stopping condition is a deadline — give the job one"
     `kind="indefinite"` has no attempt ceiling. Its single stopping condition is the job's
     `schedule_to_close`, arbitrated in SQL — and **a `transient` actor never has one**:
@@ -403,7 +424,10 @@ body instead ([§9](#9-control-flow-signals)).
     deadline then exists and the registration warning stays honest), bound the 429s with a
     domain classifier registered *before* the built-in (e.g. override to `transient` past
     a budget you track yourself), or pass `schedule_to_close=` per enqueue (deprecated
-    form).
+    form). There is a fourth remedy, purpose-built: build the built-in's bounded variant —
+    `make_rate_limit_aware_classifier(claim_kind="transient")` — bounded AND
+    server-honoring: `max_attempts` stays the stopper, the hint sets when, and the
+    recognition/parsing/bounds are exactly the built-in's (see the knob table above).
 
 ### Sniffing the server's hint: `Retry-After` / `X-Retry-After`
 
@@ -414,22 +438,24 @@ transitive dependency tree stays yours): `exception.response.headers` (the
 `ClientResponseError` shape, or any exception carrying headers directly). Both the
 standard `retry-after` and the de-facto `x-retry-after` header names are read,
 case-insensitively; the standard header wins when both are present. Values are parsed
-as seconds-integers (`"120"`) and HTTP-dates (RFC 9110 IMF-fixdate, via the stdlib's
-`email.utils.parsedate_to_datetime`).
+as decimal-fraction seconds (`"120"`, `"0.5"`) and HTTP-dates (RFC 9110 IMF-fixdate, via
+the stdlib's `email.utils.parsedate_to_datetime`).
 
-Every recognized signal, what the built-in returns for it, and what bounds the result:
+Every recognized signal, what the built-in returns for it, and what bounds the result
+(the default `claim_kind="indefinite"` mode; the transient mode swaps the kind and the
+bound — knob table above):
 
 | Signal | Override returned | What bounds it |
 |---|---|---|
-| `429` + hint parsed to a delay in `(0, 1 day]` | `indefinite` **with** `delay` | the delay is honored exactly — no jitter draw (the library never mutates a value your classifier specified) — `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
+| `429` + hint parsed to a positive delay | `indefinite` **with** `delay` | the delay is honored exactly — no jitter draw (the library never mutates a value your classifier specified) — `max_retry_backoff` clamps it, `MIN_DEFERRAL_INTERVAL` floors it — and `schedule_to_close` still terminates the job (the delay does not move the deadline) |
 | `429` with no hint header | `indefinite`, no `delay` | the declared policy's curve (`jitter`, `cap`, `max_retry_backoff`); `schedule_to_close` terminates |
-| `429` + hint of `0`, negative, unparsable, or beyond one day | `indefinite`, no `delay` (curve fallback) | same row as above — garbage degrades the *delay*, never the classification |
+| `429` + hint of `0`, negative-shape, or unparsable | `indefinite`, no `delay` (curve fallback) | same row as above — garbage degrades the *delay*, never the classification |
 | `RateLimitError`-named exception (with or without headers) | per the two rows above | same bounds |
 
 The curve-fallback rule is deliberate good citizenship: a server that answers
-`Retry-After: 0` (or a value past a day, or a format no RFC knows) does not get to
-degenerate the retry loop — the declared policy's curve keeps computing *when*, and the
-job's deadline keeps deciding *whether*. The parsed hint itself is honored **exactly** —
+`Retry-After: 0` (or a value no grammar knows) does not get to degenerate the retry loop
+— the declared policy's curve keeps computing *when*, and the job's deadline keeps
+deciding *whether*. The parsed hint itself is honored **exactly** —
 an explicit override delay is an explicit direction, and the library never mutates a
 value your classifier specified (drawing ±20% over the server's horizon would schedule
 retries *before* it). So the default needs no `jitter=0.0` escape for exact
@@ -461,6 +487,33 @@ illustrates the wrapping pattern only, so it is set as indented text rather than
 The spread is yours to shape (`apply_jitter` is the same multiplicative-symmetric band
 the curve uses, and it is your explicit direction now, so the default is not choosing
 for you).
+
+**A finite hint is never garbage — the ceiling clamps it.** A hint beyond the old
+one-day parse cap (`"100000"`, or a `1e20`-class value) is honored as the delay and
+CLAMPED to `max_retry_backoff` on the decision path — the ceiling's documented job ("a
+malicious or malformed header cannot strand a job") and the operator's explicit knob, so
+`max_retry_backoff=120s` + a `1e20`-class hint retries at exactly 120s. The parse adds
+only a *representability* saturation (a value beyond `timedelta`'s range saturates
+instead of crashing a classifier); it adds no semantic cap — the ceiling IS the bound.
+
+**The seconds grammar is a decimal fraction, closed on purpose.** Recognized:
+`"120"`, `"0.5"` (digits, optional `.`-fraction — a sub-second hint flows through and
+lands on the `MIN_DEFERRAL_INTERVAL` floor, 1s, on the decision path). Rejected as
+garbage (curve fallback): a comma decimal (`"1,5"`), scientific notation (`"1e3"`), a
+sign (`"+30"`), an underscore digit separator (`"1_000"`), non-ASCII decimal digits
+(`"١٢٣"`), embedded whitespace, and everything unparsable — the last three were
+silently honored by the previous `int()` parse and the closed grammar is a deliberate
+tightening of exactly those accidents (none is an RFC 9110 delta-seconds form). A
+rate-limit hint is a
+human-scale count of seconds; every richer parse is a divergence surface between
+consumers, not a feature. `Retry-After: 0` stays curve-fallback (the monopolisation
+hazard); the explicit-zero *floor* — an override carrying `delay=timedelta(0)` honored
+as "as fast as the deferral floor allows" — remains the decision path's rule.
+
+**HTTP-date parsing stays, and diverging consumers have the fence.** The date form is
+kept: a consumer preferring fallback-over-parse fences HTTP-date forms in their own
+classifier first (composition order decides — [pinned
+above](#composing-classifiers-compose_retry_classifiers-and-rate_limit_aware_classifier)).
 
 When two legitimate intents collide — the server's directive vs the operator's
 `max_retry_backoff` ceiling — the default resolves **toward the server**: the parsed
@@ -569,7 +622,9 @@ place here:
    `RetryOverride(kind="transient")`: the declared `max_attempts` governs and the
    job dies when the budget does — bounded, never indefinite. (Composed with the
    built-in anyway, order decides: the taxonomy must come first, or the built-in's
-   `indefinite` claim wins the 429.)
+   `indefinite` claim wins the 429. The purpose-built form of this route is the
+   built-in's own bounded mode — `make_rate_limit_aware_classifier(claim_kind="transient")`
+   — which needs no composition order argument and keeps the hint sniffing.)
 
 3. **Fence with your own classifier first.** Composition order is the general
    escape: register a classifier that claims 429s however you like — your own

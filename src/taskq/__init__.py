@@ -125,6 +125,7 @@ from taskq.retry import (
     RetryPolicy,
     compose_retry_classifiers,
     failure_taxonomy_classifier,
+    make_rate_limit_aware_classifier,
     rate_limit_aware_classifier,
 )
 from taskq.scheduler import register_cron
@@ -251,6 +252,7 @@ __all__ = [
     "failure_taxonomy_classifier",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
+    "make_rate_limit_aware_classifier",
     "make_redis_client_factory",
     "new_uuid",
     "rate_limit_aware_classifier",
