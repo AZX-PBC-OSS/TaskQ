@@ -510,7 +510,7 @@ def test_a_job_cancels_live_through_the_admin_sidecar(
         match = _re.search(r'name="csrf_token" value="([^"]+)"', page.text)
         assert match is not None, (
             "the cancel form must render on the sidecar (a Backend + "
-            f"actions enabled): {page.text[page.text.find('Cancel'):][:200]}"
+            f"actions enabled): {page.text[page.text.find('Cancel') :][:200]}"
         )
         cancel = http.post(
             f"{stack.admin_url}/jobs/{job_id}/cancel",
