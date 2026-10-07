@@ -1,0 +1,154 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________ test_every_alert_rule_fires_on_real_names_and_labels _____________
+
+live = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1765.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_5f73e86673'}, value=1.0)]})
+follower = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1333.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_5f73e86673'}, value=1.0)]})
+hostile_mid = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1275.0), Sample...', 'otel_scope_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2'}, value=2.979323362931609)]})
+emitter = Exposition(samples=(Sample(name='target_info', labels={'service_instance_id': '10598c89-76ee-416b-aa7b-fbfad5754b30', ... 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'state': 'pending', 'workflow': '_other_'}, value=11.0)]})
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-17123/test_every_alert_rule_fires_on0')
+
+    @pytest.mark.skipif(
+        not docker_available(),
+        reason="promtool runs in the prom/prometheus container; Docker unreachable",
+    )
+    def test_every_alert_rule_fires_on_real_names_and_labels(
+        live: Exposition,
+        follower: Exposition,
+        hostile_mid: Exposition,
+        emitter: Exposition,
+        tmp_path: Any,
+    ) -> None:
+        """Every shipped rule must fire against its pathology, built from the
+        metric names + label sets the real worker exposition served; the
+        healthy shapes must stay silent."""
+        rules_data = yaml.safe_load(RULES_PATH.read_text())
+    
+        # Gate: every taskq/messaging series the rules reference is one the
+        # real probes emitted (the healthy run for every family a healthy
+        # worker carries; the hostile run adds the failure-only counters -
+        # taskq_heartbeat_misses_total among them; the emitter probe adds the
+        # three cannot-stage-live counters - the two sweep-abort counters
+        # whose PG-abort pathology cannot be staged against a live shared
+        # schema, and the cron skipped-slots counter no live run reaches -
+        # whose emission paths are the real public
+        # record_sweep_*/record_cron_skipped_slots API). Label values and
+        # PromQL syntax are stripped before scanning; a rule operand the
+        # bridge never serves would make the rule unevaluatable against real
+        # data.
+        emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
+        for rule in rules_data["groups"][0]["rules"]:
+            expr = re.sub(r'"[^"]*"', '""', str(rule["expr"]))
+            expr = re.sub(r"\{[^}]*\}", "{}", expr)
+            # Range selectors ([5m]) carry durations, not series names.
+            expr = re.sub(r"\[[^\]]*\]", "[]", expr)
+            # ...so do offset durations (`offset 5m`).
+            expr = re.sub(r"offset\s+\d+[smhd]", "offset", expr)
+            # Grouping clauses (by/without/on/ignoring) name LABELS, not series.
+            expr = re.sub(r"\b(by|without|on|ignoring)\s*\([^)]*\)", r"\1 ()", expr)
+            for token in set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_:]*", expr)):
+                if token in _PROMQL_KEYWORDS:
+                    continue
+                assert token in emitted, (
+                    f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
+                )
+            # The label names the rule matches on must be real too (the
+            # emitter-bound families' labels are real the same way — the
+            # wf-progress gauge's `state` lives only on the emitter's series).
+            for label in set(re.findall(r"(\w+)\s*=\"", str(rule["expr"]))):
+                assert (
+                    any(
+                        label in s.labels
+                        for family in emitted
+                        for s in (
+                            live.series(family)
+                            or hostile_mid.series(family)
+                            or emitter.series(family)
+                        )
+                    )
+                    or label == "le"
+                ), f"rule {rule['alert']} filters on label {label!r}, which no emitted series carries"
+    
+        test_doc = {
+            "rule_files": ["/work/rules.yaml"],
+            "evaluation_interval": "1m",
+            "tests": _build_promtool_cases(live),
+        }
+>       out = run_promtool_rule_tests(RULES_PATH, yaml.safe_dump(test_doc), tmp_path)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_prometheus_metrics_review.py:1496: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+rules_path = PosixPath('/tmp/opencode/wt-taskqflow/src/taskq/contrib/prometheus/rules.yaml')
+test_yaml = 'evaluation_interval: 1m\nrule_files:\n- /work/rules.yaml\ntests:\n- alert_rule_test:\n  - alertname: TaskQQueueDepthH...\n  - series: taskq_wf_progress_nodes_total{state="blocked",workflow="probe_wf"}\n    values: 0+0x35\n  interval: 1m\n'
+workdir = PosixPath('/tmp/pytest-of-rich/pytest-17123/test_every_alert_rule_fires_on0')
+
+    def run_promtool_rule_tests(rules_path: Path, test_yaml: str, workdir: Path) -> str:
+        """Evaluate a ``promtool test rules`` file against the shipped rules
+        inside the prom/prometheus image's own promtool.
+    
+        The rules file is mounted read-only, exactly as a server would load
+        it; the test file's input series are built by the callers from the
+        REAL exposition the probes captured. Raises AssertionError with
+        promtool's diff on failure - each non-firing rule names the alert.
+        """
+        assert _DOCKER is not None, "docker is required for the promtool evaluation"
+        # Stage into a fresh, world-readable directory: pytest tmp paths carry
+        # 0700 modes the container's stat cannot cross.
+        stage = Path(tempfile.mkdtemp(prefix="promtool_stage_"))
+        try:
+            shutil.copy(rules_path, stage / "rules.yaml")
+            for path in (stage, stage / "rules.yaml"):
+                path.chmod(0o755)
+            test_file = stage / "taskq_rules_test.yml"
+            test_file.write_text(test_yaml)
+            test_file.chmod(0o644)
+            result = subprocess.run(  # noqa: S603  # Why: fixed argv container run, no shell.
+                [
+                    _DOCKER,
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{stage}:/work:ro",
+                    "--entrypoint",
+                    "promtool",
+                    PROMTOOL_IMAGE,
+                    "test",
+                    "rules",
+                    "/work/taskq_rules_test.yml",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+>           assert result.returncode == 0, (
+                   ^^^^^^^^^^^^^^^^^^^^^^
+                f"promtool rule tests failed:\n{result.stdout}\n{result.stderr}"
+            )
+E           AssertionError: promtool rule tests failed:
+E           
+E           
+E           
+E             FAILED:
+E               alertname: TaskQWorkflowBlockedStuck, time: 32m, 
+E                   exp:[
+E                       0:
+E                         Labels:{alertname="TaskQWorkflowBlockedStuck", severity="warning", workflow="probe_wf"}
+E                         Annotations:{description="A workflow run has nodes sitting in a BLOCKED representation (join-wait, a blocked-with-reason stamp, or held) for 30 minutes with no transition — the join that never fires, the hold nobody released, or the fail-closed block nobody cleaned up. The gauge is sampled by the maintenance leader on the admin's surface (taskq.wf_progress_nodes_total, dimensioned by the DECLARED workflow — `_other_` carries the unregistered collapse). The per-run truth: the admin's run page reads the per-node rollup (blocked-by, join-latency SQL in docs/guides/insights.md); the node rows name the blocking reason (metadata.blocking_reason: 'join' waiting on parents, 'orphan_parent' a misnamed child, 'failed_parent' a failed parent's fail-closed cascade, 'body_unavailable' a fired join whose body never resolved — that one is a deployment defect: the workflow's definitions are not imported in every worker process). Operators should override the threshold in their own rule configuration. Runbook: docs/guides/runbooks.md#taskqworkflowblockedstuck.", summary="Workflow probe_wf has 3 nodes pinned blocked for 30m with no transition"}
+E                       ], 
+E                   got:[
+E                       0:
+E                         Labels:{alertname="TaskQWorkflowBlockedStuck", severity="warning", state="blocked", workflow="probe_wf"}
+E                         Annotations:{description="A workflow run has nodes sitting in a BLOCKED representation (join-wait, a blocked-with-reason stamp, or held) for 30 minutes with no transition — the join that never fires, the hold nobody released, or the fail-closed block nobody cleaned up. The gauge is sampled by the maintenance leader on the admin's surface (taskq.wf_progress_nodes_total, dimensioned by the DECLARED workflow — `_other_` carries the unregistered collapse). The per-run truth: the admin's run page reads the per-node rollup (blocked-by, join-latency SQL in docs/guides/insights.md); the node rows name the blocking reason (metadata.blocking_reason: 'join' waiting on parents, 'orphan_parent' a misnamed child, 'failed_parent' a failed parent's fail-closed cascade, 'body_unavailable' a fired join whose body never resolved — that one is a deployment defect: the workflow's definitions are not imported in every worker process). Operators should override the threshold in their own rule configuration. Runbook: docs/guides/runbooks.md#taskqworkflowblockedstuck.", summary="Workflow probe_wf has 3 nodes pinned blocked for 30m with no transition"}
+E                       ]
+
+tests/_prom_review.py:1047: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=5d4bd469b60d redis=e7288c31f84c state_dir=/tmp/pytest-of-rich/pytest-17123
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=5d4bd469b60d redis=e7288c31f84c
+=========================== short test summary info ============================
+FAILED tests/test_prometheus_metrics_review.py::test_every_alert_rule_fires_on_real_names_and_labels
+1 failed in 132.23s (0:02:12)

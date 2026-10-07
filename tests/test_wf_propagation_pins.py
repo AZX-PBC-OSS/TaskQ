@@ -664,9 +664,7 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
         "death fenced the collect leg's decrement, and nothing resolved "
         "the join: a claimable never-fired row on a failed flow"
     )
-    assert b_state["metadata"].get("failed_parent") == str(x), (
-        "the stamp names the failed parent"
-    )
+    assert b_state["metadata"].get("failed_parent") == str(x), "the stamp names the failed parent"
     assert fires_b == 0, "the join never fires over the fenced flow"
 
     # THE ENVELOPE IS HONEST: the derivation says 'failed' — X's failure

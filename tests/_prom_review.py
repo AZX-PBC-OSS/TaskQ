@@ -907,12 +907,16 @@ def run_hostile_probe(
 _DOCKER = shutil.which("docker")
 
 _EMITTER_PROBE = '''
-"""Emitter probe: drives the real cannot-stage-live counter emitters -
-the sweep-abort pair (Postgres aborting a bounded prune batch collides
-with the worker's own retry ladder) and the cron skipped-slots counter
+"""Emitter probe: drives the real cannot-stage-live emitters - the
+sweep-abort pair (Postgres aborting a bounded prune batch collides
+with the worker's own retry ladder), the cron skipped-slots counter
 (no live run reaches it: the 1-hour default catch-up window swallows the
-probes' staged 2-minute backlog) - families whose emission paths are real
-public API - and dumps the exposition their series actually serve."""
+probes' staged 2-minute backlog), and the wf-progress gauge (an
+observable gauge the MAINTENANCE LEADER samples on the admin's surface -
+the worker probes scrape the worker exposition, which never carries it;
+the emission path is the real public update_wf_progress_cache API the
+leader's sampler calls) - families whose emission paths are real public
+API - and dumps the exposition their series actually serve."""
 
 import asyncio
 import os
@@ -934,6 +938,7 @@ from taskq.obs import (  # noqa: E402
     record_cron_skipped_slots,
     record_sweep_timeout,
     record_sweep_unexpected_error,
+    update_wf_progress_cache,
 )
 from taskq.obs import _otel as otel_mod  # noqa: E402
 
@@ -942,6 +947,16 @@ otel_mod.set_otel_enabled(True)
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
 record_cron_skipped_slots("probe_fail_actor", 1)
+# THE WF-PROGRESS GAUGE (T08): the leader's sampler's own write - the
+# (workflow, state)-keyed cache the observable gauge reads out. The fed
+# values are the promtool cases' fed label values' source of truth.
+update_wf_progress_cache(
+    {
+        ("probe_wf", "blocked"): 3,
+        ("probe_wf", "running"): 7,
+        ("_other_", "pending"): 11,
+    }
+)
 
 with open(os.environ["PROBE_SCRAPE_PATH"], "w") as fh:
     fh.write(generate_latest(REGISTRY).decode())

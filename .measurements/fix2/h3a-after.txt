@@ -1,0 +1,77 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_____________ test_every_alert_rule_fires_on_real_names_and_labels _____________
+
+live = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1852.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_daaa96f0ee'}, value=1.0)]})
+follower = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1333.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_daaa96f0ee'}, value=1.0)]})
+hostile_mid = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1275.0), Sample... 'otel_scope_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2'}, value=0.46861468185670674)]})
+emitter = Exposition(samples=(Sample(name='target_info', labels={'service_instance_id': '85c2a2c0-2100-4037-a991-3f5d89b589e8', ... 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'state': 'pending', 'workflow': '_other_'}, value=11.0)]})
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-17122/test_every_alert_rule_fires_on0')
+
+    @pytest.mark.skipif(
+        not docker_available(),
+        reason="promtool runs in the prom/prometheus container; Docker unreachable",
+    )
+    def test_every_alert_rule_fires_on_real_names_and_labels(
+        live: Exposition,
+        follower: Exposition,
+        hostile_mid: Exposition,
+        emitter: Exposition,
+        tmp_path: Any,
+    ) -> None:
+        """Every shipped rule must fire against its pathology, built from the
+        metric names + label sets the real worker exposition served; the
+        healthy shapes must stay silent."""
+        rules_data = yaml.safe_load(RULES_PATH.read_text())
+    
+        # Gate: every taskq/messaging series the rules reference is one the
+        # real probes emitted (the healthy run for every family a healthy
+        # worker carries; the hostile run adds the failure-only counters -
+        # taskq_heartbeat_misses_total among them; the emitter probe adds the
+        # three cannot-stage-live counters - the two sweep-abort counters
+        # whose PG-abort pathology cannot be staged against a live shared
+        # schema, and the cron skipped-slots counter no live run reaches -
+        # whose emission paths are the real public
+        # record_sweep_*/record_cron_skipped_slots API). Label values and
+        # PromQL syntax are stripped before scanning; a rule operand the
+        # bridge never serves would make the rule unevaluatable against real
+        # data.
+        emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
+        for rule in rules_data["groups"][0]["rules"]:
+            expr = re.sub(r'"[^"]*"', '""', str(rule["expr"]))
+            expr = re.sub(r"\{[^}]*\}", "{}", expr)
+            # Range selectors ([5m]) carry durations, not series names.
+            expr = re.sub(r"\[[^\]]*\]", "[]", expr)
+            # ...so do offset durations (`offset 5m`).
+            expr = re.sub(r"offset\s+\d+[smhd]", "offset", expr)
+            # Grouping clauses (by/without/on/ignoring) name LABELS, not series.
+            expr = re.sub(r"\b(by|without|on|ignoring)\s*\([^)]*\)", r"\1 ()", expr)
+            for token in set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_:]*", expr)):
+                if token in _PROMQL_KEYWORDS:
+                    continue
+                assert token in emitted, (
+                    f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
+                )
+            # The label names the rule matches on must be real too.
+            for label in set(re.findall(r"(\w+)\s*=\"", str(rule["expr"]))):
+>               assert (
+                    any(
+                        label in s.labels
+                        for family in emitted
+                        for s in (live.series(family) or hostile_mid.series(family))
+                    )
+                    or label == "le"
+                ), f"rule {rule['alert']} filters on label {label!r}, which no emitted series carries"
+E               AssertionError: rule TaskQWorkflowBlockedStuck filters on label 'state', which no emitted series carries
+E               assert (False or 'state' == 'le'
+E                +  where False = any(<generator object test_every_alert_rule_fires_on_real_names_and_labels.<locals>.<genexpr> at 0x7f349ea93d30>)
+E                 
+E                 - le
+E                 + state)
+
+tests/test_prometheus_metrics_review.py:1476: AssertionError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=8456c451a235 redis=c0fa47a1c409
+=========================== short test summary info ============================
+FAILED tests/test_prometheus_metrics_review.py::test_every_alert_rule_fires_on_real_names_and_labels
+1 failed, 1 passed in 130.78s (0:02:10)
