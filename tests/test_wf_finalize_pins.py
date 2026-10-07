@@ -137,6 +137,145 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     assert await fire_count(wf_conn, wf_schema, join2) == 1
 
 
+# ── Pin 22: THE BUILD-TIME REFUSALS (the stranded invisible join) ───────
+
+
+def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> None:
+    """An EMPTY fork (zero children) and a JOIN node with zero incoming
+    edges are refused at build time — before any row is written. The
+    runtime shape was the dragon: the rederive arm's counts INNER-joined
+    wf_edge, so an edge-less join-wait row was INVISIBLE (never reconciled,
+    never fired, never stamped blocked-with-reason) — silently stranded
+    forever with a healthy-looking record. The sweep's LEFT-JOIN hardening
+    diagnoses such a row ``orphan_parent`` (the attack file drives it:
+    ``test_attack_join_node_without_edges_is_invisible_to_the_sweep``); the
+    validators are the door the declarative API composes, and the public
+    ``insert_node`` path writes declared edges via the bundle's exported
+    edge writer in the same call."""
+    from taskq.workflows import validate_fork, validate_join_spec
+    from taskq.workflows._types import ForkSpec
+
+    empty = ForkSpec(children=())
+    with pytest.raises(ValueError, match="empty fork"):
+        validate_fork(empty)
+    with pytest.raises(ValueError, match="zero incoming edges"):
+        validate_join_spec("orphan", (), 1)
+    with pytest.raises(ValueError, match="2 parents"):
+        validate_join_spec("join", (new_uuid(), new_uuid()), 3)
+    # A well-formed fork validates.
+    from taskq.workflows._types import ChildSpec
+
+    validate_fork(
+        ForkSpec(children=(ChildSpec(step_key="c", actor="wf", queue="default"),))
+    )
+    engine_redlog.red(
+        "pin22-build-time-refusals",
+        "the unvalidated builders (empty fork / edge-less join) reached the DB",
+        {"edgeless_join": "stranded invisible in join-wait (pre-hardening: not even diagnosable)"},
+    )
+
+
+# ── Pin 23: THE DECREMENT GUARD (the >= 0 flip — the gremlin's fingerprint)
+@pytest.mark.integration
+async def test_pin_23_tx2_decrement_guard_deps_never_negative(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    engine_redlog: RedLog,
+) -> None:
+    """THE GREMLIN PIN: tx2 runs TWICE on ONE admitted view — the second
+    decrement must be a NO-OP. The shipped guard is ``j.deps_pending > 0``
+    (the rowcount gate): a zeroed counter is not decrementable, the
+    counter can never go negative, and the fire stays exactly one. The
+    gremlin flips the guard to ``>= 0`` — the deps = -1 fingerprint, the
+    join strands (the fired row's counter lies in the cache the sweep
+    reconciles). The pin drives the SHIPPED statement through the engine's
+    own tx2 entry — the mutation reds it."""
+    from taskq.workflows import engine as engine_mod
+
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, parent)
+
+    # ONE admitted view, tx2 TWICE (the duplicate-delivery shape tx2's own
+    # fence does not see — tx1's rowcount gate admitted this worker once).
+    async with module_pg_pool.acquire() as tx2_conn:
+        first_hits, first_fired = await engine_mod._run_tx2(  # pyright: ignore[reportPrivateUsage]  # Why: the pin drives the tx2 seam directly — the guard under mutation lives here.
+            tx2_conn, wf_sql, flow_id=flow_id, parent_id=parent, reducers=None
+        )
+        assert first_hits and first_hits[0].deps_pending == 0
+        assert len(first_fired) == 1
+
+        second_hits, second_fired = await engine_mod._run_tx2(  # pyright: ignore[reportPrivateUsage]
+            tx2_conn, wf_sql, flow_id=flow_id, parent_id=parent, reducers=None
+        )
+    engine_redlog.red(
+        "pin23-decrement-guard",
+        "the DECREMENT guard flipped to >= 0 (the second tx2 decrements a zeroed counter)",
+        {"deps_pending_fingerprint": -1, "second_tx2_hits": len(second_hits)},
+    )
+    assert second_hits == (), "the second tx2 must hit nothing (the guard is > 0)"
+    assert second_fired == ()
+    state = await node_state(wf_conn, wf_schema, join_id)
+    assert state["deps_pending"] == 0, (
+        f"the counter went NEGATIVE (deps_pending={state['deps_pending']}): "
+        "the >= 0 flip's fingerprint — the join strands on a lying cache"
+    )
+    assert await fire_count(wf_conn, wf_schema, join_id) == 1, "still exactly one fire"
+
+
+# ── Pin 24: THE FLOW-STATUS LEG IN TX2 (the finalize on a cancelled flow)
+@pytest.mark.integration
+async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    engine_redlog: RedLog,
+) -> None:
+    """THE GREMLIN PIN, green-half: the finalize path fires on a CANCELLED
+    flow — tx1's attempt fence admits the node's own terminal (the fence is
+    the attempt token, not the flow's), and tx2's DECREMENT must refuse via
+    the flow-status EXISTS leg: the counter freezes, the join never fires.
+    The gremlin DROPS the flow-status leg from the DECREMENT — the dead
+    flow's join decrements and fires (pin 5's twin, on the finalize path).
+    The pin drives the SHIPPED statements through finalize_node."""
+    flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, parent)
+
+    result = await finalize_node(
+        module_pg_pool,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=parent,
+        step_key="a",
+        worker_id=worker_id,
+        attempt=attempt,
+        claim_epoch=epoch,
+        outcome="succeeded",
+    )
+    engine_redlog.red(
+        "pin24-flow-status-leg",
+        "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)",
+        {"deps_pending_fingerprint": 0, "fired_on_cancelled_flow": True},
+    )
+    assert result.applied, "tx1's attempt fence admits the node's own terminal"
+    state = await node_state(wf_conn, wf_schema, join_id)
+    assert state["deps_pending"] == 1, (
+        f"the dead flow's join DECREMENTED (deps_pending={state['deps_pending']}): "
+        "the flow-status leg is load-bearing in tx2"
+    )
+    assert not result.fired and await fire_count(wf_conn, wf_schema, join_id) == 0, (
+        "the dead flow's join never fires"
+    )
+
+
 # ── Pin 6: DUPLICATE-FINALIZE (the rowcount gate) ────────────────────────
 
 

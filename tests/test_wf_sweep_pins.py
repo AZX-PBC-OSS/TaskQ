@@ -287,7 +287,7 @@ def _drop_missing_parent_arm_sql(wf_sql: WorkflowSql) -> str:
     counted-and-terminal, and the join whose parent is GONE fires silently
     (the 'record healthy, work wrong' class)."""
     mutated = wf_sql.rederive_sweep.replace(
-        "count(*) FILTER (WHERE p.id IS NULL) AS missing_parents,",
+        "count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,",
         "0::bigint AS missing_parents,",
     )
     assert mutated != wf_sql.rederive_sweep, "the mutation drill did not arm"
@@ -298,7 +298,7 @@ def _drop_missing_parent_arm_fire_sql(wf_sql: WorkflowSql) -> str:
     """The FIRE arm's twin of the same conviction: no missing-parent arm in
     its counts either."""
     mutated = wf_sql.sweep_fire.replace(
-        "count(*) FILTER (WHERE p.id IS NULL) AS missing_parents,",
+        "count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,",
         "0::bigint AS missing_parents,",
     )
     assert mutated != wf_sql.sweep_fire, "the fire's mutation drill did not arm"

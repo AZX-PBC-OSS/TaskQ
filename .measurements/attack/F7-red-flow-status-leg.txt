@@ -1,0 +1,2 @@
+FAILED tests/test_wf_finalize_pins.py::test_pin_24_finalize_on_cancelled_flow_never_decrements
+1 failed in 3.04s

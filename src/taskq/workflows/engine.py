@@ -142,6 +142,11 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
     """
     if spec.deps_pending < 0:
         raise ValueError(f"deps_pending must be >= 0, got {spec.deps_pending}")
+    if spec.parents and len(spec.parents) != spec.deps_pending:
+        raise ValueError(
+            f"deps_pending must equal the declared parent count "
+            f"(deps_pending={spec.deps_pending}, parents={len(spec.parents)})"
+        )
     node_id = JobId(new_uuid())
     await conn.execute(
         wsql.node_insert,
@@ -162,6 +167,15 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         spec.idempotency_scope,
         spec.idempotency_key,
     )
+    # The declared edges ride the SAME call (the exported edge writer): a
+    # joined node's incoming edges are the join counter's ONLY truth — the
+    # join that never got them was a stranded invisible join (the rederive
+    # arm's INNER join on wf_edge enumerated it into nothing).
+    if spec.parents:
+        await conn.executemany(
+            wsql.node_edge,
+            [(node_id, parent, spec.flow_id) for parent in spec.parents],
+        )
     return node_id
 
 

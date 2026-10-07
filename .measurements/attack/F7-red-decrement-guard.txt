@@ -1,0 +1,2 @@
+FAILED tests/test_wf_finalize_pins.py::test_pin_23_tx2_decrement_guard_deps_never_negative
+1 failed in 3.10s

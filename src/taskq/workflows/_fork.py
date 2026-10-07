@@ -20,6 +20,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata
+from taskq.workflows.definitions import validate_fork
 
 if TYPE_CHECKING:
     pass
@@ -43,6 +44,7 @@ async def insert_fork(
     rows, the edge rows, the join node — parallel-array chunks, ids minted
     app-side (uuid7 via the seam). NEVER a second transaction: the parent's
     terminal mark, the children, and the join share one tx, one now()."""
+    validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
     children = fork.children
     child_ids = [JobId(new_uuid()) for _ in children]
 

@@ -40,6 +40,7 @@ from taskq.workflows._sql_finalize import (
     FORK_EDGES_SQL,
     FORK_JOIN_CONSUMERS_SQL,
     FORK_JOIN_NODE_SQL,
+    NODE_EDGE_SQL,
     NODE_INSERT_SQL,
     OUTBOX_INSERT_SQL,
     TERMINAL_MARK_SQL,
@@ -108,6 +109,7 @@ class WorkflowSql:
     ledger_fence_by_id: str
     phantom_reap: str
     node_insert: str
+    node_edge: str
     flow_status: str
     flow_run_insert: str
     flow_run_read: str
@@ -159,6 +161,7 @@ class WorkflowSql:
             ledger_fence_by_id=render(LEDGER_FENCE_BY_ID_SQL),
             phantom_reap=render(PHANTOM_REAP_SQL),
             node_insert=render(NODE_INSERT_SQL),
+            node_edge=render(NODE_EDGE_SQL),
             flow_status=render(FLOW_STATUS_SQL),
             flow_run_insert=render(FLOW_RUN_INSERT_SQL),
             flow_run_read=render(FLOW_RUN_READ_SQL),

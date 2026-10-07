@@ -153,6 +153,18 @@ WHERE id = $1
 """
 
 
+# The PUBLIC edge writer (the fork's FORK_EDGES_SQL is the fork-internal
+# one; this is the single-edge insert the public join path uses): a joined
+# node's incoming edges ARE the join counter's truth — a join declared
+# without them is a stranded invisible join (the rederive arm diagnoses it
+# metadata.blocking_reason='orphan_parent'; the declarative API refuses it
+# at build time, definitions.validate_fork / validate_join_spec).
+NODE_EDGE_SQL = """\
+INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id)
+VALUES ($1, $2, $3)
+"""
+
+
 FLOW_STATUS_SQL = """\
 SELECT id, status FROM {schema}.jobs WHERE id = $1
 """
