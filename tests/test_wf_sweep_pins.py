@@ -13,6 +13,8 @@ the unfenced variants kept in this file forever as the convicted shapes.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -127,6 +129,110 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
     assert (await node_state(wf_conn, wf_schema, join2))["deps_pending"] == 0, (
         "the cache reconciled (count = 0 un-terminal); the FIRE is what the leg refuses"
     )
+
+
+# ── Pin 2: THE DISPATCH FENCE (P3 rule 4's SECOND leg, in the claim) ────
+
+
+@pytest.mark.integration
+async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    engine_redlog: RedLog,
+) -> None:
+    """Pin 2's green, the ticket's shape: a pending workflow child of a
+    CANCELLED flow is NOT claimable — the claim's candidate WHERE carries
+    the flow-status EXISTS (the fence's second leg; the fire guard's leg
+    and the finalize fence are the other two). The leg refuses cleanly and
+    the sweep re-derives (the asymmetry doctrine: a refused claim is
+    re-derivable, a claimed one is not un-runnable). The RED drill is the
+    fence dropped (recorded: ``.measurements/attack/B2-red-dispatch-fence.txt``
+    — the shipped claim re-claims the dead flow's child); the attack file
+    ``tests/attack_wf_dispatch_fence.py`` keeps the same conviction on the
+    REAL backend path (``dispatch_batch`` over ``clean_jobs_app``).
+
+    The plan stays serviceable: the fence short-circuits on the step_key
+    probe (vanilla rows evaluate no subplan) — this pin records the
+    claimed statement's EXPLAIN alongside the hot-statement corpus."""
+    import time
+
+    from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
+
+    # The cancelled flow + one of its pending children (a fork-child shape:
+    # deps_pending 0 — claimable by the counter's verdict alone).
+    flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
+    child = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'c', "
+        "$2::jsonb, now() - interval '1 hour')",
+        child,
+        json.dumps({"flow_id": str(flow_id)}),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
+        "VALUES ('wf', 'default') ON CONFLICT (actor) DO NOTHING"
+    )
+
+    worker_id = new_uuid()
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(child) not in claimed, (
+        f"the dispatch fence's flow-status leg is absent: the cancelled "
+        f"flow's pending child {child} was claimed (claimed={sorted(claimed)})"
+    )
+    status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child)
+    assert status == "pending", "the refusal leaves the row untouched (the sweep re-derives)"
+
+    # A LIVE flow's child still claims (the fence must not over-reject).
+    live_flow = await seed_flow(wf_conn, wf_schema, status="running")
+    live_child = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live', "
+        "$2::jsonb, now() - interval '1 hour')",
+        live_child,
+        json.dumps({"flow_id": str(live_flow)}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(live_child) in claimed, (
+        f"the fence over-rejected: a LIVE flow's pending child {live_child} "
+        f"was not claimed (claimed={sorted(claimed)})"
+    )
+
+    # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides
+    # as a per-row subplan that vanilla rows never evaluate).
+    plan = await wf_conn.fetchval(
+        "EXPLAIN (BUFFERS) " + DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        ["default"],
+        5,
+        worker_id,
+        timedelta(seconds=30),
+        2,
+    )
+    assert plan is not None
+    measurements = Path(".measurements/attack")
+    measurements.mkdir(parents=True, exist_ok=True)
+    with open(measurements / "explain-hot-statements.txt", "a") as sink:
+        sink.write(f"\n=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, {time.strftime('%Y-%m-%d')}) ===\n")
+        sink.write(plan if plan.endswith("\n") else plan + "\n")
 
 
 # ── Pin 8: MISNAMED-CHILD (blocked-with-reason, never a silent fire) ────
