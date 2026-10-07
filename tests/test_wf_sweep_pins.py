@@ -235,6 +235,49 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         sink.write(plan if plan.endswith("\n") else plan + "\n")
 
 
+# ── Pin 21: THE SWEEP ARMS ARE WIRED (the registration IS the fix) ──────
+
+
+def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
+    """The three healing arms (the lock-first re-derive + fire, the outbox
+    drain, the phantom reaper) are REGISTERED in the leader's maintenance
+    sweep loop — the registration was the gap: the arms existed in
+    ``taskq.workflows._sweep`` and nothing outside the package called
+    them, so the healing was unreachable in production. The pin convicts
+    an unwired arm (a spec deleted from the tick table reds) AND the
+    §16.1 import law (importing the worker module never imports
+    ``taskq.workflows`` at module scope — the arms' imports stay lazy,
+    inside the spec calls)."""
+    import subprocess  # Why: the pin IS the ticket's grep shape.
+    import sys
+
+    source = (
+        Path(__file__).parent.parent / "src" / "taskq" / "worker" / "_leader_sweeps.py"
+    ).read_text()
+    for arm in ("wf_join_rederive", "wf_outbox_drain", "wf_phantom_reap"):
+        assert f'name="{arm}"' in source, (
+            f"the {arm} sweep arm is not registered in the leader's "
+            "maintenance sweep loop — the healing is unreachable in production"
+        )
+    # The lazy-import law: a fresh interpreter importing the WORKER module
+    # must leave taskq.workflows unimported (the arms ride per-call
+    # imports; a module-scope import of the package in the sweep loop is
+    # the convicted shape).
+    out = subprocess.run(  # Why: fresh-interpreter probe, fixed argv, the repo's own package.
+        [
+            sys.executable,
+            "-c",
+            "import taskq.worker._leader_sweeps, sys; "
+            "print('taskq.workflows' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    assert "False" in out, out
+
+
 # ── Pin 8: MISNAMED-CHILD (blocked-with-reason, never a silent fire) ────
 
 

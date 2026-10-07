@@ -82,6 +82,7 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend.statemachine import assert_valid_transition
 from taskq.workflows._capture import build_capture
 from taskq.workflows._fork import insert_fork
+from taskq.workflows._reducers import register_flow_reducers
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import (
     DecrementHit,
@@ -415,6 +416,16 @@ async def finalize_node(
     two map children of one step key never overwrite each other's outcome.
     """
     assert_valid_transition("running", outcome, job_id)
+
+    # THE REDUCER MEMO (the tx1→tx2 window's cure): the finalize's
+    # reducers are resolvable OUTSIDE this call's stack — the sweep's
+    # healing pass runs the fired join's body from the same memo (see
+    # workflows/_reducers.py; D1's definition-first rule is the resolver's
+    # fallback). Registered before tx1: a fenced-out finalize registers
+    # nothing harmful (the memo keys by join step key; a body that never
+    # fires is never run).
+    if reducers:
+        register_flow_reducers(flow_id, reducers)
 
     # The failure IO-capture rides tx1 (a row already being updated); the
     # success path writes NOTHING extra (the G1 ruling — every capture

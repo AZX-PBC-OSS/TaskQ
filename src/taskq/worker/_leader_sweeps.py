@@ -506,6 +506,43 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 batch_size=ctx.deps.settings.event_writer_batch_size,
             )
 
+    async def wf_join_rederive_call() -> int:
+        # THE WORKFLOW HEALING ARMS (T04) — wired here, not in the
+        # backend: THE IMPORT LAW (§16.1) keeps every workflows import out
+        # of module scope outside the package (the arms live in
+        # taskq.workflows._sweep; this is their REGISTRATION), so each
+        # call imports lazily. The arms take the dispatcher pool and
+        # manage their own bounded transactions; each returns a count.
+        from taskq.workflows import sweep_join_rederive
+        from taskq.workflows._sql import render_workflow_sql
+
+        wsql = render_workflow_sql(ctx.deps.settings.schema_name)
+        summary = await sweep_join_rederive(
+            ctx.deps.dispatcher_pool,
+            wsql,
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+        return summary.blocked + summary.reconciled + len(summary.fired)
+
+    async def wf_outbox_drain_call() -> int:
+        from taskq.workflows import drain_outbox
+        from taskq.workflows._sql import render_workflow_sql
+
+        return await drain_outbox(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
+    async def wf_phantom_reap_call() -> int:
+        from taskq.workflows import reap_phantom_ledger
+        from taskq.workflows._sql import render_workflow_sql
+
+        return await reap_phantom_ledger(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     def _dbg_tick(event: str) -> Callable[[int, float], None]:
         """The standard success-path debug line: the sweep's tick event."""
 
@@ -662,6 +699,63 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             drain_in_try=True,
             warn_without_worker_id=True,
             on_rows=_log_stale_batches_completed,
+        ),
+        _SweepSpec(
+            # THE WORKFLOW HEALING ARMS (T04) — the three sweep arms
+            # registered into the tick's table (the registration WAS the
+            # gap: the arms existed, nothing outside taskq.workflows called
+            # them). Gated on the PG-only maintenance marker (the same
+            # hasattr gate the other PG-only sweeps use); the lazy imports
+            # keep the §16.1 import law (nothing outside the package
+            # imports taskq.workflows at module scope).
+            #
+            # * wf_join_rederive — the lock-first re-derive + fire: heals
+            #   the tx1→tx2 crash window (the parent terminalized, the
+            #   decrement/fire never ran) by reconciling the counter cache
+            #   from the edge ledger, firing the firable joins and running
+            #   their reducer bodies (at-least-once, tx-scoped).
+            # * wf_outbox_drain — the delivery half: inserts the fired
+            #   joins' consumer rows idempotently (the composite arbiter)
+            #   and flips the undelivered flag in the same tx.
+            # * wf_phantom_reap — fences 'running' ledger rows on terminal
+            #   flows (the rows-alone reconstruction reconciles, pin 15).
+            #
+            # UndefinedTableError tolerance: a rolling deploy may run this
+            # code against a schema the 01.00.23 round has not landed on
+            # yet — a per-tick warn until the migration applies, never the
+            # deliberately-fatal streak (the keyed-row sweep's pattern).
+            name="wf_join_rederive",
+            call=wf_join_rederive_call,
+            warn_event="sweep-wf-join-rederive-failed",
+            warn_kind="sweep_wf_join_rederive_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_join_rederive_tick"),
+        ),
+        _SweepSpec(
+            name="wf_outbox_drain",
+            call=wf_outbox_drain_call,
+            warn_event="sweep-wf-outbox-drain-failed",
+            warn_kind="sweep_wf_outbox_drain_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
+        ),
+        _SweepSpec(
+            # ONE full-table-scoped pass per tick, deliberately NOT a
+            # drain: the reap's UPDATE is statement-bounded by the
+            # phantom population itself (every reaped row leaves the
+            # predicate), so a second pass returns zero and a drain loop
+            # would only re-run the empty statement.
+            name="wf_phantom_reap",
+            call=wf_phantom_reap_call,
+            warn_event="sweep-wf-phantom-reap-failed",
+            warn_kind="sweep_wf_phantom_reap_failed",
+            gated_on=("sweep_leaked_reservation_slots",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
         ),
     )
 
