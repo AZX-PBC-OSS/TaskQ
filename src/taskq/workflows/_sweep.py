@@ -96,7 +96,7 @@ async def sweep_join_rederive(
             # next pass, never NULL-id fired).
             fire_ids = [new_uuid() for _ in range(firable)]
             winners = await conn.fetch(wsql.sweep_fire, fire_ids, batch_size)
-            fired = []
+            fired_joins: list[FiredJoin] = []
             for w in winners:
                 # THE BODY: the winner's reducer runs INSIDE this tx (the
                 # exactly-once boundary is the FIRE's, never the body's —
@@ -105,14 +105,14 @@ async def sweep_join_rederive(
                 body = resolve_flow_reducer(JobId(w["flow_id"]), w["step_key"])
                 if body is not None:
                     await body()
-                fired.append(
+                fired_joins.append(
                     FiredJoin(
                         join_job_id=JobId(w["join_job_id"]),
                         step_key=w["step_key"],
                         consumers=_consumer_bindings(w["consumers"]),
                     )
                 )
-            fired = tuple(fired)
+            fired = tuple(fired_joins)
             outbox_rows = [
                 (
                     new_uuid(),

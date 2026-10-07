@@ -46,14 +46,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 
+if TYPE_CHECKING:
+    # Type-only export: JSONValue lives in tors' stubs, not its runtime
+    # module -- future annotations make the string-form uses safe.
+    from tors import JSONValue
+
 __all__ = [
+    "FlowEntry",
     "LedgerClaim",
     "RunClaim",
     "claim_step_ledger",
@@ -73,6 +79,21 @@ __all__ = [
 #: collide silently (the second flow's run returned the FIRST flow's run
 #: id + status, launched nothing).
 RUN_IDEMPOTENCY_SCOPE: Final[str] = "workflow-run"
+
+
+class FlowEntry(Protocol):
+    """The flow definition's registered shape the run-key claim needs (the
+    typed door — a bare ``int`` or attribute-less object is a checker
+    error, the T01 negative probes pin it). ``name`` namespaces the
+    arbiter's scope (``workflow-run:<name>``)."""
+
+    name: str
+    actor: str
+    queue: str
+    max_attempts: int
+    retry_kind: str
+    payload: dict[str, object] | str | None
+    trace_id: str | None
 
 
 def run_idempotency_scope(flow_name: str | None = None) -> str:
@@ -109,6 +130,9 @@ class LedgerClaim:
     ``fresh`` rows were inserted by THIS claim (the only grant of work — the
     attempt increments at claim); a conflicting claim returns the EXISTING
     row, whose terminal ``result`` is the memoized answer.
+    ``result`` is the TYPED door: the memoized payload is a JSON value —
+    never a bare ``Any`` (the T01 probe: any method call on it is a checker
+    error).
     ``ledger_id`` is the claimed LEDGER ROW's own id (the RETURNING id) —
     the strongest terminal-write key: the finalize that holds it pins the
     outcome write to exactly this row (``LEDGER_TERMINAL_BY_ID_SQL``).
@@ -120,7 +144,7 @@ class LedgerClaim:
     map_index: int | None
     attempt: int
     status: str
-    result: Any | None
+    result: JSONValue | None
     error_class: str | None
     error_message: str | None
     ledger_id: JobId | None = None
@@ -175,7 +199,7 @@ async def claim_step_ledger(
         map_index=rec["map_index"],
         attempt=rec["attempt"],
         status=rec["status"],
-        result=rec["result"],
+        result=_decode_jsonb(rec["result"]),
         error_class=rec["error_class"],
         error_message=rec["error_message"],
     )
@@ -212,16 +236,17 @@ async def insert_flow_run(
     conn: ConnLike,
     wsql: WorkflowSql,
     *,
-    entry: Any,
+    entry: FlowEntry,
     run_key: str,
 ) -> RunClaim:
     """The RUN-KEY claim (G2): the flow's root row inserted under the
-    ``workflow-run`` scope with the caller's key — the composite arbiter is
-    the rememberer. A conflict returns the EXISTING run's id + status.
+    ``workflow-run:<flow name>`` scope with the caller's key — the composite
+    arbiter is the rememberer. A conflict returns the EXISTING run's id +
+    status.
 
-    *entry* is the flow definition's registered shape (T09's API; the core
-    needs ``actor``/``queue``/``max_attempts``/``retry_kind``/``payload``/
-    ``trace_id`` attributes only).
+    *entry* is the flow definition's registered shape (T09's API; the
+    TYPED door — :class:`FlowEntry`, the protocol the negative probes
+    pin).
     """
     flow_id = new_uuid()
     inserted = await conn.fetchrow(
@@ -234,7 +259,7 @@ async def insert_flow_run(
         entry.retry_kind,
         entry.trace_id,
         dumps_jsonb_str({"flow_id": str(flow_id)}),
-        run_idempotency_scope(getattr(entry, "name", None)),
+        run_idempotency_scope(entry.name),
         run_key,
     )
     if inserted is not None:
@@ -243,9 +268,7 @@ async def insert_flow_run(
     # The arbiter's conflict path: the EXISTING run's id + status, never a
     # second silent run (the founding-incident shape — "202 + a new run" —
     # is the convicted variant, kept RED forever by the pin).
-    existing = await conn.fetchrow(
-        wsql.flow_run_read, run_idempotency_scope(getattr(entry, "name", None)), run_key
-    )
+    existing = await conn.fetchrow(wsql.flow_run_read, run_idempotency_scope(entry.name), run_key)
     assert existing is not None  # the arbiter conflict implies the row exists
     return RunClaim(
         flow_id=JobId(existing["id"]),
