@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import signal
 import time
 from collections.abc import AsyncGenerator
@@ -87,6 +88,8 @@ if TYPE_CHECKING:
     from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = [pytest.mark.integration, pytest.mark.system]
+
+_LOG = logging.getLogger(__name__)
 
 _TAG = "sys-s7"
 
@@ -179,14 +182,20 @@ _CORPSE_PREMISE_BOUND = (
 _PROBE_STRETCH = 20.0
 _PROBE_STALL_MARGIN = _POLL_FLOOR * _PROBE_STRETCH
 
-#: The CapSampler's close-join hang guard: one tick's two queries plus the
-#: 0.1s cadence, stretched by the tier's load factor (the co-tenancy band
-#: the file's other derived bounds price). A backend hung past this bound
-#: cannot be joined naturally - the fallback cancels, and the fallback's
+#: The CapSampler's close-join hang guard: one tick's two queries plus
+#: the 0.1s cadence, stretched by the 20x co-tenancy factor these
+#: runners actually measure (_PROBE_STRETCH, the same band this file's
+#: other derived bounds price - NOT the tier's 2.0 progress factor,
+#: which cannot tell a slow tick from a hung one at this file's own
+#: weather). Say it plainly: under loaded weather a legitimate tick can
+#: take MULTIPLES of its healthy-weather time, so this bound is priced
+#: so a legitimate tick stays under it at 20x stretch and the fallback
+#: below fires only on a genuine hang - a backend wedged past 20
+#: seconds. The fallback cancel CAN land mid-query, and the fallback's
 #: own task reap (CapSampler.close) is what keeps the cancel's asyncpg
-#: Connection._cancel task off the module loop (the two shard reds' leak
-#: class, see the close's docstring).
-_SAMPLER_JOIN_BOUND_S = (_SWEEP_INTERVAL + _POLL_FLOOR) * TIER_LOAD_STRETCH
+#: Connection._cancel task off the module loop (the two shard reds'
+#: leak class, see the close's docstring).
+_SAMPLER_JOIN_BOUND_S = (_SWEEP_INTERVAL + _POLL_FLOOR) * _PROBE_STRETCH
 
 #: The flap scenario's premise hang guard: one claim cycle (the poll
 #: floor plus the leader's dispatch tick) stretched by the 20x co-tenancy
@@ -282,6 +291,30 @@ async def _worker_ids(
 # ── The shared pins ──────────────────────────────────────────────────────
 
 
+def _is_asyncpg_cancel_task(task: asyncio.Task[object]) -> bool:
+    """Whether the task's coroutine is asyncpg's ``Connection._cancel``.
+
+    The ONLY fire-and-forget mint the sampler's paths can produce
+    (``asyncpg/connection.py``'s ``_cancel_current_command``:
+    ``self._cancellations.add(self._loop.create_task(self._cancel(waiter)))``,
+    fired when a query waiter is cancelled mid-wire). The close's reap
+    is scoped to exactly this class: anything else still pending after
+    close() is NOT this reap's to swallow - the conftest loop-leak guard
+    names it loudly instead (the fail-loudly doctrine), so a broad,
+    globally-scoped reap here could mask a future mint class the guard
+    exists to catch. Both the coroutine qualname and the code object's
+    file are checked, so a coincidental ``_cancel`` method on some other
+    module's Connection class cannot match.
+    """
+    coro = task.get_coro()
+    code = getattr(coro, "cr_code", None)
+    return (
+        getattr(coro, "__qualname__", "") == "Connection._cancel"
+        and code is not None
+        and code.co_filename.endswith("asyncpg/connection.py")
+    )
+
+
 class CapSampler:
     """Continuously tally every running row against the distributed caps.
 
@@ -348,6 +381,10 @@ class CapSampler:
         #: rows. None until seen; ``assert_cap_receipt`` owns the assert.
         self.cap_receipt_at: int | None = None
         self._task: asyncio.Task[None] | None = None
+        #: Every task the close's reap reaped, as ``"<task name> coro=<coro>"``
+        #: - the reap's count and its evidence in one surface (the reap is
+        #: loud, never silent; the forced-fallback pin asserts on this).
+        self.reaped_tasks: list[str] = []
 
     async def _tick(self) -> None:
         if self._conn is None:
@@ -462,28 +499,70 @@ class CapSampler:
           the only thing that can hold a tick this long); the fallback
           cancel there CAN still land mid-query, so:
         * REAP what the close itself minted: the pending-task diff
-          against the close's entry is awaited (bounded, then cancelled
-          - asyncpg's ``_cancel`` suppresses its own cancellation), so
-          even the fallback leaves no task behind on the module loop.
+          against the close's entry, SCOPED to asyncpg's
+          ``Connection._cancel`` (the only fire-and-forget mint these
+          paths produce - see ``_is_asyncpg_cancel_task``), is awaited
+          off the loop (bounded, then cancelled - asyncpg's ``_cancel``
+          suppresses its own cancellation), so even the fallback leaves
+          no task behind on the module loop. The reap is LOUD: every
+          reaped task is logged by name + coro and counted on the
+          instance (``reaped_tasks``). Anything ELSE still pending after
+          close() is deliberately left for the conftest loop-leak guard
+          to name - the fail-loudly doctrine, not a mask. (On a fast
+          box the mint often finishes inside the ``conn.close()`` round
+          trips before the reap's diff runs - the reap is the
+          GUARANTEE it is awaited, not a bet on the healing.)
+        * The reap lives in a ``finally``: if close() ITSELF is
+          cancelled mid-body (e.g. during the bounded ``conn.close()``
+          await, whose ``contextlib.suppress(Exception)`` does not
+          swallow ``CancelledError`` on 3.8+), the reap still runs and
+          reaps the fallback's mint before the cancellation propagates.
+          The one window that remains is a SECOND cancellation landing
+          inside the reap's own awaits; nothing in the suite cancels
+          close(), so that residue is latent and accepted.
         """
         minted_baseline = set(asyncio.all_tasks())
         self.stop.set()
-        if self._task is not None and not self._task.done():
-            done, _pending = await asyncio.wait({self._task}, timeout=_SAMPLER_JOIN_BOUND_S)
-            if not done:
-                self._task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await self._task  # Why: teardown; the tally already recorded what it saw.
-        if self._conn is not None and not self._conn.is_closed():
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._conn.close(), timeout=5.0)
-            self._conn = None
-        # The reap: tasks minted while close() ran (asyncpg's
-        # Connection._cancel on the fallback path - the shard-red leak
-        # class), awaited off the loop before the guard's snapshot.
-        reaps = set(asyncio.all_tasks()) - minted_baseline - {asyncio.current_task()}
+        try:
+            if self._task is not None and not self._task.done():
+                done, _pending = await asyncio.wait({self._task}, timeout=_SAMPLER_JOIN_BOUND_S)
+                if not done:
+                    self._task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await self._task  # Why: teardown; the tally already recorded what it saw.
+            if self._conn is not None and not self._conn.is_closed():
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self._conn.close(), timeout=5.0)
+                self._conn = None
+        finally:
+            # The reap: whatever the close's window minted (the
+            # fallback's mid-query cancel - the shard-red leak class),
+            # awaited off the loop even if close() itself is being
+            # cancelled. Scoped, loud, counted - see the method.
+            await self._reap_minted_cancels(minted_baseline)
+
+    async def _reap_minted_cancels(self, minted_baseline: set[asyncio.Task[object]]) -> None:
+        """Await off the loop every mint still pending since the baseline.
+
+        SCOPED to asyncpg's ``Connection._cancel`` (see
+        ``_is_asyncpg_cancel_task`` for why the scope stops there) and
+        LOUD: every reaped task is logged by name + coro and appended to
+        ``reaped_tasks`` - the count is the forced-fallback pin's
+        deterministic evidence the reap ran on a mint, and the log is
+        the operator's record when a runner's weather makes the mint
+        outlive close's own round trips.
+        """
+        reaps = {
+            task
+            for task in set(asyncio.all_tasks()) - minted_baseline - {asyncio.current_task()}
+            if _is_asyncpg_cancel_task(task)
+        }
+        for task in reaps:
+            record = f"{task.get_name()} coro={task.get_coro()}"
+            self.reaped_tasks.append(record)
+            _LOG.warning("CapSampler.close reaped a minted task: %s", record)
         if reaps:
-            done, pending = await asyncio.wait(reaps, timeout=5.0)
+            _done, pending = await asyncio.wait(reaps, timeout=5.0)
             for task in pending:
                 task.cancel()
             if pending:
@@ -1728,7 +1807,17 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
         # the close and this snapshot: the leak heals inside a
         # teardown's own round trips (the weather ruling), which is
         # exactly why the CI red was rare.
-        leaked = set(asyncio.all_tasks()) - baseline - {asyncio.current_task()}
+        #
+        # The pin's OWN helper is exempt: ``_release_lock`` was minted
+        # after the baseline and is still pending when close() returns
+        # under load (it sleeps to the 1.0s lock window and then pays
+        # two round trips - a race close's return cannot win on a 20x
+        # stretched runner). It is awaited in the finally below BEFORE
+        # the test ends, so the exemption cannot hide a guard-visible
+        # leak: the guard's own diff would never see it either. Every
+        # OTHER mint - the asyncpg Connection._cancel above all - must
+        # be gone the moment close() returns.
+        leaked = set(asyncio.all_tasks()) - baseline - {asyncio.current_task(), releaser}
         assert not leaked, (
             "the sampler's close left task(s) pending on the module loop - "
             "asyncpg's fire-and-forget Connection._cancel, the shard-red "
@@ -1738,4 +1827,154 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
         # The lock's release is not part of the snapshot's story: the
         # leaked task (on the red shape) heals or not BEFORE this runs,
         # and the pin's own assertion is the red either way.
+        await releaser
+
+
+@pytest.mark.timeout(60)
+async def test_cap_sampler_close_hang_guard_fallback_reaps_the_minted_cancel(
+    pg_dsn: str,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The close's HANG-GUARD FALLBACK path, forced and pinned.
+
+    The sibling pin (``..._leaves_no_task_pending...``) exercises the
+    NATURAL-exit join: its lock window (1.0s) always beats the join
+    bound, so the fallback cancel and the scoped reap behind it were
+    never exercised by any test - mutation-surviving code (deleting the
+    reap block reddened nothing). THIS pin forces the fallback: the
+    join bound is patched below the 1.0s lock window, so the join times
+    out while the tick's SELECT is still blocked mid-wire and the
+    fallback MUST cancel the task mid-query - the exact state that makes
+    asyncpg mint its fire-and-forget ``Connection._cancel``.
+
+    Two parts, because a single end-to-end no-leak diff cannot carry the
+    red honestly: on a fast box the minted ``_cancel`` task usually
+    finishes INSIDE the close's own ``conn.close()`` round trips
+    (measured: conn.close ~5ms, the mint's fresh server connection
+    faster), so an end-to-end loop diff alone stays GREEN even with the
+    reap block deleted - the same weather ruling that made the original
+    leak rare.
+
+    * Part 1 - the fallback RAN and the reap was INVOKED: a spy wraps
+      ``_reap_minted_cancels`` around the real close(); if the reap
+      block is deleted from close (mutation A), the spy never fires and
+      this part reds deterministically. The loop diff after close must
+      still be clean.
+    * Part 2 - the reap's TEETH on a mint it provably sees: the pin
+      hand-mints a ``Connection._cancel`` (cancel a blocked query's
+      task, snapshot the diff synchronously - no await in between, so
+      the mint cannot have completed), hands the diff to the reap, and
+      asserts the mint came back DONE, counted in ``reaped_tasks`` by
+      name + coro, and logged. Breaking the reap's diff, its await, or
+      its log reds here.
+    """
+    monkeypatch.setattr(
+        "tests.system_e2e.test_rolling_release_fleet._SAMPLER_JOIN_BOUND_S",
+        0.3,  # Why: below the 1.0s lock window, so the join MUST time out.
+    )
+    schema = module_pg_schema.schema_name
+    baseline = set(asyncio.all_tasks())
+
+    # The lock window covers BOTH parts (part 1's forced fallback AND
+    # part 2's blocked-query mint); released long before the pin's own
+    # 60s bound either way.
+    locker = await asyncpg.connect(pg_dsn)
+    await locker.execute("BEGIN")
+    await locker.execute(
+        f'LOCK TABLE "{schema}".jobs IN ACCESS EXCLUSIVE MODE'
+    )  # Why: fixture-validated schema identifier.
+    lock_open_until = time.monotonic() + 2.5
+
+    async def _release_lock() -> None:
+        remaining = lock_open_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        await locker.execute("ROLLBACK")
+        await locker.close()
+
+    releaser = asyncio.create_task(_release_lock())
+
+    sampler = CapSampler(pg_dsn, schema)
+    try:
+        # Part 1: the forced fallback through a REAL close(), with the
+        # reap spied (the real method still runs underneath the spy).
+        reap_calls: list[bool] = []
+        real_reap = CapSampler._reap_minted_cancels
+
+        async def _spy_reap(self: CapSampler, minted_baseline: set[asyncio.Task[object]]) -> None:
+            reap_calls.append(True)
+            await real_reap(self, minted_baseline)
+
+        monkeypatch.setattr(CapSampler, "_reap_minted_cancels", _spy_reap)
+
+        sampler.start()
+        await asyncio.sleep(0.3)
+        await sampler.close()
+
+        # The fallback MUST have fired: the patched 0.3s join bound
+        # expired while the lock still held the tick's SELECT mid-wire
+        # (the lock opens at 2.5s). A cancelled tick task is the
+        # fingerprint - a natural exit cannot leave one.
+        assert sampler._task is not None and sampler._task.cancelled(), (
+            "the forced hang-guard fallback did not fire - the join bound "
+            "did not expire (patch failed?) or the close cancelled instead"
+        )
+        assert reap_calls == [True], (
+            "the forced fallback never invoked the reap - the reap block "
+            "is deleted from close() (mutation A) or bypassed"
+        )
+
+        # The sibling pin's no-leak diff, now over the FORCED fallback:
+        # the scoped reap must leave the module loop exactly as clean as
+        # the natural exit does.
+        leaked = set(asyncio.all_tasks()) - baseline - {asyncio.current_task(), releaser}
+        assert not leaked, (
+            "the sampler's close FALLBACK path left task(s) pending on "
+            "the module loop - the scoped reap must await what the "
+            f"fallback's cancel mints: {[t.get_name() for t in leaked]}"
+        )
+
+        # Part 2: the reap's teeth on a mint it provably sees. Mint a
+        # Connection._cancel by hand (cancel a blocked query's task),
+        # snapshot the diff SYNCHRONOUSLY - no await between the mint's
+        # delivery and this set, so the mint cannot have completed -
+        # then hand it to the reap and demand it come back awaited,
+        # counted, and logged.
+        q_conn = await asyncpg.connect(pg_dsn)
+        q_task = asyncio.create_task(
+            q_conn.fetch(f'SELECT 1 FROM "{schema}".jobs')  # blocked on the lock
+        )
+        await asyncio.sleep(0.1)  # Why: let the SELECT reach the wire.
+        reap_baseline = set(asyncio.all_tasks())
+        q_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await q_task
+        minted = set(asyncio.all_tasks()) - reap_baseline - {asyncio.current_task()}
+        assert minted, "the repro did not mint the asyncpg Connection._cancel task"
+        assert all(_is_asyncpg_cancel_task(t) for t in minted), (
+            f"the minted task is not the asyncpg Connection._cancel class: "
+            f"{[t.get_coro() for t in minted]}"
+        )
+        counted_before = len(sampler.reaped_tasks)
+        with caplog.at_level("WARNING", logger="tests.system_e2e.test_rolling_release_fleet"):
+            await sampler._reap_minted_cancels(reap_baseline)
+        assert all(t.done() for t in minted), (
+            "the reap returned with the minted cancel still pending - the "
+            "reap's bounded await is broken (wrong diff, dropped wait)"
+        )
+        new_records = sampler.reaped_tasks[counted_before:]
+        assert len(new_records) == len(minted), (
+            f"the reap did not count every mint it reaped: {new_records} "
+            f"for {[t.get_name() for t in minted]}"
+        )
+        assert all("Connection._cancel" in record for record in new_records), (
+            f"the reap's count does not name the mint class: {new_records}"
+        )
+        assert "reaped a minted task" in caplog.text, (
+            "the reap ran silently - every reaped task must be logged by "
+            f"name + coro: {new_records}"
+        )
+    finally:
         await releaser
