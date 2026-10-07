@@ -1,0 +1,7 @@
+[
+  {
+    "pin": "t06-pin6-sweep-compose",
+    "mutation": "the sweep's failed_required arm dropped \u2014 the fail_closed join fires over the failed parent after the heal",
+    "red": "{\"blocked_required\": 1, \"fired\": 1}"
+  }
+]

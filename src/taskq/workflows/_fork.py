@@ -100,7 +100,9 @@ async def insert_fork(
             fork.join.step_key,
             len(children),
             fork.trace_id,
-            _jsonb(_join_metadata(flow_id, fork.join.consumers)),
+            _jsonb(
+                _join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven)
+            ),
             f"workflow:{flow_id}",
             f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
         )

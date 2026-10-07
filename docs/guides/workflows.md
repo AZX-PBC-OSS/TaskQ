@@ -72,6 +72,45 @@ terminal flow's entry at the reap (a terminal flow's joins can never
 fire). A raising body there rolls the sweep pass back; the next tick
 re-fires.
 
+## The fan-in bound + the two join shapes (T07)
+
+**The bound: ≤ 1000 declared parents per join** (`MAX_FAN_IN_PER_JOIN`) —
+enforced at validate (`wf.validate()` / the validators): a join declaring
+more is REFUSED, the error naming the bound and the child-driven
+alternative.
+
+THE HONEST DERIVATION (F7, restated — never a line through points that
+don't share one): P1's three measured points — 200 → 14.9 ms, 1000 →
+23.8 ms, 5000 → 39.3 ms — are sub-linear-in-log but NOT one line: an
+endpoint fit (~5.1 µs/edge + ~14 ms base) predicts 19.1 ms at 1000
+against the measured 23.8 — **the 1000 point is the outlier, named as
+such** (least-squares gives ≈4.7 µs + 16.3 ms and still misses the
+endpoints). The landed implementation's own refit
+(`.measurements/edge-scale-curve.json` — the scale pin re-runs it) reads
+~0.6 µs/edge + ~2.8 ms base, with the same shape. THE GOVERNING BUDGET,
+STATED HONESTLY: at the ~3-16 ms BASE term no fan-in meets a 5 ms-class
+budget; the declared-edge cost is dominated by the BASE (paid once per
+sweep pass regardless of fan-in), not the edges — the marginal edge cost
+is µs-class. The bound's candidate therefore stands on the BASE-COST
+argument (what the bound bounds is the PER-JOIN marginal work inside one
+pass), NOT on the 5 ms-class comparison — that comparison was false and
+is struck. **The refit procedure is the pin's own**: re-fit the curve on
+the landed code, re-derive the marginal from the fit, and re-state the
+argument against the refit numbers; the bound moves only by that argument
+in review.
+
+**The child-driven escape** (`JoinSpec(child_driven=True)`): past the
+bound, the join does not trust the per-joined-row counter cache — the
+fire counts its terminal children FROM THE EDGE LEDGER (each child's
+finalize names its join target; the choice is RECORDED on the joined
+node's `metadata.join_shape='child_driven'`). The exactly-once pins
+(duplicate-finalize, double-fire PK) hold on BOTH shapes. OPERATIONAL
+GUIDANCE: prefer partitioning the map over the escape — a fan-in past
+32767 cannot even carry its count in the smallint counter cache (the
+cache is a cache; the ledger is the truth — a >32767-unterminal recount
+needs the counter's own widening before it can reconcile), so a genuinely
+huge fan-in is a schema conversation, not a knob.
+
 ## The failed-parent propagation (T06)
 
 A parent's TERMINAL failure — the retry ladder EXHAUSTED, or a
@@ -204,7 +243,7 @@ families:
 | `tests/test_wf_engine_units.py` | the in-process pins: the seam-only generation (10), redact-before-persist (11), the canonical hash (12), the deadlock budget (14), body-from-definition (16) |
 | `tests/test_wf_propagation_pins.py` | the T06 propagation family: the stranded join (pin 1), the peer-cancel record (pin 2), the collect exhaustion fan-in + the ts ordering (pin 3), the skip's zero ledger rows (pin 4), the mid-ladder composition (pin 5), the sweep's crash-window heal (pin 6), the policy validator (pin 7) |
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
-| `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands |
+| `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
 
 History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in

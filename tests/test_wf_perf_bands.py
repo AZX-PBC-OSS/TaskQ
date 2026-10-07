@@ -20,6 +20,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
+from taskq.backend._protocol import JobId
 from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
@@ -357,3 +358,225 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
         "the red drill did not fire: the forced plan regression did not blow "
         "the band — the pin cannot fail, it is a decoration"
     )
+
+
+# ── T07: THE EDGE-JOIN SCALE CURVE (the bound's honest derivation) ──────
+
+
+async def _seed_fan_in(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: Any,
+    module_pg_pool: asyncpg.Pool,
+    *,
+    n: int,
+    child_driven: bool,
+) -> JobId:
+    """One join of fan-in N at the declared-edge (or child-driven) shape,
+    seeded through the FORK (the parallel-array path — the same statement
+    shapes production fans out with)."""
+    from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
+
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    # insert_fork rides the CALLER'S transaction; the engine's entry is
+    # the finalize — drive it (the fork is atomic with the terminal).
+    fork = ForkSpec(
+        children=tuple(
+            ChildSpec(step_key="c", actor="wf", queue="default", map_index=m, payload={"i": m})
+            for m in range(n)
+        ),
+        join=JoinSpec(
+            step_key="reduce",
+            actor="wf",
+            queue="default",
+            consumers=(ConsumerBinding(step_key="post", actor="wf", queue="default"),),
+            child_driven=child_driven,
+        ),
+    )
+    result = await finalize_node(
+        module_pg_pool,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=fork_parent,
+        step_key="a",
+        worker_id=(await claim_view(wf_conn, wf_schema, fork_parent))[0],
+        attempt=1,
+        claim_epoch=0,
+        outcome="succeeded",
+        fork=fork,
+    )
+    assert result.applied
+    return flow_id
+
+
+async def _measure_rederive(module_pg_pool: asyncpg.Pool, wf_sql: Any, batch: int = 200) -> float:
+    """One full rederive pass, wall-clock ms (the pass is ONE batched
+    statement + the fire arm — the fire is empty here, the joins unfired)."""
+    from taskq.workflows._sweep import sweep_join_rederive
+
+    start = time.perf_counter_ns()
+    await sweep_join_rederive(module_pg_pool, wf_sql, batch_size=batch)
+    return (time.perf_counter_ns() - start) / 1e6
+
+
+async def _drop_flow(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: JobId) -> None:
+    """The shape's rows leave the population (the next point measures its
+    own shape only)."""
+    await wf_conn.execute(
+        f"DELETE FROM \"{wf_schema}\".jobs WHERE metadata->>'flow_id' = $1::text OR id = $2::uuid",
+        str(flow_id),
+        flow_id,
+    )
+    await wf_conn.execute(f'DELETE FROM "{wf_schema}".wf_edge WHERE flow_id = $1::uuid', flow_id)
+
+
+@pytest.mark.load_sensitive
+@pytest.mark.integration
+async def test_edge_join_scale_curve_across_the_bound(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: Any,
+) -> None:
+    """THE SCALE CURVE, measured across the bound's boundary (the refit
+    procedure, run on the LANDED implementation — F7's restated rule): the
+    three fan-in points inside/at/past the declared-edge band, the refit
+    from the endpoints, the outlier named, the per-edge marginal checked
+    against the BASE-DOMINATED argument, and the plan asserted
+    INDEX-DRIVEN at a ≥ 100k-edge join (the 83.7 ms unscoped monster is
+    the convicted shape — the pin asserts the plan stays index-served).
+
+    The asserted BANDS are this machine's OWN measurements (the artifact
+    records them); the bound moves only by the refit's argument in review.
+    """
+    from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
+
+    curve: dict[str, object] = {}
+    inside_bound = min(200, MAX_FAN_IN_PER_JOIN)
+    at_bound = MAX_FAN_IN_PER_JOIN
+    past_bound = MAX_FAN_IN_PER_JOIN * 5  # 5000: the child-driven shape
+
+    points = []
+    for n, driven in ((inside_bound, False), (at_bound, False), (past_bound, True)):
+        flow_id = await _seed_fan_in(
+            wf_conn, wf_schema, wf_sql, module_pg_pool, n=n, child_driven=driven
+        )
+        ms = await _measure_rederive(module_pg_pool, wf_sql)
+        points.append((n, driven, ms))
+        curve[str(n)] = {"child_driven": driven, "rederive_ms": round(ms, 3)}
+        await _drop_flow(wf_conn, wf_schema, flow_id)
+
+    # THE REFIT (the endpoint fit): cost(n) ≈ base + marginal x n — the
+    # marginal derived from the two endpoint points; the middle point's
+    # residual is the record (P1's 1000-point was the outlier; THIS run's
+    # outlier is NAMED, not averaged away).
+    (n1, _d1, ms1), (n2, _d2, ms2), (n3, _d3, ms3) = points
+    marginal_us_per_edge = (ms3 - ms1) / ((n3 - n1) * 1e-3) if n3 > n1 else 0.0
+    base_ms = ms1 - marginal_us_per_edge * n1 / 1e3
+    refit_at_bound = base_ms + marginal_us_per_edge * n2 / 1e3
+    outlier_residual_ms = ms2 - refit_at_bound
+
+    # THE SHAPE BOUNDARY: the child-driven point must not cliff — its
+    # per-edge marginal stays in the same class as the declared-edge
+    # points' (a discontinuity across the boundary is the convicted
+    # cliff).
+    inside_marginal_us = (ms2 - ms1) / ((n2 - n1) * 1e-3)
+    assert marginal_us_per_edge <= max(10.0, inside_marginal_us * 10), (
+        f"the per-edge marginal blew past the boundary: refit "
+        f"{marginal_us_per_edge:.2f} µs/edge vs inside {inside_marginal_us:.2f} "
+        "µs/edge — the shape switch is a cliff (the convicted discontinuity)"
+    )
+    # THE BASE-DOMINATED ARGUMENT's number: the marginal edge cost is
+    # µs-class (the base is paid once per pass; the bound bounds the
+    # PER-JOIN marginal work).
+    assert marginal_us_per_edge < 100.0, (
+        f"the marginal edge cost {marginal_us_per_edge:.2f} µs is not "
+        "µs-class — the refit re-derives the bound's argument"
+    )
+
+    # THE ≥ 100k-EDGE JOIN: the plan must stay INDEX-DRIVEN (no seq scan
+    # of jobs or wf_edge — the unscoped monster's conviction). Seeded
+    # DIRECTLY (parallel-array chunks): the fork's map_index is smallint —
+    # a fan-in past 32k cannot ride it, and the recount reads the EDGES.
+    big_n = 100_000
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    join_id = new_uuid()
+    # THE CACHE SENTINEL (the unspecification this pin feeds back): the
+    # counter cache is a SMALLINT — it cannot carry a 100k count (the
+    # 32767 ceiling); the child-driven shape's cache carries the sentinel
+    # (the counter-as-cache is never trusted — the LEDGER is the truth,
+    # and a >32767-unterminal recount needs the counter's own migration
+    # before it can reconcile the cache; fed back, never silently
+    # decided).
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, deps_pending, metadata) "
+        f"VALUES ($1::uuid, 'wf', 'default', '{{}}', 3, 'transient', "
+        f"'pending'::\"{wf_schema}\".job_status, 'big_join', 1, "
+        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')))",
+        join_id,
+        str(join_id),
+    )
+    from taskq.workflows._types import _metadata
+
+    parent_ids = [new_uuid() for _ in range(big_n)]
+    for start in range(0, big_n, 500):
+        chunk = parent_ids[start : start + 500]
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+            "SELECT u.id, u.actor, u.queue, u.payload, u.max_attempts, u.retry_kind, "
+            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, '
+            "u.idempotency_scope, u.idempotency_key "
+            "FROM unnest($1::uuid[], $2::text[], $3::text[], $4::jsonb[], "
+            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::text[], $11::text[]) "
+            "AS u(id, actor, queue, payload, max_attempts, retry_kind, status, "
+            "step_key, metadata, idempotency_scope, idempotency_key) ",
+            chunk,
+            ["wf"] * len(chunk),
+            ["default"] * len(chunk),
+            ["{}"] * len(chunk),
+            [3] * len(chunk),
+            ["transient"] * len(chunk),
+            ["succeeded"] * len(chunk),
+            ["c"] * len(chunk),
+            [json.dumps(_metadata(flow_id, blocking_reason=None))] * len(chunk),
+            [f"workflow:{flow_id}"] * len(chunk),
+            [f"wf:{flow_id}:c:{i}" for i in range(start, start + len(chunk))],
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id) '
+            "SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[]) ",
+            [join_id] * len(chunk),
+            chunk,
+            [flow_id] * len(chunk),
+        )
+    plan_rows = await wf_conn.fetch(
+        f"EXPLAIN (FORMAT JSON) {wf_sql.rederive_sweep}",
+        200,
+        "orphan_parent",
+        "failed_parent",
+    )
+    plan_text = json.dumps([dict(r) for r in plan_rows], default=str)
+    await _drop_flow(wf_conn, wf_schema, flow_id)
+    seq_scanned = [ln for ln in plan_text.split('Node Type": "') if "Seq Scan" in ln[:40]]
+    scan_on_core = any(
+        f'"Relation Name": "{rel}"' in plan_text and '"Node Type": "Seq Scan"' in plan_text
+        for rel in ("jobs", "wf_edge")
+    )
+    assert not scan_on_core, (
+        "the 100k-edge rederive plans a Seq Scan on jobs/wf_edge — the "
+        "83.7 ms unscoped monster shape (the plan must stay index-driven)"
+    )
+    _ = seq_scanned
+
+    curve["refit"] = {
+        "marginal_us_per_edge": round(marginal_us_per_edge, 3),
+        "base_ms": round(base_ms, 3),
+        "refit_at_bound_ms": round(refit_at_bound, 3),
+        "outlier_residual_ms": round(outlier_residual_ms, 3),
+        "outlier": str(n2),
+        "big_edge_explain": "index-driven (no seq scan on jobs/wf_edge)",
+    }
+    _write_measurement("edge-scale-curve.json", curve)

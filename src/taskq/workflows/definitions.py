@@ -24,6 +24,7 @@ from taskq.workflows._types import ForkSpec
 
 __all__ = [
     "FAILURE_POLICIES",
+    "MAX_FAN_IN_PER_JOIN",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
     "StepBody",
@@ -130,11 +131,15 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 # the DB anyway; the validators are the door the API layer composes).
 
 
-#: The declared failure policies (T06) — the edge ledger's
+#: The declared failure policies (T06/T07) — the edge ledger's
 #: ``failure_policy`` column's vocabulary; a fork/join declaring anything
 #: else is refused at build time (the runtime never sees an unknown
 #: policy — the propagation rule's split would silently take the default).
-FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect")
+#: ``maybe`` is T07's optional edge: a maybe child's TERMINAL failure is
+#: ABSORBED like collect's (fan-in + the join fires) but is SURFACED —
+#: the fan-in item names the policy that absorbed it, so the result
+#: envelope cannot lie about which policy ran.
+FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect", "maybe")
 
 
 def validate_fork(fork: ForkSpec) -> None:
@@ -157,6 +162,38 @@ def validate_fork(fork: ForkSpec) -> None:
             f"join {fork.join.step_key!r} declares unknown failure_policy "
             f"{fork.join.failure_policy!r} — one of {FAILURE_POLICIES}"
         )
+    # T07'S FAN-IN BOUND (the fork's door): the fork's join over more
+    # children than the bound is refused unless it declares the
+    # child-driven shape explicitly (the choice is recorded on the joined
+    # node's metadata — the docs state when child-driven engages).
+    if (
+        fork.join is not None
+        and len(fork.children) > MAX_FAN_IN_PER_JOIN
+        and not fork.join.child_driven
+    ):
+        raise ValueError(
+            f"join {fork.join.step_key!r} fans in {len(fork.children)} "
+            f"children — above the declared maximum fan-in per join "
+            f"({MAX_FAN_IN_PER_JOIN}). Use JoinSpec(child_driven=True) "
+            "(the child-driven shape: the fire counts terminal children "
+            "from the edge ledger, never a per-joined-row edge list) or "
+            "partition the map."
+        )
+
+
+#: The DECLARED MAXIMUM FAN-IN PER JOIN (T07's operational bound): the
+#: join's re-derive cost scales with the edge-ledger row count per join,
+#: and the measured curve's honest reading (P1's three points — 200 →
+#: 14.9 ms, 1000 → 23.8 ms, 5000 → 39.3 ms — are NOT one line: the 1000
+#: point is the outlier; the endpoint fit ~5.1 µs/edge + ~14 ms base) is
+#: that the BASE term dominates — no fan-in meets a 5 ms-class budget at
+#: the ~14-16 ms base, and the marginal edge cost is ~5 µs. The bound's
+#: candidate therefore stands on the BASE-COST argument (the base is paid
+#: once per sweep pass regardless of fan-in; the bound bounds the
+#: PER-JOIN marginal work inside one pass), not on the false 5 ms-class
+#: comparison. Past the bound the child-driven shape is the documented
+#: escape (an explicit opt-in, recorded on the joined node).
+MAX_FAN_IN_PER_JOIN: Final[int] = 1000
 
 
 def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: int) -> None:
@@ -176,4 +213,18 @@ def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: 
             f"join node {step_key!r} declares deps_pending={deps_pending} but "
             f"{len(parents)} parents — the counter's cache must equal the "
             "declared edge count"
+        )
+    # T07'S FAN-IN BOUND: past the operational bound the declared-edge
+    # shape is refused — the error NAMES the bound and the child-driven
+    # alternative (the documented escape for the genuinely-needed case:
+    # the child-driven join counts its terminal children from the edge
+    # ledger at fire time instead of trusting the per-joined-row cache).
+    if len(parents) > MAX_FAN_IN_PER_JOIN:
+        raise ValueError(
+            f"join node {step_key!r} declares {len(parents)} parents — above "
+            f"the declared maximum fan-in per join ({MAX_FAN_IN_PER_JOIN}). "
+            "The declared-edge re-derive cost scales with the edge count per "
+            "join; use the child-driven shape (JoinSpec(child_driven=True) — "
+            "each child's finalize names its join target and the fire counts "
+            "terminal children from the edge ledger), or partition the map."
         )

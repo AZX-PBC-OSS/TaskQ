@@ -92,6 +92,12 @@ class JoinSpec:
     #: The declared failure policy recorded on the join's incoming edges
     #: (T06): what a parent's TERMINAL failure does to this join.
     failure_policy: FailurePolicy = "fail_closed"
+    #: T07's child-driven escape: the join past the declared fan-in bound
+    #: counts its terminal children FROM THE EDGE LEDGER at fire time (the
+    #: counter-as-cache is never trusted; the choice is RECORDED on the
+    #: joined node's metadata — metadata.join_shape). The declared-edge
+    #: shape (the default) is the bounded one.
+    child_driven: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +133,8 @@ class NodeSpec:
     #: The failure policy recorded on THIS node's incoming edges when it is
     #: a joined node (the public join path's declaration — T06).
     failure_policy: FailurePolicy = "fail_closed"
+    #: T07's child-driven escape (recorded on the joined node's metadata).
+    child_driven: bool = False
     map_index: int | None = None
     deps_pending: int = 0
     consumers: tuple[ConsumerBinding, ...] = ()
@@ -163,6 +171,10 @@ class FailureInfo:
     map_index: int | None
     error: ErrorInfo
     attempts: tuple[tuple[int, str | None, str | None], ...] = ()
+    #: The edge's OWN declared policy that absorbed this failure (T07's C:
+    #: the envelope must not lie about which policy ran — 'collect' and
+    #: 'maybe' absorb; the marker is on the item).
+    policy: str = "collect"
 
     def to_json(self) -> dict[str, object]:
         """The fan-in item's jsonb shape (the join row's ``failures``
@@ -171,6 +183,7 @@ class FailureInfo:
         return {
             "node_key": self.node_key,
             "map_index": self.map_index,
+            "policy": self.policy,
             "error": {
                 "error_class": self.error.error_class,
                 "error_message": self.error.error_message,
@@ -214,6 +227,7 @@ def _failure_info_from_json(raw: object) -> FailureInfo:
             error_traceback=traceback_raw if isinstance(traceback_raw, str) else None,
         ),
         attempts=tuple(attempts),
+        policy=str(decoded.get("policy", "collect")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk (pre-policy items read 'collect').
     )
 
 
@@ -274,9 +288,19 @@ def _metadata(
 
 
 def _join_metadata(
-    flow_id: JobId, consumers: tuple[ConsumerBinding, ...] = ()
+    flow_id: JobId,
+    consumers: tuple[ConsumerBinding, ...] = (),
+    *,
+    child_driven: bool = False,
 ) -> dict[str, object]:
-    return _metadata(flow_id, blocking_reason=BLOCKING_REASON_JOIN, consumers=consumers)
+    """The joined node's metadata: the flow link, the join-wait marker, the
+    declared consumers — and T07's shape record (metadata.join_shape) when
+    the child-driven escape declared it: the choice rides the ROW (the
+    sweep's re-derive reads it; the record never guesses)."""
+    meta = _metadata(flow_id, blocking_reason=BLOCKING_REASON_JOIN, consumers=consumers)
+    if child_driven:
+        meta["join_shape"] = "child_driven"
+    return meta
 
 
 def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:

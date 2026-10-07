@@ -1,0 +1,144 @@
+# ROUND-2 CERTIFIER DRILL (the registry leg stripped — memo-only resolution)
+# Mutation (by the certifier, then restored): src/taskq/workflows/_reducers.py,
+# resolve_flow_reducer — `if workflow_name:` -> `if False and workflow_name:`
+# (the durable registry leg dead; the process-local memo the only source).
+# Expected: RED — the fresh-interpreter healer fires the join with the body
+# run ZERO times. Result: FAILED as required (verdict={'fired': 1, 'body_calls': 0}).
+# Tree verified restored after (git status clean). Second drill (no file):
+# a flow stamped with a workflow name NOTHING registers, healed with an
+# empty memo -> resolve -> None, join FIRED, no exception, no warning —
+# the silent-skip class; disclosed in docs/guides/workflows.md; the asymmetry
+# doctrine (loud) argues for a blocking_reason/warn — filed as MEDIUM, not a
+# blocker (the refusal's own cure sketch sanctioned the resolve-from-definition
+# cure; the unregistered-name window needs a fleet definition-skew).
+---
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_attack_sweep_fire_skips_the_reducer_body _________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fbc18884aa0>
+wf_schema = 'tq_0d86f202d1'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fbc1a70fe80>
+wf_sql = WorkflowSql(schema='tq_0d86f202d1', terminal_mark='UPDATE tq_0d86f202d1.jobs\nSET status = $2::"tq_0d86f202d1".job_sta...w_run_read='SELECT id, status::text\nFROM tq_0d86f202d1.jobs\nWHERE idempotency_scope = $1 AND idempotency_key = $2\n')
+pg_dsn = 'postgresql://taskq:taskq@localhost:41656/tq_db_0d86f202d1ec'
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-16812/test_attack_sweep_fire_skips_t0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fbc1a683a50>
+
+    @pytest.mark.integration
+    async def test_attack_sweep_fire_skips_the_reducer_body(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        pg_dsn: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The CROSS-PROCESS form: the healer is a FRESH interpreter process —
+        no reducer memo, no shared state — and the body must still run,
+        resolved from the REGISTERED DEFINITION via the flow root's stamped
+        workflow name. The memo-only shape (the finalizing process's memory
+        as the source of truth) is the convicted variant: the sweep heals
+        schema-wide, so the healer is never guaranteed to be the finalizer —
+        the body would run ZERO times fleet-wide and the consumers would
+        dispatch off an un-reduced join."""
+        flow_id = await seed_flow(wf_conn, wf_schema, workflow=_WORKFLOW_NAME)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+        parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    
+        # THE DEFINITION: registered under the name the flow root stamps —
+        # the convention every worker process follows (the registry content
+        # is schema-level by construction: the same definitions imported in
+        # every process). The parent's registry copy is NOT the healer's —
+        # the heal runs in a fresh process that registers its OWN; the
+        # parent's copy exists so the finalize's reducers argument declares a
+        # body, and to make the point: the parent's memory is not what runs.
+        async def parent_body(ctx: object) -> None:
+            return None
+    
+        get_registry().register(
+            WorkflowDef(name=_WORKFLOW_NAME, bodies={"join": cast("StepBody", parent_body)})
+        )
+    
+        # THE CRASH: tx1 commits (the parent terminalizes — the fenced UPDATE
+        # returned its row), then the worker dies before tx2. Simulated at the
+        # exact statement boundary: _run_tx2 never returns.
+        async def dead_tx2(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("worker killed between tx1 and tx2")
+    
+        monkeypatch.setattr(engine_mod, "_run_tx2", dead_tx2)
+        # The raise IS the kill: the worker process dies here (tx1 already
+        # committed — nothing rolls it back).
+        with pytest.raises(RuntimeError, match="worker killed between tx1 and tx2"):
+            await finalize_node(
+                module_pg_pool,
+                wf_sql,
+                flow_id=flow_id,
+                job_id=parent,
+                step_key="a",
+                worker_id=(await claim_view(wf_conn, wf_schema, parent))[0],
+                attempt=1,
+                claim_epoch=0,
+                outcome="succeeded",
+                reducers={"join": parent_body},
+            )
+        monkeypatch.undo()
+    
+        # THE PROCESS DEATH: the finalizing process's memory is gone — the
+        # memo it warmed dies with it. Nothing in THIS process can answer the
+        # heal's resolution anymore.
+        forget_flow_reducers(flow_id)
+        from taskq.workflows._reducers import resolve_flow_reducer
+    
+        assert resolve_flow_reducer(flow_id, "join") is None, (
+            "the memo still answers after the finalizing process died — the "
+            "cross-process attack below would not exercise the durable leg"
+        )
+    
+        # THE HEALING PASS IN A FRESH PROCESS: a new interpreter — importing
+        # taskq.workflows, registering the SAME definition name (the fleet
+        # convention), NO reducer memo — runs sweep_join_rederive against the
+        # stamped flow root. The verdict is the subprocess's own printout.
+        script = tmp_path / "_attack_cross_process_heal.py"
+        script.write_text(_HEALER_SCRIPT)
+        proc = await asyncio.to_thread(
+            subprocess.run,  # Why: fixed argv + tmp_path script, the pin-21 fresh-interpreter pattern.
+            [sys.executable, str(script), wf_schema],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "TASKQ_PG_DSN": pg_dsn},
+        )
+        assert proc.returncode == 0, (
+            f"the fresh-process healer crashed (rc={proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+        )
+        verdict = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert verdict["fired"] >= 1, (
+            f"the sweep's healing pass did not fire the crash-window join in "
+            f"the fresh process (verdict={verdict})"
+        )
+        # THE CONTRACT: at-least-once body execution ACROSS PROCESSES — the
+        # healer ran the REAL body, resolved from the registered definition
+        # (its own memo never existed).
+>       assert verdict["body_calls"] >= 1, (
+            f"the join fired via the sweep's healing pass in the FRESH process "
+            f"and the reducer body ran {verdict['body_calls']} times: the fire "
+            f"arm resolved no body from the registered definition — the "
+            f"resolution is process-local (the memo), so the tx1→tx2 crash "
+            f"window turns 'at-least-once body execution' into NEVER whenever "
+            f"another process's leader wins the heal — downstream consumers "
+            f"dispatch off an un-reduced join (verdict={verdict})"
+        )
+E       AssertionError: the join fired via the sweep's healing pass in the FRESH process and the reducer body ran 0 times: the fire arm resolved no body from the registered definition — the resolution is process-local (the memo), so the tx1→tx2 crash window turns 'at-least-once body execution' into NEVER whenever another process's leader wins the heal — downstream consumers dispatch off an un-reduced join (verdict={'fired': 1, 'body_calls': 0})
+E       assert 0 >= 1
+
+tests/attack_wf_engine_windows.py:209: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=378c940dd9ce redis=6ebce705cbd8 state_dir=/tmp/pytest-of-rich/pytest-16812
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=378c940dd9ce redis=6ebce705cbd8
+=========================== short test summary info ============================
+FAILED tests/attack_wf_engine_windows.py::test_attack_sweep_fire_skips_the_reducer_body
+1 failed in 5.21s

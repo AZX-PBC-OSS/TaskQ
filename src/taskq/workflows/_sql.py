@@ -35,7 +35,7 @@ from taskq.constants import require_schema
 from taskq.workflows._sql_finalize import (
     COLLECT_FAN_IN_APPEND_SQL,
     COLLECT_FAN_IN_SQL,
-    DECREMENT_COLLECT_SQL,
+    DECREMENT_ABSORBED_SQL,
     DECREMENT_SQL,
     FAIL_CLOSED_CASCADE_SQL,
     FIRE_SQL,
@@ -103,7 +103,7 @@ class WorkflowSql:
     schema: str
     terminal_mark: str
     decrement: str
-    decrement_collect: str
+    decrement_absorbed: str
     fail_closed_cascade: str
     collect_fan_in: str
     collect_fan_in_append: str
@@ -160,7 +160,7 @@ class WorkflowSql:
             schema=schema,
             terminal_mark=render(TERMINAL_MARK_SQL),
             decrement=render(DECREMENT_SQL),
-            decrement_collect=render(DECREMENT_COLLECT_SQL),
+            decrement_absorbed=render(DECREMENT_ABSORBED_SQL),
             fail_closed_cascade=render(FAIL_CLOSED_CASCADE_SQL),
             collect_fan_in=render(COLLECT_FAN_IN_SQL),
             collect_fan_in_append=render(COLLECT_FAN_IN_APPEND_SQL),

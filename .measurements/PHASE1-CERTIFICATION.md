@@ -200,3 +200,134 @@ process boundary it claims to survive.
 **Certification: REFUSED.** Close Blockers 1 and 2 (with the drills re-run: the differential
 audit green and the cross-process body-resolution shape pinned red-on-mutation), then
 recertify. Mediums/lows may ride phase 2 except as they block the re-drill.
+
+---
+
+# PHASE-1 RECERTIFICATION — ROUND 2 (feat/taskqflow @ d83d5e1c; the cure wave 56bd8f48/e9ae3793/74bb2512)
+
+Certifier: the PHASE-1 RECERTIFIER, round 2 (independent, adversarial; verified against the code
+and the database, plus THREE of my own live-revert/defeat drills).
+Date: 2026-10-07
+Verdict: **CERTIFIED** — both blockers closed with genuine teeth; phase 2 may build. Findings
+below ride WITH the certification (one scheduling demand, one medium, two notes). I fixed nothing.
+
+## Blocker 1 (the audit differential) — CLOSED, verified adversarially
+
+* `tests/test_audit_sweep_registry_differential.py` — **26/26 green** on HEAD (24 legacy + 2 new
+  pins). Diff vs 244abfb5: purely additive except the double's `fetchrow` widening
+  (`object | None` → a zero-summary dict) — invisible to the legacy scenarios (the vendored
+  module never calls `fetchrow`); the 24 legacy tests are UNMODIFIED and pass.
+* The mechanism is as claimed: `workflow_sweeps_capable` is the arms' OWN admission seam — a
+  `ClassVar` on `PostgresBackend` (src/taskq/backend/postgres.py), probed by the `_SweepSpec`
+  tick table's plain `hasattr` gate (src/taskq/worker/_leader_sweeps.py:872); the three wf specs
+  gate on `("workflow_sweeps_capable",)` and on NOTHING else — no borrowed marker anywhere.
+* The two new pins have TEETH: (1) the off-pin runs the whole tick on a legacy-surface double and
+  asserts ZERO `wf_*` events; (2) the composition pin declares the marker on a second double and
+  asserts stripping the wf events yields the legacy stream exactly (conservative: a wf-prefixed
+  LEGACY event would break its own equality — the pin cannot lie in the wave's favor).
+* MY DEFEAT DRILL A: I re-armed a rogue admission by flipping the join-rederive arm's
+  `gated_on` back to the borrowed `("sweep_leaked_reservation_slots",)` in the shipped
+  `_leader_sweeps.py` → `test_audit_wf_arms_stay_off_without_the_capability_marker` **RED**
+  (line 659). The audit convicts the borrowed-marker registration. Tree restored, verified clean.
+* §16.1 import law: MY OWN fresh-interpreter probe — `import taskq`, `taskq.backend`,
+  `taskq.worker._leader_sweeps` → **zero** `taskq.workflows*` in `sys.modules`. Held.
+
+## Blocker 2 (the process-local memo) — CLOSED, verified adversarially
+
+* Read the whole resolution chain: `SWEEP_FIRE_SQL` now JOINs the flow root and returns
+  `root.metadata->>'workflow' AS workflow_name` (src/taskq/workflows/_sql_sweep.py); the fire arm
+  resolves the body via `resolve_flow_reducer(..., workflow_name=...)` →
+  `resolve_step_body` against the real default registry (`KeyError` on an unknown name);
+  the process-local memo is strictly FALL-THROUGH (the definition wins when the stamped name
+  resolves — it cannot shadow); the dead `flow:{flow_id}` fallback is **DELETED** (grep: zero
+  occurrences in src/). The stamp is written at `insert_flow_run`
+  (`metadata.workflow = entry.name`, src/taskq/workflows/ledger.py).
+* The cross-process attack (`test_attack_sweep_fire_skips_the_reducer_body`) is the real thing:
+  the finalize dies at the `_run_tx2` boundary, the memo is dropped, and the heal runs in a FRESH
+  interpreter subprocess (`sys.executable`, own registration, no shared state) — **green**.
+* MY DEFEAT DRILL B: I stripped the registry leg in the shipped resolver (`if workflow_name:` →
+  `if False and workflow_name:` — memo-only) and re-ran the attack → **RED** with the exact
+  convicted shape: the fresh process fired the join with the body run ZERO times
+  (`verdict={'fired': 1, 'body_calls': 0}`). Recorded at
+  `.measurements/attack/ROUND2-DRILL-memo-only.txt`; tree restored, verified clean.
+* MY DEFEAT DRILL C (the unregistered name): a flow root stamped with a workflow name NO process
+  registers, healed with an empty memo → `resolve_flow_reducer` returns `None`, the join FIRES,
+  the declared consumers are delivered, and NOTHING loud happens (no exception, no warn, no
+  `blocking_reason`). See MEDIUM R2-2 below.
+
+## The round-1 mediums/lows — all real now
+
+* MEDIUM 3 (the memo leak): `forget_flow_reducers` has its caller — the phantom reaper's pass
+  (src/taskq/workflows/_sweep.py:233). Pin 22 is real: it warms the cache, drives the SHIPPED
+  `reap_phantom_ledger` against the live DB, and convicts a reaper that stops forgetting.
+* LOW 4: pin 2 records the FULL EXPLAIN — every row fetched (`fetch`), the whole plan persisted
+  to the red sink (the subplan rows included).
+* LOW 5: the import-law drill's scratch module rides `tmp_path`; no stray file in the tree.
+
+## The docs
+
+`docs/guides/workflows.md` + the upgrading note carry a real cross-process semantics section:
+the stamp, the registry-as-truth/memo-as-cache discipline, the reaper's bound, the raising-body
+rollback + re-fire — AND an honest degradation disclosure (the unregistered-definition case,
+named in as many words). Real content, matches the code.
+
+## MY GATES (×1, all mine)
+
+| Gate | Result |
+|---|---|
+| Differential audit | 26/26 |
+| Pins + attacks + type probes (wf suite: sweep/finalize/fork/ledger/engine/migration pins, 4 attack files, negative types) | 50 passed |
+| wf perf bands | 4 passed |
+| Import discipline + CI-workflow/suite-hygiene pins | 49 passed |
+| ruff check + ruff format --check (the wave's files) | clean / 18 formatted |
+| pyright (all 12 changed files) | **0 errors, 0 warnings** |
+| Bands re-measured by my own suite run | fanout-1000 43.3/500 ms; join-fire 11.2/50 ms; dispatch p50 7.33/50 ms (red drill 2138 ms); enqueue p50 385 µs/25 ms; row-width 7.37/8 B; partial ratio 0.26 %/1 % — all green |
+| **FULL estate** (`pytest -n 2 -m "not slow and not load_sensitive"`, 30 min) | **4 failed / 12647 passed / 8 skipped** — see FINDING R2-1 |
+
+## NO REGRESSIONS
+
+`git diff 244abfb5..HEAD` on the B1/B2/F-wave shipped files (`_sql_ledger.py`, `_dispatch_sql.py`,
+the migrations, `workflows/_sql.py`, both attack files, the typeprobe tree, `ci.yaml`): **EMPTY**.
+The wave's src diffs are confined to the cure files (postgres.py, _leader_sweeps.py, _reducers.py,
+_sql_sweep.py, _sweep.py, engine.py, ledger.py) and are surgical (read each hunk).
+
+## THE FINDINGS (ride with the certification)
+
+* **HIGH-finding R2-1 (estate debt, PRE-EXISTING — not this wave's, verified):** the full estate
+  suite carries 4 reds: `test_no_stdlib_json` (stdlib `import json` in
+  `workflows/_sweep.py:34`, `_types.py:12`, `ledger.py:47`), `test_sweepaudit_bounded_writes`
+  (the workflows `_sql` write statements unregistered in the bounded-writes registry),
+  `test_sql_templates_smoke_pg` ×2 (`_WF_DISPATCH_FENCE_TEMPLATE` — B2's own fence fragment —
+  unregistered in the SQL guard). I built a synced baseline worktree at 244abfb5: **the same 4
+  fail there, with IDENTICAL violation lists** (diffed set-for-set), and one adjacent test
+  (`test_exemption_registry_has_no_stale_entries`) went red→green — the branch is strictly
+  BETTER than the round-1 certified HEAD. `src/taskq/workflows/` does not exist on main, so
+  these guards have been red on this branch since T04/B2; the round-1 "estate slice" evidently
+  never ran the full suite (its 14 were the audit file's). NOT a regression of this wave —
+  certification stands — but the CI selection is red on both sides of it, and two of the four
+  are guard blindness over the workflows SQL itself (the bounded-writes audit has never vetted
+  the workflow statements; the smoke guard has never parse/plan-validated the fence template).
+  **SCHEDULED DEMAND:** phase 2's opening must land the estate cure — route the three json
+  imports through `taskq._json`, register the workflows SQL statements in the bounded-writes
+  registry and `_COVERED_BY` (with rendered-product validation) — before phase 2's own gates
+  stack on top of a red suite.
+* **MEDIUM R2-2 (the loudness asymmetry, my drill C):** a flow root stamped with a workflow name
+  the healer's process has not registered fires its join and dispatches its consumers off an
+  UN-REDUCED join silently — no exception, no warn, no `blocking_reason` stamp (verified live).
+  The docs disclose it ("keep the definitions imported in every worker") and the round-1 refusal's
+  own cure sketch sanctioned the resolve-from-definition cure, so this does not re-block; but the
+  asymmetry doctrine says loud. Recommended cure (phase 2): on a stamped name that fails
+  registry resolution with an EMPTY memo, stamp `metadata.blocking_reason='body_unavailable'`
+  and/or emit a warn event, keeping the legacy silent path for genuinely anonymous (unstamped)
+  roots only.
+* **NOTE R2-3:** the heal path runs the definition body as `definition_body(None)` — a body that
+  dereferences ctx raises, which rolls the sweep tx back LOUDLY (the doctrine holds), but the
+  re-fire loop is unbounded (a poison pass re-fires every tick). Acceptable under the stated
+  at-least-once semantics; tighten when the sweep arms are next touched.
+* **NOTE R2-4:** the tracked `.measurements/*.json` bands are re-measured by every suite run
+  (they show modified after a run) — expected; my run's values are all within budget.
+
+**Certification: CERTIFIED (round 2).** Both blockers closed with shipped-path mechanisms, each
+independently convicted by my own red drill; the import law holds; the pins are load-bearing;
+no regressions against the round-1 certified baseline. Phase 2 may build, under the scheduled
+estate demand R2-1 and the loudness recommendation R2-2.
