@@ -808,10 +808,14 @@ paths = [
     # 4. The workflow engine's guard statements (T04 G5): the terminal-mark
     #    CAS, the decrement's `deps_pending > 0`, the fire's flow-status
     #    leg, the rederive's missing-parent arm, the held-row exclusivity
-    #    clause. Reproducible run:
+    #    clause. Reproducible run (the pin files' REAL names — the killers
+    #    of these gremlins are the finalize/sweep/ledger pin families; an
+    #    earlier draft named `tests/test_workflows_engine_pins.py`, which
+    #    never shipped):
     #
     #   uv run pytest --gremlins --gremlin-executor=subprocess \
-    #       tests/test_workflows_engine_pins.py tests/test_workflows_ledger_pins.py \
+    #       tests/test_wf_finalize_pins.py tests/test_wf_sweep_pins.py \
+    #       tests/test_workflows_ledger_pins.py \
     #       --gremlin-report=console,json
     "src/taskq/workflows/engine.py",
     "src/taskq/workflows/_sweep.py",
