@@ -343,6 +343,20 @@ class TaskQSettings(DotEnvConfig):
         validator=_schema_name_validator,
         description="Postgres schema for all TaskQ tables.",
     )
+    queues_strict: bool = Field(
+        default=False,
+        description="TASKQ_QUEUES_STRICT. When True, the enqueue-time "
+        "unserved-queue check becomes HARD: a submit whose queue no "
+        "registered actor's assignment routes to raises UnknownQueueError "
+        "before any backend write (covering direct enqueues, every batch "
+        "arm, and sub-job fan-out), instead of storing an orphaned row on "
+        "a queue no worker claims. The worker-side twin fails the boot "
+        "when a configured queue (TASKQ_QUEUES) has no registered actor "
+        "routing to it — worker-only, because actors register only there. "
+        "Default False: the unserved-queue NOTE stays the only signal. "
+        "Per-submit escape: allow_unregistered=True for genuinely dynamic "
+        "queue names.",
+    )
     redis_url: RedisDsn | None = Field(
         default=None,
         description="Optional Redis URL. Required for real-time progress fanout.",

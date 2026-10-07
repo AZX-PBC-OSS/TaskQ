@@ -349,7 +349,16 @@ class JobsClient:
         self._redis_client: "redis_async.Redis | None" = None  # type: ignore[type-arg]  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
         self._exit_stack: AsyncExitStack = AsyncExitStack()
         self._unique_for_warner = UniqueForNoIdentityWarner()
-        self._capacity_cache = ActorCapacityCache(backend, ttl=capacity_cache_ttl)
+        self._capacity_cache = ActorCapacityCache(
+            backend,
+            ttl=capacity_cache_ttl,
+            # A bare construction (no settings) invents no knob: strict
+            # off, the fail-open posture the note's own tests pin.
+            # getattr-with-default: the client-layer tests drive bare
+            # stand-in namespaces for settings (the notify_enabled
+            # convention), strict defaults False there.
+            queues_strict=bool(getattr(settings, "queues_strict", False)),
+        )
         # Why resolved here: every enqueue path in this client validates
         # against one number, and a client built without settings still gets
         # the shipped default rather than a second literal.
@@ -480,6 +489,7 @@ class JobsClient:
         payload: P,
         *,
         queue: QueueName | None = None,
+        allow_unregistered: bool = False,
         scheduled_at: datetime | None = None,
         priority: int | None = None,
         schedule_to_close: datetime | None = None,
@@ -626,6 +636,21 @@ class JobsClient:
           ``JobHandle.was_existing`` is ``True``. This field replaces the
           need for callers to inspect the row's ``created_at`` to detect a
           dedup return.
+
+        **allow_unregistered:**
+
+        - The per-submit escape from ``TASKQ_QUEUES_STRICT``: with strict
+          on, a queue no registered actor's assignment routes to raises
+          :class:`~taskq.exceptions.UnknownQueueError` before any write;
+          ``allow_unregistered=True`` skips that verdict for THIS call —
+          for genuinely dynamic queue names (tenant-prefixed, sharded at
+          runtime) that no registration can predict. The unserved-queue
+          NOTE still fires (the diagnostic sits below the gate), so a
+          typo'd name stays visible even on an escaped call. With strict
+          off the flag changes nothing. The batch arms carry no per-item
+          flag: their queues are the items' actors' own declared routes,
+          the thing registration populates; use single enqueues for
+          dynamic names.
         """
         resolved_queue = queue if queue is not None else ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
@@ -641,8 +666,15 @@ class JobsClient:
             # Zero-I/O verdict from the snapshot the resolve just refreshed:
             # a queue no stored assignment routes to strands the row
             # silently (pending forever), the note is the enqueue-time
-            # signal, warn-once per queue per TTL.
-            self._capacity_cache.maybe_warn_unserved_queue(resolved_queue, actor=ref.name)
+            # signal, warn-once per queue per TTL. Under
+            # TASKQ_QUEUES_STRICT this same verdict REFUSES
+            # (UnknownQueueError) instead of warning — unless
+            # allow_unregistered=True, the per-submit escape for a
+            # genuinely dynamic queue name (the note still fires on an
+            # escaped call, so a typo stays visible).
+            self._capacity_cache.maybe_warn_unserved_queue(
+                resolved_queue, actor=ref.name, allow_unregistered=allow_unregistered
+            )
             # An explicit trace_id/span_id overrides the ambient span, per
             # docs/guides/jobs-clients.md: "pass explicitly to override or
             # to propagate an external trace context". Explicit values

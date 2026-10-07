@@ -5,6 +5,7 @@ RetryAfter are not errors, they are signals the consumer translates into
 state transitions.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -1290,4 +1291,85 @@ class BatchIdExistsError(TaskQError):
             super().__init__(
                 f"batch_id {batch_id} already exists; use a different batch_id "
                 f"or omit it to auto-generate one"
+            )
+
+
+class UnknownQueueError(TaskQError):
+    """Raised when strict queue-name validation refuses a queue name.
+
+    With ``TASKQ_QUEUES_STRICT=true`` the enqueue-time unserved-queue
+    check (``ActorCapacityCache.maybe_warn_unserved_queue`` — the same
+    zero-I/O TTL-snapshot verdict every enqueue arm already consults)
+    becomes HARD: a queue no registered actor's assignment routes to
+    raises HERE, before any backend write, instead of storing an
+    orphaned row on a queue no worker claims. Silent data non-delivery
+    is the worst failure class a queueing library has, and a
+    one-character typo used to be enough to cause it.
+
+    Two raising sites, one class, both naming the offending queue AND
+    the set it was judged against (the unserved-queue note's quality
+    bar: the fix is obvious from the message alone):
+
+    * **At submit** (``source="submit"``): the judged set is the
+      registered queue assignments (``actor_config`` rows, fleet-wide
+      DB truth the client can read without actor registration — the
+      split-deployment constraint). The snapshot is TTL-bounded, so a
+      queue registered seconds ago may not be in it yet; the message
+      says so. Fail-open on an UNAVAILABLE snapshot: a read blip or a
+      capability-less backend is not evidence of stranding, so the
+      enqueue proceeds and the refresh failure carries the diagnosis
+      (strict must not turn a database blip into a submit outage).
+      Nothing was stored when this raises — the refusal is at the door.
+    * **At worker boot** (``source="worker_boot"``): the judged set is
+      the worker's own configured consume set (``TASKQ_QUEUES``), and
+      the coverage is the fleet's stored assignments read back after
+      ``sync_actor_config``. A configured queue nothing routes to is
+      config drift between deploy and code; the worker refuses to boot.
+      Deliberately worker-only: actors register only in the worker
+      process, so a client-side boot check of this shape would brick
+      split deployments (web submits, worker consumes).
+    """
+
+    def __init__(
+        self,
+        queues: Sequence[str],
+        known_queues: Sequence[str],
+        *,
+        actor: str | None = None,
+        source: Literal["submit", "worker_boot"] = "submit",
+        snapshot_is_ttl_bounded: bool = False,
+    ) -> None:
+        self.queues = tuple(queues)
+        self.known_queues = tuple(known_queues)
+        self.actor = actor
+        self.source = source
+        self.snapshot_is_ttl_bounded = snapshot_is_ttl_bounded
+        offending = ", ".join(repr(q) for q in self.queues)
+        known_list = ", ".join(repr(q) for q in self.known_queues)
+        where = f" (actor {actor!r})" if actor is not None else ""
+        noun = "queue name" if len(self.queues) == 1 else "queue names"
+        verb = "is" if len(self.queues) == 1 else "are"
+        if source == "submit":
+            ttl_note = (
+                " (the snapshot is TTL-bounded: a queue registered seconds "
+                "ago may not be in it yet)"
+                if snapshot_is_ttl_bounded
+                else ""
+            )
+            super().__init__(
+                f"{noun} {offending} {verb} not served: no registered actor's "
+                f"queue assignment routes to it (registered routes: "
+                f"[{known_list}]{ttl_note}) and TASKQ_QUEUES_STRICT is "
+                f"enabled{where}: nothing was stored. Fix the queue name, "
+                f"register an actor whose queue is {offending}, pass "
+                f"allow_unregistered=True for a genuinely dynamic queue, or "
+                f"disable TASKQ_QUEUES_STRICT."
+            )
+        else:
+            super().__init__(
+                f"configured queue {offending} has no registered actor routing "
+                f"to it (configured: [{known_list}]) and TASKQ_QUEUES_STRICT is "
+                f"enabled: the worker refuses to boot, jobs on it would never "
+                f"be dispatched. Remove {offending} from TASKQ_QUEUES, or "
+                f"deploy/register an actor whose queue is {offending}."
             )

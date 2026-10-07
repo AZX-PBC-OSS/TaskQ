@@ -139,6 +139,7 @@ class SubJobEnqueuer:
         *,
         clock: Clock | None = None,
         capacity_cache: ActorCapacityCache | None = None,
+        queues_strict: bool = False,
         transaction_conn: ConnLike | None = None,
     ) -> None:
         self._loop_scope_resolved = loop_scope_resolved
@@ -146,7 +147,9 @@ class SubJobEnqueuer:
         self._backend = backend
         self._clock = clock if clock is not None else SystemClock()
         self._capacity_cache = (
-            capacity_cache if capacity_cache is not None else ActorCapacityCache(backend)
+            capacity_cache
+            if capacity_cache is not None
+            else ActorCapacityCache(backend, queues_strict=queues_strict)
         )
         self._transaction_conn = transaction_conn
         self._pending_buffer: list[EnqueueArgs] = []
@@ -170,6 +173,7 @@ class SubJobEnqueuer:
         payload: P,
         *,
         connection: asyncpg.Connection | None = None,
+        allow_unregistered: bool = False,
         scheduled_at: datetime | None = None,
         priority: int | None = None,
         fairness_key: str | None = None,
@@ -189,13 +193,22 @@ class SubJobEnqueuer:
     ) -> JobHandle[R]:
         """Enqueue a sub-job. ``max_pending`` is a per-call limit resolved
         against the operator-owned stored cap and the ``@actor(...)``
-        literal: against a non-NULL *stored* ``actor_config.max_pending``
-        the tighter of the two wins (``min(stored, per_call)``, an
+        literal: against a non-NULL *stored* ``max_pending`` the tighter of
+        the two wins (``min(stored, per_call)``, an
         explicit caller shedding load is never widened by an operator
         override, and no code path can raise an operator's fleet cap);
         with no stored value this parameter wins outright over the
         literal (historical behavior, actor code may loosen its own
         declaration).
+
+        ``allow_unregistered`` is the per-submit escape from
+        ``TASKQ_QUEUES_STRICT`` (whose hard branch this arm shares
+        through the capacity cache): a child queue no registered
+        assignment routes to normally raises
+        :class:`~taskq.exceptions.UnknownQueueError` before any write;
+        the flag skips that verdict for THIS call, for genuinely dynamic
+        child queue names. The unserved-queue NOTE still fires on an
+        escaped call. With strict off the flag changes nothing.
 
         ``_batch_id`` is a library-internal parameter used by
         :meth:`enqueue_batch` to stamp ``batch_id`` into metadata after
@@ -216,9 +229,15 @@ class SubJobEnqueuer:
                 per_call=max_pending,
             )
             # The sub-job arm's slice of the enqueue-time unserved-queue
-            # note, the same snapshot verdict (zero I/O, warn-once per
-            # queue per TTL) JobsClient.enqueue applies.
-            self._capacity_cache.maybe_warn_unserved_queue(resolved_queue, actor=actor_ref.name)
+            # check, the same snapshot verdict (zero I/O, warn-once per
+            # queue per TTL) JobsClient.enqueue applies — and under
+            # TASKQ_QUEUES_STRICT the same hard branch (the fan-out arm
+            # carries no parallel validation path). allow_unregistered is
+            # the per-submit escape for a genuinely dynamic child queue;
+            # the note still fires on an escaped call.
+            self._capacity_cache.maybe_warn_unserved_queue(
+                resolved_queue, actor=actor_ref.name, allow_unregistered=allow_unregistered
+            )
             resolved_tags = self._resolve_tags(tags, inherit_tags)
             args = build_enqueue_args(
                 actor_ref,

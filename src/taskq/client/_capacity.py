@@ -78,6 +78,7 @@ from typing import Any, Protocol, cast
 import structlog
 
 from taskq.backend._protocol import BACKEND_PROTOCOL_VERSION, Backend
+from taskq.exceptions import UnknownQueueError
 from taskq.obs import record_capacity_refresh_failure
 
 __all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "DEFAULT_CAPACITY_READ_TIMEOUT", "ActorCapacityCache"]
@@ -125,6 +126,7 @@ class ActorCapacityCache:
         *,
         ttl: float = DEFAULT_CAPACITY_CACHE_TTL,
         read_timeout: float = DEFAULT_CAPACITY_READ_TIMEOUT,
+        queues_strict: bool = False,
     ) -> None:
         if ttl < 0:
             raise ValueError(f"capacity cache ttl must be >= 0, got {ttl!r}")
@@ -135,6 +137,13 @@ class ActorCapacityCache:
         self._backend = backend
         self._ttl = ttl
         self._read_timeout = read_timeout
+        # Strict queue-name validation (TASKQ_QUEUES_STRICT): when True,
+        # the unserved-queue verdict below REFUSES (UnknownQueueError)
+        # instead of warning. One knob, one predicate, no parallel
+        # validation path: every enqueue arm already consults
+        # maybe_warn_unserved_queue, so strict rides the exact seam the
+        # note rides.
+        self._queues_strict = queues_strict
         self._rows: dict[str, int | None] = {}
         # Actor name -> queue assignment from the same actor_config table,
         # refreshed on the same TTL cadence when the backend implements the
@@ -257,39 +266,79 @@ class ActorCapacityCache:
         if epoch == self._epoch:
             self._queues = queues
 
-    def maybe_warn_unserved_queue(self, queue: str, *, actor: str) -> None:
-        """Warn when no registered actor routes to *queue*.
+    def maybe_warn_unserved_queue(
+        self, queue: str, *, actor: str, allow_unregistered: bool = False
+    ) -> None:
+        """Warn — or, under strict mode, REFUSE — when no registered actor
+        routes to *queue*.
 
         The enqueue-time half of the stranded-jobs detection: an enqueue
         onto a queue no ``actor_config`` row routes to strands the row
         (``pending`` forever, nothing dispatches it), and before this
         note NOTHING signaled at enqueue time. Zero I/O: the verdict
         reads the current in-process snapshot, the hot path pays no round
-        trip for it.
+        trip for it. This is THE queue-name validation seam: every
+        enqueue arm (direct, the three batch arms, the sub-job fan-out
+        enqueuer) consults it, so the strict branch below covers them all
+        through one predicate — no parallel validation path exists.
+
+        **The strict branch** (``queues_strict=True``, the
+        ``TASKQ_QUEUES_STRICT`` knob): an unknown queue raises
+        :class:`~taskq.exceptions.UnknownQueueError` instead of warning —
+        BEFORE any backend write, so the orphaned message is never
+        stored. The judged set is the registered queue assignments
+        (fleet-wide ``actor_config`` DB truth, readable without actor
+        registration — the split-deployment constraint: the client
+        process validates against configuration, never a registry).
+        Fail-open on an UNAVAILABLE snapshot: the guards below return
+        when no snapshot exists (never-refreshed, read failure,
+        capability-less backend), because snapshot absence is not
+        evidence of stranding — a database blip must not become a submit
+        outage; the refresh-failure event carries the diagnosis instead
+        (pinned by the strict twins of test_refresh_failure_fails_open).
+
+        ``allow_unregistered`` is the per-submit escape: it skips the
+        REFUSAL for this call (a genuinely dynamic queue name no
+        registration can predict) while the NOTE below still fires, so a
+        typo stays visible even on an escaped call. With strict off the
+        flag changes nothing.
 
         The predicate is the snapshot's, so it carries the cache's
-        documented bounds: a worker registered fewer than ``ttl`` seconds
-        ago (default 5) is not yet in the set, and a failed or
+        documented bounds: under strict, a queue whose actor registered
+        fewer than ``ttl`` seconds ago (default 5) is not yet in the set
+        and REFUSES — the error's message says so; a failed or
         never-succeeded refresh (or a backend without
-        ``get_actor_queues``) disables the note entirely, fail-open. The
+        ``get_actor_queues``) disables the check entirely, fail-open. The
         TASKQ_QUEUES corner (a worker consuming a queue via
-        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes) reads
-        as unserved here — the predicate is the stored-assignment set, and
-        the client cannot see workers' consumed-queue lists. The note's
-        reason therefore states only what it tested (no stored assignment
-        routes the queue) and names the ``--queues``/``TASKQ_QUEUES`` escape,
-        so the corner's false positive is self-explaining instead of
-        asserting a stranded row that does not exist.
+        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes)
+        reads as unserved here — the predicate is the stored-assignment
+        set, and the client cannot see workers' consumed-queue lists. The
+        message therefore states only what was tested (no registered
+        assignment routes the queue) and names the escapes.
 
-        Warn-once per queue per ``ttl`` window (the stranded sweep's
-        non-set doctrine: a condition that starts small and grows must
-        keep re-warning, but a hot producer enqueuing thousands of rows
-        onto one typo'd queue must not flood the log).
+        Non-strict (the default): warn-once per queue per ``ttl`` window
+        (the stranded sweep's non-set doctrine: a condition that starts
+        small and grows must keep re-warning, but a hot producer
+        enqueuing thousands of rows onto one typo'd queue must not flood
+        the log). Under strict the refusal replaces the warn; the
+        warn-once bookkeeping is untouched (the exception propagates).
         """
         if not self._has_snapshot or self._queues is None:
             return
         if queue in self._queues.values():
             return
+        if self._queues_strict and not allow_unregistered:
+            # The hard branch, AT THE DOOR: nothing has been written yet
+            # (every caller consults this before any backend write), so
+            # the refused submit stores no orphan. The judged set and the
+            # TTL bound are both named — the fix is obvious from the
+            # message alone.
+            raise UnknownQueueError(
+                [queue],
+                sorted(set(self._queues.values())),
+                actor=actor,
+                snapshot_is_ttl_bounded=True,
+            )
         now = time.monotonic()
         last = self._unserved_warned_at.get(queue)
         if last is not None and (now - last) < self._ttl:
