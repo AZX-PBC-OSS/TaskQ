@@ -18,7 +18,7 @@ engine's own statements read back.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +79,57 @@ def propagation_redlog() -> Iterator[RedLog]:
     log = RedLog("t06-propagation-reds.json")
     yield log
     log.flush()
+
+
+#: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
+#: status → the flow ROOT row's job_status (the root's legal vocabulary).
+#: blocked/running/pending runs are LIVE runs (the root stays running —
+#: or its pre-start pending); complete runs report succeeded.
+G7_DERIVED_TO_ROOT: dict[str, str] = {
+    "complete": "succeeded",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "blocked": "running",
+    "running": "running",
+    "pending": "pending",
+}
+
+
+@pytest.fixture
+async def wf_g7_status_truth(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
+) -> AsyncIterator[None]:
+    """G7 (T08): the ALWAYS-ON metamorphic assertion — at test end, the
+    REPORTED workflow status (the flow root row's own status, the
+    linearization point the engine's maintenance leg writes) equals the
+    status RECONSTRUCTED FROM ROWS ALONE (the §17.5 derivation over the
+    node rows + the ledger — D4's two-source rule). Registered for every
+    workflow integration test via the collection hook (tests/conftest.py
+    adds it to the wf-family files); catches status-drift continuously,
+    not just in the dedicated pin's scenarios. A deliberately-lying
+    fixture status (a root hand-written to a state the rows cannot
+    derive) reds the suite (the drill pin proves the teeth)."""
+    yield
+    await g7_check(wf_conn, wf_schema, wf_sql)
+
+
+async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql) -> None:
+    """The G7 assertion's body (one home — the fixture and the teeth-drill
+    pin both run THIS, never a re-spelled copy)."""
+    from taskq.workflows._status import reconstruct_workflow_status
+
+    flows = await wf_conn.fetch(
+        f"SELECT id, status FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__'"
+    )
+    for flow in flows:
+        reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(flow["id"]))
+        expected = G7_DERIVED_TO_ROOT.get(reconstructed, "running")
+        assert flow["status"] == expected, (
+            f"the reported status drifted from the rows: flow {flow['id']} "
+            f"reports {flow['status']!r} but the rows reconstruct "
+            f"{reconstructed!r} (expected the root {expected!r}) — the "
+            "status cache has arrived (G7)"
+        )
 
 
 @pytest.fixture

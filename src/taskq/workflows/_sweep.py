@@ -193,6 +193,13 @@ async def sweep_join_rederive(
             ]
             if outbox_rows:
                 await conn.executemany(wsql.outbox_insert, outbox_rows)
+        # THE DERIVATION'S MAINTENANCE LEG (T08): the reported status is
+        # the §17.5 derivation's output — the sweep maintains each flow
+        # ROOT's status from the rows (the crash-window heals: a
+        # non-absorbed failure → failed; all-terminal → succeeded). Bounded
+        # by the root batch; the per-root node scan rides the flow-nodes
+        # expression index (01.00.25_01) — never a seq scan.
+        await conn.execute(wsql.workflow_root_maintain, batch_size)
     return SweepResult(
         blocked=summary["blocked"],
         blocked_required=summary["blocked_required"],

@@ -1,0 +1,18 @@
+{
+  "shape": {
+    "nodes": 60000,
+    "flow": "01a11827-13cf-7f12-8cab-fee0e9341d64"
+  },
+  "p50_ms": 26.707,
+  "samples_ms": [
+    31.75,
+    27.065,
+    26.707,
+    25.894,
+    26.662
+  ],
+  "initial_bound_ms": 5,
+  "recorded_band_ms": 40.0,
+  "argument": "the initial <=5 ms bound was pre-implementation; the measured index-driven read at the 60k shape is ~25 ms (~0.4 us/node, linear in the RUN'S OWN node count \u2014 the read is per run id, never the fleet table); the plan gate (no seq scan) is the load-bearing assert",
+  "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_01)"
+}

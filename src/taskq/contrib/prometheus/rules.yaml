@@ -442,6 +442,35 @@ groups:
             sweep will ever touch these rows; the leader's detector is the
             only signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
 
+      - alert: TaskQWorkflowBlockedStuck
+        expr: taskq_wf_progress_nodes_total{state="blocked"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Workflow {{ $labels.workflow }} has {{ $value }} nodes pinned
+            blocked for 30m with no transition
+          description: >-
+            A workflow run has nodes sitting in a BLOCKED representation
+            (join-wait, a blocked-with-reason stamp, or held) for 30
+            minutes with no transition — the join that never fires, the
+            hold nobody released, or the fail-closed block nobody
+            cleaned up. The gauge is sampled by the maintenance leader on
+            the admin's surface (taskq.wf_progress_nodes_total,
+            dimensioned by the DECLARED workflow — `_other_` carries the
+            unregistered collapse). The per-run truth: the admin's run
+            page reads the per-node rollup (blocked-by, join-latency SQL
+            in docs/guides/insights.md); the node rows name the blocking
+            reason (metadata.blocking_reason: 'join' waiting on parents,
+            'orphan_parent' a misnamed child, 'failed_parent' a failed
+            parent's fail-closed cascade, 'body_unavailable' a fired join
+            whose body never resolved — that one is a deployment defect:
+            the workflow's definitions are not imported in every worker
+            process). Operators should override the threshold in their
+            own rule configuration. Runbook:
+            docs/guides/runbooks.md#taskqworkflowblockedstuck.
+
       - alert: TaskQRunningLeaseExpired
         expr: taskq_jobs_running_lease_expired > 0
         for: 5m

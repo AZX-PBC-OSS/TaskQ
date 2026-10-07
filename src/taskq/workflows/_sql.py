@@ -59,6 +59,12 @@ from taskq.workflows._sql_ledger import (
     LEDGER_TERMINAL_BY_ID_SQL,
     LEDGER_TERMINAL_SQL,
 )
+from taskq.workflows._sql_status import (
+    WORKFLOW_MAP_PROGRESS_SQL,
+    WORKFLOW_NODES_SQL,
+    WORKFLOW_ROLLUP_SQL,
+    WORKFLOW_ROOT_MAINTAIN_SQL,
+)
 from taskq.workflows._sql_sweep import (
     JOIN_BODY_UNAVAILABLE_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
@@ -131,6 +137,10 @@ class WorkflowSql:
     flow_status: str
     flow_run_insert: str
     flow_run_read: str
+    workflow_rollup: str
+    workflow_nodes: str
+    workflow_map_progress: str
+    workflow_root_maintain: str
 
     @staticmethod
     def build(schema: str) -> WorkflowSql:
@@ -188,4 +198,8 @@ class WorkflowSql:
             flow_status=render(FLOW_STATUS_SQL),
             flow_run_insert=render(FLOW_RUN_INSERT_SQL),
             flow_run_read=render(FLOW_RUN_READ_SQL),
+            workflow_rollup=render(WORKFLOW_ROLLUP_SQL),
+            workflow_nodes=render(WORKFLOW_NODES_SQL),
+            workflow_map_progress=render(WORKFLOW_MAP_PROGRESS_SQL),
+            workflow_root_maintain=render(WORKFLOW_ROOT_MAINTAIN_SQL),
         )
