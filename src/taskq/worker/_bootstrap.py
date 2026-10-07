@@ -931,6 +931,62 @@ def _fail_fast_on_unrouted_configured_queues(
     raise UnknownQueueError(unrouted, configured, source="worker_boot")
 
 
+def _emit_retired_queue_assignments_advisory(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    stored_rows: Mapping[str, ActorConfigRow],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """THE RETIREMENT HALF, the boot gate's inverse visibility: stored
+    assignments for actors this worker neither serves nor consumes —
+    retired-actor drift, a queue the fleet's stored config still routes
+    after the actor left the code — surface as ONE aggregated ADVISORY,
+    never a refusal.
+
+    The asymmetry this respects: the configured-but-unrouted gate above
+    refuses (the strict knob's one hard edge), because a configured
+    queue nothing routes to provably dispatches nothing; a stored row
+    for an absent actor proves nothing on its own — a sibling worker may
+    still serve or consume it, and refusing here would strand its live
+    jobs. So: advisory only, aggregated once per boot, the sibling
+    caveat in the note, the remedy (delete the stored row via
+    ``taskq actor-config``) named. Nothing lingers silently.
+
+    Runs in the same post-sync block as the gate (the same fleet-wide
+    read), for strict and non-strict boots alike — an advisory has no
+    knob; it is the note's sibling on the worker side.
+    """
+    if not stored_rows:
+        return
+    consumed = set(settings.queues)
+    served = {ref.queue for ref in actor_registry.values()}
+    # Rows for actors NOT in this registry: the full-registry fleet
+    # (every worker imports the whole registry) makes these exactly the
+    # retired-from-code actors the DB still routes; split-registry
+    # fleets read the sibling caveat.
+    unclaimed = sorted(
+        (row.actor, row.queue)
+        for row in stored_rows.values()
+        if row.actor not in actor_registry and row.queue not in consumed and row.queue not in served
+    )
+    if not unclaimed:
+        return
+    log.warning(
+        "retired-queue-assignments",
+        actors=[actor for actor, _queue in unclaimed],
+        queues=sorted({queue for _actor, queue in unclaimed}),
+        note=(
+            "stored actor_config assignments route these queues, but no "
+            "actor registered here serves them and this worker does not "
+            "consume them: a sibling worker may legitimately serve or "
+            "consume each one, but if the actor was retired from the code "
+            "the stored row is drift — delete it (taskq actor-config) so "
+            "this queue stops being routed. Advisory only; nothing was "
+            "refused."
+        ),
+    )
+
+
 def _resolve_rl_registry(
     explicit: RateLimitRegistry | None,
     di_registry: ProviderRegistry,
@@ -1905,8 +1961,11 @@ async def _main(
             # Strict queue-name validation rides the enqueuer's capacity
             # cache into every fan-out arm (and the per-job enqueuer the
             # dispatch path builds shares THIS cache, so it inherits the
-            # knob rather than re-deriving it).
+            # knobs rather than re-deriving them). env_queues is the
+            # two-source rule's second source: this worker's own declared
+            # set.
             queues_strict=settings.queues_strict,
+            env_queues=settings.queues,
         )
 
         if actor_registry is not None:
@@ -2069,8 +2128,13 @@ async def _main(
                     # means the gate silently skips — fail-open on an
                     # unavailable read, the check never runs on data it
                     # cannot trust (that boot already carries the
-                    # resolved-capacity-read-failed warning).
+                    # resolved-capacity-read-failed warning). The
+                    # retirement advisory rides the same read (its
+                    # inverse: routed-but-unclaimed, advisory only).
                     _fail_fast_on_unrouted_configured_queues(settings, actor_registry, stored_rows)
+                    _emit_retired_queue_assignments_advisory(
+                        settings, actor_registry, stored_rows, _startup_log
+                    )
                     _emit_resolved_capacity_startup_lines(
                         settings,
                         actor_registry,

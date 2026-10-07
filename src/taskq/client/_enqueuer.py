@@ -140,6 +140,7 @@ class SubJobEnqueuer:
         clock: Clock | None = None,
         capacity_cache: ActorCapacityCache | None = None,
         queues_strict: bool = False,
+        env_queues: Sequence[str] | None = None,
         transaction_conn: ConnLike | None = None,
     ) -> None:
         self._loop_scope_resolved = loop_scope_resolved
@@ -149,7 +150,7 @@ class SubJobEnqueuer:
         self._capacity_cache = (
             capacity_cache
             if capacity_cache is not None
-            else ActorCapacityCache(backend, queues_strict=queues_strict)
+            else ActorCapacityCache(backend, queues_strict=queues_strict, env_queues=env_queues)
         )
         self._transaction_conn = transaction_conn
         self._pending_buffer: list[EnqueueArgs] = []
@@ -437,6 +438,12 @@ class SubJobEnqueuer:
 
         if conn is not None:
             effective_mp: dict[str, int | None] = {}
+            # Memoized by actor name (verdict per new name only): the
+            # name -> queue function assumption — enforced at the registry
+            # boundary (worker/_bootstrap refuses keys that disagree with
+            # ref.name; sync_actor_config CardinalityViolations on
+            # duplicates) — so per-name memoization cannot hide a second
+            # queue behind one actor.
             for item in items:
                 ref = item.actor_ref
                 if ref.name not in effective_mp:

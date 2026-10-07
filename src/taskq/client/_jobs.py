@@ -356,8 +356,13 @@ class JobsClient:
             # off, the fail-open posture the note's own tests pin.
             # getattr-with-default: the client-layer tests drive bare
             # stand-in namespaces for settings (the notify_enabled
-            # convention), strict defaults False there.
+            # convention), strict defaults False there. env_queues is the
+            # two-source rule's second source — this process's own
+            # declared set, when it has one (a base-settings client has
+            # none; the snapshot is then the only source, the
+            # documented web-without-env corner).
             queues_strict=bool(getattr(settings, "queues_strict", False)),
+            env_queues=getattr(settings, "queues", None),
         )
         # Why resolved here: every enqueue path in this client validates
         # against one number, and a client built without settings still gets
@@ -882,6 +887,13 @@ class JobsClient:
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}
+        # Why memoized by ACTOR NAME and verdict-check per new name only:
+        # this assumes name -> queue is a FUNCTION (two refs sharing a
+        # name always share a queue). That invariant is enforced at the
+        # registry boundary (worker/_bootstrap refuses registry keys that
+        # disagree with ref.name, and sync_actor_config would
+        # CardinalityViolation on a duplicate name), so per-name
+        # memoization cannot hide a second queue behind one actor.
         for item in items:
             ref = item.actor_ref
             if ref.name not in effective_mp:
@@ -903,6 +915,20 @@ class JobsClient:
         # Build finalizer EnqueueArgs (without batch_id stamping, deadlock prevention).
         finalizer_args: EnqueueArgs | None = None
         if finalizer is not None:
+            # The finalizer rides the SAME strict verdict as the items: the
+            # per-item loop above iterates items only, and the finalizer's
+            # args write through BOTH sub-paths below (the atomic arm and
+            # the caller-connection arm), so without this the finalizer
+            # was the strict bypass — the exact orphan class strict exists
+            # to kill (its row stored on an unregistered queue, no
+            # refusal, no note). The snapshot is warm here — the awaited
+            # cap resolution in the loop spent the one refresh — so the
+            # verdict is a pure snapshot lookup, zero extra I/O. One
+            # verdict covers both write sites: the args are built once,
+            # after it.
+            self._capacity_cache.maybe_warn_unserved_queue(
+                finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+            )
             finalizer_args = build_enqueue_args(
                 finalizer.actor_ref,
                 finalizer.payload,
@@ -1166,6 +1192,12 @@ class JobsClient:
         effective_mp: dict[str, int | None] = {}
 
         def _lazy_args(stream: Iterable[EnqueueItem]) -> Iterable[EnqueueArgs]:
+            # Why memoized by ACTOR NAME (verdict per new name only): the
+            # name -> queue function assumption — enforced at the registry
+            # boundary (worker/_bootstrap refuses keys that disagree with
+            # ref.name; sync_actor_config CardinalityViolations on
+            # duplicates) — so per-name memoization cannot hide a second
+            # queue behind one actor.
             for idx, item in enumerate(stream):
                 ref = item.actor_ref
                 if ref.name not in effective_mp:
@@ -1259,6 +1291,17 @@ class JobsClient:
                 first_ref.name, first_ref.max_pending
             )
             self._capacity_cache.maybe_warn_unserved_queue(first_ref.queue, actor=first_ref.name)
+            if finalizer is not None:
+                # The finalizer rides the SAME strict verdict (the
+                # per-item verdicts run inside the sync generator, which
+                # never sees the finalizer — its args ride the atomic
+                # call below): the exact strict bypass the batch arm's
+                # fix documents. The snapshot is warm here — the awaited
+                # resolution above spent the one refresh — so the verdict
+                # is a pure snapshot lookup, zero extra I/O.
+                self._capacity_cache.maybe_warn_unserved_queue(
+                    finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+                )
             all_rows = await self._backend.enqueue_batch_atomic(
                 _lazy_args(_chain()),
                 batch_id=resolved_batch_id,
@@ -1298,6 +1341,23 @@ class JobsClient:
             finalizer_row = None
             if finalizer is not None:
                 assert finalizer_args is not None
+                # The finalizer writes FIRST here (M4), BEFORE the chunk
+                # loop's first awaited refresh — so this path's strict
+                # verdict needs the refresh spent on it explicitly (free
+                # when warm, the single-refresh-per-TTL budget; a failed
+                # refresh fails the verdict open, the same posture as
+                # every other arm). Without the awaited resolution the
+                # verdict below would read a possibly-cold snapshot and
+                # fail open on a genuinely stranded finalizer.
+                await self._capacity_cache.effective_max_pending(
+                    finalizer.actor_ref.name, finalizer.actor_ref.max_pending
+                )
+                # The finalizer's strict verdict — the chunk loop's
+                # per-item verdicts never see it, and this is the write
+                # the caller-connection shape performs.
+                self._capacity_cache.maybe_warn_unserved_queue(
+                    finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+                )
                 finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
 
             # Consume chunks. The payload is validated exactly ONCE per item
@@ -1319,6 +1379,11 @@ class JobsClient:
                 # cache makes this a lookup after the first) before the
                 # args are built, so a stored override on a literal-less
                 # actor is enforced exactly as enqueue_batch enforces it.
+                # Memoizing by actor name assumes name -> queue is a
+                # function — enforced at the registry boundary
+                # (worker/_bootstrap refuses keys that disagree with
+                # ref.name; sync_actor_config CardinalityViolations on
+                # duplicates).
                 for ci in chunk_items:
                     if ci.actor_ref.name not in effective_mp:
                         effective_mp[
