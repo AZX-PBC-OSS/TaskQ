@@ -28,6 +28,7 @@ from taskq.workflows.ledger import (
     claim_step_ledger,
     insert_flow_run,
     memoized_step_result,
+    run_idempotency_scope,
     step_idempotency_key,
     step_idempotency_scope,
 )
@@ -218,7 +219,7 @@ async def test_pin_4_run_key_replay_one_run(
     rows = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE idempotency_scope = $1 '
         "AND idempotency_key = $2",
-        "workflow-run",
+        run_idempotency_scope(flow.name),
         key,
     )
     assert int(rows) == 1, "one run row, forever"

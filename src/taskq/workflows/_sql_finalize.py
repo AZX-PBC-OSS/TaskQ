@@ -87,7 +87,7 @@ WITH wins AS (
     ON CONFLICT (join_job_id) DO NOTHING
     RETURNING join_job_id, step_key
 )
-SELECT w.join_job_id, w.step_key, j.metadata->'consumers' AS consumers
+SELECT w.join_job_id, w.step_key, j.trace_id, j.metadata->'consumers' AS consumers
 FROM wins w
 JOIN {schema}.jobs j ON j.id = w.join_job_id
 """

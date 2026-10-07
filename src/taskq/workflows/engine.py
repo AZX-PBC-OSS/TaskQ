@@ -327,6 +327,11 @@ async def _fire_and_deliver(
             # stated.
             await body()
     if fired.consumers:
+        # THE TRACE RIDES THE OUTBOX (§18.2's stamp-at-enqueue): the
+        # consumer rows' trace_id is the join's own trace when it has one,
+        # else the FIRE's id — every consumer of one fire shares one trace
+        # chain, never a NULL trace on the drain's dispatch.
+        trace_id = winner["trace_id"] or str(fire_id)
         await conn.executemany(
             wsql.outbox_insert,
             [
@@ -336,7 +341,14 @@ async def _fire_and_deliver(
                     flow_id,
                     c.step_key,
                     c.map_index,
-                    _jsonb({"actor": c.actor, "queue": c.queue, "payload": c.payload}),
+                    _jsonb(
+                        {
+                            "actor": c.actor,
+                            "queue": c.queue,
+                            "payload": c.payload,
+                            "trace_id": trace_id,
+                        }
+                    ),
                 )
                 for c in fired.consumers
             ],
