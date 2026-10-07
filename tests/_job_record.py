@@ -71,4 +71,5 @@ def full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "retry_jitter": 0.2,
         "assignment_routed": False,
         "claim_epoch": 0,
+        "parent_id": None,
     }
