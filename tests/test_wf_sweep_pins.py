@@ -216,10 +216,13 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     )
 
     # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides
-    # as a per-row subplan that vanilla rows never evaluate) — recorded to
-    # the red sink (a file that gets READ; the async-safe path — no
-    # blocking file IO in the event loop).
-    plan = await wf_conn.fetchval(
+    # as a per-row subplan that vanilla rows never evaluate) — the FULL
+    # plan, every row of it, recorded to the red sink (a file that gets
+    # READ; the async-safe path — no blocking file IO in the event loop).
+    # ``fetchval`` returns only the FIRST plan line — the bare top-level
+    # ``Update`` summary proves nothing about plan shape; the subplan's
+    # shape lives in the deeper rows.
+    plan_rows = await wf_conn.fetch(
         "EXPLAIN (BUFFERS) " + DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
         ["default"],
         5,
@@ -227,11 +230,11 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         timedelta(seconds=30),
         2,
     )
-    assert plan is not None
+    assert plan_rows, "the EXPLAIN returned no plan rows"
     engine_redlog.red(
         "pin2-dispatch-fence-plan",
         "EXPLAIN (BUFFERS) of the fenced strict-FIFO claim (the plan-shape record)",
-        {"plan": plan.splitlines()},
+        {"plan": [r["QUERY PLAN"] for r in plan_rows]},
     )
 
 
