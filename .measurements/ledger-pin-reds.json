@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin1-double-run",
-    "mutation": "the memoized lookup's statement mutated to match nothing (the replay forgets)",
-    "red": "{\"executions_after_redelivery\": 1}"
+    "pin": "pin6-ledger-terminal-atomic",
+    "mutation": "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
+    "red": "{\"node\": \"succeeded\", \"ledger\": \"running\"}"
   }
 ]
