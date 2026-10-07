@@ -38,6 +38,7 @@ import asyncpg
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.workflows._reducers import resolve_flow_reducer
 from taskq.workflows._sql import BLOCKING_REASON_ORPHAN_PARENT, WorkflowSql
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
@@ -71,6 +72,16 @@ async def sweep_join_rederive(
     The whole pass runs in ONE transaction: the rederive statement's row
     locks are held until the fire arm + outbox rows commit, so the fire's
     re-derivation of the firable set is deterministic.
+
+    THE FIRED JOIN'S REDUCER BODY (the tx1→tx2 crash window's cure): the
+    winner's body resolves from the flow run's reducer memo (the finalize
+    registered it — workflows/_reducers.py; D1's registered definition is
+    the resolver's fallback) and runs INSIDE this transaction — the same
+    exactly-once boundary the finalize's tx2 states: a raising body rolls
+    this tx back (the fire row and the outbox rows with it), the next pass
+    re-fires, the body RE-RUNS — at-least-once body execution survives the
+    window between the engine's own two transactions. A fired join with no
+    resolvable body delivers its declared consumers; nothing else runs.
     """
     async with pool.acquire() as conn, conn.transaction():
         summary = await conn.fetchrow(wsql.rederive_sweep, batch_size, orphan_blocking_reason)
@@ -85,14 +96,23 @@ async def sweep_join_rederive(
             # next pass, never NULL-id fired).
             fire_ids = [new_uuid() for _ in range(firable)]
             winners = await conn.fetch(wsql.sweep_fire, fire_ids, batch_size)
-            fired = tuple(
-                FiredJoin(
-                    join_job_id=JobId(w["join_job_id"]),
-                    step_key=w["step_key"],
-                    consumers=_consumer_bindings(w["consumers"]),
+            fired = []
+            for w in winners:
+                # THE BODY: the winner's reducer runs INSIDE this tx (the
+                # exactly-once boundary is the FIRE's, never the body's —
+                # a raising body rolls the whole pass back and the
+                # re-derive re-fires; at-least-once body execution).
+                body = resolve_flow_reducer(JobId(w["flow_id"]), w["step_key"])
+                if body is not None:
+                    await body()
+                fired.append(
+                    FiredJoin(
+                        join_job_id=JobId(w["join_job_id"]),
+                        step_key=w["step_key"],
+                        consumers=_consumer_bindings(w["consumers"]),
+                    )
                 )
-                for w in winners
-            )
+            fired = tuple(fired)
             outbox_rows = [
                 (
                     new_uuid(),
