@@ -51,7 +51,8 @@ from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
-    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
+    _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pins must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -599,7 +600,13 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
         plan = await _explain_analyze(
             conn,
             _params_wrapper(
-                _STRICT_FIFO_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=False
+                # The PLAIN render's fragment, not the raw template: the
+                # fragment carries the claim-cursor hole, and a raw hole
+                # in an EXPLAIN is a PostgresSyntaxError (the CI red this
+                # constant exists to cure).
+                _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,
+                mixed_population_schema,
+                rr_keys=False,
             ),
             ["default"],
             10,

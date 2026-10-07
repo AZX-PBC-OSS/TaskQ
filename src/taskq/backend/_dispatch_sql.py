@@ -1338,6 +1338,23 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
               WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
           ) * $5::int"""
 
+# The plain render's candidates lateral: the hole resolved EXACTLY as
+# DISPATCH_STRICT_FIFO_SQL resolves it (empty), by the same replace the
+# render runs - never a restated resolution. The EXPLAIN pins that probe
+# the standalone fragment against a live planner
+# (tests/test_migration_lock_scope_dead_index.py,
+# tests/test_sweepaudit_dispatch_bound.py) must measure the text
+# production dispatches: sending the raw hole to Postgres is a
+# PostgresSyntaxError, the exact defect class the parse-smoke guard
+# exists for (the guard's own registration of this constant keeps the
+# resolution honest - if the plain render and this fragment drift apart,
+# that registration reds). The cursor render resolves the same hole with
+# the bound instead; only the perf harness substitutes per-variant, and
+# it does so from the raw template fragment above.
+_STRICT_FIFO_CANDIDATES_LATERAL_PLAIN: str = _STRICT_FIFO_CANDIDATES_LATERAL.replace(
+    "__CLAIM_CURSOR_BOUND_J2__", ""
+)
+
 _ROUND_ROBIN_CANDIDATES_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
            w.fairness_rank, w.priority, w.scheduled_at

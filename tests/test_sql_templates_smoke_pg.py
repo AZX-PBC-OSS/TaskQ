@@ -281,6 +281,16 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "render substitutes its __CLAIM_CURSOR_BOUND_J2__ hole with nothing, "
         "the cursor render with the id lower bound (backend/_claim_cursor.py)",
     ),
+    "taskq.backend._dispatch_sql:_STRICT_FIFO_CANDIDATES_LATERAL_PLAIN": (
+        ("taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",),
+        None,
+        "the candidates lateral with the claim-cursor hole resolved as the "
+        "plain render resolves it (empty); a fragment, never a standalone "
+        "statement - the live-planner EXPLAIN pins consume exactly this text, "
+        "so the containment demand below keeps the resolution honest: if the "
+        "plain render stops carrying the resolved fragment verbatim, this "
+        "registration reds",
+    ),
     "taskq.backend._dispatch_sql:_ROUND_ROBIN_CANDIDATES_LATERAL": (
         ("taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",),
         None,

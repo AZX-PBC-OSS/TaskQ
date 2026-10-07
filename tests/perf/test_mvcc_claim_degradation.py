@@ -228,15 +228,29 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
         async def supply(rows_n: int) -> None:
             """Fresh pending rows, CLIENT-minted uuid7 ids: the claim
             cursor is a client-side high-water mark, the supply must
-            sort above it deterministically."""
-            ids = [(new_job_id(),) for _ in range(rows_n)]
-            await conn.executemany(
-                f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is fixture-derived (validated at settings load), not user input; every value is $-bound.
-                "retry_kind, status, priority, scheduled_at) "
-                "VALUES ($1, 'mvcc_ab_actor', 'default', '{}'::jsonb, 1, 'transient', "
-                "'pending', 0, statement_timestamp() - interval '10 seconds')",
-                ids,
-            )
+            sort above it deterministically.
+
+            Bulk-loaded through the same unnest shape grow_dead uses,
+            for the same reason grow_dead is bulk: this connection is a
+            dispatcher-pool slot whose command_timeout
+            (dispatcher_command_timeout) bounds every statement, and a
+            rows_n-statement executemany of single-row INSERTs exceeds
+            that budget on a loaded runner (the CI red: 20,000
+            round-trips timed out while the -n 8 packing kept the shared
+            PG busy). statement_timestamp() is evaluated once per
+            statement here instead of per row - immaterial, every row
+            only needs to be pending and 10s due."""
+            for chunk_start in range(0, rows_n, 5_000):
+                n = min(5_000, rows_n - chunk_start)
+                ids = [new_job_id() for _ in range(n)]
+                await conn.execute(
+                    f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is fixture-derived (validated at settings load), not user input; every value is $-bound.
+                    "retry_kind, status, priority, scheduled_at) "
+                    "SELECT u, 'mvcc_ab_actor', 'default', '{}'::jsonb, 1, 'transient', "
+                    "'pending', 0, statement_timestamp() - interval '10 seconds' "
+                    "FROM unnest($1::uuid[]) AS u",
+                    ids,
+                )
 
         # The probe arms: the SHIPPED candidates probe, with and without
         # the scalar bound. One shared bound advances with the cursor
