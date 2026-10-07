@@ -174,6 +174,7 @@ def _backend_with_dispatcher_pool(
     mock_deps = Mock()
     mock_deps.settings.schema_name = "taskq_test"
     mock_deps.settings.dispatch_oversample = 2
+    mock_deps.settings.claim_cursor_reset_seconds = 0.0
     mock_deps.settings.dispatcher_command_timeout = command_timeout
     mock_deps.worker_pool = Mock()
     mock_deps.dispatcher_pool = pool

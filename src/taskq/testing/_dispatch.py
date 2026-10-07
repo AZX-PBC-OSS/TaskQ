@@ -143,6 +143,19 @@ async def _dispatch_batch(
     # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
 
+    # ── claim cursor (backend/_claim_cursor.py) ────────────────────────
+    # The twin mirrors the PG claim cursor: the backend's per-queue
+    # high-water mark of successfully-claimed ids bounds the LABEL-ROUTED
+    # candidates (PG: the strict-FIFO candidates lateral's innermost probe
+    # and the has_pending admission probe, both ``AND id >= $6::uuid``).
+    # Round-robin is exempt (the id-seek contradicts cohort fairness) and
+    # the knob's 0 is the off switch (the naive shape). The bound re-reads
+    # per attempt: the jitter reset can expire a cursor mid-round.
+    cursor = self._claim_cursor
+    cursor.reset_seconds = self._claim_cursor_reset_seconds
+    _cursor_active = cursor.reset_seconds > 0
+    _queues_set = set(queues)
+
     # ── per_actor_capacity + repend_capacity + candidates laterals ────
     # Candidates come FROM the actor_config registry, exactly PG's
     # per_actor_capacity and repend_capacity CTEs
@@ -197,6 +210,13 @@ async def _dispatch_batch(
     oversample = _DISPATCH_OVERSAMPLE
     expansions = 0
     while True:
+        # The bound re-reads per attempt (the jitter reset can expire a
+        # cursor mid-round): the OLDEST live per-queue cursor among the
+        # round's queues, the scalar PG's $6 carries.
+        _round_bound = None
+        if _cursor_active and not _use_round_robin:
+            _bounds = [b for q in _queues_set if (b := cursor.bound(q)) is not None]
+            _round_bound = min(_bounds) if _bounds else None
         candidates: list[JobRow] = []
         _fairness_rank: dict[UUID, int] = {}
         for _actor, _cfg in self._actor_configs_meta.items():
@@ -225,6 +245,12 @@ async def _dispatch_batch(
                     # unnest(queues) probes, queue label against the
                     # subscription.
                     if row.queue in queues:
+                        # The claim cursor's bound (strict rounds only):
+                        # PG's candidates lateral probes carry
+                        # ``AND j2.id >= $6::uuid`` - a below-bound row is
+                        # invisible to the round until the jitter reset.
+                        if _round_bound is not None and row.id < _round_bound:
+                            continue
                         _by_queue[row.queue].append(row)
                 elif _cfg.queue in queues:
                     # Assignment-routed arm: PG's repend_capacity gate (the
@@ -446,6 +472,14 @@ async def _dispatch_batch(
                 self._claim_tick += 1
                 for _claimed_actor in dispatched_per_actor:
                     self._actor_claim_ticks[_claimed_actor] = self._claim_tick
+                # Mirror of the claim cursor's advance (PG:
+                # backend/_dispatch.py advances per admitted row, only for
+                # queues this round polled): the per-queue high-water mark
+                # the next round's bound reads.
+                if _cursor_active:
+                    for _row in dispatched:
+                        if _row.queue in _queues_set:
+                            cursor.advance(_row.queue, _row.id)
             return dispatched
         expansions += 1
         oversample = _DISPATCH_OVERSAMPLE * (2**expansions)
