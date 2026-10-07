@@ -2596,6 +2596,41 @@ and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
 
+## The workflow round (01.00.23) — the DAG engine's schema
+
+Migrations `01.00.23_01/_02/_03` ship the workflow engine's DDL: the five
+workflow columns on `jobs` (`parent_id`, `map_index`, `step_key`,
+`deps_pending`, `code_version`), the four ledger tables (`wf_edge`,
+`wf_join_fire`, `wf_outbox`, `wf_step_ledger`), and the workflow indexes —
+each file one lock class (columns / tables / indexes), applied in that
+order. See [Workflows](workflows.md) for the engine's contract.
+
+**The round was amended in place before landing.** The step ledger's
+claim arbiter keys `(flow_id, step_key, COALESCE(map_index, -1), attempt)`
+— map children of one step key are different claims — which is an
+expression index (`wf_step_ledger_claim_uniq`, in `_03`; a UNIQUE
+constraint cannot carry an expression), so the table's bare
+`UNIQUE (flow_id, step_key, attempt)` constraint was removed from `_02`'s
+`CREATE TABLE`. Because **none of these files ever shipped in a release**
+(the branch is the round's first publication), no `_variants/` entry is
+owed: variant history exists for databases that applied PREVIOUSLY
+PUBLISHED bytes, and no database ever applied these. If you applied a
+pre-release build that carried the older constraint: the files' checksums
+changed, and `taskq migrate status` will name the drift — the cure is the
+same as the published-variants discipline below, except the honest
+bookkeeping here is "this pre-release build's ledger refers to a draft of
+01.00.23 that was never published"; re-run the round's files on a fresh
+schema (they are idempotent-ordered, additive DDL) rather than
+legitimising a draft checksum with a variant.
+
+Two indexes the sweep arms lean on: `wf_step_ledger_running_idx` (the
+phantom reaper's `status='running'` partial) and
+`jobs_wf_join_fire_probe_idx` (the fire arm's join-wait probe — its
+predicate deliberately carries NO `deps_pending > 0`: the firable row's
+counter cache was just reconciled to 0 by the rederive in the same
+transaction, and a counter-carrying predicate would hide exactly the rows
+the arm exists to fire).
+
 ### Published variants: the one exception to immutability
 
 Restoring a byte-exact file fixes the guard going forward, but databases

@@ -102,6 +102,7 @@ nav:
       - Workers: guides/workers.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
+      - Workflows (DAG Engine): guides/workflows.md
       - Cancellation: guides/cancellation.md
       - Progress Tracking: guides/progress.md
       - Workgroups: guides/workgroups.md
