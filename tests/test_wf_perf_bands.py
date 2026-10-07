@@ -557,6 +557,7 @@ async def test_edge_join_scale_curve_across_the_bound(
         200,
         "orphan_parent",
         "failed_parent",
+        "flow_dead",
     )
     plan_text = json.dumps([dict(r) for r in plan_rows], default=str)
     await _drop_flow(wf_conn, wf_schema, flow_id)

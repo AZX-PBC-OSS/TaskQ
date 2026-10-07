@@ -1,7 +1,7 @@
 [
   {
-    "pin": "t06-pin8-mixed-policy-fence",
-    "mutation": "the flow-fenced join arm dropped (or the absorbed predicate read the edge's POLICY declaration as a ran absorption) \u2014 the collect join hangs claimable-never-fired on a failed flow, and the derivation can never say 'failed' for the failed-closed run",
-    "red": "{\"join_b_blocking_reason\": \"failed_parent\", \"join_b_deps_pending\": 1, \"fires\": 0}"
+    "pin": "t18-pin1-expiry-eats-children",
+    "mutation": "the guard stripped from the expiry arm \u2014 the children's results expire BEFORE the join fires, the reduce reads holes (the silent partial)",
+    "red": "{\"expired\": 0, \"survivors\": 1000}"
   }
 ]
