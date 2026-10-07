@@ -123,6 +123,20 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
+
+# Fixture registration: pytest sees fixtures imported into conftest (the
+# web_admin/_fixtures.py pattern — pytest 9.1.1 drops nested-conftest
+# fixtures for non-adjacent argument lists). Only the FIXTURES register
+# here; the pin files import the non-fixture helpers directly from
+# tests._wf_fixtures. The per-line ignores repeat: pyright does not
+# propagate the import block's first-line ignore.
+from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
+    engine_redlog,  # pyright: ignore[reportUnusedImport]
+    ledger_redlog,  # pyright: ignore[reportUnusedImport]
+    wf_conn,  # pyright: ignore[reportUnusedImport]
+    wf_schema,  # pyright: ignore[reportUnusedImport]
+    wf_sql,  # pyright: ignore[reportUnusedImport]
+)
 from tests.web_admin._fixtures import (
     _dev_env,
     make_app,

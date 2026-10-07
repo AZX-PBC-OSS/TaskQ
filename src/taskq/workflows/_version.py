@@ -27,9 +27,15 @@ verified canonical under dict ordering (the pin holds the door).
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from tors import content_hash
+
+if TYPE_CHECKING:
+    # Type-only export: JSONValue lives in tors' stubs, not its runtime
+    # module -- future annotations make the string-form uses safe.
+    from tors import JSONValue
+
 
 __all__ = ["code_version_payload", "compute_code_version"]
 
@@ -43,20 +49,23 @@ def code_version_payload(
     qualname: str,
     source: str | None,
     pinned: str | None = None,
-) -> dict[str, str]:
+) -> JSONValue:
     """The canonical payload the version hash covers.
 
     Every field is NAMED (a dict, hashed canonically by tors — key order
     cannot matter), never a positional concat: adding a field changes every
     hash (a clean invalidation), reordering nothing.
     """
-    return {
+    # Annotated as JSONValue (not dict[str, str]): the stub's dict shape is
+    # invariant in its value type, and the literal contextualizes cleanly.
+    payload: JSONValue = {
         "schema": _PAYLOAD_VERSION,
         "module": module,
         "qualname": qualname,
         "source": source if source is not None else "",
         "pinned": pinned if pinned is not None else "",
     }
+    return payload
 
 
 def compute_code_version(

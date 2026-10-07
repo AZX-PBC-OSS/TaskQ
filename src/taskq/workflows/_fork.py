@@ -1,0 +1,112 @@
+"""The fork (T04's fork-atomicity rule): the parent's guarded terminal
+UPDATE + the fork's child INSERTs + the join-row INSERT share ONE
+transaction — the writes land inside the CALLER's tx1 (never a second
+transaction, which would break the atomicity rule 5 and reopen the
+fork-debt window pin 19 convicts).
+
+Fan-out inserts are chunked parallel-array statements (``_FORK_CHUNK``
+rows per statement — never one round trip per child; the 1000-child
+fan-out tx band's shape). Ids are minted per fork through the
+``taskq._ids`` seam (uuid7, time-ordered); the wiring lives in
+``(parent_id, map_index)`` — NEVER in a string-shape convention on
+hand-built ids (pin 18's collision dragon).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from taskq._ids import new_uuid
+from taskq.backend._protocol import ConnLike, JobId
+from taskq.workflows._sql import WorkflowSql
+from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata
+
+if TYPE_CHECKING:
+    pass
+
+__all__ = ["FORK_CHUNK", "insert_fork"]
+
+#: Fan-out chunk size: rows per parallel-array INSERT statement.
+FORK_CHUNK = 500
+
+
+async def insert_fork(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    parent_id: JobId,
+    parent_step_key: str,
+    fork: ForkSpec,
+) -> tuple[list[JobId], JobId | None]:
+    """The fork's writes, inside the CALLER's transaction (tx1): the child
+    rows, the edge rows, the join node — parallel-array chunks, ids minted
+    app-side (uuid7 via the seam). NEVER a second transaction: the parent's
+    terminal mark, the children, and the join share one tx, one now()."""
+    children = fork.children
+    child_ids = [JobId(new_uuid()) for _ in children]
+
+    for start in range(0, len(children), FORK_CHUNK):
+        chunk = children[start : start + FORK_CHUNK]
+        ids = child_ids[start : start + FORK_CHUNK]
+        await conn.execute(
+            wsql.fork_children,
+            ids,
+            [c.actor for c in chunk],
+            [c.queue for c in chunk],
+            [_jsonb(c.payload) for c in chunk],
+            [fork.max_attempts] * len(chunk),
+            [fork.retry_kind] * len(chunk),
+            [parent_id] * len(chunk),
+            [c.map_index for c in chunk],
+            [c.step_key for c in chunk],
+            [fork.trace_id] * len(chunk),
+            [_jsonb(_metadata(flow_id, blocking_reason=None))] * len(chunk),
+            [f"workflow:{flow_id}"] * len(chunk),
+            # The key is PARENT-SCOPED (the wiring identity: parent node +
+            # child key + map index) — a bare (flow, child step) key would
+            # collide across every fork of the same step (pin 18's dragon).
+            [
+                f"wf:{flow_id}:{parent_step_key}:{c.step_key}"
+                + (f":{c.map_index}" if c.map_index is not None else "")
+                for c in chunk
+            ],
+        )
+        await conn.execute(
+            wsql.fork_edges,
+            ids,
+            [parent_id] * len(chunk),
+            [flow_id] * len(chunk),
+        )
+
+    join_id: JobId | None = None
+    if fork.join is not None:
+        join_id = JobId(new_uuid())
+        await conn.execute(
+            wsql.fork_join_node,
+            join_id,
+            fork.join.actor,
+            fork.join.queue,
+            _jsonb(fork.join.payload),
+            fork.max_attempts,
+            fork.retry_kind,
+            parent_id,
+            fork.join.step_key,
+            len(children),
+            fork.trace_id,
+            _jsonb(_join_metadata(flow_id, fork.join.consumers)),
+            f"workflow:{flow_id}",
+            f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
+        )
+        # The join's edges: one per child (the ledger's truth — the
+        # fan-out's children feed the join).
+        for start in range(0, len(child_ids), FORK_CHUNK):
+            chunk_ids = child_ids[start : start + FORK_CHUNK]
+            await conn.execute(
+                wsql.fork_edges,
+                # child_id = the join; parent_id = each child.
+                [join_id] * len(chunk_ids),
+                chunk_ids,
+                [flow_id] * len(chunk_ids),
+            )
+    return child_ids, join_id
