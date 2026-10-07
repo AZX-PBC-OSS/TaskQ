@@ -43,11 +43,19 @@ def _absorbed_exists(node_alias: str) -> str:
 # read (the query-count pin). The flow root row itself (step_key='__flow__')
 # is the run's linearization point, read BESIDE the nodes (its status is
 # the reported status the G7 always-on assertion reconstructs against),
-# never counted among them.
+# never counted among them — the WHERE names that (the root's own status
+# is not a NODE's status, and counting it manufactured a phantom one).
+# The two exact clauses (step_key <> '__flow__' + the flow link present)
+# are what let the planner prove the partial index (01.00.25_02 — the
+# uuid-cast expression, the workflow-rows-only partial) serves this read
+# at the fleet shape: without them the read was a Seq Scan of the whole
+# jobs table per status read (the H3 conviction).
 WORKFLOW_ROLLUP_SQL = """\
 SELECT status, count(*) AS count
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1::uuid
+  AND metadata ? 'flow_id'
+  AND step_key <> '__flow__'
 GROUP BY status
 """
 
@@ -72,6 +80,7 @@ SELECT j.id, j.step_key, j.status, j.deps_pending,
        j.error_class, j.error_message
 FROM {schema}.jobs j
 WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
+  AND j.metadata ? 'flow_id'
   AND j.step_key <> '__flow__'
 ORDER BY j.id
 """
@@ -104,7 +113,7 @@ GROUP BY c.step_key
 # cancel flip and the direct cascade own their own legs (the
 # linearization points); this heals the windows. Bounded: the roots batch
 # (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node scan rides
-# jobs_wf_flow_nodes_idx (01.00.25_01/02) — never a seq scan.
+# jobs_wf_flow_nodes_idx (01.00.25_02) — never a seq scan.
 #
 # THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the phase-2 attack's H1
 # cure): the maintenance leg derives the root's terminal state from THE
@@ -161,6 +170,7 @@ per_flow AS (
     FROM roots r
     JOIN {schema}.jobs n
       ON (n.metadata->>'flow_id')::uuid = r.id
+     AND n.metadata ? 'flow_id'
      AND n.step_key <> '__flow__'
     GROUP BY r.id
 ),

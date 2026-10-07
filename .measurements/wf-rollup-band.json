@@ -1,18 +1,19 @@
 {
   "shape": {
-    "nodes": 60000,
-    "flow": "01a1185a-9e45-72e1-90ed-eb83764e5e2d"
+    "fleet_rows": 80040,
+    "runs": 40,
+    "nodes_per_run": 500,
+    "measured_flow": "01a11889-5a9f-7451-81b4-bd2a9669f6a0"
   },
-  "p50_ms": 25.863,
+  "p50_ms": 0.527,
   "samples_ms": [
-    40.851,
-    25.938,
-    25.622,
-    25.131,
-    25.863
+    12.138,
+    0.557,
+    0.527,
+    0.336,
+    0.332
   ],
-  "initial_bound_ms": 5,
-  "recorded_band_ms": 40.0,
-  "argument": "the initial <=5 ms bound was pre-implementation; the measured index-driven read at the 60k shape is ~25 ms (~0.4 us/node, linear in the RUN'S OWN node count \u2014 the read is per run id, never the fleet table); the plan gate (no seq scan) is the load-bearing assert",
-  "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_01)"
+  "recorded_band_ms": 10.0,
+  "argument": "the pin REWRITTEN for the fleet shape (the phase-2 attack's H3b): the pre-rewrite shape measured a table containing ONLY the measured flow's rows \u2014 the measured flow WAS the whole table, so the plan assert could not fail on a seq scan. At the fleet shape the pre-cure index (01.00.25_01's raw-TEXT key) served NO flow-scoped read: the rollup read p50 21.2 ms and the per-node read 20.7 ms, BOTH Seq Scans, linear in the fleet table (.measurements/fix2/index-before-text-index.txt). The cure (01.00.25_02: the uuid-cast expression + the metadata?'flow_id' partial, the reads carrying the proving clauses) puts every flow-scoped read on the index: p50 ~0.1-0.3 ms \u2014 O(the run's own node count). The plan gate is the load-bearing assert; the band is set from THIS measurement. The fleet-wide gauge sampler (_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY DESIGN (no run id to key); its band is recorded in index-fleet-bands.json (~23 ms at the 220k-row fleet).",
+  "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_02)"
 }

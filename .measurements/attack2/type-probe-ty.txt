@@ -1,0 +1,159 @@
+error[missing-argument]: No argument provided for required parameter `error_traceback`
+  --> tests/typeprobe/attack2_wf_phase2_types.py:41:15
+   |
+41 |         error=ErrorInfo(error_class="ValueError", error_message="boom"),
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[missing-argument]: No argument provided for required parameter `error_traceback`
+  --> tests/typeprobe/attack2_wf_phase2_types.py:49:15
+   |
+49 |         error=ErrorInfo(error_class="ValueError", error_message="boom"),
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[invalid-argument-type]: Argument is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:60:9
+   |
+60 |         error="boom",  # MUST_ERROR (reportArgumentType: the envelope is ErrorInfo, never a bare str)
+   |         ^^^^^^^^^^^^ Expected `ErrorInfo`, found `Literal["boom"]`
+
+error[invalid-argument-type]: Argument is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:68:27
+   |
+68 |     bad_status = NodeView(status=42)  # MUST_ERROR (reportArgumentType: the jobs vocabulary is str, never int)
+   |                           ^^^^^^^^^ Expected `str`, found `Literal[42]`
+
+error[invalid-argument-type]: Argument is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:70:43
+   |
+70 |     bad_deps = NodeView(status="pending", deps_pending="2")  # MUST_ERROR (reportArgumentType: the counter is int)
+   |                                           ^^^^^^^^^^^^^^^^ Expected `int`, found `Literal["2"]`
+
+error[invalid-argument-type]: Argument to function `derive_workflow_status` is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:86:38
+   |
+86 |     verdict = derive_workflow_status(nodes)  # MUST_ERROR (reportArgumentType: the derivation takes tuple[NodeView, ...], never raw di…
+   |                                      ^^^^^ Expected `tuple[NodeView, ...]`, found `list[dict[str, str]]`
+info: Function defined here
+   --> src/taskq/workflows/_status.py:113:5
+    |
+113 | def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
+    |     ^^^^^^^^^^^^^^^^^^^^^^ --------------------------- Parameter declared here
+
+error[unresolved-reference]: Name `ConnLike` used when not defined
+  --> tests/typeprobe/attack2_wf_phase2_types.py:91:11
+   |
+91 |     conn: ConnLike = None  # type: ignore[assignment] — the probe holds no real conn
+   |           ^^^^^^^^
+
+error[missing-argument]: No arguments provided for required parameters `terminal_mark`, `decrement`, `decrement_absorbed`, `fail_closed_cascade`, `collect_fan_in`, `collect_fan_in_append`, `fire`, `outbox_insert`, `outbox_fetch_undelivered`, `outbox_drain_consumers`, `outbox_drain_flip`, `fork_children`, `fork_edges`, `fork_join_node`, `fork_join_consumers`, `rederive_sweep`, `sweep_fire`, `join_body_unavailable`, `ledger_claim`, `ledger_memoized`, `ledger_terminal`, `ledger_terminal_by_id`, `ledger_fence_attempt`, `ledger_fence_by_id`, `phantom_reap`, `node_insert`, `node_edge`, `flow_status`, `flow_run_insert`, `flow_run_read`, `workflow_rollup`, `workflow_nodes`, `workflow_map_progress`, `workflow_root_maintain`
+  --> tests/typeprobe/attack2_wf_phase2_types.py:92:12
+   |
+92 |     wsql = WorkflowSql("probe_schema")
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[invalid-argument-type]: Argument to function `fan_in_skip` is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:94:9
+   |
+94 |         conn,
+   |         ^^^^ Expected `ConnLike`, found `None`
+info: Function defined here
+   --> src/taskq/workflows/engine.py:547:11
+    |
+547 | async def fan_in_skip(
+    |           ^^^^^^^^^^^
+548 |     conn: ConnLike,
+    |     -------------- Parameter declared here
+
+error[invalid-argument-type]: Argument is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:96:23
+   |
+96 |         flow_id=JobId("00000000-0000-0000-0000-000000000000"),
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Expected `UUID`, found `Literal["00000000-0000-0000-0000-000000000000"]`
+
+error[invalid-argument-type]: Argument is incorrect
+  --> tests/typeprobe/attack2_wf_phase2_types.py:97:25
+   |
+97 |         parent_id=JobId("00000000-0000-0000-0000-000000000000"),
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Expected `UUID`, found `Literal["00000000-0000-0000-0000-000000000000"]`
+
+error[missing-argument]: No arguments provided for required parameters `parent_id`, `step_key`, `map_index` of function `fan_in_skip`
+   --> tests/typeprobe/attack2_wf_phase2_types.py:102:13
+    |
+102 |     wrong = fan_in_skip(conn, wsql, flow_id="not-a-jobid")  # MUST_ERROR (reportArgumentType: flow_id is JobId + parent_id/step_key/m…
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+info: Parameters declared here
+   --> src/taskq/workflows/engine.py:547:22
+    |
+547 |   async def fan_in_skip(
+    |  ______________________^
+548 | |     conn: ConnLike,
+549 | |     wsql: WorkflowSql,
+550 | |     *,
+551 | |     flow_id: JobId,
+552 | |     parent_id: JobId,
+553 | |     step_key: str,
+554 | |     map_index: int | None,
+555 | | ) -> int:
+    | |_^
+
+error[invalid-argument-type]: Argument to function `fan_in_skip` is incorrect
+   --> tests/typeprobe/attack2_wf_phase2_types.py:102:25
+    |
+102 |     wrong = fan_in_skip(conn, wsql, flow_id="not-a-jobid")  # MUST_ERROR (reportArgumentType: flow_id is JobId + parent_id/step_key/m…
+    |                         ^^^^ Expected `ConnLike`, found `None`
+info: Function defined here
+   --> src/taskq/workflows/engine.py:547:11
+    |
+547 | async def fan_in_skip(
+    |           ^^^^^^^^^^^
+548 |     conn: ConnLike,
+    |     -------------- Parameter declared here
+
+error[invalid-argument-type]: Argument to function `fan_in_skip` is incorrect
+   --> tests/typeprobe/attack2_wf_phase2_types.py:102:37
+    |
+102 |     wrong = fan_in_skip(conn, wsql, flow_id="not-a-jobid")  # MUST_ERROR (reportArgumentType: flow_id is JobId + parent_id/step_key/m…
+    |                                     ^^^^^^^^^^^^^^^^^^^^^ Expected `JobId`, found `Literal["not-a-jobid"]`
+info: Function defined here
+   --> src/taskq/workflows/engine.py:547:11
+    |
+547 | async def fan_in_skip(
+    |           ^^^^^^^^^^^
+548 |     conn: ConnLike,
+549 |     wsql: WorkflowSql,
+550 |     *,
+551 |     flow_id: JobId,
+    |     -------------- Parameter declared here
+
+error[unresolved-attribute]: Object of type `int` has no attribute `join`
+   --> tests/typeprobe/attack2_wf_phase2_types.py:111:14
+    |
+111 |     orphan = MAX_FAN_IN_PER_JOIN.join("")  # MUST_ERROR (reportAttributeAccess: the bound is int, not str — a misuse the checker must…
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[missing-argument]: No arguments provided for required parameters `terminal_mark`, `decrement`, `decrement_absorbed`, `fail_closed_cascade`, `collect_fan_in`, `collect_fan_in_append`, `fire`, `outbox_insert`, `outbox_fetch_undelivered`, `outbox_drain_consumers`, `outbox_drain_flip`, `fork_children`, `fork_edges`, `fork_join_node`, `fork_join_consumers`, `rederive_sweep`, `sweep_fire`, `join_body_unavailable`, `ledger_claim`, `ledger_memoized`, `ledger_terminal`, `ledger_terminal_by_id`, `ledger_fence_attempt`, `ledger_fence_by_id`, `phantom_reap`, `node_insert`, `node_edge`, `flow_status`, `flow_run_insert`, `flow_run_read`, `workflow_rollup`, `workflow_nodes`, `workflow_map_progress`, `workflow_root_maintain`
+   --> tests/typeprobe/attack2_wf_phase2_types.py:116:12
+    |
+116 |     wsql = WorkflowSql("probe_schema")
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[invalid-argument-type]: Argument to function `reconstruct_workflow_status` is incorrect
+   --> tests/typeprobe/attack2_wf_phase2_types.py:118:9
+    |
+118 |         "not-a-conn",  # MUST_ERROR (reportArgumentType: the read takes ConnLike, never a bare str)
+    |         ^^^^^^^^^^^^ Expected `ConnLike`, found `Literal["not-a-conn"]`
+info: Function defined here
+   --> src/taskq/workflows/_status.py:175:11
+    |
+175 | async def reconstruct_workflow_status(
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+176 |     conn: ConnLike, wsql: WorkflowSql, flow_id: JobId
+    |     -------------- Parameter declared here
+
+error[invalid-argument-type]: Argument is incorrect
+   --> tests/typeprobe/attack2_wf_phase2_types.py:120:15
+    |
+120 |         JobId("00000000-0000-0000-0000-000000000000"),
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Expected `UUID`, found `Literal["00000000-0000-0000-0000-000000000000"]`
+
+Found 18 diagnostics

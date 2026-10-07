@@ -3688,7 +3688,8 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
 # tick (the vanilla pattern — never a worker scrape, never the opt-in
 # TASKQ_METRICS_PORT worker port). One grouped read (the same read the
 # admin's status panel uses — the query-count pin), index-driven
-# (jobs_wf_flow_nodes_idx, 01.00.25_01).
+# (jobs_wf_flow_nodes_idx, 01.00.25_02 — the uuid-cast expression, the
+# workflow-rows-only partial `metadata ? 'flow_id'`).
 #
 # THE ALERT SUGGESTION SHIPS WITH THE GAUGE (GAPS-ESTATE F4 — a metric
 # nobody alerts on is a decoration): TaskQWorkflowBlockedStuck (a run

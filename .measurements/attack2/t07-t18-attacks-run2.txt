@@ -1,0 +1,60 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=410006978
+rootdir: /tmp/opencode/wt-taskqflow
+configfile: pyproject.toml
+plugins: anyio-4.15.1, cov-7.1.0, hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, respx-0.23.1, randomly-5.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 240.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [4 items]
+
+..F.
+=================================== FAILURES ===================================
+____________ test_attack_t07_timeout_sweep_racing_the_last_attempt _____________
+[gw2] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f062fd32140>
+wf_conn = <asyncpg.connection.Connection object at 0x7f062d5daf30>
+wf_schema = 'tq_2f04dbab6a'
+wf_sql = WorkflowSql(schema='tq_2f04dbab6a', terminal_mark='UPDATE tq_2f04dbab6a.jobs\nSET status = $2::"tq_2f04dbab6a".job_sta...pf.flow_id\n      AND NOT pf.has_live\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t07_timeout_sweep_racing_the_last_attempt(
+        module_pg_pool: asyncpg.Pool,
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """The deadline sweep takes a RUNNING child mid-final-attempt (its
+        schedule_to_close elapsed); the child's real finalize lands after.
+        The fence must lose CLEANLY: the child stays the sweep's 'failed'
+        (no zombie success), a fail_closed join blocks-with-reason, nothing
+        fires."""
+        from taskq.backend._sweeps import sweep_deadline_exceeded
+    
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="to_join", deps=1)
+        child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="t0")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, child, flow_id, "fail_closed")
+    
+        # the deadline elapses WHILE the child is running (the running row's
+        # schedule_to_close in the past — the sweep's own eligibility).
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
+            "WHERE id = $1",
+            child,
+        )
+        swept = 0
+        async with module_pg_pool.acquire() as deadline_conn:
+            swept = await sweep_deadline_exceeded(deadline_conn, schema=wf_schema)
+>       assert swept >= 1, "the deadline sweep must take the overdue running row"
+E       AssertionError: the deadline sweep must take the overdue running row
+E       assert 0 >= 1
+
+tests/attack2-t07-t18.py:283: AssertionError
+=========================== short test summary info ============================
+FAILED tests/attack2-t07-t18.py::test_attack_t07_timeout_sweep_racing_the_last_attempt
+========================= 1 failed, 3 passed in 6.54s ==========================

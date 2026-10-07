@@ -334,16 +334,20 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
 #: The workflow progress rollup (T08): per (declared workflow, node state)
 #: node counts — ONE grouped read for the wf-progress gauge and the
 #: admin's status panel alike (the query-count pin). Index-driven: the
-#: node rows ride jobs_wf_flow_nodes_idx (01.00.25_01), each root a
-#: primary-key probe. The `_other_` collapse happens in the SAMPLER (it
-#: knows the registered names); the read groups by the run's own stamped
-#: name, unregistered or not.
+#: node rows ride jobs_wf_flow_nodes_idx (01.00.25_02 — the uuid-cast
+#: expression, the workflow-rows-only partial `metadata ? 'flow_id'`,
+#: which this WHERE names exactly: the read is O(the fleet's WORKFLOW
+#: rows), never a seq scan of the fleet table), each root a primary-key
+#: probe. The `_other_` collapse happens in the SAMPLER (it knows the
+#: registered names); the read groups by the run's own stamped name,
+#: unregistered or not.
 _QUERY_WF_PROGRESS_SQL_TEMPLATE = (
     "SELECT COALESCE(r.metadata->>'workflow', '_other_') AS workflow, "
     "n.status AS state, count(*) AS count "
     'FROM "{schema}".jobs n '
     "JOIN \"{schema}\".jobs r ON r.id = (n.metadata->>'flow_id')::uuid "
-    "WHERE n.step_key IS NOT NULL AND n.step_key <> '__flow__' "
+    "WHERE n.metadata ? 'flow_id' "
+    "AND n.step_key IS NOT NULL AND n.step_key <> '__flow__' "
     "GROUP BY 1, 2"
 )
 
