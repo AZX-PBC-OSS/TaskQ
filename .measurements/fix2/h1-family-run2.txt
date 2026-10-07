@@ -1,0 +1,135 @@
+bringing up nodes...
+bringing up nodes...
+
+...............................................................F..       [100%]
+=================================== FAILURES ===================================
+___________ test_attack_t06_mixed_policy_node_the_collect_join_hangs ___________
+[gw3] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fa60e8298b0>
+wf_schema = 'tq_34f3cf20d8'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fa60e82d180>
+wf_sql = WorkflowSql(schema='tq_34f3cf20d8', terminal_mark='UPDATE tq_34f3cf20d8.jobs\nSET status = $2::"tq_34f3cf20d8".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t06_mixed_policy_node_the_collect_join_hangs(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """Node X feeds joinA (fail_closed) and joinB (collect). X fails:
+        the cascade blocks A and fails the flow IN THE SAME TX — then the
+        collect leg's decrement reads the flow-alive guard and refuses, so
+        joinB never resolves; the sweep then RECONCILES joinB's counter to 0
+        (its failed_required is 0 — the edge says collect) leaving a
+        never-fired, never-stamped, claimable join row. The record shows a
+        hanging join — the pin-1 claim broken; and the rollup's EXISTS
+        ``absorbed`` flag marks X absorbed, so the derivation can never say
+        'failed' for this failed-closed run."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_a = await seed_join(wf_conn, wf_schema, flow_id, step_key="ja", deps=1)
+        join_b = await seed_join(wf_conn, wf_schema, flow_id, step_key="jb", deps=1)
+        x = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="x")
+        await _seed_edge_named(wf_conn, wf_schema, join_a, x, flow_id, "fail_closed")
+        await _seed_edge_named(wf_conn, wf_schema, join_b, x, flow_id, "collect")
+    
+        await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=x,
+            step_key="x",
+            worker_id=(await claim_view(wf_conn, wf_schema, x))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",
+            error_class="ValueError",
+            error_message="the mixed node",
+        )
+    
+        root = await node_state(wf_conn, wf_schema, flow_id)
+        assert root["status"] == "failed", "the fail_closed leg must fail the flow"
+        a_state = await node_state(wf_conn, wf_schema, join_a)
+        assert a_state["metadata"].get("blocking_reason") == "failed_parent"
+    
+        b_state = await node_state(wf_conn, wf_schema, join_b)
+        fires_b = await fire_count(wf_conn, wf_schema, join_b)
+    
+        # THE SWEEP's next pass: what does the record look like after the
+        # healer runs?
+        await sweep_join_rederive(module_pg_pool, wf_sql)
+        b_after = await node_state(wf_conn, wf_schema, join_b)
+        fires_b_after = await fire_count(wf_conn, wf_schema, join_b)
+    
+        print(
+            json.dumps(
+                {
+                    "join_b_before_sweep": {
+                        "status": b_state["status"],
+                        "deps_pending": b_state["deps_pending"],
+                        "failures": b_state["metadata"].get("failures"),
+                        "fires": fires_b,
+                    },
+                    "join_b_after_sweep": {
+                        "status": b_after["status"],
+                        "deps_pending": b_after["deps_pending"],
+                        "blocking_reason": b_after["metadata"].get("blocking_reason"),
+                        "fires": fires_b_after,
+                    },
+                },
+                indent=2,
+            )
+        )
+    
+        # THE RECORD MUST NOT SHOW A HANGING JOIN: joinB resolved some way —
+        # fired, or blocked-with-reason. A pending join-wait row (or a
+        # reconciled-to-0 never-fired claimable row) is the convicted shape.
+        resolved = (
+            fires_b_after == 1
+            or b_after["metadata"].get("blocking_reason") in ("failed_parent", "orphan_parent")
+        )
+>       assert resolved, (
+            f"THE HANGING COLLECT JOIN: joinB rests status={b_after['status']!r} "
+            f"deps_pending={b_after['deps_pending']} "
+            f"blocking_reason={b_after['metadata'].get('blocking_reason')!r} "
+            f"fires={fires_b_after} — the flow-alive guard refused the collect "
+            "leg's decrement (the cascade flipped the flow in the same tx), "
+            "and the sweep's recount then RECONCILES the counter to 0 "
+            "(failed_required=0 for a collect edge): a never-fired, "
+            "never-stamped join row on a failed flow"
+        )
+E       AssertionError: THE HANGING COLLECT JOIN: joinB rests status='pending' deps_pending=0 blocking_reason='join' fires=0 — the flow-alive guard refused the collect leg's decrement (the cascade flipped the flow in the same tx), and the sweep's recount then RECONCILES the counter to 0 (failed_required=0 for a collect edge): a never-fired, never-stamped join row on a failed flow
+E       assert False
+
+tests/attack2-t06-cascade.py:432: AssertionError
+----------------------------- Captured stdout call -----------------------------
+{
+  "join_b_before_sweep": {
+    "status": "pending",
+    "deps_pending": 1,
+    "failures": [
+      {
+        "error": {
+          "error_class": "ValueError",
+          "error_message": "the mixed node",
+          "error_traceback": null
+        },
+        "policy": "collect",
+        "attempts": [],
+        "node_key": "x",
+        "map_index": null
+      }
+    ],
+    "fires": 0
+  },
+  "join_b_after_sweep": {
+    "status": "pending",
+    "deps_pending": 0,
+    "blocking_reason": "join",
+    "fires": 0
+  }
+}
+=========================== short test summary info ============================
+FAILED tests/attack2-t06-cascade.py::test_attack_t06_mixed_policy_node_the_collect_join_hangs
+1 failed, 65 passed in 11.44s

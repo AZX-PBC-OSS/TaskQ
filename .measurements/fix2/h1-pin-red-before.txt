@@ -1,0 +1,98 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_t08_maintenance_leg_finalizes_the_wedged_root ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7ff006e98b90>
+wf_schema = 'tq_df3d0a3d0c'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7ff006bf5840>
+wf_sql = WorkflowSql(schema='tq_df3d0a3d0c', terminal_mark='UPDATE tq_df3d0a3d0c.jobs\nSET status = $2::"tq_df3d0a3d0c".job_sta...pf.flow_id\n      AND NOT pf.has_live\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+propagation_redlog = <tests._wf_fixtures.RedLog object at 0x7ff006e90440>
+
+    @pytest.mark.integration
+    async def test_t08_maintenance_leg_finalizes_the_wedged_root(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        propagation_redlog: RedLog,
+    ) -> None:
+        """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's H1): tx1 commits
+        the child's terminal FAILURE, tx2 (the cascade) never runs — the
+        sweep's blocked_required heal stamps the join, but the maintenance
+        leg's ``has_live`` counted the stamped join row LIVE forever (nothing
+        dispatches it, nothing fires it, nothing will ever terminalize it), so
+        the root wedged 'running': unbounded retention (the pruner's liveness
+        guard holds every row) + the dead run re-scanned every sweep pass.
+        THE CURE PINNED: the maintenance leg derives the root's terminal state
+        FROM THE ROWS — the same reconstruction the debug view uses — and
+        FINALIZES the root in the same tx when the rows are terminal and the
+        root row isn't (the named terminal state + the reason). One sweep pass
+        releases the retention.
+        THE CONVICTED VARIANT (the drill): the has_live predicate counting the
+        resolved-blocked rows live — the root wedges 'running'."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fc_join", deps=2)
+        failed_child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c0")
+        peer = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c1")
+        await seed_edge(wf_conn, wf_schema, join_id, failed_child, flow_id)
+        await seed_edge(wf_conn, wf_schema, join_id, peer, flow_id)
+    
+        # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands (the direct
+        # write — the exact tx1 shape), tx2 (the cascade) never runs.
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
+            "error_class = 'ValueError' WHERE id = $1",
+            failed_child,
+        )
+        summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+        assert summary.blocked_required >= 1, "the heal must stamp the join first"
+    
+        # The peer's own work completes (its worker finalizes) — now EVERY
+        # node row is terminal-or-resolved-blocked. One more sweep pass: the
+        # maintenance leg's window to finalize the root.
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+            "WHERE id = $1",
+            peer,
+        )
+        await sweep_join_rederive(module_pg_pool, wf_sql)
+    
+        root = await wf_conn.fetchrow(
+            f'SELECT status, finished_at, error_class FROM "{wf_schema}".jobs WHERE id = $1',
+            flow_id,
+        )
+        assert root is not None
+        reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
+        propagation_redlog.red(
+            "t08-maintenance-root-wedge",
+            "the maintenance leg's has_live counting the resolved-blocked join "
+            "row live — the root wedges 'running' forever (unbounded retention, "
+            "the dead-run rescan every pass)",
+            {
+                "root_status": root["status"],
+                "reconstructed": reconstructed,
+                "finished_at": str(root["finished_at"]),
+                "error_class": root["error_class"],
+            },
+        )
+        assert reconstructed == "failed", "the rows reconstruct the un-absorbed failure"
+>       assert root["status"] == "failed", (
+            f"THE ROOT WEDGE: the rows reconstruct {reconstructed!r} but the "
+            f"root row reports {root['status']!r} — the maintenance leg must "
+            "finalize the root from the rows in the same pass"
+        )
+E       AssertionError: THE ROOT WEDGE: the rows reconstruct 'failed' but the root row reports 'running' — the maintenance leg must finalize the root from the rows in the same pass
+E       assert 'running' == 'failed'
+E         
+E         - failed
+E         + running
+
+tests/test_wf_status_pins.py:376: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=559ab48e036e redis=17419862a34a state_dir=/tmp/pytest-of-rich/pytest-17098
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=559ab48e036e redis=17419862a34a
+=========================== short test summary info ============================
+FAILED tests/test_wf_status_pins.py::test_t08_maintenance_leg_finalizes_the_wedged_root
+1 failed in 3.00s

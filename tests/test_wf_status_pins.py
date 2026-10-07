@@ -34,6 +34,7 @@ from tests._wf_fixtures import (
     RedLog,
     claim_view,
     g7_check,
+    node_state,
     seed_edge,
     seed_flow,
     seed_join,
@@ -300,6 +301,124 @@ async def test_t08_query_count_one_read_per_status_surface(
     assert "GROUP BY" in queries[0]
     assert "ORDER BY" in queries[1]
     assert "GROUP BY" in queries[2]
+
+
+# ── The maintenance leg: the rows are truth, the root row is a cache ────
+
+
+@pytest.mark.integration
+async def test_t08_maintenance_leg_finalizes_the_wedged_root(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    propagation_redlog: RedLog,
+) -> None:
+    """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's H1): tx1 commits
+    the child's terminal FAILURE, tx2 (the cascade) never runs — the
+    sweep's blocked_required heal stamps the join, but the maintenance
+    leg's ``has_live`` counted the stamped join row LIVE forever (nothing
+    dispatches it, nothing fires it, nothing will ever terminalize it), so
+    the root wedged 'running': unbounded retention (the pruner's liveness
+    guard holds every row) + the dead run re-scanned every sweep pass.
+    THE CURE PINNED: the maintenance leg derives the root's terminal state
+    FROM THE ROWS — the same reconstruction the debug view uses — and
+    FINALIZES the root in the same tx when the rows are terminal and the
+    root row isn't (the named terminal state + the reason). One sweep pass
+    releases the retention.
+    THE CONVICTED VARIANT (the drill): the has_live predicate counting the
+    resolved-blocked rows live — the root wedges 'running'."""
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fc_join", deps=2)
+    failed_child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c0")
+    peer = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c1")
+    await seed_edge(wf_conn, wf_schema, join_id, failed_child, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, peer, flow_id)
+
+    # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands (the direct
+    # write — the exact tx1 shape), tx2 (the cascade) never runs.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
+        "error_class = 'ValueError' WHERE id = $1",
+        failed_child,
+    )
+    summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+    assert summary.blocked_required >= 1, "the heal must stamp the join first"
+
+    # The peer's own work completes (its worker finalizes) — now EVERY
+    # node row is terminal-or-resolved-blocked. One more sweep pass: the
+    # maintenance leg's window to finalize the root.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
+        peer,
+    )
+    await sweep_join_rederive(module_pg_pool, wf_sql)
+
+    root = await wf_conn.fetchrow(
+        f'SELECT status, finished_at, error_class FROM "{wf_schema}".jobs WHERE id = $1',
+        flow_id,
+    )
+    assert root is not None
+    reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
+    propagation_redlog.red(
+        "t08-maintenance-root-wedge",
+        "the maintenance leg without the failed-root arm (the old gate: the "
+        "finalize required EVERY row terminal, and the stamped join row is "
+        "terminalizable by nothing) — the root wedges 'running' forever "
+        "(unbounded retention, the dead-run rescan every pass)",
+        {
+            "root_status": root["status"],
+            "reconstructed": reconstructed,
+            "finished_at": str(root["finished_at"]),
+            "error_class": root["error_class"],
+        },
+    )
+    assert reconstructed == "failed", "the rows reconstruct the un-absorbed failure"
+    assert root["status"] == "failed", (
+        f"THE ROOT WEDGE: the rows reconstruct {reconstructed!r} but the "
+        f"root row reports {root['status']!r} — the maintenance leg must "
+        "finalize the root from the rows in the same pass"
+    )
+    assert root["finished_at"] is not None, "the finalize stamps the completion"
+    # THE REASON, NAMED: the sweep's finalize names its mechanism — the
+    # root the cascade never flipped carries the maintenance stamp (the
+    # cascade's own flip stamps the peer-cancel origin instead).
+    assert root["error_class"] is not None, "the finalize names the reason"
+    # RETENTION RELEASED: the root is terminal, so the pruner's liveness
+    # guard (T18) no longer holds the run's rows — the terminal state IS
+    # the release. (The root's own rows prune on the normal schedule.)
+
+    # THE MUTATION DRILL (live, on a FRESH wedged flow): the maintenance
+    # leg WITHOUT the failed-root arm (the old gate's shape — the finalize
+    # requires EVERY row terminal, and the stamped join row is
+    # terminalizable by nothing) — the shipped statement's conviction
+    # reproduces and the root NEVER finalizes.
+    mutated = wf_sql.workflow_root_maintain.replace(
+        "(pf.has_failed AND NOT COALESCE(pf.has_active, false))",
+        "false",
+    )
+    assert mutated != wf_sql.workflow_root_maintain, "the mutation drill did not arm"
+    flow2 = await seed_flow(wf_conn, wf_schema)
+    join2 = await seed_join(wf_conn, wf_schema, flow2, step_key="fc2_join", deps=1)
+    child2 = await seed_running_node(wf_conn, wf_schema, flow2, step_key="d0")
+    await seed_edge(wf_conn, wf_schema, join2, child2, flow2)
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now() WHERE id = $1",
+        child2,
+    )
+    async with module_pg_pool.acquire() as conn:
+        await conn.execute(mutated, 200)
+    wedged = await node_state(wf_conn, wf_schema, flow2)
+    assert wedged["status"] == "running", (
+        f"the mutated predicate did NOT wedge the root ({wedged['status']!r}) — "
+        "the drill's conviction is broken: the mutant must reproduce the wedge"
+    )
+    # The SHIPPED statement finalizes the same shape (the control arm —
+    # the drill's comparator is honest both ways).
+    await sweep_join_rederive(module_pg_pool, wf_sql)
+    healed = await node_state(wf_conn, wf_schema, flow2)
+    assert healed["status"] == "failed", f"the shipped statement must finalize: {healed}"
+    _ = join_id
 
 
 # ── One run = one trace, under concurrency ──────────────────────────────

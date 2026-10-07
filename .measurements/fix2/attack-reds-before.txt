@@ -1,0 +1,236 @@
+FF........                                                               [100%]
+=================================== FAILURES ===================================
+___________ test_attack_t06_crash_window_fail_closed_root_and_peers ____________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fe686b74e60>
+wf_schema = 'tq_84d513de03'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fe686613b80>
+wf_sql = WorkflowSql(schema='tq_84d513de03', terminal_mark='UPDATE tq_84d513de03.jobs\nSET status = $2::"tq_84d513de03".job_sta...pf.flow_id\n      AND NOT pf.has_live\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t06_crash_window_fail_closed_root_and_peers(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """The crash window: the child's tx1 marked it failed, the cascade
+        (tx2) never ran. The sweep heal stamps the join. THE ROOT: the
+        §17.2 cascade's flip is also lost — the maintenance leg must heal
+        it. PREDICTION UNDER ATTACK: has_live counts the blocked join row
+        (pending forever) — the root wedges 'running'; and the peers keep
+        running on the dead flow."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fc_join", deps=2)
+        failed_child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c0")
+        peer = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c1")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, failed_child, flow_id, "fail_closed")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, peer, flow_id, "fail_closed")
+    
+        # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands, tx2 (the
+        # cascade) never runs — the direct DB write, the exact tx1 shape.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'failed\', finished_at = now(), '
+            "error_class = 'ValueError' WHERE id = $1",
+            failed_child,
+        )
+    
+        summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+        assert summary.blocked_required >= 1, "the heal must stamp the join (the pin-6 shape)"
+    
+        join_state = await node_state(wf_conn, wf_schema, join_id)
+        assert join_state["metadata"].get("blocking_reason") == "failed_parent"
+    
+        # THE PEERS: the direct cascade peer-cancels them; the heal's tx —
+        # does anything cancel this still-running peer of the dead run?
+        peer_state = await node_state(wf_conn, wf_schema, peer)
+    
+        # THE ROOT: every OTHER node is terminal except the blocked join row
+        # and the running peer. Terminalize the peer the way its own worker
+        # would (its work completes) and re-run the heal — the maintenance
+        # leg's one window to flip the root.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'succeeded\', finished_at = now() '
+            "WHERE id = $1",
+            peer,
+        )
+        await sweep_join_rederive(module_pg_pool, wf_sql)
+    
+        root = await node_state(wf_conn, wf_schema, flow_id)
+        join_state2 = await node_state(wf_conn, wf_schema, join_id)
+        reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
+    
+        # The G7 mapping: derived 'failed' ⇒ the root row must BE 'failed'.
+        print(
+            json.dumps(
+                {
+                    "root_status": root["status"],
+                    "reconstructed": reconstructed,
+                    "join_after_heal": {
+                        "status": join_state2["status"],
+                        "deps_pending": join_state2["deps_pending"],
+                        "blocking_reason": join_state2["metadata"].get("blocking_reason"),
+                    },
+                    "peer_after_heal": peer_state["status"],
+                },
+                indent=2,
+            )
+        )
+        assert reconstructed == "failed", "the failed child is un-absorbed: the rows say failed"
+>       assert root["status"] == "failed", (
+            f"THE ROOT WEDGE: the rows reconstruct {reconstructed!r} but the "
+            f"flow root reports {root['status']!r} — the maintenance leg's "
+            "has_live counts the blocked join row (pending forever), so the "
+            "root never flips: the run wedges 'running' forever"
+        )
+E       AssertionError: THE ROOT WEDGE: the rows reconstruct 'failed' but the flow root reports 'running' — the maintenance leg's has_live counts the blocked join row (pending forever), so the root never flips: the run wedges 'running' forever
+E       assert 'running' == 'failed'
+E         
+E         - failed
+E         + running
+
+tests/attack2-t06-cascade.py:154: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=d29a7aec9121 redis=449ca292b5b0 state_dir=/tmp/pytest-of-rich/pytest-17094
+----------------------------- Captured stdout call -----------------------------
+{
+  "root_status": "running",
+  "reconstructed": "failed",
+  "join_after_heal": {
+    "status": "pending",
+    "deps_pending": 2,
+    "blocking_reason": "failed_parent"
+  },
+  "peer_after_heal": "running"
+}
+___________ test_attack_t06_mixed_policy_node_the_collect_join_hangs ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fe686b759a0>
+wf_schema = 'tq_84d513de03'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fe686613b80>
+wf_sql = WorkflowSql(schema='tq_84d513de03', terminal_mark='UPDATE tq_84d513de03.jobs\nSET status = $2::"tq_84d513de03".job_sta...pf.flow_id\n      AND NOT pf.has_live\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t06_mixed_policy_node_the_collect_join_hangs(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """Node X feeds joinA (fail_closed) and joinB (collect). X fails:
+        the cascade blocks A and fails the flow IN THE SAME TX — then the
+        collect leg's decrement reads the flow-alive guard and refuses, so
+        joinB never resolves; the sweep then RECONCILES joinB's counter to 0
+        (its failed_required is 0 — the edge says collect) leaving a
+        never-fired, never-stamped, claimable join row. The record shows a
+        hanging join — the pin-1 claim broken; and the rollup's EXISTS
+        ``absorbed`` flag marks X absorbed, so the derivation can never say
+        'failed' for this failed-closed run."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_a = await seed_join(wf_conn, wf_schema, flow_id, step_key="ja", deps=1)
+        join_b = await seed_join(wf_conn, wf_schema, flow_id, step_key="jb", deps=1)
+        x = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="x")
+        await _seed_edge_named(wf_conn, wf_schema, join_a, x, flow_id, "fail_closed")
+        await _seed_edge_named(wf_conn, wf_schema, join_b, x, flow_id, "collect")
+    
+        await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=x,
+            step_key="x",
+            worker_id=(await claim_view(wf_conn, wf_schema, x))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",
+            error_class="ValueError",
+            error_message="the mixed node",
+        )
+    
+        root = await node_state(wf_conn, wf_schema, flow_id)
+        assert root["status"] == "failed", "the fail_closed leg must fail the flow"
+        a_state = await node_state(wf_conn, wf_schema, join_a)
+        assert a_state["metadata"].get("blocking_reason") == "failed_parent"
+    
+        b_state = await node_state(wf_conn, wf_schema, join_b)
+        fires_b = await fire_count(wf_conn, wf_schema, join_b)
+    
+        # THE SWEEP's next pass: what does the record look like after the
+        # healer runs?
+        await sweep_join_rederive(module_pg_pool, wf_sql)
+        b_after = await node_state(wf_conn, wf_schema, join_b)
+        fires_b_after = await fire_count(wf_conn, wf_schema, join_b)
+    
+        print(
+            json.dumps(
+                {
+                    "join_b_before_sweep": {
+                        "status": b_state["status"],
+                        "deps_pending": b_state["deps_pending"],
+                        "failures": b_state["metadata"].get("failures"),
+                        "fires": fires_b,
+                    },
+                    "join_b_after_sweep": {
+                        "status": b_after["status"],
+                        "deps_pending": b_after["deps_pending"],
+                        "blocking_reason": b_after["metadata"].get("blocking_reason"),
+                        "fires": fires_b_after,
+                    },
+                },
+                indent=2,
+            )
+        )
+    
+        # THE RECORD MUST NOT SHOW A HANGING JOIN: joinB resolved some way —
+        # fired, or blocked-with-reason. A pending join-wait row (or a
+        # reconciled-to-0 never-fired claimable row) is the convicted shape.
+        resolved = (
+            fires_b_after == 1
+            or b_after["metadata"].get("blocking_reason") in ("failed_parent", "orphan_parent")
+        )
+>       assert resolved, (
+            f"THE HANGING COLLECT JOIN: joinB rests status={b_after['status']!r} "
+            f"deps_pending={b_after['deps_pending']} "
+            f"blocking_reason={b_after['metadata'].get('blocking_reason')!r} "
+            f"fires={fires_b_after} — the flow-alive guard refused the collect "
+            "leg's decrement (the cascade flipped the flow in the same tx), "
+            "and the sweep's recount then RECONCILES the counter to 0 "
+            "(failed_required=0 for a collect edge): a never-fired, "
+            "never-stamped join row on a failed flow"
+        )
+E       AssertionError: THE HANGING COLLECT JOIN: joinB rests status='pending' deps_pending=0 blocking_reason='join' fires=0 — the flow-alive guard refused the collect leg's decrement (the cascade flipped the flow in the same tx), and the sweep's recount then RECONCILES the counter to 0 (failed_required=0 for a collect edge): a never-fired, never-stamped join row on a failed flow
+E       assert False
+
+tests/attack2-t06-cascade.py:432: AssertionError
+----------------------------- Captured stdout call -----------------------------
+{
+  "join_b_before_sweep": {
+    "status": "pending",
+    "deps_pending": 1,
+    "failures": [
+      {
+        "error": {
+          "error_class": "ValueError",
+          "error_message": "the mixed node",
+          "error_traceback": null
+        },
+        "policy": "collect",
+        "attempts": [],
+        "node_key": "x",
+        "map_index": null
+      }
+    ],
+    "fires": 0
+  },
+  "join_b_after_sweep": {
+    "status": "pending",
+    "deps_pending": 0,
+    "blocking_reason": "join",
+    "fires": 0
+  }
+}
+=========================== short test summary info ============================
+FAILED tests/attack2-t06-cascade.py::test_attack_t06_crash_window_fail_closed_root_and_peers
+FAILED tests/attack2-t06-cascade.py::test_attack_t06_mixed_policy_node_the_collect_join_hangs
+2 failed, 8 passed in 4.99s
