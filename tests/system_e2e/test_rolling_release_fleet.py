@@ -179,6 +179,15 @@ _CORPSE_PREMISE_BOUND = (
 _PROBE_STRETCH = 20.0
 _PROBE_STALL_MARGIN = _POLL_FLOOR * _PROBE_STRETCH
 
+#: The CapSampler's close-join hang guard: one tick's two queries plus the
+#: 0.1s cadence, stretched by the tier's load factor (the co-tenancy band
+#: the file's other derived bounds price). A backend hung past this bound
+#: cannot be joined naturally - the fallback cancels, and the fallback's
+#: own task reap (CapSampler.close) is what keeps the cancel's asyncpg
+#: Connection._cancel task off the module loop (the two shard reds' leak
+#: class, see the close's docstring).
+_SAMPLER_JOIN_BOUND_S = (_SWEEP_INTERVAL + _POLL_FLOOR) * TIER_LOAD_STRETCH
+
 #: The flap scenario's premise hang guard: one claim cycle (the poll
 #: floor plus the leader's dispatch tick) stretched by the 20x co-tenancy
 #: factor - the same shape the #651 cure gave this file's premise waits
@@ -431,12 +440,54 @@ class CapSampler:
         self._task = asyncio.create_task(self._run())
 
     async def close(self) -> None:
-        """Stop the sampler and make sure its task is always awaited."""
+        """Stop the sampler and leave the module loop clean.
+
+        Three steps, each with a reason:
+
+        * JOIN THE NATURAL EXIT first (no cancel): the tick loop checks
+          the stop flag between ticks, so the join costs at most one
+          tick + the 0.1s cadence - and no cancel ever lands MID-QUERY.
+          That is the leak class the two shard reds share (the PG16
+          shard's overlapping-pairs error-at-teardown, run 37504960221,
+          and the PG18 shard's grace-edge flap's, run 37504950651): a
+          cancel meeting a query in flight on the wire makes asyncpg
+          mint a fire-and-forget ``Connection._cancel`` task (a fresh
+          server connection whose whole life is the PG cancel request),
+          and a task left pending on the module loop at test end is the
+          conftest loop-leak guard's error - on a fast box the task
+          heals inside the teardown's own round trips (the rerun-green
+          weather ruling), on a loaded runner the guard's snapshot
+          catches it and the SHARD errors.
+        * The join is bounded (a hang guard: a backend hung past it is
+          the only thing that can hold a tick this long); the fallback
+          cancel there CAN still land mid-query, so:
+        * REAP what the close itself minted: the pending-task diff
+          against the close's entry is awaited (bounded, then cancelled
+          - asyncpg's ``_cancel`` suppresses its own cancellation), so
+          even the fallback leaves no task behind on the module loop.
+        """
+        minted_baseline = set(asyncio.all_tasks())
         self.stop.set()
         if self._task is not None and not self._task.done():
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._task  # Why: teardown; the tally already recorded what it saw.
+            done, _pending = await asyncio.wait({self._task}, timeout=_SAMPLER_JOIN_BOUND_S)
+            if not done:
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._task  # Why: teardown; the tally already recorded what it saw.
+        if self._conn is not None and not self._conn.is_closed():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._conn.close(), timeout=5.0)
+            self._conn = None
+        # The reap: tasks minted while close() ran (asyncpg's
+        # Connection._cancel on the fallback path - the shard-red leak
+        # class), awaited off the loop before the guard's snapshot.
+        reaps = set(asyncio.all_tasks()) - minted_baseline - {asyncio.current_task()}
+        if reaps:
+            done, pending = await asyncio.wait(reaps, timeout=5.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=5.0)
 
     async def stop_and_report(self, label: str) -> None:
         await self.close()
@@ -1600,3 +1651,91 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
         for worker in fresh.values():
             reap(worker)
         await delete_tagged(conn, schema, _TAG)
+
+
+# ── The sampler teardown's loop-hygiene pin ──────────────────────────────
+
+
+@pytest.mark.timeout(60)
+async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
+    pg_dsn: str, module_pg_schema: ModulePgSchema
+) -> None:
+    """The sampler's close must never leave a task pending on the module
+    event loop - the leak class behind BOTH shard reds (the PG16 shard's
+    error-at-teardown of the overlapping-pairs scenario, run 37504960221,
+    and the PG18 shard's of the grace-edge flap, run 37504950651: "test
+    left asyncio task(s) still pending on the module event loop ...
+    coroutine: Connection._cancel", 37/40 passed, 1 error each).
+
+    The race, determinized here: ``close`` cancelled the sampler task
+    MID-TICK, and when the cancel lands while a tick's query is genuinely
+    IN FLIGHT on the wire, asyncpg answers it with a fire-and-forget
+    ``Connection._cancel`` task (``_cancel_current_command``'s
+    ``create_task`` - a fresh server connection whose whole life is the
+    PG cancel request). That task outlives the test body: on a fast box
+    it finishes inside the teardown's own awaits (rerun-green - the
+    weather ruling), on a loaded runner the conftest loop-leak guard's
+    snapshot catches it pending and the SHARD errors. The deterministic
+    injection holds an ACCESS EXCLUSIVE lock on ``jobs``, so the next
+    tick's SELECT is provably mid-wire when the cancel lands; the pin
+    then mirrors the conftest guard's own baseline-diff the moment
+    ``close`` returns.
+
+    The cure this pin holds: the close joins the task's NATURAL exit
+    (the tick loop checks the stop flag between ticks - no cancel ever
+    lands mid-query), and the hang-guard fallback (a backend hung past
+    the join bound) reaps what its own cancel mints before returning.
+    """
+    schema = module_pg_schema.schema_name
+    baseline = set(asyncio.all_tasks())
+
+    # Hold the table's exclusive lock in a side session so the sampler's
+    # next SELECT is blocked IN FLIGHT on the wire, not queued locally.
+    locker = await asyncpg.connect(pg_dsn)
+    await locker.execute("BEGIN")
+    await locker.execute(
+        f'LOCK TABLE "{schema}".jobs IN ACCESS EXCLUSIVE MODE'
+    )  # Why: fixture-validated schema identifier.
+    # The lock's bounded release: 1.0s covers close()'s entry plus the
+    # sampler's one blocked tick on either shape (the retired bare close
+    # and the cure), and is released long before the pin's own 60s bound.
+    lock_open_until = time.monotonic() + 1.0
+
+    async def _release_lock() -> None:
+        remaining = lock_open_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        await locker.execute("ROLLBACK")
+        await locker.close()
+
+    releaser = asyncio.create_task(_release_lock())
+
+    sampler = CapSampler(pg_dsn, schema)
+    try:
+        sampler.start()
+        # The FIRST tick is the one close() meets: its SELECT is already
+        # blocked in-flight on the wire (the lock was taken before the
+        # start), the state every scenario tail hands the close on the
+        # red runs.
+        await asyncio.sleep(0.3)
+
+        await sampler.close()
+
+        # The conftest guard's own shape, at the moment the guard sees
+        # it: the teardown diff runs as soon as the test body hands
+        # control back - every task minted during THIS body that is
+        # still pending is the shard-red error. No await may sit between
+        # the close and this snapshot: the leak heals inside a
+        # teardown's own round trips (the weather ruling), which is
+        # exactly why the CI red was rare.
+        leaked = set(asyncio.all_tasks()) - baseline - {asyncio.current_task()}
+        assert not leaked, (
+            "the sampler's close left task(s) pending on the module loop - "
+            "asyncpg's fire-and-forget Connection._cancel, the shard-red "
+            f"leak class: {[t.get_name() for t in leaked]}"
+        )
+    finally:
+        # The lock's release is not part of the snapshot's story: the
+        # leaked task (on the red shape) heals or not BEFORE this runs,
+        # and the pin's own assertion is the red either way.
+        await releaser
