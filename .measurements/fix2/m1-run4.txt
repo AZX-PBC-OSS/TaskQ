@@ -1,0 +1,175 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+____________________ test_wf_pre_workflow_expiry_tolerance _____________________
+
+conn = <asyncpg.connection.Connection object at 0x7fb3b24bc230>
+schema = 'tq_6219217853_prewf', batch_size = 100
+
+    async def sweep_expired_results(
+        conn: ConnLike,
+        *,
+        schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    ) -> int:
+        """Expire result rows whose ``result_expires_at`` has passed, one
+        bounded batch per call.
+    
+        One call nulls ``result``, ``result_size_bytes`` and
+        ``result_expires_at`` on at most ``batch_size`` rows in one short
+        transaction; repeated calls drain the eligible backlog a batch at a
+        time. The statement writes no ``job_events`` rows, so the
+        trailing-watermark visibility margin does not bind it, the bound
+        exists because the write set scales with the stored result bytes: a
+        backlog of expired results (every result in the fleet expiring at
+        once after a retention change) is a single transaction whose
+        duration, lock-hold, and WAL volume grow with that backlog, and the
+        window caps each of them per call.
+    
+        PG uses server-side ``statement_timestamp()`` for the comparison
+        (STABLE, so ``jobs_result_expires_at_idx`` serves it as an Index
+        Cond, see the module docstring); this function takes no ``now``
+        argument.
+    
+        The sweep keeps ``result_expires_at`` on the rows it nulls: the past
+        stamp is the expiry signal a late poller's
+        ``ResultUnavailable.reason='result_ttl_expired'`` reads. It proves
+        the TTL elapsed, no more (the completion write stamps it even when
+        the actor stored no result), so the client message asserts only the
+        elapsed TTL and the absent result. See ``_SWEEP_RESULT_TTL_SQL``'s
+        comment.
+    
+        THE ROLLING-DEPLOY TOLERANCE (the doc's named mechanism, real): the
+        T18 workflow-liveness guard probes ``wf_edge`` — a schema the
+        workflow round has not landed on has NO such table, and the guarded
+        statement's miss is ``UndefinedTableError``. The arm TOLERATES it
+        per call, the way the prune's candidate predicate does: the fallback
+        runs the UNGUARDED base statement — semantically EXACT there (no
+        workflow tables = no join-wait rows to protect, the hold's subject
+        does not exist) — logged once per process (a stuck fallback would
+        otherwise mute the guard silently; a per-tick line would be noise
+        during a deploy). The tolerance is PER CALL: the next call tries the
+        guarded statement again, so a migration landing mid-stream resumes
+        guarded.
+    
+        Returns the count of results expired by this call.
+        """
+        try:
+>           return await _run_single_statement_sweep(
+                conn,
+                schema=schema,
+                sql_template=_SWEEP_RESULT_TTL_SQL,
+                name="sweep_expired_results",
+                batch_size=batch_size,
+            )
+
+src/taskq/backend/_sweeps.py:2064: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/backend/_sweeps.py:1966: in _run_single_statement_sweep
+    tag = await conn.execute(sql, batch_size)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "tq_6219217853_prewf.wf_edge" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+
+During handling of the above exception, another exception occurred:
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fb3b24bc230>
+module_pg_schema = ModulePgSchema(schema_name='tq_6219217853', pg_dsn='postgresql://taskq:taskq@localhost:42575/tq_db_6219217853e1')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_expiry_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The result-expiry arm on a schema with NO workflow tables: the arm
+        RUNS (the unguarded fallback — exact there) and expires the row; the
+        convicted variant (the guarded statement raw — the tolerance dropped)
+        raises the leader-killing miss."""
+        pre = module_pg_schema.schema_name + "_prewf"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+        await _seed_expired_result(clean_pg_conn, schema_name, actor="van", key="tol-1")
+    
+        # THE SHIPPED ARM: tolerated — the expiry runs unguarded.
+>       expired = await sweep_expired_results(clean_pg_conn, schema=schema_name)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_pre_workflow_tolerance_pins.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/backend/_sweeps.py:2083: in sweep_expired_results
+    return await _run_single_statement_sweep(
+src/taskq/backend/_sweeps.py:1966: in _run_single_statement_sweep
+    tag = await conn.execute(sql, batch_size)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "{schema}.jobs" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=a9989fa68bbb redis=b170a4d8de82 state_dir=/tmp/pytest-of-rich/pytest-17135
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 16:03:38 [warning  ] expiry-workflow-guard-fallback kind=expiry_workflow_guard_fallback reason='wf_edge does not exist (the workflow round has not applied) — the expiry arm runs unguarded, which is semantically exact there (no workflow tables, no join-wait rows to hold for)'
+__________________ test_wf_pre_workflow_actor_prune_tolerance __________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fb3b24bd040>
+module_pg_schema = ModulePgSchema(schema_name='tq_6219217853', pg_dsn='postgresql://taskq:taskq@localhost:42575/tq_db_6219217853e1')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_actor_prune_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The per-actor prune arm on a schema with NO workflow tables and an
+        actor_overrides entry: the arm survives (the per-batch unguarded
+        fallback — the pre-tolerance shape was the leader's death) and prunes
+        the actor's aged rows; the convicted variant (the guarded actor
+        candidate raw) raises the miss."""
+        pre = module_pg_schema.schema_name + "_prewf2"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+        await _seed_expired_result(clean_pg_conn, schema_name, actor="override_me", key="tol-2")
+    
+        result = await prune_terminal_jobs(
+            clean_pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            batch_size=100,
+            schema=schema_name,
+            actor_overrides={"override_me": timedelta(days=1)},
+        )
+>       assert result.total_deleted >= 1, f"the actor arm must survive and prune: {result}"
+E       AssertionError: the actor arm must survive and prune: PruneResult(total_deleted=0, archived=0, by_actor={}, by_status={}, cutoffs={'failed': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc), 'succeeded': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc), 'abandoned': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc), 'crashed': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc), 'cancelled': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc)}, duration_ms=10)
+E       assert 0 >= 1
+E        +  where 0 = PruneResult(total_deleted=0, archived=0, by_actor={}, by_status={}, cutoffs={'failed': datetime.datetime(2026, 9, 7, 2...zone.utc), 'cancelled': datetime.datetime(2026, 9, 7, 23, 3, 39, 49162, tzinfo=datetime.timezone.utc)}, duration_ms=10).total_deleted
+
+tests/test_wf_pre_workflow_tolerance_pins.py:115: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 16:03:39 [warning  ] prune-workflow-guard-fallback  kind=prune_workflow_guard_fallback reason='wf_edge does not exist (the workflow round has not applied) — the candidate runs unguarded'
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=a9989fa68bbb redis=b170a4d8de82
+=========================== short test summary info ============================
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_expiry_tolerance
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_actor_prune_tolerance
+2 failed in 4.95s

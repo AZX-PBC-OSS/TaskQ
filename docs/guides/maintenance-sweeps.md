@@ -505,9 +505,18 @@ no liveness to protect), logged once per process
 (`prune-workflow-guard-fallback`).
 
 **The rolling-deploy note:** the result-expiry arm tolerates the missing
-workflow tables the same way the workflow sweep arms do (the per-tick
-tolerance) — during the window the expiry does not run, which is the HOLD
-direction (results survive), never the eat direction.
+workflow tables the same way the candidate predicate does — the T18 guard
+probes `wf_edge`, a schema the workflow round has not landed on has no
+such table, and the guarded statement's miss (`UndefinedTableError`) is
+tolerated PER CALL: the fallback runs the UNGUARDED base statement
+(semantically exact there — no workflow tables, no join-wait rows to hold
+for), logged once per process (`expiry-workflow-guard-fallback`), and the
+next call tries the guarded statement again (a migration landing
+mid-stream resumes guarded). The per-actor candidate arm carries the same
+per-batch tolerance (a pre-workflow schema with `actor_overrides`
+configured was the leader's death before the tolerance). The fallback is
+per batch, never a permanent reassignment: the unguarded statement rides
+a local, so the drain resumes GUARDED the moment the tables exist.
 
 **The clock mechanism, named (for the test reader):** the guards' clock is
 the DATABASE's own `statement_timestamp()` — a test forces the expiry by

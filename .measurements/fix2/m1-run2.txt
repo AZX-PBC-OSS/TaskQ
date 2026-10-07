@@ -1,0 +1,86 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+____________________ test_wf_pre_workflow_expiry_tolerance _____________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fe8ea620140>
+module_pg_schema = ModulePgSchema(schema_name='tq_87d7da861b', pg_dsn='postgresql://taskq:taskq@localhost:42571/tq_db_87d7da861bba')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_expiry_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The result-expiry arm on a schema with NO workflow tables: the arm
+        RUNS (the unguarded fallback — exact there) and expires the row; the
+        convicted variant (the guarded statement raw — the tolerance dropped)
+        raises the leader-killing miss."""
+        pre = module_pg_schema.schema_name + "_prewf"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+>       await _seed_expired_result(clean_pg_conn, schema_name, actor="van", key="tol-1")
+
+tests/test_wf_pre_workflow_tolerance_pins.py:78: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_pre_workflow_tolerance_pins.py:57: in _seed_expired_result
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.IndeterminateDatatypeError: could not determine data type of parameter $1
+
+asyncpg/protocol/protocol.pyx:165: IndeterminateDatatypeError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=a29e7c3d6e54 redis=5ff57084918f state_dir=/tmp/pytest-of-rich/pytest-17133
+__________________ test_wf_pre_workflow_actor_prune_tolerance __________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fe8ea620c80>
+module_pg_schema = ModulePgSchema(schema_name='tq_87d7da861b', pg_dsn='postgresql://taskq:taskq@localhost:42571/tq_db_87d7da861bba')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_actor_prune_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The per-actor prune arm on a schema with NO workflow tables and an
+        actor_overrides entry: the arm survives (the per-batch unguarded
+        fallback — the pre-tolerance shape was the leader's death) and prunes
+        the actor's aged rows; the convicted variant (the guarded actor
+        candidate raw) raises the miss."""
+        pre = module_pg_schema.schema_name + "_prewf2"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+>       await _seed_expired_result(clean_pg_conn, schema_name, actor="override_me", key="tol-2")
+
+tests/test_wf_pre_workflow_tolerance_pins.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_pre_workflow_tolerance_pins.py:57: in _seed_expired_result
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.IndeterminateDatatypeError: could not determine data type of parameter $1
+
+asyncpg/protocol/protocol.pyx:165: IndeterminateDatatypeError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=a29e7c3d6e54 redis=5ff57084918f
+=========================== short test summary info ============================
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_expiry_tolerance
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_actor_prune_tolerance
+2 failed in 4.12s
