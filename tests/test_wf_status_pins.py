@@ -237,8 +237,10 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
 def test_t08_cardinality_never_per_node_labels() -> None:
     """The metric registration must REJECT a per-node label series — a
     per-node series cannot be created: the cache is (workflow, state)-keyed
-    (a node-dimensioned key cannot enter), and the observation callback's
-    label set is exactly {workflow, state}."""
+    (a node-dimensioned key cannot enter — ATTEMPTED here, the rejection
+    observed: the callback's strict pair-unpack is the enforcement, so a
+    lenient `key[0], key[1]` rewrite REDS this pin), and the observation
+    callback's label set is exactly {workflow, state}."""
     from taskq.obs._otel import (  # pyright: ignore[reportPrivateUsage]  # Why: the pin watches the registration's own surface.
         _observe_wf_progress,
         update_wf_progress_cache,
@@ -264,19 +266,54 @@ def test_t08_cardinality_never_per_node_labels() -> None:
     others = [o for o in observations if (o.attributes or {}).get("workflow") == "_other_"]
     assert len(others) == 1 and others[0].value == 11
 
+    # THE PER-NODE ATTEMPT, REJECTED: a node-dimensioned key (the
+    # convicted per-node series' shape) cannot enter the cache — the
+    # callback's strict pair-unpack raises, the series is never emitted.
+    update_wf_progress_cache(
+        {
+            ("registered-wf", "running", "c7"): 1,  # type: ignore[dict-item]  # Why: the ATTEMPT — the convicted per-node key shape, rejected at the observation.
+        }
+    )
+    with pytest.raises(ValueError, match="too many values to unpack"):
+        list(_observe_wf_progress(None))  # pyright: ignore[reportArgumentType]  # Why: as above — the options argument is ignored.
+    # THE CACHE RESTORED: the rejected key must not sit in the
+    # process-global cache for the next observer (the drill's own
+    # hygiene — the lawful shape goes back).
+    update_wf_progress_cache(
+        {
+            ("registered-wf", "running"): 7,
+            ("_other_", "pending"): 11,
+        }
+    )
+
 
 @pytest.mark.integration
 async def test_t08_query_count_one_read_per_status_surface(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
+    module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """ONE query per status read: the admin page's status panel and the
-    gauge share the same read — the rollup is ONE grouped statement (the
-    per-node variant is the SAME read class, one statement). The pin
-    counts the statements the surfaces issue."""
+    """ONE query per status read, INDEPENDENT OF THE POPULATION: the
+    status surfaces (the per-run reconstruction — the admin's debug view —
+    and the wf-progress gauge's fleet sampler) are single-statement reads
+    per class, never a per-row loop. THE REAL-MUTATION SHAPE (the audit's
+    rewrite — the pre-rewrite pin counted ITS OWN three calls through a
+    passthrough, no surface driven, nothing could fail): the pin drives
+    the REAL surfaces through a counting connection at TWO node counts —
+    the statement count must not move with the population, so an N+1
+    implementation (a per-node read loop — the monster class) REDS it,
+    and a surface that grew a second instrument (a second query per
+    status read) reds it too."""
     flow_id = await seed_flow(wf_conn, wf_schema)
-    await seed_running_node(wf_conn, wf_schema, flow_id)
+    for i in range(3):
+        child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=f"a{i}")
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+            "WHERE id = $1",
+            child,
+        )
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="j", deps=2)
 
     queries: list[str] = []
 
@@ -295,19 +332,54 @@ async def test_t08_query_count_one_read_per_status_surface(
             return await self._inner.fetchval(sql, *args)
 
     counting = CountingConn(wf_conn)
-    await counting.fetch(wf_sql.workflow_rollup, flow_id)  # the panel's read
-    await counting.fetch(wf_sql.workflow_nodes, flow_id)  # the per-node read
-    # The two surfaces = TWO statements total (each ONE grouped query) —
-    # the counter's complement rides INSIDE the map-progress read, never
-    # a second instrument.
-    await counting.fetch(wf_sql.workflow_map_progress, flow_id)
-    assert len(queries) == 3, queries
-    # The two grouped reads carry their GROUP BY; the per-node read is a
-    # bounded ordered read of ONE run's rows (its own query, never a
-    # per-row loop).
+    await reconstruct_workflow_status(counting, wf_sql, flow_id)
+    small_run_statements = len(queries)
+    assert small_run_statements == 3, queries  # the nodes + the ledger + the never-granted
+
+    # THE POPULATION GROWS (more terminal nodes + the join's edges): the
+    # statement count must NOT.
+    for i in range(30):
+        child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=f"b{i}")
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+            "WHERE id = $1",
+            child,
+        )
+    for _ in range(2):
+        extra = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="e")
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id) VALUES ($1, $2, $3)',
+            join_id,
+            extra,
+            flow_id,
+        )
+    queries.clear()
+    await reconstruct_workflow_status(counting, wf_sql, flow_id)
+    assert len(queries) == small_run_statements, (
+        f"the reconstruction's statement count MOVED with the population "
+        f"({small_run_statements} -> {len(queries)}) — a per-node read "
+        "loop (the N+1 monster class) arrived"
+    )
+
+    # THE GAUGE'S FLEET SAMPLER: ONE grouped statement — the same read
+    # class the panel uses — never a per-workflow query (the query-count
+    # pin's original claim, driven at the REAL surface).
+    from taskq.worker._leader_shared import (
+        _QUERY_WF_PROGRESS_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    queries.clear()
+    await counting.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=wf_schema))
+    assert len(queries) == 1, (
+        f"the gauge's fleet sample issued {len(queries)} statements — the "
+        "gauge and the panel share ONE grouped read"
+    )
     assert "GROUP BY" in queries[0]
-    assert "ORDER BY" in queries[1]
-    assert "GROUP BY" in queries[2]
+    # The rollup (the panel's grouped read) — one statement, GROUP BY
+    # carried.
+    queries.clear()
+    await counting.fetch(wf_sql.workflow_rollup, flow_id)
+    assert len(queries) == 1 and "GROUP BY" in queries[0], queries
 
 
 # ── The maintenance leg: the rows are truth, the root row is a cache ────
