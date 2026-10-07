@@ -253,7 +253,7 @@ async def paused_pg() -> AsyncIterator[tuple[str, PostgresContainer, str]]:
         yield dsn, container, schema
 
 
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_health")
 def test_ti2_ready_fails_when_pg_stopped(
     paused_pg: tuple[str, PostgresContainer, str],
 ) -> None:

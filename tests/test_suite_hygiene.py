@@ -1468,3 +1468,60 @@ async def test_soak_stage2_stays_silent_when_residue_honours_cancel() -> None:
     honest = asyncio.create_task(_hygiene_leak_probe_coro(), name="soak-reap-honest")
     await stop_worker_and_reap_bootstrap(worker_task, baseline, reap_timeout=5.0)
     assert honest.cancelled() or honest.done()
+
+
+# ── xdist_group pins: the measured state-affinity map ──────────────────────
+#
+# The five chaos modules used to share ONE xdist_group ("chaos"), which held
+# all 15 of their tests for a single worker as a convoy under
+# --dist=loadgroup. Measured 2026-10-06 (the CI-runtime measurement): the
+# shared group cost the 5-module subset 62.1-72.6s of wall at -n 2 vs 46.1s
+# split per-module (41 passed both ways). The db-global mechanisms that
+# presumably motivated the shared group are all schema-qualified — the
+# advisory locks go through schema_lock_name(...) on per-test-unique schemas
+# (tc1_ .. tc5_{new_base62()}) and the NOTIFY channels are
+# wake_channel(schema_name) — so each module now pins its OWN group and the
+# pins below keep it that way.
+
+_CHAOS_GROUP_MEMBERS: dict[str, str] = {
+    "test_leader_chaos.py": "chaos_leader",
+    "test_notify_chaos.py": "chaos_notify",
+    "test_ratelimit_reservation_chaos.py": "chaos_ratelimit",
+    "test_attack_livelock_pins.py": "chaos_livelock",
+    "test_health_integration.py": "chaos_health",
+}
+
+
+def test_chaos_modules_carry_per_module_xdist_groups() -> None:
+    """Every xdist_group in each chaos module must be exactly that module's
+    own group — never a resurrected shared ``chaos`` group, never a stranger's
+    name (loadgroup holds a group's tests for one worker: a shared name would
+    re-form the convoy the split removed)."""
+    seen: dict[str, str] = {}
+    for filename, expected in _CHAOS_GROUP_MEMBERS.items():
+        text = (Path(__file__).parent / filename).read_text(encoding="utf-8")
+        groups = set(re.findall(r'xdist_group\(name="([^"]+)"\)', text))
+        assert groups == {expected}, (
+            f"{filename}: expected every xdist_group to be {expected!r} "
+            f"(the per-module chaos split; see the tests/conftest.py docstring "
+            f"for the schema-qualification that makes the split safe), "
+            f"got {sorted(groups)}"
+        )
+        seen[filename] = expected
+    # The split's whole point: no two chaos modules share a group name.
+    assert len(set(seen.values())) == len(seen), f"two chaos modules share an xdist_group: {seen}"
+
+
+def test_the_listen_group_stays_whole() -> None:
+    """tests/web_admin/test_listen_coverage.py's ``listen`` group is the
+    chaos family's ONE genuine db-global affinity: fixed LISTEN channel
+    names on the shared pg_dsn, where two workers would receive each other's
+    NOTIFYs (everything else in the family is schema-qualified). It must
+    keep its group — whole and named ``listen``."""
+    text = (Path(__file__).parent / "web_admin" / "test_listen_coverage.py").read_text(
+        encoding="utf-8"
+    )
+    groups = re.findall(r'xdist_group\(name="([^"]+)"\)', text)
+    assert groups and set(groups) == {"listen"}, (
+        f"test_listen_coverage.py: the listen group moved, renamed or split: {groups}"
+    )
