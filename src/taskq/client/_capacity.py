@@ -72,12 +72,13 @@ this resolver can.
 import asyncio
 import math
 import time
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from typing import Any, Protocol, cast
 
 import structlog
 
 from taskq.backend._protocol import BACKEND_PROTOCOL_VERSION, Backend
+from taskq.exceptions import UnknownQueueError
 from taskq.obs import record_capacity_refresh_failure
 
 __all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "DEFAULT_CAPACITY_READ_TIMEOUT", "ActorCapacityCache"]
@@ -125,6 +126,8 @@ class ActorCapacityCache:
         *,
         ttl: float = DEFAULT_CAPACITY_CACHE_TTL,
         read_timeout: float = DEFAULT_CAPACITY_READ_TIMEOUT,
+        queues_strict: bool = False,
+        env_queues: Sequence[str] | None = None,
     ) -> None:
         if ttl < 0:
             raise ValueError(f"capacity cache ttl must be >= 0, got {ttl!r}")
@@ -135,6 +138,21 @@ class ActorCapacityCache:
         self._backend = backend
         self._ttl = ttl
         self._read_timeout = read_timeout
+        # Strict queue-name validation (TASKQ_QUEUES_STRICT): when True,
+        # the unserved-queue verdict below REFUSES (UnknownQueueError)
+        # instead of warning. One knob, one predicate, no parallel
+        # validation path: every enqueue arm already consults
+        # maybe_warn_unserved_queue, so strict rides the exact seam the
+        # note rides.
+        self._queues_strict = queues_strict
+        # The SECOND source of the two-source rule: the deploying
+        # process's own declared queue set (TASKQ_QUEUES, when its
+        # settings carry one — a web process loading the base settings
+        # has none, the snapshot-only corner). None means absent; a
+        # refusal requires the queue to miss BOTH sources.
+        self._env_queues: frozenset[str] | None = (
+            frozenset(env_queues) if env_queues is not None else None
+        )
         self._rows: dict[str, int | None] = {}
         # Actor name -> queue assignment from the same actor_config table,
         # refreshed on the same TTL cadence when the backend implements the
@@ -257,39 +275,114 @@ class ActorCapacityCache:
         if epoch == self._epoch:
             self._queues = queues
 
-    def maybe_warn_unserved_queue(self, queue: str, *, actor: str) -> None:
-        """Warn when no registered actor routes to *queue*.
+    def maybe_warn_unserved_queue(
+        self, queue: str, *, actor: str, allow_unregistered: bool = False
+    ) -> None:
+        """Warn — or, under strict mode, REFUSE — when no registered actor
+        routes to *queue*.
 
         The enqueue-time half of the stranded-jobs detection: an enqueue
         onto a queue no ``actor_config`` row routes to strands the row
         (``pending`` forever, nothing dispatches it), and before this
         note NOTHING signaled at enqueue time. Zero I/O: the verdict
         reads the current in-process snapshot, the hot path pays no round
-        trip for it.
+        trip for it. This is THE queue-name validation seam: every
+        enqueue arm (direct, the three batch arms, the sub-job fan-out
+        enqueuer) consults it, so the strict branch below covers them all
+        through one predicate — no parallel validation path exists.
 
-        The predicate is the snapshot's, so it carries the cache's
-        documented bounds: a worker registered fewer than ``ttl`` seconds
-        ago (default 5) is not yet in the set, and a failed or
-        never-succeeded refresh (or a backend without
-        ``get_actor_queues``) disables the note entirely, fail-open. The
-        TASKQ_QUEUES corner (a worker consuming a queue via
-        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes) reads
-        as unserved here — the predicate is the stored-assignment set, and
-        the client cannot see workers' consumed-queue lists. The note's
-        reason therefore states only what it tested (no stored assignment
-        routes the queue) and names the ``--queues``/``TASKQ_QUEUES`` escape,
-        so the corner's false positive is self-explaining instead of
-        asserting a stranded row that does not exist.
+        **The strict branch** (``queues_strict=True``, the
+        ``TASKQ_QUEUES_STRICT`` knob): an unknown queue raises
+        :class:`~taskq.exceptions.UnknownQueueError` instead of warning —
+        BEFORE any backend write, so the orphaned message is never
+        stored. THE ASYMMETRY DOCTRINE, the verdict's spine: over-
+        rejection is strictly worse than over-permission, so refusals
+        require positive two-source evidence and every ambiguous state
+        resolves to ALLOW + advisory —
 
-        Warn-once per queue per ``ttl`` window (the stranded sweep's
-        non-set doctrine: a condition that starts small and grows must
-        keep re-warning, but a hot producer enqueuing thousands of rows
-        onto one typo'd queue must not flood the log).
+        * an EMPTY snapshot (no worker ever started, the first-deploy
+          state) carries zero evidence of stranding: the check disables
+          itself, the note stays the advisory, the submit is accepted;
+        * an UNAVAILABLE snapshot (read failure, capability-less
+          backend) never refuses — the fail-open guards at the top own
+          it, the refresh-failure event carries the diagnosis (pinned by
+          the strict twins of test_refresh_failure_fails_open);
+        * a queue the process's env set (``TASKQ_QUEUES``) declares but
+          the snapshot lacks is a NEW queue mid-deploy — allowed through
+          the registration lag, the note stays the advisory;
+        * the TTL window (a queue registered seconds ago) is disclosed
+          in the refusal message when one finally fires — and it fires
+          only when BOTH sources miss.
+
+        The judged sets are the registered queue assignments (fleet-wide
+        ``actor_config`` DB truth, readable without actor registration —
+        the split-deployment constraint: the client process validates
+        against configuration, never a registry) and, when the process's
+        settings carry one, its own declared set.
+
+        ``allow_unregistered`` is the per-submit escape: it skips the
+        REFUSAL for this call (a genuinely dynamic queue name no
+        registration can predict) while the NOTE below still fires, so a
+        typo stays visible even on an escaped call. With strict off the
+        flag changes nothing.
+
+        The TASKQ_QUEUES corner (a worker consuming a queue via
+        ``--queues``/``TASKQ_QUEUES`` that no stored assignment routes)
+        reads as unserved here when the process declares no env set of
+        its own — the predicate is the stored-assignment set, and the
+        client cannot see workers' consumed-queue lists; the message
+        states only what was tested (no registered assignment routes the
+        queue) and names the deploy-order protection (workers before
+        clients for new queues) and the escapes, so the corner is
+        self-explaining instead of asserting a stranded row that does
+        not exist.
+
+        Non-strict (the default): warn-once per queue per ``ttl`` window
+        (the stranded sweep's non-set doctrine: a condition that starts
+        small and grows must keep re-warning, but a hot producer
+        enqueuing thousands of rows onto one typo'd queue must not flood
+        the log). Under strict the refusal replaces the warn; the
+        warn-once bookkeeping is untouched (the exception propagates).
         """
         if not self._has_snapshot or self._queues is None:
             return
-        if queue in self._queues.values():
+        served = queue in self._queues.values()
+        if served:
             return
+        if self._queues_strict and not allow_unregistered:
+            # THE ASYMMETRY DOCTRINE: over-rejection is strictly worse
+            # than over-permission — every ambiguous state resolves to
+            # ALLOW + advisory; a refusal requires POSITIVE two-source
+            # evidence.
+            #
+            # 1. THE EMPTY-SNAPSHOT RULE: an empty snapshot (no worker
+            #    has ever started, the first-deploy state) carries ZERO
+            #    evidence of stranding — the check disables itself (the
+            #    note below stays the advisory) and never refuses.
+            # 2. THE TWO-SOURCE RULE: refuse only when the queue misses
+            #    BOTH the fleet's registered assignments AND the process's
+            #    own declared set (TASKQ_QUEUES, when it carries one). A
+            #    queue env-declared but snapshot-absent is a NEW queue
+            #    mid-deploy — allowed through the registration lag (the
+            #    note stays the advisory until the assignment registers).
+            # 3. An UNAVAILABLE snapshot (read failure, capability-less
+            #    backend) never refuses — the guards at the top failed
+            #    open long before this line.
+            if not self._queues:
+                pass  # empty snapshot: fall through to the note, never refuse
+            elif self._env_queues is not None and queue in self._env_queues:
+                pass  # env-declared: mid-deploy registration lag, allowed
+            else:
+                # Both sources missed — positive evidence of stranding.
+                # The judged sets and the TTL bound are all named; the
+                # fix is obvious from the message alone.
+                raise UnknownQueueError(
+                    [queue],
+                    sorted(set(self._queues.values())),
+                    actor=actor,
+                    snapshot_is_ttl_bounded=True,
+                    env_queues=sorted(self._env_queues) if self._env_queues else None,
+                )
         now = time.monotonic()
         last = self._unserved_warned_at.get(queue)
         if last is not None and (now - last) < self._ttl:
