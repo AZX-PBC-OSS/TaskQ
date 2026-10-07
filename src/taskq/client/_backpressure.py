@@ -10,26 +10,34 @@ The design, stated once here:
 
 * DEPTH — one indexed aggregate per call
   (``count_pending_jobs_by_queue``, grouped by queue over pending +
-  scheduled: exactly the statuses the admission cap counts, so ``over``
-  compares the cap against the number the cap governs). The
-  ``count_active_jobs`` pattern (``backend/_reads.py``), not the
-  worker-side leader sampler — that cache (``_leader_sweeps.py`` →
-  ``obs/_otel.py``) is in-process on the worker and NOT readable
-  cross-process; this read never pretends otherwise.
+  scheduled) — the queue-local OPS view, a REPORTED field. It is NOT
+  the verdict's basis: the admission cap is PER-ACTOR and governs the
+  actor's count across ALL queues (``enqueue_max_pending_count``, WHERE
+  actor = $1 — _sql_templates.py), so a queue-local count against an
+  actor cap would false-OK exactly when an actor's traffic splits
+  across queues (the F1 review finding: 9 pending here + 9 there reads
+  ok while the next enqueue is refused at 18 >= 10).
+* VERDICT — the routing actors' OWN counts (``count_pending_jobs``, the
+  actor-grouped read the cap actually governs): ``over`` when ANY
+  routing actor with a resolvable stored cap is at/over its own
+  boundary; ``ok`` only when EVERY routing actor resolves and none is
+  over (an unresolvable actor may be over — claiming ok would be the
+  false-ok again). The binding actor (smallest headroom), its load, and
+  its cap are carried on the entry.
 * CAP — the actor's effective ``max_pending`` from the
   ``ActorCapacityCache`` TTL snapshot (zero I/O beyond the one warm-up
   refresh): the data model has NO per-queue depth threshold, so "over"
-  is defined against the queue's ACTOR cap — the tightest stored
-  ``max_pending`` among the actors whose stored assignment routes the
-  queue. A queue whose actors enforce only the ``@actor`` literal reads
-  ``unknown``: the literal is code-side, invisible to this process —
-  set a stored override (``taskq actor-config set --max-pending``) to
-  make the read exact.
+  is defined against the queue's ACTOR caps. A routing actor whose cap
+  lives only in the ``@actor`` literal reads ``unknown``: the literal
+  is code-side, invisible to this process — set a stored override
+  (``taskq actor-config set --max-pending``) to make the read exact.
 * FAN-OUT — the parent's pending children, EXACT: the ``parent_id``
-  ledger stamp (01.00.23_01), no tag approximation. Children outside
-  the queried queue join that queue's verdict (the inflow that could
-  still land there and compete for the same cap); children already in
-  the queue are in its depth and are never counted twice.
+  ledger stamp (01.00.23_01), no tag approximation. REPORTED, not
+  verdict-bearing: every pending child already counts toward its OWN
+  actor's cap (wherever it sits), which is the number the admission
+  check enforces — the fan-out pressure reaches the verdict through the
+  routing actors' admission loads, and the ledger here is the
+  parent-attributed view of the same rows.
 * FAIL-OPEN — every unavailable half reads as the explicit ``unknown``
   state with a reason (sick database, capability-less backend, no
   capacity snapshot). NEVER a fabricated verdict, the
@@ -52,7 +60,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import structlog
 
-from taskq.types import BackpressureSnapshot, QueueBackpressure
+from taskq.types import BackpressureSnapshot, BackpressureState, QueueBackpressure
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import Backend, JobId
@@ -147,41 +155,6 @@ def _read_grouped(
     return _run_grouped(reader, cap_name=cap_name, read_timeout=read_timeout, call=call)
 
 
-def _peek_queue_cap(
-    cache: "ActorCapacityCache", queue: str
-) -> "tuple[int | None, str | None]":
-    """Resolve the queue's cap half from the live snapshot: ``(cap, reason)``.
-
-    ``(cap, None)`` when a stored cap resolves; ``(None, reason)`` when
-    the cap is not resolvable from this process — never a fabricated
-    number.
-    """
-    routing = cache.peek_queue_caps(queue)
-    if routing is None:
-        return None, (
-            "actor capacity snapshot unavailable (no successful refresh yet, or the "
-            "backend lacks the optional get_actor_queues read / its read failed)"
-        )
-    if not routing:
-        return None, (
-            "no stored actor_config assignment routes this queue; unless a worker "
-            "consumes this queue via --queues/TASKQ_QUEUES the jobs are unserved "
-            "(snapshot is TTL-bounded)"
-        )
-    caps = [cap for cap in routing.values() if cap is not None]
-    if not caps:
-        names = ", ".join(sorted(routing))
-        return None, (
-            f"no stored max_pending override for the routing actor(s) [{names}]; the "
-            "effective cap is the @actor literal, which this process cannot see — "
-            "set a stored override (taskq actor-config set --max-pending) to make "
-            "this read exact"
-        )
-    # The queue's admission boundary is the TIGHTEST routing actor's cap:
-    # the first boundary an enqueue for this queue hits.
-    return min(caps), None
-
-
 async def read_backpressure(
     backend: "Backend",
     cache: "ActorCapacityCache",
@@ -199,9 +172,8 @@ async def read_backpressure(
     started_at = time.monotonic()
 
     depth_map: dict[str, int] | None = None
-    depth_reason: str | None = None
     if queues:
-        depth_map, depth_reason = await _read_grouped(
+        depth_map, _ = await _read_grouped(
             getattr(backend, "count_pending_jobs_by_queue", None),
             cap_name="count_pending_jobs_by_queue",
             read_timeout=read_timeout,
@@ -209,9 +181,8 @@ async def read_backpressure(
         )
 
     children_map: dict[str, int] | None = None
-    children_reason: str | None = None
     if parent_id is not None:
-        children_map, children_reason = await _read_grouped(
+        children_map, _ = await _read_grouped(
             getattr(backend, "count_pending_children_by_queue", None),
             cap_name="count_pending_children_by_queue",
             read_timeout=read_timeout,
@@ -221,47 +192,121 @@ async def read_backpressure(
     children_total = sum(children_map.values()) if children_map is not None else None
 
     entries: dict[str, QueueBackpressure] = {}
+    queue_routing: dict[str, dict[str, int | None] | None] = {}
+    wanted_actors: set[str] = set()
     for queue in queues:
         depth = depth_map.get(queue, 0) if depth_map is not None else None
-        # The fan-out attribution, exact and double-count-free: this
-        # queue's own children are IN its depth, so only the children
-        # OUTSIDE it join the verdict.
+        # The fan-out ledger attribution, exact and double-count-free:
+        # this queue's own children are IN its depth, so the reported
+        # children_depth is the parent's pending children OUTSIDE it.
         children_depth: int | None = None
         if children_total is not None:
             children_depth = children_total - (children_map or {}).get(queue, 0)
 
-        cap, cap_reason = _peek_queue_cap(cache, queue)
+        routing = cache.peek_queue_caps(queue)
+        # None (no snapshot) and {} (unserved) are DIFFERENT unknown
+        # reasons; the map keeps the distinction, the verdict below
+        # renders it.
+        queue_routing[queue] = routing
+        if routing is not None:
+            wanted_actors.update(a for a, c in routing.items() if c is not None)
 
-        # The verdict: every compared half must be present, any absent
+        entries[queue] = QueueBackpressure(
+            queue=queue,
+            depth=depth,
+            children_depth=children_depth,
+            state="unknown",  # resolved below, after the actor counts land
+        )
+
+    # The VERDICT's basis: the routing actors' OWN pending+scheduled
+    # counts, ALL queues (enqueue_max_pending_count's grouping — the cap
+    # governs the ACTOR, not the queue; a queue-local count against an
+    # actor cap would false-OK exactly when an actor's traffic splits
+    # across queues, the F1 review finding). One round trip for the
+    # union of every queried queue's resolvable routing actors.
+    actor_counts: dict[str, int] | None = None
+    actor_reason: str | None = None
+    if wanted_actors:
+        actor_counts, actor_reason = await _read_grouped(
+            getattr(backend, "count_pending_jobs", None),
+            cap_name="count_pending_jobs",
+            read_timeout=read_timeout,
+            call=(sorted(wanted_actors),),
+        )
+
+    for queue in queues:
+        entry = entries[queue]
+        routing = queue_routing[queue]
+
+        # The verdict: the routing actors' own admission states, the
+        # 3-valent OR. Every compared half must be present; any absent
         # half is unknown with the reasons named — never a fabricated
         # verdict.
         reasons: list[str] = []
-        if depth is None and depth_reason is not None:
-            reasons.append(depth_reason)
-        if parent_id is not None and children_depth is None and children_reason is not None:
-            reasons.append(children_reason)
-        if cap is None and cap_reason is not None:
-            reasons.append(cap_reason)
+        if routing is None:
+            reasons.append(
+                "actor capacity snapshot unavailable (no successful refresh yet, or the "
+                "backend lacks the optional get_actor_queues read / its read failed)"
+            )
+        elif not routing:
+            reasons.append(
+                "no stored actor_config assignment routes this queue; unless a worker "
+                "consumes this queue via --queues/TASKQ_QUEUES the jobs are unserved "
+                "(snapshot is TTL-bounded)"
+            )
+        if actor_counts is None and actor_reason is not None:
+            reasons.append(actor_reason)
+
+        resolvable = {a: c for a, c in (routing or {}).items() if c is not None}
+        if routing and not resolvable:
+            names = ", ".join(sorted(routing))
+            reasons.append(
+                f"no stored max_pending override for the routing actor(s) [{names}]; the "
+                "effective cap is the @actor literal, which this process cannot see — "
+                "set a stored override (taskq actor-config set --max-pending) to make "
+                "this read exact"
+            )
+
         if reasons:
             entries[queue] = QueueBackpressure(
                 queue=queue,
-                depth=depth,
-                children_depth=children_depth,
-                effective_max_pending=None,
+                depth=entry.depth,
+                children_depth=entry.children_depth,
                 state="unknown",
                 reason="; ".join(reasons),
             )
             continue
 
-        assert depth is not None and cap is not None
-        load = depth + (children_depth or 0)
+        assert resolvable and actor_counts is not None
+        headrooms = sorted(
+            (cap - actor_counts.get(actor, 0), actor, cap) for actor, cap in resolvable.items()
+        )
+        min_headroom, binding_actor, binding_cap = headrooms[0]
+        binding_load = binding_cap - min_headroom
+        if min_headroom <= 0:
+            state: BackpressureState = "over"
+        elif len(resolvable) < len(routing or {}):
+            # A resolvable actor is below its boundary, but another
+            # routing actor's cap is the @actor literal, unresolvable
+            # here: it may be over. Claiming ok would be the F1-class
+            # false-ok again.
+            state = "unknown"
+            reasons.append(
+                "some routing actor(s) enforce only the @actor literal (unresolvable "
+                "here) and may be at or over their boundary"
+            )
+        else:
+            state = "ok"
+
         entries[queue] = QueueBackpressure(
             queue=queue,
-            depth=depth,
-            children_depth=children_depth,
-            effective_max_pending=cap,
-            state="over" if load >= cap else "ok",
-            reason=None,
+            depth=entry.depth,
+            children_depth=entry.children_depth,
+            binding_actor=binding_actor,
+            effective_max_pending=binding_cap,
+            admission_load=binding_load,
+            state=state,
+            reason="; ".join(reasons) if reasons else None,
         )
 
     logger.debug(

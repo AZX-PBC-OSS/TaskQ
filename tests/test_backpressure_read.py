@@ -26,8 +26,15 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import pytest
+
 from taskq._ids import new_job_id
-from taskq.client._enqueuer import _parent_job_id_var, current_parent_id, set_parent_job_id
+from taskq.client._enqueuer import (
+    SubJobEnqueuer,
+    _parent_job_id_var,
+    current_parent_id,
+    set_parent_job_id,
+)
 from taskq.client._jobs import JobsClient
 from taskq.testing import FakeClock, InMemoryBackend, make_enqueue_args
 from taskq.types import BackpressureSnapshot
@@ -93,6 +100,7 @@ async def test_over_and_ok_boundary_is_depth_lt_cap() -> None:
     entry = (await client.backpressure(["q"])).queues["q"]
     assert entry.state == "over"
     assert entry.effective_max_pending == 2
+    assert entry.admission_load == 2  # the binding actor's own all-queue count
     assert entry.reason is None
 
     # The operator raises the cap: below the boundary flips the verdict
@@ -107,16 +115,64 @@ async def test_over_and_ok_boundary_is_depth_lt_cap() -> None:
 
 
 async def test_tightest_cap_wins_when_multiple_actors_route() -> None:
-    """Several actors route to one queue: the tightest stored cap is the boundary."""
+    """Several actors route to one queue: the BINDING actor (smallest
+    headroom — its OWN count against its OWN cap) is the boundary, the
+    3-valent OR. The seeds' rows belong to the routing actors
+    themselves: a queue-local count of an UNRELATED actor's rows never
+    makes a routing actor over (the corrected semantics — the cap
+    governs the actor's all-queue count, not the queue's)."""
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="a_wide", queue="q", max_pending=100)
     backend.register_actor_config(actor="b_tight", queue="q", max_pending=2)
+    # b_tight's OWN pending rows: 2 of them, at its cap.
+    for _ in range(2):
+        await backend.enqueue(make_enqueue_args(actor="b_tight", queue="q", scheduled_at=_NOW - timedelta(seconds=1)))
+
+    client = JobsClient(backend)
+    entry = (await client.backpressure(["q"])).queues["q"]
+    assert entry.binding_actor == "b_tight"
+    assert entry.effective_max_pending == 2
+    assert entry.admission_load == 2
+    assert entry.state == "over"
+
+    # a_wide is fine (0 of 100) but b_tight binds the queue's verdict.
+
+
+async def test_queue_local_depth_of_an_unrelated_actor_never_falses_over() -> None:
+    """The F1 differential's mirror face: the queue's depth counts rows
+    whose admission is governed by a DIFFERENT actor's cap. The verdict
+    must not read them against this queue's routing actor."""
+    backend = InMemoryBackend(FakeClock(_NOW))
+    backend.register_actor_config(actor="a_wide", queue="q", max_pending=2)
+    # 3 pending rows of test_actor (no stored cap, routed nowhere) in q.
     await _seed_pending(backend, "q", 3)
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"])).queues["q"]
-    assert entry.effective_max_pending == 2
-    assert entry.state == "over"
+    assert entry.depth == 3  # the queue-local ops view sees them
+    assert entry.binding_actor == "a_wide"
+    assert entry.admission_load == 0  # a_wide's OWN count: the cap governs THIS
+    assert entry.state == "ok"
+
+
+async def test_differential_actor_split_across_queues_is_seen() -> None:
+    """THE F1 DIFFERENTIAL (the false-ok the first design had): one actor's
+    pending split across two queues — 9 in its assigned queue + 9 via the
+    queue= override, cap 10. The cap governs the actor's ALL-QUEUE count
+    (18 >= 10, the next enqueue is REFUSED); a queue-local verdict read
+    9 < 10 and said ok — the exact failure the signal exists to predict.
+    Red on the pre-F1 design, green here."""
+    backend = InMemoryBackend(FakeClock(_NOW))
+    backend.register_actor_config(actor="test_actor", queue="q", max_pending=10)
+    await _seed_pending(backend, "q", 9)
+    await _seed_pending(backend, "c", 9)  # same actor, the queue= override
+
+    client = JobsClient(backend)
+    entry = (await client.backpressure(["q"])).queues["q"]
+    assert entry.depth == 9  # the queue sees only its own 9
+    assert entry.admission_load == 18  # the cap governs ALL of the actor's
+    assert entry.effective_max_pending == 10
+    assert entry.state == "over"  # 18 >= 10: the refusal the signal must predict
 
 
 # ── The fail-open posture: unknown, never a fabricated verdict ──────────
@@ -144,29 +200,76 @@ class _SickCapBackend(InMemoryBackend):
         raise RuntimeError("sick database")
 
 
-async def test_unknown_when_backend_lacks_the_depth_read() -> None:
-    """A capability-less backend (built before the staged read) reads unknown."""
+class _NoActorCountBackend(InMemoryBackend):
+    """A backend without the verdict's BASIS: the actor-grouped pending
+    count (count_pending_jobs) is what the admission cap actually
+    governs; without it no honest verdict exists."""
+
+    count_pending_jobs = None  # type: ignore[assignment]
+
+
+class _SickActorCountBackend(InMemoryBackend):
+    async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
+        raise RuntimeError("connection reset mid-count")
+
+
+async def test_depth_read_is_optional_and_not_verdict_bearing() -> None:
+    """A backend built before the staged depth read existed: depth reads
+    None, the VERDICT still computes (it is actor-scoped — the cap
+    governs the actor's all-queue count, not the queue's)."""
     backend = _NoDepthReadBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
     await _seed_pending(backend, "q", 5)
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"])).queues["q"]
-    assert entry.state == "unknown"
     assert entry.depth is None
-    assert "count_pending_jobs_by_queue" in (entry.reason or "")
+    assert entry.admission_load == 5  # the actor-grouped number carried the verdict
+    assert entry.state == "over"
+    assert entry.reason is None
 
 
-async def test_unknown_when_depth_read_fails() -> None:
-    """A sick database reads unknown; the read never raises."""
-    backend = _SickDepthBackend(FakeClock(_NOW))
+async def test_unknown_when_backend_lacks_the_actor_count_read() -> None:
+    """A capability-less backend for the VERDICT's basis reads unknown:
+    without the actor-grouped count no honest verdict exists, and claiming
+    ok would be the false-ok the signal exists to prevent."""
+    backend = _NoActorCountBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
+    await _seed_pending(backend, "q", 5)
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"])).queues["q"]
     assert entry.state == "unknown"
+    assert entry.admission_load is None
+    assert "count_pending_jobs" in (entry.reason or "")
+
+
+async def test_unknown_when_actor_count_read_fails() -> None:
+    """A sick database mid-actor-count: the same fail-open, the reason
+    names the failed read, no fabricated verdict."""
+    backend = _SickActorCountBackend(FakeClock(_NOW))
+    backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
+    await _seed_pending(backend, "q", 5)
+
+    client = JobsClient(backend)
+    entry = (await client.backpressure(["q"])).queues["q"]
+    assert entry.state == "unknown"
+    assert "count_pending_jobs" in (entry.reason or "")
+
+
+async def test_depth_read_failure_leaves_depth_none_but_the_verdict_stands() -> None:
+    """A sick database mid-depth-read: depth is None, the verdict still
+    computes from the actor counts (the verdict never needed the queue's
+    number)."""
+    backend = _SickDepthBackend(FakeClock(_NOW))
+    backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
+    await _seed_pending(backend, "q", 5)
+
+    client = JobsClient(backend)
+    entry = (await client.backpressure(["q"])).queues["q"]
     assert entry.depth is None
-    assert "count_pending_jobs_by_queue" in (entry.reason or "")
+    assert entry.state == "over"
+    assert entry.admission_load == 5
 
 
 async def test_unknown_when_capacity_snapshot_unavailable() -> None:
@@ -226,7 +329,8 @@ async def test_fanout_children_outside_the_queue_join_the_verdict() -> None:
     entry = (await client.backpressure(["p"], parent_id=parent_id)).queues["p"]
     assert entry.children_depth == 3  # the parent's pending children outside p
     assert entry.depth == 1
-    assert entry.state == "over"  # 1 + 3 >= cap 2
+    assert entry.state == "over"  # the children ARE test_actor rows: load 4 >= cap 2
+    assert entry.admission_load == 4
     assert entry.reason is None
 
 
@@ -294,15 +398,21 @@ async def test_ambient_parent_id_from_the_worker_context_flows() -> None:
     assert snapshot.queues["p"].state == "over"  # 0 depth + 1 child >= cap 1
 
 
-async def test_unknown_when_parent_children_read_is_missing() -> None:
-    """A parent is in play but the backend lacks the children read: unknown, never 'ok'."""
+async def test_children_read_is_optional_and_not_verdict_bearing() -> None:
+    """A backend built before the staged children read existed:
+    children_depth reads None, the VERDICT still computes (the fan-out
+    ledger is reported, not verdict-bearing — every pending child already
+    counts toward its OWN actor's cap, the number the admission check
+    enforces)."""
     backend = _NoChildrenReadBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=100)
+    await _seed_pending(backend, "q", 1)
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"], parent_id=new_job_id())).queues["q"]
-    assert entry.state == "unknown"
-    assert "count_pending_children_by_queue" in (entry.reason or "")
+    assert entry.children_depth is None
+    assert entry.state == "ok"
+    assert entry.admission_load == 1
 
 
 class _SickChildrenBackend(InMemoryBackend):
@@ -310,14 +420,16 @@ class _SickChildrenBackend(InMemoryBackend):
         raise RuntimeError("sick database")
 
 
-async def test_unknown_when_children_read_fails() -> None:
+async def test_children_read_failure_leaves_children_none_but_the_verdict_stands() -> None:
     backend = _SickChildrenBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=100)
+    await _seed_pending(backend, "q", 1)
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"], parent_id=new_job_id())).queues["q"]
-    assert entry.state == "unknown"
-    assert "count_pending_children_by_queue" in (entry.reason or "")
+    assert entry.children_depth is None
+    assert entry.state == "ok"
+    assert entry.admission_load == 1
 
 
 async def test_actor_body_read_via_the_sub_job_enqueuer() -> None:
@@ -518,3 +630,81 @@ async def test_empty_queues_read_is_an_empty_snapshot() -> None:
 def test_current_parent_id_defaults_to_none() -> None:
     """The ambient parent context is unset outside a worker entry."""
     assert current_parent_id() is None
+
+
+# ── The as-of story's honesty under sustained failure (the F3 fix) ──────
+
+
+class _FailsAfterFirstBackend(InMemoryBackend):
+    """Succeeds once, then a sustained failure regime."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self._failed_yet = False
+
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        if self._failed_yet:
+            raise RuntimeError("sustained outage")
+        self._failed_yet = True
+        return {"test_actor": 5}
+
+
+async def test_cap_age_grows_through_sustained_failures() -> None:
+    """The stale-as-fresh mode is the lie the age field exists to prevent:
+    _refreshed_at (the retry-bounding stamp) fires on FAILURES too, so the
+    age must come from the last SUCCESS — two TTLs of failures make the
+    reported age grow past the TTL instead of resetting."""
+    import asyncio
+
+    from taskq.client._capacity import ActorCapacityCache
+
+    backend = _FailsAfterFirstBackend(FakeClock(_NOW))
+    cache = ActorCapacityCache(backend, ttl=0.05, read_timeout=0.5)
+
+    await cache.refresh()
+    first_age = cache.snapshot_age()
+    assert first_age is not None and first_age < 0.05
+
+    # Two TTLs of failures: the retry stamp keeps firing (rate bounding)
+    # but the DATA is now > 2 TTLs old and the reported age must say so.
+    # asyncio.sleep, not time.sleep (ASYNC251): real time passes either
+    # way, and time.monotonic (the cache's stamp) advances with it.
+    await asyncio.sleep(0.12)
+    await cache.refresh()  # fails, fail-open, retry stamp fires
+    await cache.refresh()  # fails again
+    age = cache.snapshot_age()
+    assert age is not None and age >= 0.1, age  # > 2 TTLs: stale reported AS stale
+    # The served data is still the last good snapshot (fail-open), and the
+    # snapshot's cap half carries the honest age.
+    client = JobsClient(backend)
+    client._capacity_cache = cache
+    snapshot = await client.backpressure(["q"])
+    assert snapshot.cap_age_seconds is not None and snapshot.cap_age_seconds >= 0.1
+
+
+# ── The F5 fix: the actor-body read reports a missing schema actionably ──
+
+
+async def test_sub_job_enqueuer_backpressure_translates_missing_schema() -> None:
+    """A missing schema through ctx.jobs.backpressure() raises
+    SchemaNotMigratedError (the actionable translation), not a raw
+    asyncpg UndefinedTableError."""
+    import asyncpg
+
+    from taskq.exceptions import SchemaNotMigratedError
+
+    class _UnmigratedBackend(InMemoryBackend):
+        async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
+            raise asyncpg.exceptions.UndefinedTableError("relation missing")
+
+    backend = _UnmigratedBackend(FakeClock(_NOW))
+    backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved=None,
+        worker_pool=object(),
+        backend=backend,
+        clock=FakeClock(_NOW),
+    )
+
+    with pytest.raises(SchemaNotMigratedError):
+        await enqueuer.backpressure(["q"])

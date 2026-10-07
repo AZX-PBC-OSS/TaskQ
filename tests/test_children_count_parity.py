@@ -108,6 +108,64 @@ async def test_parity_depth_count_matches_pg(clean_jobs_app: JobsApp) -> None:
     assert await pg_backend.count_pending_jobs_by_queue([]) == {}
 
 
+async def test_stamp_readback_via_get_parity(clean_jobs_app: JobsApp) -> None:
+    """The ledger must be readable, not just writable (the F2 review fix:
+    _job_row_from_record omitted the column on every PG read). Enqueue a
+    child under the ambient context THROUGH the client, read it back via
+    client.get, both backends agree."""
+    from pydantic import BaseModel, TypeAdapter
+
+    from taskq.actor import ActorRef
+    from taskq.client import JobsClient
+    from taskq.client._enqueuer import _parent_job_id_var
+    from taskq.retry import RetryPolicy
+
+    class _Payload(BaseModel):
+        value: str = "x"
+
+    class _Result(BaseModel):
+        ok: bool = True
+
+    def _ref() -> ActorRef[_Payload, _Result]:
+        async def _handler(payload: _Payload) -> _Result:
+            return _Result()
+
+        return ActorRef(
+            name="f2_readback_actor",
+            queue="f2_q",
+            fn=_handler,
+            wants_ctx=False,
+            dependencies={},
+            payload_type=_Payload,
+            result_adapter=TypeAdapter(_Result),
+            retry=RetryPolicy(),
+            result_ttl=None,
+            singleton=False,
+            unique_for=None,
+            max_pending=None,
+        )
+
+    memory = InMemoryBackend(FakeClock(_NOW))
+    pg_backend = clean_jobs_app.backend
+    parent_id = new_job_id()
+
+    memory_client = JobsClient(memory, clock=FakeClock(_NOW))
+    pg_client = JobsClient(pg_backend)
+
+    token = _parent_job_id_var.set(parent_id)
+    try:
+        mem_handle = await memory_client.enqueue(_ref(), _Payload())
+        pg_handle = await pg_client.enqueue(_ref(), _Payload())
+    finally:
+        _parent_job_id_var.reset(token)
+
+    mem_back = await memory_client.get(mem_handle.job_id)
+    pg_back = await pg_client.get(pg_handle.job_id)
+    assert mem_back is not None and pg_back is not None
+    assert pg_back.row.parent_id == parent_id
+    assert mem_back.row.parent_id == parent_id
+
+
 async def test_children_count_is_index_served(clean_jobs_app: JobsApp) -> None:
     """The plan must walk jobs_parent_pending_idx, never a Seq Scan.
 

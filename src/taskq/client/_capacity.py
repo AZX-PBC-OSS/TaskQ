@@ -163,6 +163,14 @@ class ActorCapacityCache:
         # the warn-once-per-TTL state maybe_warn_unserved_queue reads.
         self._unserved_warned_at: dict[str, float] = {}
         self._refreshed_at: float | None = None
+        # Monotonic timestamp of the last refresh that actually SUCCEEDED,
+        # distinct from _refreshed_at (which also stamps on FAILURE to
+        # bound the retry rate): a sustained-failure regime keeps the
+        # retry stamp fresh while the DATA grows arbitrarily old. The
+        # backpressure read's cap_age_seconds reports THIS — the stale-
+        # as-fresh mode (a verdict saying "1s old" over data 10 TTLs old)
+        # is the lie the age field exists to prevent.
+        self._last_success_at: float | None = None
         # True once a refresh has succeeded and been stored, independent
         # of row count, because a successful read of an EMPTY
         # actor_config table is still a snapshot (see _refresh).
@@ -220,6 +228,11 @@ class ActorCapacityCache:
                 if epoch == self._epoch:
                     self._rows = rows
                     self._has_snapshot = True
+                    # The SUCCESS stamp, distinct from the retry-bounding
+                    # stamp below: the read-side age reports this, so a
+                    # sustained-failure regime shows the data's real age
+                    # instead of reading stale as fresh.
+                    self._last_success_at = time.monotonic()
                     # The served-queue set rides the same refresh cadence:
                     # one small whole-table read per TTL, beside the
                     # max_pending read, never per enqueue (the enqueue hot
@@ -415,18 +428,21 @@ class ActorCapacityCache:
         await self._refresh()
 
     def snapshot_age(self) -> float | None:
-        """How old the CURRENT snapshot is, in seconds, zero I/O, never raises.
+        """How old the CURRENT snapshot's DATA is, in seconds, zero I/O, never raises.
 
-        ``None`` when no snapshot exists (no successful refresh yet) —
-        the LIB-2 read carries that as the snapshot's
-        ``cap_age_seconds=None`` and its ``unknown`` cap reasons, so a
-        typed verdict states its own staleness instead of omitting it.
-        The clock is the same monotonic one :meth:`_refresh` stamps, so
-        the age is reliable across system-clock steps.
+        Computed from the last refresh that actually SUCCEEDED — NOT from
+        the retry-bounding stamp (which also fires on failures, so a
+        sustained-failure regime would otherwise report a fresh-looking
+        age over arbitrarily old data, the stale-as-fresh mode). ``None``
+        when no refresh has EVER succeeded — then the read-side verdict
+        is ``unknown`` with its reason and the age's absence is part of
+        the same honest story. The clock is the same monotonic one
+        :meth:`_refresh` reads, so the age is reliable across system-
+        clock steps.
         """
-        if self._refreshed_at is None:
+        if self._last_success_at is None:
             return None
-        return max(0.0, time.monotonic() - self._refreshed_at)
+        return max(0.0, time.monotonic() - self._last_success_at)
 
     def peek_queue_caps(self, queue: str) -> dict[str, int | None] | None:
         """The routing actors for *queue* and their stored caps, from the

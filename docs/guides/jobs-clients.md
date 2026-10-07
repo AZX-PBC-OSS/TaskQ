@@ -1527,20 +1527,32 @@ elif entry.state == "unknown":
 
 | Field | What it is | Cost |
 |---|---|---|
-| `depth` | Jobs holding a pending slot in the queue (pending + scheduled — **exactly** what the admission cap counts, `enqueue_max_pending_count`'s predicate). | One indexed aggregate per call (`count_pending_jobs_by_queue`, the `count_active_jobs` pattern), all queried queues in one round trip. |
-| `effective_max_pending` | The queue's **actor** cap: the data model has no per-queue depth threshold, so the boundary is the tightest stored `max_pending` among the actors whose stored assignment routes the queue, read from the client-side `ActorCapacityCache` TTL snapshot (default 5s staleness bound, the same snapshot enqueue admission itself resolves through). | Zero I/O beyond one warm-up refresh per TTL window (shared with the enqueue path). |
-| `children_depth` | The fan-out parent's pending children **outside** this queue (see below). | One more aggregate round trip, only when a parent is in play. |
+| `depth` | Jobs holding a pending slot **in this queue** (pending + scheduled) — the queue-local, ops view. **Reported, not verdict-bearing.** | One indexed aggregate per call (`count_pending_jobs_by_queue`, the `count_active_jobs` pattern), all queried queues in one round trip. |
+| `binding_actor` / `admission_load` / `effective_max_pending` | **The verdict's basis.** The admission cap is per-ACTOR and governs the actor's pending+scheduled count across **all** queues (`enqueue_max_pending_count`: `WHERE actor = $1`, enforced at every enqueue). The binding actor is the queue's routing actor with the smallest headroom (its own cap minus its own all-queue count); `admission_load` is that actor's count; `effective_max_pending` is its stored cap, read from the client-side `ActorCapacityCache` TTL snapshot (default 5s staleness bound — the same snapshot enqueue admission itself resolves through). | Zero I/O beyond one warm-up refresh per TTL window (shared with the enqueue path) plus one `count_pending_jobs` aggregate for the union of the routing actors. |
+| `children_depth` | The fan-out parent's pending children **outside** this queue — the exact `parent_id` ledger. **Reported, not verdict-bearing:** every pending child already counts toward its OWN actor's cap (wherever it sits), which is the number admission enforces — the fan-out pressure reaches the verdict through the routing actors' admission loads, and this field is the parent-attributed view of the same rows. | One more aggregate round trip, only when a parent is in play. |
 
-The verdict: `state` is `"over"` when `depth + children_depth >=
-effective_max_pending` — the next enqueue for the queue's actor is likely
-refused with `MaxPendingExceededError` — and `"ok"` below it.
+The verdict: `state` is `"over"` when any routing actor's own all-queue
+count is at or over its stored cap — the next enqueue for that actor is
+likely refused with `MaxPendingExceededError` — and `"ok"` only when every
+routing actor resolves and none is over.
+
+### Why the verdict is actor-scoped, not queue-scoped
+
+The cap is `WHERE actor = $1` — an actor's traffic split across queues
+(an explicit `queue=` override, or a queue move) accumulates in ONE
+count that the queue-local depth cannot see. A queue-local verdict
+false-OKs exactly there: 9 pending in the assigned queue + 9 via the
+override read "9 < 10, ok" while the next enqueue is refused at 18 >=
+10. The verdict therefore compares what the cap actually governs (the
+actor's own count), and the queue-local `depth` stays as the ops view.
+Pinned: `test_differential_actor_split_across_queues_is_seen`.
 
 ### The fan-out half: exact `parent_id` accounting
 
 A fan-out parent (a dispatcher enqueuing thousands of children) needs its
-children's pending depth in the verdict. The ledger is **exact**: every
-child enqueue made under a parent's context stamps `jobs.parent_id` with
-the parent's job id (a plain column, migration `01.00.23_01` — deliberately
+children's pending depth visible. The ledger is **exact**: every child
+enqueue made under a parent's context stamps `jobs.parent_id` with the
+parent's job id (a plain column, migration `01.00.23_01` — deliberately
 **no foreign key**, so it never serializes child inserts behind the parent
 row and never blocks a retention purge; a dangling `parent_id` — parent
 purged, children pending — is a defined, harmless state the count handles
@@ -1561,34 +1573,46 @@ async def dispatch_orders(payload, ctx) -> None:
         await ctx.jobs.enqueue(enrich_item, order)  # child: parent_id stamped
 ```
 
-Outside a worker (or for an explicit parent), pass `parent_id=`. Attribution
-counts every job exactly once: children already in the queried queue are in
-its `depth` and are never added again; `children_depth` is only the
-pending-children inflow that could still land there and compete for the same
-cap.
+Outside a worker (or for an explicit parent), pass `parent_id=`. The
+fan-out pressure reaches the verdict through the routing actors' own
+counts: every pending child is a row of ITS target actor, and that
+actor's cap governs its all-queue count — so children piling up on the
+target queue turn the TARGET queue's verdict `over`, which is exactly
+the admission truth (the next child will be refused by the same
+arithmetic). `children_depth` is the parent-attributed ledger view of
+those same rows (pending children of the parent outside the queried
+queue), reported for observability; children already in the queried
+queue are in its `depth` and are never counted twice.
 
 ### Fail-open: `unknown`, never a fabricated verdict
 
-Any half that cannot be seen forces `state="unknown"` with `reason` naming
-it: a sick database (the read fails or exceeds its bounded wait), a backend
-built before the staged reads existed, no capacity snapshot, a queue no
-stored assignment routes (the unserved-queue corner), or a routing actor
-whose cap lives only in the `@actor(max_pending=...)` **literal** — code is
-invisible to another process, so set a stored override
-(`taskq actor-config set --max-pending`) to make the read exact. The read
-never raises on backend trouble; the one exception is a missing schema,
-which surfaces as `SchemaNotMigratedError` — a setup defect is not degraded
-data.
+Any half the verdict needs that cannot be seen forces `state="unknown"`
+with `reason` naming it: a sick database (the read fails or exceeds its
+bounded wait), a backend built before the staged reads existed, no
+capacity snapshot, a queue no stored assignment routes (the unserved-queue
+corner), or a routing actor whose cap lives only in the
+`@actor(max_pending=...)` **literal** — code is invisible to another
+process, so set a stored override (`taskq actor-config set --max-pending`)
+to make the read exact. When SOME routing actors resolve and others do
+not, a resolved actor that is over still reads `over` (that actor's
+refusal is certain), but `ok` is withheld (an unresolved actor may be
+over — claiming ok would be the false-ok). The read never raises on
+backend trouble; the one exception is a missing schema, which surfaces as
+`SchemaNotMigratedError` — a setup defect is not degraded data (the actor
+body's `ctx.jobs.backpressure()` translates it identically).
 
 ### As-of: the snapshot states its own age
 
 The snapshot carries `as_of` (the UTC instant of the read) and
 `cap_age_seconds` (how old the capacity snapshot the caps came from was —
-bounded by the TTL, default 5s; `None` when no snapshot exists, then every
-cap half reads `unknown` with its reason). The depth half was **exact at
-`as_of`** and advisory from it on; a caller surfacing the number to users
-can show the staleness story honestly instead of guessing (prefect's "Late"
-state taught this the hard way: a stale verdict presented as fresh).
+computed from the last refresh that SUCCEEDED, so a sustained-failure
+regime reports the data's real age instead of resetting fresh on every
+failed retry; bounded by the TTL, default 5s; `None` when no snapshot
+exists, then every cap half reads `unknown` with its reason). The depth
+half was **exact at `as_of`** and advisory from it on; a caller surfacing
+the number to users can show the staleness story honestly instead of
+guessing (prefect's "Late" state taught this the hard way: a stale verdict
+presented as fresh).
 
 ### Dangling parents: first-class states, never errors
 

@@ -67,6 +67,7 @@ from taskq.exceptions import (
     BatchIdExistsError,
     BatchMaxPendingExceededError,
     PartialBatchError,
+    SchemaNotMigratedError,
     SubEnqueueError,
 )
 from taskq.types import BackpressureSnapshot
@@ -97,6 +98,20 @@ _parent_job_id_var: contextvars.ContextVar[JobId | None] = contextvars.ContextVa
     "taskq_parent_job_id",
     default=None,
 )
+
+
+def _missing_schema_errors() -> tuple[type[BaseException], ...]:
+    """The lazy-import discipline (asyncpg may be absent): the exception
+    types this module's schema translations catch (the F5 review fix: the
+    actor-body read reports a missing schema as
+    :class:`SchemaNotMigratedError`, not a raw asyncpg traceback). A tuple
+    so the caller's single ``except`` stays one line; empty when the
+    postgres extra is absent, and an empty except never matches."""
+    try:
+        import asyncpg
+    except ImportError:  # pragma: no cover - the postgres extra absent
+        return ()
+    return (asyncpg.exceptions.UndefinedTableError,)
 
 
 def set_parent_tags(tags: tuple[str, ...]) -> contextvars.Token[tuple[str, ...]]:
@@ -230,21 +245,34 @@ class SubJobEnqueuer:
 
         The actor body's slice of the LIB-2 read (the fan-out decision
         happens HERE, in the parent's execution): same contract as
-        :meth:`JobsClient.backpressure` — depth/cap/children halves, the
+        :meth:`JobsClient.backpressure` — the actor-scoped verdict, the
         fail-open ``unknown`` state, advisory semantics — reading this
         enqueuer's own backend and capacity cache. ``parent_id`` defaults
         to the ambient parent context: inside an actor body that is THIS
-        job, so the verdict includes this parent's pending children with
-        no arguments. See :class:`~taskq.types.BackpressureSnapshot`.
+        job, so the snapshot's fan-out ledger includes this parent's
+        pending children with no arguments. See
+        :class:`~taskq.types.BackpressureSnapshot`.
         """
         await self._capacity_cache.refresh()
-        return await read_backpressure(
-            self._backend,
-            self._capacity_cache,
-            list(dict.fromkeys(queues)),
-            parent_id=parent_id if parent_id is not None else current_parent_id(),
-            read_timeout=DEFAULT_CAPACITY_READ_TIMEOUT,
-        )
+        try:
+            return await read_backpressure(
+                self._backend,
+                self._capacity_cache,
+                list(dict.fromkeys(queues)),
+                parent_id=parent_id if parent_id is not None else current_parent_id(),
+                read_timeout=DEFAULT_CAPACITY_READ_TIMEOUT,
+            )
+        except _missing_schema_errors() as exc:  # type: ignore[misc]  # Why: the helper returns () when asyncpg is absent, and an empty tuple's except never matches.
+            # The JobsClient arm's SchemaNotMigratedError translation: a
+            # setup defect is not degraded data — the actor body sees the
+            # actionable error, not a raw asyncpg traceback. The schema
+            # name rides the asyncpg error when it carries one; the
+            # shipped default is the honest fallback (a custom-schema
+            # deployment reaching an unmigrated database through a worker
+            # is already a boot failure).
+            raise SchemaNotMigratedError(
+                getattr(exc, "schema", None) or "taskq"
+            ) from exc
 
     async def enqueue[P: BaseModel, R: BaseModel | None](
         self,
@@ -755,4 +783,9 @@ class SubJobEnqueuer:
             span_id=args.span_id,
             metadata=args.metadata,
             tags=args.tags,
+            # The fan-out ledger rides the display guess too (the F2 fix):
+            # the synthetic row is what the caller sees before the
+            # transaction commits, a parent_id it omits would make the
+            # ledger lie on the transactional sub-enqueue path.
+            parent_id=args.parent_id,
         )

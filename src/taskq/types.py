@@ -33,14 +33,15 @@ __all__ = [
 BackpressureState = Literal["ok", "over", "unknown"]
 """The backpressure verdict's domain.
 
-``ok``: the queue's admission load (depth, plus the parent's
-pending-children inflow when a fan-out parent is in play) is below the
-queue's effective cap. ``over``: at or above it — the next enqueue for
-the queue's actor is likely refused with
-:class:`~taskq.exceptions.MaxPendingExceededError`. ``unknown``: a half
-of the comparison is unavailable (sick database, a backend without the
-staged reads, no capacity snapshot, an actor cap that lives only in
-code) — ``reason`` names what could not be seen. NEVER a fabricated
+``ok``: every routing actor whose stored cap resolves is BELOW its
+admission boundary. ``over``: at least one routing actor's own
+pending+scheduled count (ALL queues — that is the count
+``enqueue_max_pending_count`` governs) is at or above its cap, so the
+next enqueue for this queue's actor is likely refused with
+:class:`~taskq.exceptions.MaxPendingExceededError`. ``unknown``: the
+verdict could not be computed (sick database, a backend without the
+staged reads, no capacity snapshot, a routing actor cap that lives only
+in code) — ``reason`` names what could not be seen. NEVER a fabricated
 verdict: the read fails open to ``unknown``, the
 ``maybe_warn_unserved_queue`` posture.
 """
@@ -60,21 +61,36 @@ class QueueBackpressure(BaseModel):
 
     queue: str
     depth: int | None = None
-    """Jobs holding a pending slot in this queue (pending + scheduled —
-    exactly what the admission cap counts, ``enqueue_max_pending_count``'s
-    predicate). ``None``: the depth read was unavailable."""
+    """Jobs holding a pending slot in THIS queue (pending + scheduled) —
+    the queue-local, ops view. NOT the verdict's basis: the admission
+    cap governs the ACTOR's count across ALL queues (see
+    :attr:`admission_load`); a queue-local count against an actor cap
+    would false-OK exactly when an actor's traffic splits across queues
+    (the F1 review finding). ``None``: the depth read was unavailable."""
     children_depth: int | None = None
     """The fan-out parent's pending children OUTSIDE this queue — the
-    inflow that could still land here and compete for the same cap.
-    Every counted job is counted exactly once: children already in this
-    queue are in :attr:`depth`, never added again. ``None``: no fan-out
-    parent in play, or the children read was unavailable (then
-    ``state`` is ``unknown`` with the reason)."""
+    exact ``parent_id`` ledger, REPORTED not verdict-bearing: every
+    pending child already counts toward its OWN actor's cap, which is
+    the number the admission check enforces, so the fan-out pressure
+    reaches the verdict through the routing actors' admission loads
+    without a second copy of it here. ``None``: no fan-out parent in
+    play, or the children read was unavailable."""
+    binding_actor: str | None = None
+    """The routing actor whose admission state binds the verdict: the
+    smallest headroom (stored cap minus its own pending+scheduled count)
+    among the actors whose stored assignment routes this queue.
+    ``None``: no cap resolved (then ``state`` is ``unknown``)."""
     effective_max_pending: int | None = None
-    """The tightest stored ``max_pending`` among the actors whose stored
-    assignment routes this queue. ``None``: no cap resolvable from this
-    process (no snapshot, no routing row, or the routing actor enforces
-    only the ``@actor`` literal — code-side, invisible here)."""
+    """:attr:`binding_actor`'s stored cap — the tightest effective
+    admission boundary for this queue. ``None``: no cap resolvable from
+    this process (no snapshot, no routing row, or the routing actor
+    enforces only the ``@actor`` literal — code-side, invisible here)."""
+    admission_load: int | None = None
+    """:attr:`binding_actor`'s pending+scheduled count across ALL queues
+    — the number ``enqueue_max_pending_count`` actually compares against
+    its cap. The verdict is ``over`` exactly when this is at or above
+    :attr:`effective_max_pending`. ``None``: the count read was
+    unavailable."""
     state: BackpressureState
     reason: str | None = None
     """Set exactly when ``state == 'unknown'``: what could not be seen."""

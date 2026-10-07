@@ -64,6 +64,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "priority": 0,
         "attempt": 0,
         "claim_epoch": 0,
+        "parent_id": None,
         "max_attempts": 3,
         "retry_kind": "transient",
         "schedule_to_close": None,

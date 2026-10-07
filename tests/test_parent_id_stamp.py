@@ -318,3 +318,26 @@ async def test_batch_fast_copy_arm_stamps_items() -> None:
     rows = [r for r in backend._jobs.values() if r.queue == "default"]
     assert len(rows) == 3
     assert all(r.parent_id == parent_id for r in rows)
+
+
+async def test_stamp_is_readable_back_via_client_get() -> None:
+    """The ledger must be readable, not just writable (the F2 review fix:
+    _job_row_from_record and _synthesize_row dropped the column on every
+    PG read and on the transactional display row)."""
+    backend = InMemoryBackend(FakeClock(_NOW))
+    client = _make_client(backend)
+    parent_id = new_job_id()
+
+    token = _parent_job_id_var.set(parent_id)
+    try:
+        handle = await client.enqueue(_make_actor_ref(), _Payload())
+    finally:
+        _parent_job_id_var.reset(token)
+
+    # The readback paths: get (hot row), get_row, and a fresh handle.
+    handle2 = await client.get(handle.job_id)
+    assert handle2 is not None
+    assert handle2.row.parent_id == parent_id
+    row = await client.get_row(handle.job_id)
+    assert row is not None
+    assert row.parent_id == parent_id
