@@ -834,6 +834,26 @@ paths = [
     "src/taskq/workflows/engine.py",
     "src/taskq/workflows/_sweep.py",
     "src/taskq/workflows/_sql.py",
+    # 5. The phase-2 guard statements' surfaces (T06/T07/T08/T18 + the
+    #    phase-2 attack's M2): the fail-closed cascade's block/peers/flow
+    #    arms + the absorbed decrement's policy filter + the fan-in cap's
+    #    three arms (_sql_finalize), the rederive's blocked_required +
+    #    flow-fenced arms (_sql_sweep), the absorbed predicate +
+    #    maintenance leg (_sql_status), the expiry arm's guard + the
+    #    rolling-deploy tolerance (backend/_sweeps), the candidate
+    #    predicate's guard (worker/_leader_shared). Reproducible run (the
+    #    killers are the propagation/status/sweeper/pruner pin families):
+    #
+    #   uv run pytest --gremlins --gremlin-executor=subprocess \
+    #       tests/test_wf_propagation_pins.py tests/test_wf_status_pins.py \
+    #       tests/test_wf_sweep_pins.py tests/test_wf_pruner_pins.py \
+    #       tests/test_wf_pre_workflow_tolerance_pins.py \
+    #       --gremlin-report=console,json
+    "src/taskq/workflows/_sql_finalize.py",
+    "src/taskq/workflows/_sql_sweep.py",
+    "src/taskq/workflows/_sql_status.py",
+    "src/taskq/backend/_sweeps.py",
+    "src/taskq/worker/_leader_shared.py",
 ]
 
 [tool.coverage.run]

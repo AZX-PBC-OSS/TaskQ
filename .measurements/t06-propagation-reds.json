@@ -1,7 +1,7 @@
 [
   {
-    "pin": "t08-reconstruction-rows-only",
-    "mutation": "a status cache (the reconstruction consulting anything but rows \u2014 the pinned never-again variant)",
-    "red": "{\"reconstructed\": \"cancelled\"}"
+    "pin": "t06-pin8-mixed-policy-fence",
+    "mutation": "the flow-fenced join arm dropped (or the absorbed predicate read the edge's POLICY declaration as a ran absorption) \u2014 the collect join hangs claimable-never-fired on a failed flow, and the derivation can never say 'failed' for the failed-closed run",
+    "red": "{\"join_b_blocking_reason\": \"failed_parent\", \"join_b_deps_pending\": 1, \"fires\": 0}"
   }
 ]
