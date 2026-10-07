@@ -60,28 +60,62 @@ crash-vs-shutdown accounting.
 ## Contents
 
 1. [Job lifecycle](#job-lifecycle)
-2. [`JobsClient`](#jobsclient)
-3. [`enqueue()`](#enqueue)
-4. [`enqueue_batch()`](#enqueue_batch)
-5. [`enqueue_batch_fast()`](#enqueue_batch_fast)
-6. [Batch failure policies](#batch-failure-policies)
-7. [Batch finalizer](#batch-finalizer)
-8. [`enqueue_batch_streaming()`](#enqueue_batch_streaming)
-9. [`wait_for_batch()`](#wait_for_batch)
-10. [`list_batches()`](#list_batches)
-11. [`BatchSummary`](#batchsummary)
-12. [`JobHandle[R]`](#jobhandler)
-13. [`get()`](#get)
-14. [`get_row()`](#get_row)
-15. [`cancel()`](#cancel)
-16. [`cancel_where()`](#cancel_where)
-17. [`list()`](#list)
-18. [`SubJobEnqueuer`](#subjobenqueuer)
-19. [Error handling](#error-handling)
-20. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
-21. [Idempotency example](#idempotency-example)
-22. [Batch enqueue example](#batch-enqueue-example)
-23. [Tags](#tags)
+2. [`TaskQ()`](#taskq)
+3. [`JobsClient`](#jobsclient)
+4. [`enqueue()`](#enqueue)
+5. [`enqueue_batch()`](#enqueue_batch)
+6. [`enqueue_batch_fast()`](#enqueue_batch_fast)
+7. [Batch failure policies](#batch-failure-policies)
+8. [Batch finalizer](#batch-finalizer)
+9. [`enqueue_batch_streaming()`](#enqueue_batch_streaming)
+10. [`wait_for_batch()`](#wait_for_batch)
+11. [`list_batches()`](#list_batches)
+12. [`BatchSummary`](#batchsummary)
+13. [`JobHandle[R]`](#jobhandler)
+14. [`get()`](#get)
+15. [`get_row()`](#get_row)
+16. [`cancel()`](#cancel)
+17. [`cancel_where()`](#cancel_where)
+18. [`list()`](#list)
+19. [`SubJobEnqueuer`](#subjobenqueuer)
+20. [Error handling](#error-handling)
+21. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
+22. [Idempotency example](#idempotency-example)
+23. [Batch enqueue example](#batch-enqueue-example)
+24. [Tags](#tags)
+
+---
+
+## `TaskQ()`
+
+`TaskQ` is the top-level client: it owns the connection plumbing (pool,
+Redis, LISTEN transport) and exposes the job operations (`tq.enqueue(...)`,
+`tq.get(...)`, `tq.stream(...)`) plus `tq.actors`. It supports both the async
+context-manager pattern and explicit `open()` / `close()` for frameworks
+that manage their own lifecycle. The full parameter reference also renders
+from the class docstring on the [Client API reference](../api-reference/client.md);
+this table consolidates the constructor surface in one place.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dsn` | `str \| None` | `None` | Postgres DSN string. Mutually exclusive with `pool` and `pool_factory` (exactly one of the three is required). |
+| `pool` | `asyncpg.Pool \| None` | `None` | An already-open pool. Caller-owned: `close()` will not close it. |
+| `pool_factory` | `PoolFactory \| None` | `None` | Zero-arg async factory returning an `asyncpg.Pool`, invoked and **owned** by TaskQ at `open()`; `reload_credentials()` re-invokes it to rotate the pool in place. Pair with `taskq.auth.make_pg_pool_factory` for rotating-credential deployments. |
+| `pg_provider` | `PgCredentialProvider \| None` | `None` | Sugar for `pool_factory=make_pg_pool_factory(dsn, pg_provider, min_size=..., max_size=...)` — requires `dsn`, mutually exclusive with `pool_factory`. |
+| `schema` | `str \| None` | `None` | TaskQ schema name. When omitted, resolved the way the worker and CLI resolve it: `TASKQ_SCHEMA_NAME` from the environment / `.env` cascade, final default `"taskq"`. An explicit value always wins. |
+| `min_pool_size` | `int` | `1` | Minimum pool connections. Only used when `dsn` or `pg_provider` is provided. |
+| `max_pool_size` | `int` | `5` | Maximum pool connections. Only used when `dsn` or `pg_provider` is provided. |
+| `redis_url` | `str \| None` | `None` | Redis URL for real-time progress fanout. TaskQ creates and owns the client; `close()` closes it. Mutually exclusive with `redis_client`. |
+| `redis_client` | `redis.asyncio.Redis \| None` | `None` | An already-open Redis client. Caller-owned; `close()` will not close it. |
+| `pg_conn_factory` | `ConnFactory \| None` | `None` | Zero-arg async factory returning an `asyncpg.Connection` for the LISTEN/NOTIFY transport behind `watch_reclaims()`. For deployments with no DSN (e.g. AAD-managed-identity auth) that still want the reclaim wake-up. Mutually exclusive with `listen_conn`. |
+| `listen_conn` | `asyncpg.Connection \| None` | `None` | A pre-constructed LISTEN connection. Caller-owned; TaskQ does not close it. Share one across callers. |
+| `reload_interval` | `float \| None` | `None` | Seconds between automatic credential-reload rebuilds of a factory-built pool; the client-side `TASKQ_RELOAD_INTERVAL`. `None` derives the cadence from the credential's lease (a leaseless factory is never rebuilt automatically). Requires `pool_factory`/`pg_provider` and a positive value — a `ValueError` at construction otherwise, never a silent ignore. |
+| `poll_timeout` | `float` | `30.0` | Maximum seconds between transport wakeups before re-fetching job state. On Postgres alone, `stream()` has no wakeups and polls every `min(poll_timeout, 0.5)` seconds (never below 0.1 s, jittered ±20%). |
+| `reclaim_event_visibility_delay` | `timedelta \| None` | `None` (`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`, 2 s) | The margin `watch_reclaims()` assumes between a `job_events` writer's INSERT and its COMMIT. Must match the worker fleet's margin: the correctness depends on writer transaction duration, not reader preference. |
+
+`TaskQ` is also the actor-management surface: `tq.actors` (an `ActorsClient`)
+exposes `list()` / `get()` / `set_capacity()` / `deregister()`; see
+[Actor deregistration](actors.md#actor-deregistration).
 
 ---
 
@@ -1169,7 +1203,10 @@ async for event in handle.progress_stream():
 - Raises `NotImplementedError` when using `InMemoryBackend`: the in-memory backend does not
   support pub/sub.
 - Requires the `redis` extra (`uv add "taskq-py[redis]"`) for real-time delivery. Without Redis the
-  fallback polls Postgres at 500 ms intervals.
+  fallback polls Postgres at 500 ms intervals. On that PG poll transport, a database failure
+  lasting longer than the transport's failure budget ends the stream with `StreamUnavailable`
+  (shorter blips retry silently; the last failure is chained as `__cause__`) — see the
+  [Exceptions API reference](../api-reference/exceptions.md).
 
 For the HTTP SSE endpoint that browser clients can subscribe to, see
 [Progress & Streaming](progress.md).
@@ -1604,6 +1641,19 @@ await ctx.jobs.enqueue_batch(
 )
 ```
 
+**Partial failure raises `PartialBatchError`.** The autonomous mode (no LOOP-scope connection)
+enqueues each item independently; items enqueued before the first failure are committed, the
+rest are not inserted, and the call raises with the house shape for partial batch admission:
+`succeeded_count` (items committed by this call), `failed_items` (a list of
+`(index, exception)` pairs into the caller's `items` list), and `total` (the original batch
+size). The connection arm speaks the same contract: a per-actor `max_pending` partition refusal
+there is converted to `PartialBatchError` (within-cap actors' items are inserted first). Retry
+only the failed indices — a blind whole-batch retry duplicates the committed items — or give
+items `idempotency_key`s so the retry dedupes. On a LOOP-scope connection the inserted items
+ride the parent's transaction: catching the error inside the actor body and returning normally
+commits them; letting it propagate rolls everything back. See the
+[Exceptions API reference](../api-reference/exceptions.md).
+
 ---
 
 ## Error handling
@@ -1644,6 +1694,15 @@ For the retention gap signal (`EventRetentionGapError`, raised by a resumed `wat
 stream whose cursor the event-prune watermark passed): recovery after a crash-before-consume is
 to recreate the watcher fresh (`watch_reclaims(after_id=0)`), accepting the loss the error
 reported, the deleted events cannot be refilled.
+
+**The catch-all.** Every library-raised error subclasses `TaskQError` — the table above is the
+typed layer, and `except TaskQError` is the correct fallback in handlers that must never let a
+library error escape uncaught. Two deliberate escapees do NOT subclass it: `UnencodableValue`
+subclasses `TypeError` (the historical orjson contract — an `except TypeError` swallows it) and
+`RateLimitDependencyUnavailable` (with its subclass `RateLimitStoreCorrupt`) subclasses
+`RuntimeError`. If those three matter to your handler, catch them explicitly beside the
+`TaskQError` clause. The full taxonomy — every class, its fields, and its remedy — is indexed
+in the [Exceptions API reference](../api-reference/exceptions.md).
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import JobFailed, ResultUnavailable

@@ -111,6 +111,7 @@ from taskq.timescale import (
 )
 from taskq.types import BulkCancelResult
 from taskq.worker.dev import dev_watch_loop
+from taskq.worker.health import default_worker_health_socket_path
 from taskq.worker.queue_ops import (
     QUEUE_MODES,
     QueueRow,
@@ -282,7 +283,33 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
                 err=True,
             )
             raise typer.Exit(code=1)
-        registry = {r.name: r for r in items}
+        # Duplicate names are refused, not collapsed. A dict comprehension
+        # silently let the LAST duplicate win: two distinct handlers
+        # registered under one name booted with actor_count == 1 and every
+        # dispatch for the loser ran the winner's code, the worst failure
+        # mode a registry can have (the wrong function executes, no
+        # symptom anywhere). The duplicate name is a programming error,
+        # refused at load: the message names the collision and BOTH
+        # registration sites (each handler's module + qualname), the same
+        # loud-refusal contract as the empty-registry guard below. The
+        # exact-same ActorRef object listed twice is NOT a collision: the
+        # dispatch behavior is byte-identical (one function, one config),
+        # so collapsing it preserves the old shape for restart/registry-
+        # rebuild flows that may re-list an entry.
+        registry = {}
+        for ref in items:
+            existing = registry.get(ref.name)
+            if existing is not None and existing is not ref:
+                typer.echo(
+                    f"duplicate actor name {ref.name!r} at {actors}: "
+                    f"{existing.fn.__module__}.{existing.fn.__qualname__} and "
+                    f"{ref.fn.__module__}.{ref.fn.__qualname__} both register it; "
+                    "dispatch would silently run one of them for the other's "
+                    "jobs, refusing to boot",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            registry[ref.name] = ref
     else:
         typer.echo(
             "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
@@ -532,7 +559,21 @@ def worker(
         settings.workgroup_instance = workgroup_instance
     if health_socket_path is not None:
         settings.health_socket_path = health_socket_path
-
+    elif WorkerSettings.resolve_cascade_value("TASKQ_HEALTH_SOCKET_PATH") is None:
+        # No explicit configuration anywhere (this option, the process
+        # environment, the .env cascade): the worker binds the
+        # per-worker-unique default instead of the static
+        # ``/tmp/taskq_health.sock``. That static value was a global
+        # collision point: two workers on one host left the second with no
+        # socket at all (its ``health-server-unavailable`` warning, boot
+        # continuing) while ``taskq health`` silently answered with the
+        # FIRST worker's state, the cross-report that made the worker that
+        # just warned look healthy. A pid-unique path makes every
+        # co-located worker own its socket; an explicit value here or in
+        # the cascade stays authoritative verbatim, including one spelled
+        # as the old default (that operator asked for the shared path and
+        # keeps its collision warning).
+        settings.health_socket_path = default_worker_health_socket_path()
     connections, pg_provider = _credential_connections(
         settings,
         _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
@@ -1695,14 +1736,29 @@ def doctor(
     Read-only: it issues no writing statement, so it is safe to run
     against production mid-incident.
 
-    Exit code: always 0. Every condition reported here is one a worker
-    keeps running through, and a diagnostic that fails the shell gets
-    wrapped in `|| true` and then ignored. Gating CI on drift is
-    `taskq actor-config diff`, which exits non-zero by design.
+    Exit code: 0 when the report rendered (every condition reported here
+    is one a worker keeps running through; a diagnostic that fails the
+    shell gets wrapped in `|| true` and then ignored). A connection
+    failure prints `doctor failed: <cause>` plus an Action line to
+    stderr and exits 1, migrate up's failure pattern. Gating CI on
+    drift is `taskq actor-config diff`, which exits non-zero by design.
     """
     registry = _load_actor_registry(actors)
     settings = WorkerSettings.load()
-    asyncio.run(_doctor(settings, registry, platform_grace_seconds))
+    try:
+        asyncio.run(_doctor(settings, registry, platform_grace_seconds))
+    except (SystemExit, typer.Exit):
+        raise
+    except Exception as exc:
+        # An unreachable Postgres used to escape as a raw traceback (the
+        # connect's OSError, exit 1), a shape no other CLI failure surface
+        # shows. The report's own contract is a rendered answer, so the
+        # connection failure gets the same treatment every other CLI
+        # failure gets: migrate up's two-line pattern, the cause's
+        # headline and the one action to take, no traceback.
+        typer.echo(f"doctor failed: {migrate_mod._exception_headline(exc)}", err=True)  # pyright: ignore[reportPrivateUsage]  # Why: the headline rule (first line, else type name) is migrate's own; sharing the helper keeps the two surfaces from drifting.
+        typer.echo("Action: fix the error and re-run `taskq doctor`.", err=True)
+        raise typer.Exit(code=1) from None
 
 
 async def _doctor(
@@ -1853,6 +1909,26 @@ async def _health_request(settings: WorkerSettings, path: str) -> int:
         )
     except (TimeoutError, FileNotFoundError, ConnectionRefusedError, OSError) as exc:
         typer.echo(f"health socket unreachable: {exc}", err=True)
+        if (
+            WorkerSettings.resolve_cascade_value("TASKQ_HEALTH_SOCKET_PATH") is None
+            and settings.health_socket_path
+            == WorkerSettings.get_fields()["health_socket_path"][1].default  # pyright: ignore[reportAttributeAccessIssue,reportIndexIssue]  # Why: the field's static fallback literal, read rather than restated so the two cannot drift (get_fields is the settings base's own reflection API; [1] is the FieldInfo).
+        ):
+            # The probe ran with NO explicit path anywhere in the cascade,
+            # so it aimed at the static fallback that an unconfigured
+            # worker no longer binds (it mints /tmp/taskq_health_<pid>.sock
+            # at boot). The unreachable line alone would send the operator
+            # hunting for a worker that is perfectly healthy; the hint is
+            # the per-pid discovery contract's other half. An operator who
+            # DID set an explicit path (here or in the cascade) gets the
+            # plain line: their value was honored verbatim.
+            typer.echo(
+                "hint: with no explicit path an unconfigured worker binds a "
+                "per-process default (/tmp/taskq_health_<pid>.sock — the path its "
+                "boot logs as health-server-started's socket_path); point "
+                "TASKQ_HEALTH_SOCKET_PATH at that file and re-run.",
+                err=True,
+            )
         return 1
     try:
         async with asyncio.timeout(_REQUEST_TIMEOUT_S):

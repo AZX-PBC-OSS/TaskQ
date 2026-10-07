@@ -131,6 +131,7 @@ from taskq.testing._reads import (
     _count_pending_jobs,
     _get,
     _get_actor_max_pending,
+    _get_actor_queues,
     _get_attempts,
     _get_events,
     _list_jobs,
@@ -1012,6 +1013,9 @@ class InMemoryBackend:
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self)
+
+    async def get_actor_queues(self) -> dict[str, str]:
+        return await _get_actor_queues(self)
 
     # ── NOTIFY hook ────────────────────────────────────────────────────
 

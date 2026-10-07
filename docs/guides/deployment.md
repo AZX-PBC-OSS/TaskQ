@@ -565,7 +565,7 @@ The worker serves the same two endpoints (`/live` and `/ready`) over two transpo
 
 | Transport | Enabled by | Reachable from |
 | --- | --- | --- |
-| Unix socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) | `TASKQ_HEALTH_ENABLED` (on by default) | inside the container: `taskq health live` / `taskq health ready`, so Kubernetes `exec` probes |
+| Unix socket at `TASKQ_HEALTH_SOCKET_PATH` (the image pins `/tmp/taskq_health.sock`; an unconfigured worker binds the per-process default `/tmp/taskq_health_<pid>.sock`) | `TASKQ_HEALTH_ENABLED` (on by default) | inside the container: `taskq health live` / `taskq health ready`, so Kubernetes `exec` probes |
 | TCP, `TASKQ_HEALTH_HOST`:`TASKQ_HEALTH_PORT` | setting `TASKQ_HEALTH_PORT` (unset by default) | anything that can reach the container port: `httpGet` and `tcpSocket` probes |
 
 Responses are what orchestrators expect: **200** when healthy, **503** when not, **404** for an

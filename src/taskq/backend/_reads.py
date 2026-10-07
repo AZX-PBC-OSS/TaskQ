@@ -42,6 +42,7 @@ __all__ = [
     "_count_pending_jobs",
     "_get",
     "_get_actor_max_pending",
+    "_get_actor_queues",
     "_get_attempts",
     "_get_events",
     "_list_jobs",
@@ -157,6 +158,26 @@ async def _get_actor_max_pending(
     async with _bounded_checkout(pool, "get_actor_max_pending") as conn:
         records = await conn.fetch(sql.list_actor_max_pending)
     return {str(rec["actor"]): rec["max_pending"] for rec in records}
+
+
+async def _get_actor_queues(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+) -> dict[str, str]:
+    """Whole-table ``actor_config.queue`` assignment snapshot.
+
+    Actor name -> the queue its stored assignment routes to, one row per
+    actor. Consumed through the client-side TTL cache beside
+    :func:`_get_actor_max_pending` (the same refresh cadence, never per
+    enqueue) so an enqueue can tell whether ANY registered actor routes
+    to the queue it is writing: a queue absent from the snapshot is one
+    no registration ever served, the enqueue-time half of the stranded-
+    jobs detection (the leader sweep's ``unserved_queue`` arm is the
+    worker-side half).
+    """
+    async with _bounded_checkout(pool, "get_actor_queues") as conn:
+        records = await conn.fetch(sql.list_actor_queues)
+    return {str(rec["actor"]): str(rec["queue"]) for rec in records}
 
 
 async def _get_attempts(

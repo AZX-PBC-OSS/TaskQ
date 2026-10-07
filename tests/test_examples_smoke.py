@@ -10,6 +10,7 @@ import contextlib
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from types import ModuleType
 from typing import Any
 
 import asyncpg
@@ -91,6 +92,42 @@ def test_ticker_cron_auto_registered() -> None:
 # ── Trigger app enqueue smoke ──────────────────────────────────
 
 
+def _fresh_trigger_app() -> ModuleType:
+    """``examples.app`` imported FRESH, under the caller's settings env.
+
+    Why this exists (the 2026-10-06 CI red wave, ~8 legs across 4 PRs +
+    main itself): ``examples/app.py`` freezes ``settings =
+    TaskQSettings.load()`` at IMPORT time - the operator-true pattern (a
+    real deployment configures via the environment, once, before the app
+    serves). The operator surface stays exactly as documented; the TEST
+    adapts. The hazard is import ORDER inside one xdist worker process:
+    any earlier test that imports ``examples.app`` without
+    ``TASKQ_PG_DSN`` set (tests/test_api_fix_wave.py does - it stubs
+    ``app.state.tq`` and never enters the lifespan, so the frozen DSN is
+    invisible to it) leaves the module cached in ``sys.modules`` with
+    settings pinned to the field DEFAULT - the one hardcoded-port surface
+    left in the tree, ``postgresql://…@localhost:5432/taskq``
+    (``TaskQSettings.pg_dsn``). This test's later ``from examples.app
+    import app`` then hits the cache, and the lifespan dials the dead
+    default ``127.0.0.1:5432`` while the shared container lives on its
+    mapped port (``localhost:32768``) - the ``Connect call failed
+    ('127.0.0.1', 5432)`` signature every red leg showed. Dropping the
+    module and re-importing re-runs the import-time ``load()`` under THIS
+    test's env, so the app's pool, migrations and redis client all
+    resolve the mapped-port DSN the fixtures provisioned.
+
+    The fastapi-app smoke below needs none of this:
+    ``examples/fastapi_app/main.py`` loads its settings INSIDE the
+    lifespan, at startup, from the live environment.
+    """
+    import sys
+
+    sys.modules.pop("examples.app", None)
+    import examples.app
+
+    return examples.app
+
+
 async def _migrate(dsn: str, schema: str) -> None:
     """Drop the test schema and apply all migrations."""
     from taskq.migrate import apply_pending
@@ -134,7 +171,22 @@ def test_trigger_app_enqueue(
 
     asyncio.run(_migrate(pg_dsn, schema))
 
-    from examples.app import app
+    trigger_app = _fresh_trigger_app()
+    app = trigger_app.app
+
+    # The drift pin: the app's import-time settings resolved THIS test's
+    # DSN - the container's mapped port - never the hardcoded
+    # ``localhost:5432`` field default (see ``_fresh_trigger_app`` for the
+    # incident). Both sides derive from the same fixture value, so exact
+    # equality is the invariant; a future regression that lets a stale
+    # module (default DSN) reach the lifespan fails HERE, naming the
+    # resolved DSN, instead of as a connection refused on 5432.
+    assert str(trigger_app.settings.pg_dsn) == pg_dsn, (
+        f"examples.app resolved settings for {trigger_app.settings.pg_dsn}, "
+        f"not this test's DSN {pg_dsn} - the import-time settings freeze "
+        "regressed (see _fresh_trigger_app)"
+    )
+
     from fastapi.testclient import TestClient
 
     with TestClient(app, follow_redirects=False) as client:

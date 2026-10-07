@@ -1024,7 +1024,7 @@ Probes the worker's liveness endpoint.
 taskq health live
 ```
 
-Connects to the Unix socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) and issues `GET /live`. The health server schedules a `loop.call_later(0.01, ...)` callback and waits up to 1.0s for it to fire, confirming the event loop is responsive.
+Connects to the Unix socket at `TASKQ_HEALTH_SOCKET_PATH` and issues `GET /live`. There is no path auto-discovery: an unconfigured worker binds the per-process default `/tmp/taskq_health_<pid>.sock` (logged at boot as `health-server-started`'s `socket_path`), so set `TASKQ_HEALTH_SOCKET_PATH` to probe it — the static fallback `/tmp/taskq_health.sock` applies only when the variable IS set, and a probe with no socket at the resolved path exits 1 with `health socket unreachable` (plus a hint naming the per-process default). The health server schedules a `loop.call_later(0.01, ...)` callback and waits up to 1.0s for it to fire, confirming the event loop is responsive.
 
 The Unix socket is not reachable via Kubernetes `httpGet` probes. Use an `exec` probe:
 

@@ -61,16 +61,24 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     # Opt-in the TCP health listener on the port the deployment recipes use,
     # for orchestrators that cannot exec into the container. The HEALTHCHECK
     # below uses the in-container Unix socket either way.
-    TASKQ_HEALTH_PORT=8600
+    TASKQ_HEALTH_PORT=8600 \
+    # Pin the Unix socket path explicitly: an unconfigured worker boot now
+    # defaults to a per-process path (/tmp/taskq_health_<pid>.sock) so two
+    # co-located workers cannot collide, but then `taskq health` in a
+    # separate process could not derive the path. One container runs one
+    # worker, so the image pins the shared path and keeps the worker and
+    # the HEALTHCHECK exec probe on the same, env-authoritative value.
+    TASKQ_HEALTH_SOCKET_PATH=/tmp/taskq_health.sock
 
 USER taskq
 
 EXPOSE 8600
 
 # The worker serves /live and /ready on its Unix health socket
-# (TASKQ_HEALTH_SOCKET_PATH, default /tmp/taskq_health.sock). `taskq health
-# ready` is the same exec probe the Kubernetes and Compose recipes use; the
-# readiness ping covers the dispatcher pool's Postgres reachability.
+# (pinned to /tmp/taskq_health.sock via TASKQ_HEALTH_SOCKET_PATH above).
+# `taskq health ready` is the same exec probe the Kubernetes and Compose
+# recipes use; the readiness ping covers the dispatcher pool's Postgres
+# reachability.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
     CMD ["taskq", "health", "ready"]
 

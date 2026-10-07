@@ -42,6 +42,10 @@ cadence (`released_reason: "actor-not-found"`, budget-free, surfaced by
 the stranded-jobs detector) — check the actor spelling and
 `taskq job show` before looking at queues or capacity.
 
+The full exception taxonomy — every class, its fields, and its remedy — is
+indexed on the [Exceptions API reference](exceptions.md); the retry engine's
+module surface is on the [Retry API reference](retry.md).
+
 !!! warning "Settings typos are silent"
 
     Unknown `TASKQ_*` environment variables are **ignored** by the
