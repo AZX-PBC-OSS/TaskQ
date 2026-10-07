@@ -117,9 +117,12 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     record_lock_contention,
     record_sweep_success,
     record_sweep_timeout,
+    update_cancel_pending_cache,
+    update_queue_depth_by_status_cache,
     update_queue_depth_cache,
     update_queue_live_workers_cache,
     update_queue_utilization_cache,
+    update_ratelimit_bucket_tokens_cache,
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
 )
@@ -148,6 +151,7 @@ from taskq.worker._leader_sweeps import (
     _is_deadline_family,  # pyright: ignore[reportPrivateUsage]  # Why: the one deadline-family classifier, shared by every leader loop's timeout accounting instead of each site re-deriving it.
     _prune_loop,
     _queue_depth_loop,
+    _ratelimit_buckets_loop,
     _reservation_slots_loop,
     _stranded_jobs_loop,
     _sweep_loop,
@@ -563,10 +567,22 @@ class MaintenanceLeader:
         # series and clearing them would mute the detectors under the exact
         # leadership failure they exist to expose.
         update_queue_depth_cache({})
+        update_queue_depth_by_status_cache({})
         update_queue_live_workers_cache({})
         update_queue_utilization_cache({})
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
+        # The cancel-pending gauge is the same leader-sample authority
+        # (the queue-depth loop's read): a demoted process that kept its
+        # last level would claim cancels were in flight under a leader
+        # that no longer samples them. None, not zero — an empty gauge
+        # yields no data point, the empty-not-zero discipline the
+        # lease-TTL gauge follows at this same demotion site.
+        update_cancel_pending_cache(None)
+        # Same authority loss for the bucket-tokens gauge: the peek is
+        # the leader's own read of the stores, and a frozen level would
+        # outlive the demotion that ended its sampling.
+        update_ratelimit_bucket_tokens_cache({})
         # The sweep-health stamps (last success, batch size) are leader-loop
         # samples and lose authority with the rest: a demoted process
         # exporting frozen stamps reports a degraded maintenance view forever
@@ -741,6 +757,9 @@ class MaintenanceLeader:
                     self._reservation_slots_loop(shutdown), name="leader.reservation_slots"
                 )
                 tg.create_task(self._stranded_jobs_loop(shutdown), name="leader.stranded_jobs")
+                tg.create_task(
+                    self._ratelimit_buckets_loop(shutdown), name="leader.ratelimit_buckets"
+                )
                 await shutdown.wait()
         finally:
             # Hand the lease back before the conns go: a replacement pod then
@@ -1860,6 +1879,9 @@ class MaintenanceLeader:
 
     async def _stranded_jobs_loop(self, shutdown: asyncio.Event) -> None:
         await _stranded_jobs_loop(self._sweep_ctx, shutdown)
+
+    async def _ratelimit_buckets_loop(self, shutdown: asyncio.Event) -> None:
+        await _ratelimit_buckets_loop(self._sweep_ctx, shutdown)
 
 
 _active_leaders: set[MaintenanceLeader] = set()

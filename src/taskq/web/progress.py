@@ -70,7 +70,7 @@ from taskq.constants import (
     progress_channel,
     require_schema,
 )
-from taskq.obs import get_meter
+from taskq.obs import get_meter, record_sse_connection_closed
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._routing import HeadForGetRoute
@@ -496,6 +496,12 @@ async def _event_generator(
         # slot the instant the response was constructed, making the cap a no-op.
         if sse_slot_semaphore is not None:
             sse_slot_semaphore.release()
+            # The connections gauge moves where the slot moves: this
+            # finally is the streaming life's release site (the early
+            # exits release through progress_stream's _release_slot
+            # below), so the level counts a stream for exactly the span
+            # its slot was held.
+            record_sse_connection_closed("progress", "progress-stream")
         # always release the Redis subscription; errors here
         # must not mask the primary exception.
         with contextlib.suppress(Exception):
@@ -777,6 +783,11 @@ def create_router(
             if not _slot_released:
                 _slot_released = True
                 sse_slot_semaphore.release()
+                # The gauge's matching close for the early-exit paths
+                # (503 subscribe failure, PG error, 404): the slot and
+                # the level move together here exactly as they do in the
+                # generator's own finally on the streaming paths.
+                record_sse_connection_closed("progress", "progress-stream")
 
         try:
             return await _serve_progress_stream(

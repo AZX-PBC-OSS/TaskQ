@@ -371,6 +371,15 @@ messages, attempt failures) are **not in its scrape**: they live in the
 worker processes. Scrape the workers for them, every pod: series are
 per-process, so a scrape of one pod says nothing about another.
 
+**The scrape topology in one line:** the admin's `/jobs/health/metrics`
+serves the admin-process samplers ONLY (the SSE health pair
+`taskq.admin.sse.connections` / `taskq.admin.sse.rejections_total`, and
+whatever the UI process itself records); the fleet's series — every
+leader-sampled gauge and worker-path counter — live on each worker's own
+`TASKQ_METRICS_PORT` listener. **Point Prometheus at the workers**, every
+pod, for everything job-plane; point it at the admin process for the SSE
+surfaces.
+
 **The worker's scrape listener: `TASKQ_METRICS_PORT`.** With the
 `[prometheus]` extra installed, setting a port makes `taskq worker` add a
 Prometheus pull reader to the meter provider it installs (see
@@ -498,6 +507,8 @@ you *which* jobs absorbed them.
 | `taskq.ratelimit.reclaim_drain_failures` | `1` | `error_type` | Failures of the keyed-reservation slot-row reclaim drain: a persistently failing drain strands `reservation_slots` rows, a STORAGE signal (the backlog forms on `taskq.ratelimit.reclaim_pending`). Distinct from `reclaim_heal_failures`, which is an AVAILABILITY signal; the two never share a counter. `error_type` is the exception class name. | yes |
 | `taskq.ratelimit.reclaim_drain_rows` | `1` | n/a | Rows deleted by the keyed-reclaim drain, `reservation_slots` slot rows and `rate_limit_buckets` bucket rows alike (RETURNING-confirmed). | yes |
 | `taskq.ratelimit.reclaim_heal_failures` | `1` | `error_type` | Failures of the acquire-path re-materialisation heal for keyed buckets whose slot rows a sibling worker's drain deleted: a failing heal denies new admissions for that bucket, an AVAILABILITY signal, the opposite polarity of `reclaim_drain_failures` (storage). `error_type` is the exception class name. | yes |
+| `taskq.jobs.cancels_actored` | `1` | `actor` | Operator cancel requests this WORKER observed in its cancel-poll and began acting on, per actor: the executing side of the cancel story. `taskq.cancellation.requested` counts what the ISSUING process incremented — a `taskq jobs cancel` CLI call exits after writing the row, so the issuer's increment dies with it and the scrape shows nothing; this counter moves on the worker whose heartbeat poll is the durable surface, so the same cancel is visible in the worker scrape after the issuer is gone. One increment per cancel (the first observation: the cooperative arm, or the PG fast-advance when the request was first seen already-escalated); the ladder's re-walks record nothing. Read beside `taskq.jobs.cancel_pending` for how many are still in flight. | yes |
+| `taskq.admin.sse.rejections` | `1` | `topic`, `surface` | SSE connection attempts refused because the topic's connection cap was already held (HTTP 429), recorded at the two 429 sites (the admin `/sse/{topic}` endpoint and the shared slot helper the progress stream uses). Same closed label vocabulary as `taskq.admin.sse.connections`, so the two join: rejections rising beside connections pinned at the cap is saturation; rejections alone is a burst the cap absorbed. Recorded in the admin process; exported on the admin's `/jobs/health/metrics`. | yes |
 
 One counter outside this table's worker/producer population: `taskq.admin.audit.record_failed` (admin-UI audit rows that could not be recorded after a backend-mediated mutation) is detailed in [admin-ui.md's Audit trail section](admin-ui.md#audit-trail).
 
@@ -606,6 +617,13 @@ Three consequences operators should know:
 | `taskq.jobs.running_lease_expired` | `1` | n/a | Running jobs whose lock lease is past expiry (the zombie-running shape), with rows in a cancel phase (`cancel_phase != 0`) carved out: the reclaim sweep deliberately waits out the cancel grace ladder for those, so an expired lease mid-cancel is the protocol working, not a zombie; a cancel that never completes pages elsewhere: `TaskQAbandonedJobs` when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel; reclaim honors the row to `cancelled` either way. Healthy reads 0: the reclaim sweep drains expired leases within a tick or two, so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
 | `taskq.jobs.stranded` | `1` | `actor`, `reason` | Pending/scheduled jobs that can never be dispatched, sampled by the leader. `reason` is `no_actor_config` (the actor has no `actor_config` row) or `unserved_queue` (the queue dispatch routes the actor on has no **live** worker subscribed; a worker whose heartbeat has gone stale does not serve a queue, even before the stale-worker sweep removes its row). An empty reading means recovery; `TaskQStrandedJobs` reads this series. |
 | `taskq.ratelimit.reclaim_pending` | `1` | n/a | Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick. A scalar, not a per-bucket gauge: bucket names are caller-controlled and must not become label cardinality. Persistently non-zero beside a rising `taskq.ratelimit.reclaim_drain_failures` rate is the signature of broken reclamation. |
+| `taskq.jobs.retrying` | `1` | `actor` | Non-terminal jobs (pending/scheduled/running) that are past their first attempt (`attempt > 0`), per actor, sampled by every worker with `taskq.jobs.by_status`. The retry ladder's live population: a job sitting at attempt 6 of 1000 is a healthy pending row on every other surface — `by_status` counts it pending, `taskq.jobs.attempt_failures` last moved five attempts ago. Beside `taskq.jobs.retry_headroom`, which says how close the worst row is to its ceiling. An actor with nothing retrying is absent, not 0. |
+| `taskq.jobs.retry_headroom` | `1` | `actor` | The MINIMUM of `max_attempts - attempt` over the actor's live non-terminal rows with `attempt > 0`: how many attempts the actor's worst in-flight job has left, from the same grouped read as `taskq.jobs.retrying` (one statement, one moment). The haunt-detection operand: headroom 0 is a job ON its last attempt; a value pinned near 0 across ticks is a retry loop running out of ladder (see the [alert suggestions](#alert-suggestions-for-the-new-series)). |
+| `taskq.queue.depth_by_status` | `1` | `queue`, `status` | The depth gauge's status split, per (queue, status), sampled by the leader in the same tick and on the same connection as `taskq.queue.depth` (one grouped read's GROUP BY extended with `status`), so a growing `scheduled` share — the promotion-stall signature — is visible per queue. Kept on a sibling instrument rather than a relabel of `taskq.queue.depth`: the shipped alert set (`TaskQQueueUnserved`'s `on(queue)` join) and the cardinality proofs pin the depth gauge's one-series-per-queue label set. Same cap; the `_other_` pair (mixed statuses) is bookkeeping, not alertable. |
+| `taskq.jobs.scheduled_horizon_seconds` | `s` | n/a | Seconds between now and the FURTHEST-out scheduled job's wake time (`MAX(scheduled_at) - now`, over `status='scheduled'`), sampled by every worker with `taskq.jobs.by_status`: how far ahead the future-armed wave reaches. 0.0 when nothing is scheduled; NEGATIVE when even the furthest job is overdue — every armed row has crossed its wake time and promotion is not keeping up. Label-less twin of `taskq.jobs.by_status{status="scheduled"}`, like `taskq.jobs.scheduled_count`, so the three backlog operands join without a PromQL join modifier. |
+| `taskq.jobs.cancel_pending` | `1` | n/a | Non-terminal jobs with a cancel in flight (`cancel_phase > 0`), sampled by the leader with `taskq.queue.depth`. The durable cancel surface: a CLI cancel writes the row and exits, so this gauge is the only scrape-visible trace that the protocol owes a terminal write. Healthy drains to 0 within the cancel grace ladder plus a tick or two; a sustained non-zero reading is a cancel not finishing. Read beside `taskq.jobs.cancels_actored_total` (the worker-side counter that says the cancel was observed). Cleared to absent on demotion (never frozen at a stale level). No dimensions: the fleet total is the alertable shape; the per-job truth is on the row and the admin jobs page. |
+| `taskq.ratelimit.bucket_tokens` | `1` | `bucket`, `kind` | Admission budget currently left in each rate-limit bucket: `tokens_remaining` for a token bucket, remaining admissions for a sliding window — sampled by the leader every 15 s via the same peek (`RateLimitRegistry.peek_all`) the admin rate-limits page renders, so the scrape and the page can never disagree about a bucket's level. `kind` is the page's own bounded derivation: `token_bucket` / `sliding_window_log` / `sliding_window_gcra`. Statically-registered buckets only as NAMED series (bounded by the code the user ships); keyed-materialised buckets (`base_name:key`) create NO per-key series — their tokens are summed per kind under `bucket="_other_"` (the `taskq.ratelimit.reclaim_pending` precedent: keyed values never become label cardinality). A named series pinned at 0 is an exhausted admission budget; read beside `taskq.ratelimit.denials` for the rate. Cleared to absent on demotion. |
+| `taskq.admin.sse.connections` | `1` | `topic`, `surface` | SSE streams currently open, per (topic, surface). `surface` is the closed enum `admin` (the admin UI's `/sse/{topic}` stream) or `progress` (the per-job progress stream); `topic` is the closed vocabulary the endpoints validate before the slot lookup (`queues`/`jobs`/`workers`/`history` for admin, the one constant `progress-stream` family key for progress; anything else collapses onto `_other_` at the instrument). Recorded in the process that serves the streams, so this series is exported on the admin's `/jobs/health/metrics` and never on a worker scrape. A value pinned at the configured cap with `taskq.admin.sse.rejections_total` rising is SSE saturation. |
 
 ### The watchdog family
 
@@ -801,6 +819,60 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 
 The remaining tuned-by-dashboard conditions (actor saturation, event-loop lag) ship no
 alert on purpose; both are read off the gauges in the playbook table.
+
+### Alert suggestions for the new series
+
+The shipped `rules.yaml` pins the core set; these series also support
+alert shapes worth wiring per deployment (suggested, not shipped — tune
+the `for:` windows to your fleet's tick cadences):
+
+- **The haunt: a retry loop running out of ladder.** The detection pair
+  is `taskq_jobs_retry_headroom` reaching 0 — an actor's worst live job
+  is ON its last attempt:
+
+  ```promql
+  # A job on its final attempt: page BEFORE the ceiling-writes-terminal.
+  min by (actor) (taskq_jobs_retry_headroom) == 0
+  ```
+
+  Read it with `taskq_jobs_retrying` (the population): headroom 0 with a
+  retrying count of 1 can be one legitimately-dying job; headroom pinned
+  near 0 across ticks with a retrying count that will not drain is the
+  retry loop — an actor whose failure is deterministic and whose
+  `max_attempts` is high enough to hide in for hours. A job at attempt
+  6 of 1000 is invisible to every other series (it is a healthy pending
+  row to `taskq_jobs_by_status`, and `taskq_jobs_attempt_failures` last
+  moved five attempts ago): this pair is the only live view of the
+  ladder.
+
+- **SSE saturation.** Streams pinned at the configured cap while
+  refusals continue:
+
+  ```promql
+  # topic's stream budget exhausted and clients still knocking
+  max by (topic, surface) (taskq_admin_sse_connections) == <cap>
+    and rate(taskq_admin_sse_rejections_total[5m]) > 0
+  ```
+
+  (`<cap>` is `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; both series are exported
+  on the admin's `/jobs/health/metrics`.) Rejections alone with headroom
+  under the cap is a burst the cap absorbed; sustained is a dashboards-open
+  fleet or a scrape-loop client.
+
+- **A cancel the protocol never finished.** `taskq_jobs_cancel_pending`
+  pinned above 0 past the grace ladder (plus a couple of sampling ticks)
+  means a cancel request is stuck in flight; a simultaneous
+  `taskq_jobs_cancels_actored_total` that stops moving while the gauge
+  stays up is the worker stopped acting on it (died mid-cancel —
+  `TaskQHeartbeatMisses` covers the worker side).
+
+- **An exhausted rate-limit bucket.**
+  `taskq_ratelimit_bucket_tokens{bucket="<bucket>"} == 0` with a rising
+  `taskq_ratelimit_denials_total` rate is saturation of a NAMED bucket —
+  capacity, not a stall (see [A saturated rate limit is not a promotion
+  stall](#a-saturated-rate-limit-is-not-a-promotion-stall)). The
+  `_other_` series at 0 says SOME keyed bucket is exhausted; which one
+  is on the admin rate-limits page, deliberately not on a label.
 
 ### Runaway fan-out: what the operator sees first
 

@@ -193,6 +193,19 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ("taskq.jobs.queue_wait_seconds", "taskq_jobs_queue_wait_seconds", "histogram"),  # ends in unit
     ("taskq.jobs.stranded", "taskq_jobs_stranded", "gauge"),
     ("taskq.queue.live_workers", "taskq_queue_live_workers", "gauge"),
+    ("taskq.queue.depth_by_status", "taskq_queue_depth_by_status", "gauge"),
+    ("taskq.jobs.retrying", "taskq_jobs_retrying", "gauge"),
+    ("taskq.jobs.retry_headroom", "taskq_jobs_retry_headroom", "gauge"),
+    (
+        "taskq.jobs.scheduled_horizon_seconds",
+        "taskq_jobs_scheduled_horizon_seconds",
+        "gauge",
+    ),  # ends in unit word
+    ("taskq.jobs.cancel_pending", "taskq_jobs_cancel_pending", "gauge"),
+    ("taskq.ratelimit.bucket_tokens", "taskq_ratelimit_bucket_tokens", "gauge"),
+    ("taskq.admin.sse.connections", "taskq_admin_sse_connections", "gauge"),
+    ("taskq.admin.sse.rejections", "taskq_admin_sse_rejections_total", "counter"),
+    ("taskq.jobs.cancels_actored", "taskq_jobs_cancels_actored_total", "counter"),
     (
         "taskq.worker.loop_stall_attributions",
         "taskq_worker_loop_stall_attributions_total",
@@ -328,6 +341,39 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_observable_gauge(
         "taskq.cron.slots_behind", unit="1", callbacks=[lambda _: [Observation(3, {"actor": "a"})]]
     )
+    meter.create_observable_gauge(
+        "taskq.queue.depth_by_status",
+        unit="1",
+        callbacks=[lambda _: [Observation(5, {"queue": "q", "status": "pending"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.retrying", unit="1", callbacks=[lambda _: [Observation(2, {"actor": "a"})]]
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.retry_headroom",
+        unit="1",
+        callbacks=[lambda _: [Observation(1, {"actor": "a"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.scheduled_horizon_seconds", unit="s", callbacks=[lambda _: [Observation(60.0)]]
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.cancel_pending", unit="1", callbacks=[lambda _: [Observation(1)]]
+    )
+    meter.create_observable_gauge(
+        "taskq.ratelimit.bucket_tokens",
+        unit="1",
+        callbacks=[lambda _: [Observation(4.5, {"bucket": "b", "kind": "token_bucket"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.admin.sse.connections",
+        unit="1",
+        callbacks=[lambda _: [Observation(2, {"topic": "jobs", "surface": "admin"})]],
+    )
+    meter.create_counter("taskq.admin.sse.rejections", unit="1").add(
+        1, {"topic": "jobs", "surface": "admin"}
+    )
+    meter.create_counter("taskq.jobs.cancels_actored", unit="1").add(1, {"actor": "a"})
     meter.create_observable_gauge(
         "taskq.jobs.by_status",
         unit="1",

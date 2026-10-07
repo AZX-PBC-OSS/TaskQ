@@ -20,6 +20,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from taskq._close import CLOSE_TIMEOUT_SECS
 from taskq._shield import shield_with_retrieval
 from taskq.constants import events_channel
+from taskq.obs import (
+    record_sse_connection_closed,
+    record_sse_connection_opened,
+    record_sse_rejection,
+)
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
 from taskq.web.admin._factory import (
@@ -67,6 +72,7 @@ async def _sse_generator(
     resolve_pool: Callable[[], asyncpg.Pool | None],
     schema: str | None,
     session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    topic: str = "",
 ) -> AsyncGenerator[str, None]:
     """Stream admin state_change events (or keepalives) as SSE strings.
 
@@ -223,6 +229,11 @@ async def _sse_generator(
                 yield ": keepalive\n\n"
     finally:
         semaphore.release()
+        # The connections gauge moves where the slot moves: this
+        # finally is the only release site the topic's semaphore has
+        # (the 429 path never constructed this generator), so the level
+        # counts a stream for exactly the span its slot was held.
+        record_sse_connection_closed("admin", topic)
 
 
 def register(router: APIRouter) -> None:
@@ -266,10 +277,16 @@ def register(router: APIRouter) -> None:
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=0.001)
         except TimeoutError:
+            # The 429 site (the admin surface's half of the SSE-health
+            # pair): the cap's refusals were invisible in metrics — a
+            # client-side error only. topic is the closed vocabulary the
+            # 400 guard above validated, so the label set stays bounded.
+            record_sse_rejection("admin", topic)
             raise HTTPException(
                 status_code=429,
                 detail="too many SSE connections for this topic",
             ) from None
+        record_sse_connection_opened("admin", topic)
         # Bind the request into the re-check once: the verifier reads the same
         # session cookie the request arrived with, and a session revoked
         # mid-stream fails the re-check even though those bytes are unchanged
@@ -278,7 +295,13 @@ def register(router: APIRouter) -> None:
         _session_verifier: Callable[[], Awaitable[bool]] | None = (
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )
-        gen = _sse_generator(semaphore, lambda: get_pg_pool(request), schema, _session_verifier)
+        gen = _sse_generator(
+            semaphore,
+            lambda: get_pg_pool(request),
+            schema,
+            _session_verifier,
+            topic=topic,
+        )
         return StreamingResponse(
             content=gen,
             media_type="text/event-stream; charset=utf-8",

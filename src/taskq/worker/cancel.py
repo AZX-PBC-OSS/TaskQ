@@ -61,7 +61,7 @@ from taskq.constants import (
     require_schema,
 )
 from taskq.context import CancelOrigin, JobContext
-from taskq.obs import get_logger, get_meter, log_cancel_phase_change
+from taskq.obs import get_logger, get_meter, log_cancel_phase_change, record_cancel_actored
 from taskq.worker.shutdown import ShutdownPhase
 
 if TYPE_CHECKING:
@@ -271,6 +271,14 @@ class _CancelController:
                 # the job first (the row is the final arbiter of origin).
                 active.cancel_origin = CancelOrigin.OPERATOR
                 active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
+                # The EXECUTING side's cancel count (taskq.jobs.cancels_actored_total):
+                # this is the durable surface a scrape can see — the
+                # issuer's own taskq.cancellation.requested dies with its
+                # process, this one moves on the worker whose poll is
+                # acting on the request. First observation only: the
+                # ladder re-walks the row every tick, one cancel is one
+                # increment.
+                record_cancel_actored(active.ctx.actor)
                 log_cancel_phase_change(
                     _log,
                     from_phase=int(CancelPhase.NONE),
@@ -282,6 +290,12 @@ class _CancelController:
 
             # ── PG-observation fast-advance ────────────────────────────
             if db_phase == CancelPhase.FORCED and active.cancel_phase < CancelPhase.FORCED:
+                # First observation of THIS request (local was NONE, the
+                # PG row already escalated past the poll's cooperative
+                # arm): count it here so the ladder's fast path is not
+                # the one cancel shape the executing-side counter misses.
+                if active.cancel_phase == CancelPhase.NONE:
+                    record_cancel_actored(active.ctx.actor)
                 log_cancel_phase_change(
                     _log,
                     from_phase=int(active.cancel_phase),
