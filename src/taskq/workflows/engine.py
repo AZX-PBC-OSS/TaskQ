@@ -73,19 +73,25 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import asyncpg
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import ConnLike, JobId
+from taskq._json import loads as _json_loads
+from taskq.backend._protocol import ConnLike, ErrorInfo, JobId
 from taskq.backend.statemachine import assert_valid_transition
+from taskq.constants import CANCEL_ORIGIN_PEER_FAILURE
 from taskq.workflows._capture import build_capture
 from taskq.workflows._fork import insert_fork
 from taskq.workflows._reducers import register_flow_reducers
-from taskq.workflows._sql import WorkflowSql
+from taskq.workflows._sql import (
+    BLOCKING_REASON_FAILED_PARENT,
+    WorkflowSql,
+)
 from taskq.workflows._types import (
     DecrementHit,
+    FailureInfo,
     FinalizeResult,
     FiredJoin,
     ForkSpec,
@@ -100,6 +106,7 @@ __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
     "DeadlockRetriesExhaustedError",
     "FinalizeResult",
+    "fan_in_skip",
     "finalize_node",
     "insert_node",
     "render_workflow_sql",
@@ -174,7 +181,7 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
     if spec.parents:
         await conn.executemany(
             wsql.node_edge,
-            [(node_id, parent, spec.flow_id) for parent in spec.parents],
+            [(node_id, parent, spec.flow_id, spec.failure_policy) for parent in spec.parents],
         )
     return node_id
 
@@ -379,13 +386,52 @@ async def _run_tx2(
     flow_id: JobId,
     parent_id: JobId,
     reducers: dict[str, Callable[[], Awaitable[None]]] | None,
+    outcome: Literal["succeeded", "failed", "cancelled", "crashed", "abandoned"] = "succeeded",
+    step_key: str | None = None,
+    map_index: int | None = None,
+    error_class: str | None = None,
+    error_message: str | None = None,
+    error_traceback: str | None = None,
 ) -> tuple[tuple[DecrementHit, ...], tuple[FiredJoin, ...]]:
     """tx2 in ONE transaction: the guarded decrement (the edge ledger, the
     flow-status leg, ``deps_pending > 0``); rows hitting 0 → the guarded
     fire; the winner's reducer body runs INSIDE tx2; the outbox rows ride
-    the same tx."""
+    the same tx.
+
+    T06'S FAILED-PARENT PROPAGATION, keyed on the OUTCOME (the
+    composition invariant: ladder retries emit NO terminal, so tx2 sees a
+    failed child exactly once — at exhaustion):
+
+    * ``succeeded`` (any non-failed terminal) — the decrement resolves
+      EVERY join counting this child (the shipped shape, unchanged).
+    * ``failed`` — the edges' DECLARED POLICY splits the resolution:
+      - fail_closed edges → the cascade (ONE statement: the joined node
+        blocks with ``blocking_reason='failed_parent'`` naming this
+        parent, the still-non-terminal peers are peer-cancelled with the
+        ``by='peer_failure', cascade_from=<node>`` record, the flow root
+        fails) — the join's side is resolved WITHOUT a decrement (it must
+        never become firable over a failed parent);
+      - collect edges → the failure fans in (the typed FailureInfo item
+        appended to the join row's ``failures``) + the decrement — the
+        join fires when the LAST child terminalizes, strictly after every
+        ladder attempt.
+    """
     async with conn.transaction():
-        dec_rows = await conn.fetch(wsql.decrement, parent_id, flow_id)
+        if outcome == "failed":
+            await _resolve_failed_parent(
+                conn,
+                wsql,
+                flow_id=flow_id,
+                parent_id=parent_id,
+                step_key=step_key or "",
+                map_index=map_index,
+                error_class=error_class,
+                error_message=error_message,
+                error_traceback=error_traceback,
+            )
+            dec_rows = await conn.fetch(wsql.decrement_collect, parent_id, flow_id)
+        else:
+            dec_rows = await conn.fetch(wsql.decrement, parent_id, flow_id)
         hits = tuple(DecrementHit(JobId(r["id"]), r["deps_pending"]) for r in dec_rows)
 
         fired: list[FiredJoin] = []
@@ -404,6 +450,136 @@ async def _run_tx2(
             if result is not None:
                 fired.append(result)
     return hits, tuple(fired)
+
+
+async def _resolve_failed_parent(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    parent_id: JobId,
+    step_key: str,
+    map_index: int | None,
+    error_class: str | None,
+    error_message: str | None,
+    error_traceback: str | None,
+) -> None:
+    """T06's failed-parent resolution — BOTH arms, one tx, set-based:
+
+    * the fail_closed cascade (the flow-scoped transition set; the
+      statement is a no-op when no fail_closed edge counts this parent);
+    * the collect fan-in (the FailureInfo item per collect join; the
+      statement is a no-op when no collect edge counts this parent).
+
+    The fan-in's attempt HISTORY is read from the ledger inside the
+    cascade's tx (the ledger is truth); the item embeds the estate's
+    ErrorInfo envelope (the engine constructs it through the typed door —
+    the bound constants apply here too, never re-spelled SQL-side).
+    """
+    # THE FAIL-CLOSED CASCADE — the record names the failed parent: the
+    # block stamp (metadata.failed_parent), the peer-cancel record (the
+    # cancel-origin marker + metadata.peer_cancel.cascade_from), and the
+    # flow's own failure ride THIS statement.
+    cascade_stamp = {
+        "blocking_reason": BLOCKING_REASON_FAILED_PARENT,
+        "failed_parent": str(parent_id),
+        "failed_step": step_key,
+    }
+    peer_record = {"peer_cancel": {"by": "peer_failure", "cascade_from": str(parent_id)}}
+    await conn.execute(
+        wsql.fail_closed_cascade,
+        parent_id,
+        _jsonb(cascade_stamp),
+        CANCEL_ORIGIN_PEER_FAILURE,
+        _jsonb(peer_record),
+        flow_id,
+    )
+
+    # THE COLLECT FAN-IN — the typed partial result's failure items. The
+    # ledger's attempt rows for THIS child are the history; the item is
+    # appended inside the same tx (a rolled-back tx rolls the item back —
+    # the re-fire re-derives it).
+    fanin_rows = await conn.fetch(
+        wsql.collect_fan_in,
+        parent_id,
+        flow_id,
+        step_key,
+        map_index,
+    )
+    for row in fanin_rows:
+        # The ledger's attempt history arrives as the statement's jsonb agg
+        # (str on un-coded connections — the seam parses; the wire shape is
+        # [attempt, error_class, error_message] rows, the item's own).
+        raw_attempts: Any = (
+            _json_loads(row["attempts"]) if isinstance(row["attempts"], str) else row["attempts"]
+        )
+        assert isinstance(raw_attempts, list)
+        attempts: list[tuple[int, str | None, str | None]] = [
+            (
+                int(a["attempt"]),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (the parse hands back Unknown members); the assert above is the runtime guard, the ledger wrote ints.
+                a.get("error_class"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+                a.get("error_message"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+            )
+            for a in raw_attempts  # pyright: ignore[reportUnknownVariableType]  # Why: same walk.
+        ]
+        item = FailureInfo(
+            node_key=step_key,
+            map_index=map_index,
+            error=ErrorInfo(
+                error_class=error_class or "",
+                error_message=error_message or "",
+                error_traceback=error_traceback,
+            ),
+            attempts=tuple(attempts),
+        )
+        await conn.execute(
+            wsql.collect_fan_in_append,
+            row["join_job_id"],
+            _jsonb(item.to_json()),
+        )
+
+
+async def fan_in_skip(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    parent_id: JobId,
+    step_key: str,
+    map_index: int | None,
+) -> int:
+    """T06's SKIP fan-in: a skipped child fans into its collect joins as a
+    FailureInfo item with an EMPTY attempt history — **a skip is not an
+    attempt** (P3 spike3's measured invariant): ZERO ledger rows are
+    written, zero terminal rows, zero attempts — the child's only trace is
+    the item on the join row (the ledger stays the attempted-terminals'
+    record; T08's two-source rule reads never-granted terminals elsewhere).
+
+    Returns the number of collect joins the skip fanned into."""
+    item = FailureInfo(
+        node_key=step_key,
+        map_index=map_index,
+        error=ErrorInfo(
+            error_class="Skipped",
+            error_message="the child was skipped (a skip is not an attempt)",
+            error_traceback=None,
+        ),
+        attempts=(),
+    )
+    fanin_rows = await conn.fetch(
+        wsql.collect_fan_in,
+        parent_id,
+        flow_id,
+        step_key,
+        map_index,
+    )
+    for row in fanin_rows:
+        await conn.execute(
+            wsql.collect_fan_in_append,
+            row["join_job_id"],
+            _jsonb(item.to_json()),
+        )
+    return len(fanin_rows)
 
 
 async def finalize_node(
@@ -507,6 +683,12 @@ async def finalize_node(
                 flow_id=flow_id,
                 parent_id=job_id,
                 reducers=reducers,
+                outcome=outcome,
+                step_key=step_key,
+                map_index=map_index,
+                error_class=error_class,
+                error_message=error_message,
+                error_traceback=error_traceback,
             )
 
     hits, fired = await _deadlock_retry(_tx2)

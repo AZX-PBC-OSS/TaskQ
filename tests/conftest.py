@@ -133,6 +133,7 @@ from taskq.worker.health import HealthServer
 from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
     engine_redlog,  # pyright: ignore[reportUnusedImport]
     ledger_redlog,  # pyright: ignore[reportUnusedImport]
+    propagation_redlog,  # pyright: ignore[reportUnusedImport]
     wf_conn,  # pyright: ignore[reportUnusedImport]
     wf_schema,  # pyright: ignore[reportUnusedImport]
     wf_sql,  # pyright: ignore[reportUnusedImport]

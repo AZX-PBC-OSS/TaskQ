@@ -132,8 +132,8 @@ SELECT * FROM unnest(
 
 
 FORK_EDGES_SQL = """\
-INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id)
-SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[])
+INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id, failure_policy)
+SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 """
 
 
@@ -160,11 +160,171 @@ WHERE id = $1
 # metadata.blocking_reason='orphan_parent'; the declarative API refuses it
 # at build time, definitions.validate_fork / validate_join_spec).
 NODE_EDGE_SQL = """\
-INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id)
-VALUES ($1, $2, $3)
+INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id, failure_policy)
+VALUES ($1, $2, $3, $4)
 """
 
 
 FLOW_STATUS_SQL = """\
 SELECT id, status FROM {schema}.jobs WHERE id = $1
+"""
+
+
+# ── T06: the failed-parent propagation ──────────────────────────────────
+
+# The FAIL-CLOSED peer-cascade: a parent's TERMINAL failure resolves every
+# fail_closed join counting this parent by a FLOW-SCOPED transition set,
+# ONE statement (one snapshot, one tx — the cascade is the linearization,
+# the same shape cancel's flip is):
+#
+#   * the joined node → blocked: blocking_reason='failed_parent' + the
+#     failed parent NAMED on the record (metadata.failed_parent) — the
+#     joined node's side of the counter is resolved by THIS stamp (the
+#     rederive arm locks blocking_reason='join' rows only, so a stamped
+#     row is never re-reconciled, never fired — it rests visible-blocked,
+#     never a hanging join);
+#   * the running peers (the blocked joins' OTHER parents, still
+#     non-terminal, NOT join-wait themselves — a nested join's own counter
+#     is its ledger's truth and resolves through the sweep's recount once
+#     ITS parents terminal) are PEER-CANCELLED with the record:
+#     error_class = the cancel-origin marker (the `by` leg, the same
+#     outcome reads the same way whichever path produced it) + the
+#     structured record in metadata.peer_cancel
+#     ({by: 'peer_failure', cascade_from: <the failed node>});
+#   * the workflow → failed (§17.2's cascade): the flow root's flip, the
+#     linearization point every flow-status leg then reads.
+#
+# Every write is guarded: the block only join-wait rows not already
+# stamped; the cancel only pending/scheduled/running rows; the flow flip
+# only a non-terminal root AND only when the cascade actually blocked a
+# join (no fail_closed edge → no cascade → the collect-only failure never
+# touches the flow). A re-run of this statement after a rolled-back tx is
+# idempotent — a fenced/terminal state updates nothing.
+FAIL_CLOSED_CASCADE_SQL = """\
+WITH edges AS (
+    SELECT e.child_id
+    FROM {schema}.wf_edge e
+    WHERE e.parent_id = $1::uuid
+      AND e.failure_policy = 'fail_closed'
+),
+blocked AS (
+    UPDATE {schema}.jobs j
+    SET metadata = j.metadata || $2::jsonb
+    FROM edges
+    WHERE j.id = edges.child_id
+      AND j.status = 'pending'
+      AND j.deps_pending > 0
+      AND j.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
+    RETURNING j.id
+),
+peers AS (
+    UPDATE {schema}.jobs p
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        error_class = $3::text,
+        metadata = p.metadata || $4::jsonb
+    FROM edges e
+    JOIN {schema}.wf_edge sib ON sib.child_id = e.child_id
+    WHERE p.id = sib.parent_id
+      AND p.id <> $1::uuid
+      AND p.status IN ('pending', 'scheduled', 'running')
+      AND NOT (p.deps_pending > 0
+               AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
+    RETURNING p.id
+),
+flow_failed AS (
+    UPDATE {schema}.jobs f
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        error_class = $3::text
+    WHERE f.id = $5::uuid
+      AND f.status NOT IN {terminal}
+      -- The flow fails only when the cascade actually RESOLVED a
+      -- fail_closed join of this parent: no fail_closed edge → no
+      -- cascade → the collect-only failure never touches the flow.
+      AND EXISTS (SELECT 1 FROM blocked)
+    RETURNING f.id
+)
+SELECT (SELECT count(*) FROM blocked) AS blocked,
+       (SELECT count(*) FROM peers) AS peers_cancelled,
+       (SELECT count(*) FROM flow_failed) AS flow_failed
+"""
+
+
+# The COLLECT fan-in (T06's second semantics): a failed child whose edge
+# declared 'collect' does NOT cascade — its failure fans in as the typed
+# FailureInfo item APPENDED to each collect join's ``metadata.failures``
+# array (the full attempt history rides the item — the ledger rows are
+# read in THIS statement; the detail never leaves the ledger/attempts).
+# The join row's counters still resolve through the decrement (the failed
+# child IS resolved): the join fires when the LAST child terminalizes,
+# strictly after every ladder attempt (the fan-in lands in the same tx,
+# before the fire's decrement reads 0). The statement returns the HISTORY
+# (the ledger's truth); the engine builds the typed item through the
+# FailureInfo door — one wire shape, never a re-spelled envelope.
+COLLECT_FAN_IN_SQL = """\
+WITH history AS (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'attempt', l.attempt,
+                   'error_class', l.error_class,
+                   'error_message', l.error_message
+               ) ORDER BY l.attempt
+           ) AS attempts
+    FROM {schema}.wf_step_ledger l
+    WHERE l.flow_id = $2::uuid
+      AND l.step_key = $3::text
+      AND COALESCE(l.map_index, -1) = COALESCE($4::smallint, -1)
+      AND l.status IN ('succeeded', 'failed')
+)
+SELECT j.id AS join_job_id,
+       COALESCE((SELECT history.attempts FROM history), '[]'::jsonb) AS attempts
+FROM {schema}.jobs j
+JOIN {schema}.wf_edge e ON e.child_id = j.id
+WHERE e.parent_id = $1::uuid
+  AND e.failure_policy = 'collect'
+  AND j.status = 'pending'
+  AND j.deps_pending > 0
+"""
+
+
+# The fan-in's append (the collect join row's ``failures`` array grows by
+# THIS child's item) — keyed per join row (the fan-in read above returns
+# the joins; this write lands the item). Keyed single row; the append is
+# jsonb concat on the array.
+COLLECT_FAN_IN_APPEND_SQL = """\
+UPDATE {schema}.jobs j
+SET metadata = jsonb_set(
+        j.metadata,
+        '{{failures}}',
+        COALESCE(j.metadata->'failures', '[]'::jsonb) || $2::jsonb,
+        true
+    )
+WHERE j.id = $1
+RETURNING j.id
+"""
+
+
+# The failed child's collect-side decrement: DECREMENT_SQL's shape scoped
+# to the COLLECT edges only — a fail_closed edge's side is resolved by the
+# cascade's block stamp (never by a decrement: the join must not become
+# firable over a failed parent).
+DECREMENT_COLLECT_SQL = """\
+WITH flow_alive AS (
+    SELECT 1 AS ok
+    FROM {schema}.jobs f
+    WHERE f.id = $2
+      AND f.status NOT IN {terminal}
+)
+UPDATE {schema}.jobs j
+SET deps_pending = j.deps_pending - 1
+FROM {schema}.wf_edge e
+WHERE e.parent_id = $1
+  AND e.child_id = j.id
+  AND e.failure_policy = 'collect'
+  AND j.deps_pending > 0
+  AND j.status = 'pending'
+  AND EXISTS (SELECT 1 FROM flow_alive)
+RETURNING j.id, j.deps_pending
 """

@@ -33,7 +33,11 @@ from typing import Final
 
 from taskq.constants import require_schema
 from taskq.workflows._sql_finalize import (
+    COLLECT_FAN_IN_APPEND_SQL,
+    COLLECT_FAN_IN_SQL,
+    DECREMENT_COLLECT_SQL,
     DECREMENT_SQL,
+    FAIL_CLOSED_CASCADE_SQL,
     FIRE_SQL,
     FLOW_STATUS_SQL,
     FORK_CHILDREN_SQL,
@@ -82,6 +86,10 @@ TERMINAL_SQL_SET: Final[str] = "('succeeded','failed','cancelled','crashed','aba
 #: carried on the row's metadata jsonb, never a new ENUM).
 BLOCKING_REASON_JOIN: Final[str] = "join"
 BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
+#: The fail-closed block (T06): a join whose parent TERMINAL-failed — the
+#: joined node's side of the counter is RESOLVED by this stamp (the
+#: rederive locks 'join' rows only); metadata.failed_parent names it.
+BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
 #: The loudness stamp (R2-2): a fired join whose reducer body resolved
 #: NOWHERE — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
@@ -95,6 +103,10 @@ class WorkflowSql:
     schema: str
     terminal_mark: str
     decrement: str
+    decrement_collect: str
+    fail_closed_cascade: str
+    collect_fan_in: str
+    collect_fan_in_append: str
     fire: str
     outbox_insert: str
     outbox_fetch_undelivered: str
@@ -148,6 +160,10 @@ class WorkflowSql:
             schema=schema,
             terminal_mark=render(TERMINAL_MARK_SQL),
             decrement=render(DECREMENT_SQL),
+            decrement_collect=render(DECREMENT_COLLECT_SQL),
+            fail_closed_cascade=render(FAIL_CLOSED_CASCADE_SQL),
+            collect_fan_in=render(COLLECT_FAN_IN_SQL),
+            collect_fan_in_append=render(COLLECT_FAN_IN_APPEND_SQL),
             fire=render(FIRE_SQL),
             outbox_insert=render(OUTBOX_INSERT_SQL),
             outbox_fetch_undelivered=render(OUTBOX_FETCH_UNDELIVERED_SQL),

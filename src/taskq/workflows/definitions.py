@@ -17,12 +17,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from taskq.backend._protocol import JobId
 from taskq.workflows._types import ForkSpec
 
 __all__ = [
+    "FAILURE_POLICIES",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
     "StepBody",
@@ -129,6 +130,13 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 # the DB anyway; the validators are the door the API layer composes).
 
 
+#: The declared failure policies (T06) — the edge ledger's
+#: ``failure_policy`` column's vocabulary; a fork/join declaring anything
+#: else is refused at build time (the runtime never sees an unknown
+#: policy — the propagation rule's split would silently take the default).
+FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect")
+
+
 def validate_fork(fork: ForkSpec) -> None:
     """Refuse a malformed fork at build time: an EMPTY fork (zero children)
     owes a join that can never fire, and a join declared over them counts
@@ -143,6 +151,11 @@ def validate_fork(fork: ForkSpec) -> None:
     if fork.join is not None and not fork.children:
         raise ValueError(  # pragma: no cover - unreachable above, stated for the reader
             "a join over zero children is refused at build time"
+        )
+    if fork.join is not None and fork.join.failure_policy not in FAILURE_POLICIES:
+        raise ValueError(
+            f"join {fork.join.step_key!r} declares unknown failure_policy "
+            f"{fork.join.failure_policy!r} — one of {FAILURE_POLICIES}"
         )
 
 

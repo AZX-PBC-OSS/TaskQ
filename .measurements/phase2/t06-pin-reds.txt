@@ -1,0 +1,9 @@
+== RED1 (cascade neutralized): E   SyntaxError: unterminated triple-quoted string literal (detected at line 325)
+== RED2 (peer record dropped): 1 failed, 6 deselected in 3.48s
+== RED3 (fan-in dropped): 1 failed, 6 deselected in 3.02s
+== RED4 (skip-as-attempt): 1 failed, 6 deselected in 3.02s
+== GREEN pin1: 1 passed, 6 deselected in 2.99s
+== GREEN pin2: 1 passed, 6 deselected in 3.00s
+== GREEN pin3: 1 passed, 6 deselected in 4.72s
+== GREEN pin4: 1 passed, 6 deselected in 4.39s
+1 failed, 6 deselected in 3.03s

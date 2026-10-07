@@ -985,3 +985,24 @@ Two further behaviours to know up front. `kind="indefinite"` ignores `max_attemp
 - `actors.md`: full `@actor` decorator reference.
 - `workers.md`: `WorkerSettings.max_retry_backoff`, `WorkerSettings.default_start_to_close`, and other worker-level settings.
 - `jobs-clients.md`: `schedule_to_close`, `start_to_close`, and other enqueue-time options.
+
+---
+
+## 14. Workflows: the ladder inside a fan-out
+
+A workflow node's retry ladder is the SAME ladder this guide documents —
+the fork declares `max_attempts`/`retry_kind` per fan-out, and the map's
+children retry in place (the same row, the same arbiter tuple). The
+workflow-specific rules compose on top:
+
+* **Ladder retries emit no workflow terminal** (P3 decision 7): a child
+  mid-ladder decrements nothing, cascades nothing, fans in nothing — the
+  join's counter moves ONLY at exhaustion. See
+  [workflows.md](workflows.md#the-failed-parent-propagation-t06).
+* **At exhaustion the failure resolves per the edge's declared policy**:
+  `fail_closed` (the default) peer-cancels the running siblings and fails
+  the flow; `collect` fans the failure in as a `FailureInfo` item — the
+  full attempt history, the estate's `ErrorInfo` envelope — and the join
+  fires with the partial result. The two semantics side by side, with the
+  peer-cancel record and the skip rule: [workflows.md's failure
+  section](workflows.md#the-failed-parent-propagation-t06).

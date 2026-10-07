@@ -79,6 +79,10 @@ async def insert_fork(
             ids,
             [parent_id] * len(chunk),
             [flow_id] * len(chunk),
+            # The fork's own child edges carry the DEFAULT policy: these
+            # edges reconcile fork debt; the propagation rule (T06) reads
+            # the JOIN's incoming edges only.
+            ["fail_closed"] * len(chunk),
         )
 
     join_id: JobId | None = None
@@ -106,9 +110,13 @@ async def insert_fork(
             chunk_ids = child_ids[start : start + FORK_CHUNK]
             await conn.execute(
                 wsql.fork_edges,
-                # child_id = the join; parent_id = each child.
+                # child_id = the join; parent_id = each child. EACH EDGE
+                # RECORDS THE JOIN'S DECLARED FAILURE POLICY (T06): the
+                # propagation rule reads it off the ledger — the absorption
+                # is on the record, never inferred.
                 [join_id] * len(chunk_ids),
                 chunk_ids,
                 [flow_id] * len(chunk_ids),
+                [fork.join.failure_policy] * len(chunk_ids),
             )
     return child_ids, join_id
