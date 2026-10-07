@@ -48,7 +48,7 @@ def probe_failure_info_envelope() -> None:
         map_index=None,
         error=ErrorInfo(error_class="ValueError", error_message="boom"),
         attempts=(),
-        policy="fail_closed",  # NOT a type error — see the report: policy is a bare str, the absorbing vocabulary is untyped at this door
+        policy="fail_closed",  # MUST_ERROR (reportArgumentType: the L2 cure — the policy marker is the TYPED absorbing vocabulary (collect|maybe); a fail_closed edge absorbs nothing, the envelope cannot claim it)
     )
     _ = lie
 
