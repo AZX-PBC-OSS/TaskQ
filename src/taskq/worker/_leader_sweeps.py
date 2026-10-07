@@ -704,21 +704,32 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # THE WORKFLOW HEALING ARMS (T04) — the three sweep arms
             # registered into the tick's table (the registration WAS the
             # gap: the arms existed, nothing outside taskq.workflows called
-            # them). Gated on the PG-only maintenance marker (the same
-            # hasattr gate the other PG-only sweeps use); the lazy imports
-            # keep the §16.1 import law (nothing outside the package
-            # imports taskq.workflows at module scope).
+            # them). Gated on THIS backend's own workflow capability
+            # marker — the same hasattr seam every other sweep is admitted
+            # through, each capability its own marker (the arms never
+            # borrow another sweep's method name, so a backend that
+            # implements only the legacy maintenance surface — and every
+            # audit double standing in for it — keeps the arms off, and
+            # the legacy sweep loop's observable behavior is unchanged by
+            # their registration: the arms are pure appends); the lazy
+            # imports keep the §16.1 import law (nothing outside the
+            # package imports taskq.workflows at module scope).
             #
             # * wf_join_rederive — the lock-first re-derive + fire: heals
             #   the tx1→tx2 crash window (the parent terminalized, the
             #   decrement/fire never ran) by reconciling the counter cache
             #   from the edge ledger, firing the firable joins and running
-            #   their reducer bodies (at-least-once, tx-scoped).
+            #   their reducer bodies (at-least-once, tx-scoped, resolved
+            #   DURABLY from the registered definition — the flow root's
+            #   stamped workflow name — not from the finalizing process's
+            #   memory).
             # * wf_outbox_drain — the delivery half: inserts the fired
             #   joins' consumer rows idempotently (the composite arbiter)
             #   and flips the undelivered flag in the same tx.
             # * wf_phantom_reap — fences 'running' ledger rows on terminal
-            #   flows (the rows-alone reconstruction reconciles, pin 15).
+            #   flows (the rows-alone reconstruction reconciles, pin 15)
+            #   and drops the terminal flows' reducer-cache entries (the
+            #   memo's bound).
             #
             # UndefinedTableError tolerance: a rolling deploy may run this
             # code against a schema the 01.00.23 round has not landed on
@@ -728,7 +739,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             call=wf_join_rederive_call,
             warn_event="sweep-wf-join-rederive-failed",
             warn_kind="sweep_wf_join_rederive_failed",
-            gated_on=("sweep_leaked_reservation_slots",),
+            gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=True,
             dbg_tick=_dbg_tick("wf_join_rederive_tick"),
@@ -738,7 +749,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             call=wf_outbox_drain_call,
             warn_event="sweep-wf-outbox-drain-failed",
             warn_kind="sweep_wf_outbox_drain_failed",
-            gated_on=("sweep_leaked_reservation_slots",),
+            gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=True,
             dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
@@ -753,7 +764,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             call=wf_phantom_reap_call,
             warn_event="sweep-wf-phantom-reap-failed",
             warn_kind="sweep_wf_phantom_reap_failed",
-            gated_on=("sweep_leaked_reservation_slots",),
+            gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
         ),

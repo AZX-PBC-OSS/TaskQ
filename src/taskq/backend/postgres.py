@@ -277,6 +277,17 @@ class PostgresBackend:
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int] = BACKEND_PROTOCOL_VERSION
 
+    #: The workflow healing arms' admission marker — the ``_SweepSpec``
+    #: tick table's hasattr gate probes it (``gated_on``). The arms live
+    #: in ``taskq.workflows._sweep`` (the §16.1 import law keeps them out
+    #: of this package's module scope); their admission is THIS class's
+    #: own capability declaration, the same seam every maintenance sweep
+    #: uses (each capability its own marker — the arms never borrow
+    #: another sweep's method name, so a backend declares exactly the
+    #: capabilities it implements, and a double/stand-in that implements
+    #: only the legacy maintenance surface keeps the arms off).
+    workflow_sweeps_capable: ClassVar[bool] = True
+
     def __init__(
         self,
         deps: BackendDeps,
