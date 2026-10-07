@@ -9,7 +9,7 @@ lock budgets and typed conflict path) — NOT the dropped single-column index
 ``01.00.03_01_post_idempotency_scope_drop_old_index.sql``). Idempotency keys
 stay TEXT — they are business keys ``(workflow, step_key[, map_index])``,
 not surrogate ids; the ledger's surrogate ids ride the seam
-(``taskq._ids.new_uuid()``, uuid7 — never ``gen_random_uuid()``/uuid4).
+(``taskq._ids.new_uuid()``, uuid7 — never DB-side or random-UUID generation (the TID251 ban)).
 
 Per-step opt-out (``idempotent=False``) for steps whose redelivery is
 harmless or whose payloads are too large to key. Default ON — silent
@@ -44,10 +44,12 @@ a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Final
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 
@@ -80,6 +82,14 @@ def step_idempotency_scope(flow_id: JobId) -> str:
 def step_idempotency_key(step_key: str, map_index: int | None = None) -> str:
     """The step-claim arbiter's key: ``(step_key[, map_index])``."""
     return f"wf:{step_key}" if map_index is None else f"wf:{step_key}:{map_index}"
+
+
+def _decode_jsonb(value: Any) -> Any:
+    """asyncpg returns jsonb as ``str`` on un-coded connections -- the
+    ledger's contract is the DECODED value; parse before returning."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +187,7 @@ async def memoized_step_result(
         map_index=map_index,
         attempt=rec["attempt"],
         status=rec["status"],
-        result=rec["result"],
+        result=_decode_jsonb(rec["result"]),
         error_class=rec["error_class"],
         error_message=rec["error_message"],
     )
@@ -204,11 +214,11 @@ async def insert_flow_run(
         flow_id,
         entry.actor,
         entry.queue,
-        entry.payload,
+        entry.payload if isinstance(entry.payload, str) else dumps_jsonb_str(entry.payload or {}),
         entry.max_attempts,
         entry.retry_kind,
         entry.trace_id,
-        {"flow_id": str(flow_id)},
+        dumps_jsonb_str({"flow_id": str(flow_id)}),
         run_idempotency_scope(),
         run_key,
     )
