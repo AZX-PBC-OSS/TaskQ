@@ -180,9 +180,17 @@ wins AS (
     RETURNING id AS fire_id, join_job_id, flow_id, step_key
 )
 SELECT w.join_job_id, w.step_key, w.flow_id, w.fire_id, j.trace_id,
-       j.metadata->'consumers' AS consumers
+       j.metadata->'consumers' AS consumers,
+       -- THE WORKFLOW NAME STAMP (the reducer resolution's durable leg):
+       -- the flow root's metadata names the workflow whose REGISTERED
+       -- DEFINITION carries the fired join's reducer body — the healer
+       -- resolves the body from the definition registry via this name,
+       -- whatever process finalized (the memo is a cache, never the
+       -- source). NULL when the root predates the stamp.
+       root.metadata->>'workflow' AS workflow_name
 FROM wins w
 JOIN {schema}.jobs j ON j.id = w.join_job_id
+JOIN {schema}.jobs root ON root.id = w.flow_id
 """
 
 
@@ -240,5 +248,5 @@ WHERE l.status = 'running'
       WHERE f.id = l.flow_id
         AND f.status IN {terminal}
   )
-RETURNING l.id
+RETURNING l.id, l.flow_id
 """

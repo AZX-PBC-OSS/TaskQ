@@ -459,6 +459,62 @@ async def test_pin_15_phantom_running_reaped(
     assert status == "fenced", status
 
 
+# ── Pin 22: THE REDUCER CACHE IS BOUNDED (the reaper drops terminal flows) ──
+
+
+@pytest.mark.integration
+async def test_pin_22_reaped_flow_forgets_its_reducer_cache(
+    wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """The process-local reducer cache (workflows/_reducers.py) is keyed by
+    flow id with NO schema-side bound — without a caller dropping terminal
+    flows' entries it grows once per finalized flow run, per process,
+    forever (the unbounded-memo dragon on long-lived workers). The bound:
+    the phantom reaper's pass — a TERMINAL flow's joins can never fire
+    again (the fire's own flow-status leg refuses them), so its cache
+    entry is dead weight and the reap drops it. The pin convicts a reaper
+    that stops forgetting (the cache entry survives the terminal flow).
+
+    The cross-process contract this rides under (the attack file pins the
+    RED): the cache is never the source of truth — the flow root's
+    stamped workflow name resolves a healed join's body from the
+    REGISTERED DEFINITION in any process; this memo answers only for
+    flows the registry cannot resolve, in the process whose finalize
+    warmed it."""
+    from taskq.workflows._reducers import (
+        forget_flow_reducers,
+        register_flow_reducers,
+        resolve_flow_reducer,
+    )
+
+    async def body() -> None: ...
+
+    flow_id = await seed_flow(wf_conn, wf_schema, status="succeeded")  # terminal flow
+    phantom = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
+        "map_index, attempt, status) VALUES ($1, $2, $3, 'a', NULL, 1, 'running')",
+        phantom,
+        flow_id,
+        new_uuid(),
+    )
+    # The finalize warmed the cache (the engine's own registration)...
+    register_flow_reducers(flow_id, {"join": body})
+    assert resolve_flow_reducer(flow_id, "join") is not None
+
+    # ...the reap (a terminal flow's ledger rows are phantoms) drops it.
+    reaped = await reap_phantom_ledger(module_pg_pool, wf_sql)
+    assert reaped >= 1, reaped
+    assert resolve_flow_reducer(flow_id, "join") is None, (
+        "the terminal flow's reducer-cache entry survived the reaper's "
+        "pass — the per-process cache is unbounded (one entry per flow run "
+        "ever finalized here, forever)"
+    )
+    # Hygiene: THIS test's warm entry is dropped (the cache is
+    # process-global across the module's tests).
+    forget_flow_reducers(flow_id)
+
+
 # ── Pin 17: EMPTY-JOIN (the edge-ledger formula is load-bearing) ────────
 
 

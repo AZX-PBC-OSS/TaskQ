@@ -2605,6 +2605,19 @@ workflow columns on `jobs` (`parent_id`, `map_index`, `step_key`,
 each file one lock class (columns / tables / indexes), applied in that
 order. See [Workflows](workflows.md) for the engine's contract.
 
+**The reducer-resolution semantics (the crash window's cross-process
+contract).** `insert_flow_run` stamps the flow root's metadata with the
+workflow's registered name (`metadata.workflow`); the sweep's fire arm
+resolves a healed join's reducer body FROM THE REGISTERED DEFINITION via
+that name — the definition registry every worker process carries. THE
+REGISTRY IS THE TRUTH; the process-local reducer memo is a cache only
+(warmed at finalize, never shadowing the definition), and the phantom
+reaper drops terminal flows' cache entries. A flow whose root predates
+the stamp resolves only in its finalizer's process; a flow whose
+definition is not registered in the healer's process delivers its
+declared consumers off an un-reduced join — keep the definitions
+imported in every worker.
+
 **The round was amended in place before landing.** The step ledger's
 claim arbiter keys `(flow_id, step_key, COALESCE(map_index, -1), attempt)`
 — map children of one step key are different claims — which is an

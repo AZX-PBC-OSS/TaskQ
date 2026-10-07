@@ -445,13 +445,15 @@ async def finalize_node(
     """
     assert_valid_transition("running", outcome, job_id)
 
-    # THE REDUCER MEMO (the tx1→tx2 window's cure): the finalize's
-    # reducers are resolvable OUTSIDE this call's stack — the sweep's
-    # healing pass runs the fired join's body from the same memo (see
-    # workflows/_reducers.py; D1's definition-first rule is the resolver's
-    # fallback). Registered before tx1: a fenced-out finalize registers
-    # nothing harmful (the memo keys by join step key; a body that never
-    # fires is never run).
+    # THE REDUCER CACHE WARM (the tx1→tx2 window's cure, cache half): the
+    # finalize's reducers are resolvable OUTSIDE this call's stack — the
+    # sweep's healing pass runs the fired join's body from the REGISTERED
+    # DEFINITION (the flow root's stamped workflow name resolves it in any
+    # process — the durable leg), falling through to THIS process's cache
+    # (the memo below) only for a flow the registry cannot resolve (see
+    # workflows/_reducers.py). Registered before tx1: a fenced-out
+    # finalize registers nothing harmful (the cache keys by join step
+    # key; a body that never fires is never run).
     if reducers:
         register_flow_reducers(flow_id, reducers)
 

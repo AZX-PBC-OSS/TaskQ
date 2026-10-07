@@ -53,13 +53,24 @@ outbox rows all roll back — and the re-derivation re-fires: the body
 RE-RUNS. **At-least-once body execution; exactly-once for DB-local
 effects** (the ledger claim + the composite arbiter), the stated boundary.
 
-The tx1→tx2 crash window keeps the same guarantee: the leader's
-maintenance sweep registers `wf_join_rederive`, which re-derives the
-counter from the edge ledger, fires the firable joins and runs their
-reducer bodies from the flow run's reducer memo (the finalize registered
-it; the registered definition is the resolver's fallback — bodies come
-from the definition, D1). A raising body there rolls the sweep pass back;
-the next tick re-fires.
+The tx1→tx2 crash window keeps the same guarantee ACROSS PROCESSES: the
+leader's maintenance sweep registers `wf_join_rederive`, which re-derives
+the counter from the edge ledger, fires the firable joins and runs their
+reducer bodies. The sweep heals schema-wide — ANY leader heals ANY flow's
+join-wait rows — so the body must resolve in the HEALER'S process, never
+the finalizer's memory. The resolution is therefore DURABLE:
+`insert_flow_run` stamps the flow root's metadata with its workflow's
+registered name (`metadata.workflow`), and the fire arm resolves the body
+FROM THE REGISTERED DEFINITION via that name — the definition registry
+every worker process carries (the same definitions imported fleet-wide;
+D1's BODY-FROM-DEFINITION discipline). **The registry is the truth; the
+process-local reducer memo is a cache** — it answers only for a flow the
+registry cannot resolve (a root stamped before the stamp existed, an
+anonymous flow), in the process whose finalize warmed it, and it never
+shadows the definition. The cache is bounded: the phantom reaper drops a
+terminal flow's entry at the reap (a terminal flow's joins can never
+fire). A raising body there rolls the sweep pass back; the next tick
+re-fires.
 
 ## The three cancel legs
 
@@ -93,7 +104,11 @@ fires the slot key as the run key — same slot twice → ONE run.
 ## The sweep arms (wired)
 
 Three healing arms register in the leader's maintenance sweep loop
-(the `_SweepSpec` tick table), gated on the PG-only maintenance marker:
+(the `_SweepSpec` tick table), gated on the backend's workflow capability
+marker (`workflow_sweeps_capable` — the same `hasattr` seam every
+maintenance sweep is admitted through, each capability its own marker; a
+backend that implements only the legacy maintenance surface keeps the
+arms off):
 
 * `wf_join_rederive` — the lock-first re-derive (`FOR UPDATE SKIP LOCKED`
   the join-wait children, count un-terminal parents from the edge ledger,
@@ -131,7 +146,7 @@ families:
 | --- | --- |
 | `tests/test_wf_schema_migration.py` | the schema round: the three-file lock-class split, the partial-index doctrine, the import law, the dispatch exclusion |
 | `tests/test_wf_finalize_pins.py` | the finalize family: the deps fingerprint (pin 1), the rowcount gate (6), the attempt fence (13), the gremlin guards (23: the `>= 0` flip; 24: the flow-status leg) |
-| `tests/test_wf_sweep_pins.py` | the sweep family: the post-cancel fire refusal (2+5), the misnamed child (8), held-row exclusivity (4), the phantom reaper (15), the empty join (17), the dispatch fence (2's claim leg), the sweep-arm wiring (21) |
+| `tests/test_wf_sweep_pins.py` | the sweep family: the post-cancel fire refusal (2+5), the misnamed child (8), held-row exclusivity (4), the phantom reaper (15), the empty join (17), the dispatch fence (2's claim leg), the sweep-arm wiring (21), the bounded reducer cache (22) |
 | `tests/test_wf_fork_pins.py` | the fork family: the id-collision (18), fork atomicity (19), the outbox drain exactly-once (20) |
 | `tests/test_workflows_ledger_pins.py` | the ledger family: the double-run (1), the lost-completion window (2), the concurrent claim (3), the run-key replay (4), the claim-atomic window (5), the terminal-atomic split-write (6), the map-children arbiter (7) |
 | `tests/test_wf_engine_units.py` | the in-process pins: the seam-only generation (10), redact-before-persist (11), the canonical hash (12), the deadlock budget (14), body-from-definition (16) |

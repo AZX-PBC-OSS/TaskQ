@@ -1,0 +1,6 @@
+        assert verdict["fired"] >= 1, (
+>       assert verdict["body_calls"] >= 1, (
+            f"and the reducer body ran {verdict['body_calls']} times: the fire "
+E       AssertionError: the join fired via the sweep's healing pass in the FRESH process and the reducer body ran 0 times: the fire arm resolved no body from the registered definition — the resolution is process-local (the memo), so the tx1→tx2 crash window turns 'at-least-once body execution' into NEVER whenever another process's leader wins the heal — downstream consumers dispatch off an un-reduced join (verdict={'fired': 1, 'body_calls': 0})
+tests/attack_wf_engine_windows.py:208: AssertionError
+FAILED tests/attack_wf_engine_windows.py::test_attack_sweep_fire_skips_the_reducer_body

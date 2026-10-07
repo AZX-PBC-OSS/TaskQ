@@ -38,7 +38,7 @@ import asyncpg
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows._reducers import resolve_flow_reducer
+from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import BLOCKING_REASON_ORPHAN_PARENT, WorkflowSql
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
@@ -73,15 +73,20 @@ async def sweep_join_rederive(
     locks are held until the fire arm + outbox rows commit, so the fire's
     re-derivation of the firable set is deterministic.
 
-    THE FIRED JOIN'S REDUCER BODY (the tx1→tx2 crash window's cure): the
-    winner's body resolves from the flow run's reducer memo (the finalize
-    registered it — workflows/_reducers.py; D1's registered definition is
-    the resolver's fallback) and runs INSIDE this transaction — the same
-    exactly-once boundary the finalize's tx2 states: a raising body rolls
-    this tx back (the fire row and the outbox rows with it), the next pass
-    re-fires, the body RE-RUNS — at-least-once body execution survives the
-    window between the engine's own two transactions. A fired join with no
-    resolvable body delivers its declared consumers; nothing else runs.
+    THE FIRED JOIN'S REDUCER BODY (the tx1→tx2 crash window's cure, the
+    CROSS-PROCESS form): the winner's body resolves DURABLY — from the
+    REGISTERED DEFINITION of the workflow stamped on the flow root's
+    metadata (every process carries the same definitions; the healer is
+    never the finalizer's process — the fire statement returns the stamped
+    name), falling through to the process-local reducer cache (the
+    finalize warmed it — workflows/_reducers.py) only for a flow the
+    registry cannot resolve. The body runs INSIDE this transaction — the
+    same exactly-once boundary the finalize's tx2 states: a raising body
+    rolls this tx back (the fire row and the outbox rows with it), the
+    next pass re-fires, the body RE-RUNS — at-least-once body execution
+    survives the window between the engine's own two transactions. A fired
+    join with no resolvable body delivers its declared consumers; nothing
+    else runs.
     """
     async with pool.acquire() as conn, conn.transaction():
         summary = await conn.fetchrow(wsql.rederive_sweep, batch_size, orphan_blocking_reason)
@@ -101,8 +106,16 @@ async def sweep_join_rederive(
                 # THE BODY: the winner's reducer runs INSIDE this tx (the
                 # exactly-once boundary is the FIRE's, never the body's —
                 # a raising body rolls the whole pass back and the
-                # re-derive re-fires; at-least-once body execution).
-                body = resolve_flow_reducer(JobId(w["flow_id"]), w["step_key"])
+                # re-derive re-fires; at-least-once body execution). The
+                # resolution is DURABLE: the flow root's stamped workflow
+                # name resolves the body from the REGISTERED DEFINITION —
+                # a flow finalized in another process heals with its real
+                # body (the memo is a cache, never the source).
+                body = resolve_flow_reducer(
+                    JobId(w["flow_id"]),
+                    w["step_key"],
+                    workflow_name=w["workflow_name"],
+                )
                 if body is not None:
                     await body()
                 fired_joins.append(
@@ -206,7 +219,16 @@ async def drain_outbox(
 async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     """The fenced-attempt sweep arm (hardening H1-H3): fence every
     'running' ledger row whose FLOW is terminal — the rows-alone
-    reconstruction reconciles (pin 15). Returns the reaped count."""
+    reconstruction reconciles (pin 15). Returns the reaped count.
+
+    THE MEMO'S BOUND rides the same pass: a terminal flow's joins can
+    never fire again (the fire's own flow-status leg refuses them), so its
+    reducer-cache entry is dead weight — the reaper drops it
+    (:func:`taskq.workflows._reducers.forget_flow_reducers`), bounding the
+    per-process cache by the live flow runs instead of every flow run
+    ever finalized here."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.phantom_reap)
+    for flow_id in {r["flow_id"] for r in rows}:
+        forget_flow_reducers(JobId(flow_id))
     return len(rows)

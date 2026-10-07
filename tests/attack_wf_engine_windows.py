@@ -2,20 +2,28 @@
 
 Three attacks, one file per the engine-window concern:
 
-1. THE TX1→TX2 CRASH WINDOW LOSES THE REDUCER BODY. ``finalize_node`` =
-   tx1 (the fenced terminal + fork) then tx2 (the decrement + fire +
-   reducer body + outbox). A worker killed after tx1 commits and before
-   tx2 starts leaves the decrement undone; the edge ledger still says the
-   parent is terminal. The healing arm is ``sweep_join_rederive``: it
-   reconciles the cache from the ledger and FIRES the join
-   (``SWEEP_FIRE_SQL``, ``fired_by='sweep'``), writing the outbox rows.
-   But the sweep's fire arm has NO reducer mechanism — the body runs only
-   in ``_fire_and_deliver`` (the finalize's tx2), which is dead by then.
-   The fired join's body executes ZERO times: T05's stated boundary ("a
-   raising reducer rolls tx2 back and the body RE-RUNS on re-fire —
-   at-least-once body execution", ``ledger.py:38-42``) is violated at the
-   window between the engine's own two transactions. Consumers dispatch
-   off an un-reduced join.
+1. THE TX1→TX2 CRASH WINDOW LOSES THE REDUCER BODY — THE CROSS-PROCESS
+   FORM. ``finalize_node`` = tx1 (the fenced terminal + fork) then tx2
+   (the decrement + fire + reducer body + outbox). A worker killed after
+   tx1 commits and before tx2 starts leaves the decrement undone; the
+   edge ledger still says the parent is terminal. The healing arm is
+   ``sweep_join_rederive``: it reconciles the cache from the ledger and
+   FIRES the join (``SWEEP_FIRE_SQL``, ``fired_by='sweep'``), writing the
+   outbox rows — and runs the fired join's REDUCER BODY. The body must
+   resolve in the HEALER'S process, which is never guaranteed to be the
+   finalizer's: the sweep heals schema-wide, ANY leader heals ANY flow's
+   join-wait rows. So the resolution is DURABLE — the flow root's
+   metadata names its workflow (stamped at ``insert_flow_run``) and the
+   fire arm resolves the body FROM THE REGISTERED DEFINITION (the
+   definition registry every process carries — D1's
+   BODY-FROM-DEFINITION); the process-local reducer memo is a cache,
+   never the source. This attack drives the shape END TO END: the
+   finalize dies at the window (its memo primed, then dropped — the
+   process's memory is gone), and a FRESH interpreter process — no memo,
+   no shared state, only the registered definition + the stamped name —
+   runs the heal. The body MUST run there: at-least-once body execution
+   surviving the process boundary, consumers never dispatching off an
+   un-reduced join.
 
 2. THE EDGE-LESS JOIN NODE IS INVISIBLE TO THE SWEEP. ``insert_node`` is
    the public enqueue path for joined nodes (``deps_pending > 0``), but
@@ -37,18 +45,68 @@ Three attacks, one file per the engine-window concern:
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any
+import os
+import subprocess  # Why: the cross-process attack IS a fresh-interpreter probe (the pin-21 pattern).
+import sys
+from pathlib import Path
+from typing import Any, cast
 
 import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
 from taskq.workflows import engine as engine_mod
+from taskq.workflows._reducers import forget_flow_reducers
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
+from taskq.workflows.definitions import StepBody, WorkflowDef, get_registry
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import claim_view, seed_edge, seed_flow, seed_join, seed_running_node
+
+#: The attack definition's registered name — the flow root's stamp and the
+#: subprocess's registration must agree (the fleet convention: the same
+#: definitions imported in every process).
+_WORKFLOW_NAME = "attack-cross-process-reducer"
+
+#: The fresh-process healer: registers the definition (its OWN body
+#: closure — nothing shared with the parent), runs the sweep's rederive
+#: arm against the stamped flow root, prints the JSON verdict. The parent
+#: primes no memo here; the ONLY body the healer can resolve is the
+#: registered definition's — the durable leg.
+_HEALER_SCRIPT = """\
+import asyncio, json, os, sys
+
+import asyncpg
+
+from taskq.workflows._sweep import sweep_join_rederive
+from taskq.workflows.definitions import WorkflowDef, get_registry
+from taskq.workflows.engine import render_workflow_sql
+
+schema = sys.argv[1]
+calls = {"body": 0}
+
+
+async def join_body(ctx: object) -> object:
+    calls["body"] += 1
+    return "reduced"
+
+
+get_registry().register(WorkflowDef(name="attack-cross-process-reducer", bodies={"join": join_body}))
+
+
+async def main() -> None:
+    pool = await asyncpg.create_pool(os.environ["TASKQ_PG_DSN"])
+    try:
+        result = await sweep_join_rederive(pool, render_workflow_sql(schema))
+        print(json.dumps({"fired": len(result.fired), "body_calls": calls["body"]}))
+    finally:
+        await pool.close()
+
+
+asyncio.run(main())
+"""
 
 
 @pytest.mark.integration
@@ -57,18 +115,36 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
+    pg_dsn: str,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    flow_id = await seed_flow(wf_conn, wf_schema)
+    """The CROSS-PROCESS form: the healer is a FRESH interpreter process —
+    no reducer memo, no shared state — and the body must still run,
+    resolved from the REGISTERED DEFINITION via the flow root's stamped
+    workflow name. The memo-only shape (the finalizing process's memory
+    as the source of truth) is the convicted variant: the sweep heals
+    schema-wide, so the healer is never guaranteed to be the finalizer —
+    the body would run ZERO times fleet-wide and the consumers would
+    dispatch off an un-reduced join."""
+    flow_id = await seed_flow(wf_conn, wf_schema, workflow=_WORKFLOW_NAME)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
 
-    body_calls = 0
+    # THE DEFINITION: registered under the name the flow root stamps —
+    # the convention every worker process follows (the registry content
+    # is schema-level by construction: the same definitions imported in
+    # every process). The parent's registry copy is NOT the healer's —
+    # the heal runs in a fresh process that registers its OWN; the
+    # parent's copy exists so the finalize's reducers argument declares a
+    # body, and to make the point: the parent's memory is not what runs.
+    async def parent_body(ctx: object) -> None:
+        return None
 
-    async def reducer_body() -> None:
-        nonlocal body_calls
-        body_calls += 1
+    get_registry().register(
+        WorkflowDef(name=_WORKFLOW_NAME, bodies={"join": cast("StepBody", parent_body)})
+    )
 
     # THE CRASH: tx1 commits (the parent terminalizes — the fenced UPDATE
     # returned its row), then the worker dies before tx2. Simulated at the
@@ -90,22 +166,54 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
             attempt=1,
             claim_epoch=0,
             outcome="succeeded",
-            reducers={"join": reducer_body},
+            reducers={"join": parent_body},
         )
     monkeypatch.undo()
 
-    # THE HEALING PASS: the sweep reconciles the cache from the edge
-    # ledger and fires the join (fired_by='sweep').
-    sweep = await sweep_join_rederive(module_pg_pool, wf_sql)
-    assert sweep.fired, f"the sweep must fire the crash-window join (got {sweep})"
+    # THE PROCESS DEATH: the finalizing process's memory is gone — the
+    # memo it warmed dies with it. Nothing in THIS process can answer the
+    # heal's resolution anymore.
+    forget_flow_reducers(flow_id)
+    from taskq.workflows._reducers import resolve_flow_reducer
 
-    # THE CONTRACT: at-least-once body execution. The shipped sweep fire
-    # arm has no reducer mechanism — the body ran ZERO times.
-    assert body_calls >= 1, (
-        f"the join fired via the sweep's healing pass and the reducer body "
-        f"ran {body_calls} times: the sweep's fire arm cannot run bodies, so "
-        "the tx1→tx2 crash window turns 'at-least-once body execution' into "
-        "NEVER — downstream consumers dispatch off an un-reduced join"
+    assert resolve_flow_reducer(flow_id, "join") is None, (
+        "the memo still answers after the finalizing process died — the "
+        "cross-process attack below would not exercise the durable leg"
+    )
+
+    # THE HEALING PASS IN A FRESH PROCESS: a new interpreter — importing
+    # taskq.workflows, registering the SAME definition name (the fleet
+    # convention), NO reducer memo — runs sweep_join_rederive against the
+    # stamped flow root. The verdict is the subprocess's own printout.
+    script = tmp_path / "_attack_cross_process_heal.py"
+    script.write_text(_HEALER_SCRIPT)
+    proc = await asyncio.to_thread(
+        subprocess.run,  # Why: fixed argv + tmp_path script, the pin-21 fresh-interpreter pattern.
+        [sys.executable, str(script), wf_schema],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "TASKQ_PG_DSN": pg_dsn},
+    )
+    assert proc.returncode == 0, (
+        f"the fresh-process healer crashed (rc={proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+    )
+    verdict = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert verdict["fired"] >= 1, (
+        f"the sweep's healing pass did not fire the crash-window join in "
+        f"the fresh process (verdict={verdict})"
+    )
+    # THE CONTRACT: at-least-once body execution ACROSS PROCESSES — the
+    # healer ran the REAL body, resolved from the registered definition
+    # (its own memo never existed).
+    assert verdict["body_calls"] >= 1, (
+        f"the join fired via the sweep's healing pass in the FRESH process "
+        f"and the reducer body ran {verdict['body_calls']} times: the fire "
+        f"arm resolved no body from the registered definition — the "
+        f"resolution is process-local (the memo), so the tx1→tx2 crash "
+        f"window turns 'at-least-once body execution' into NEVER whenever "
+        f"another process's leader wins the heal — downstream consumers "
+        f"dispatch off an un-reduced join (verdict={verdict})"
     )
 
 
