@@ -1,0 +1,2 @@
+FAILED tests/test_workflows_ledger_pins.py::test_pin_7_map_children_own_ledger_rows
+1 failed in 3.64s

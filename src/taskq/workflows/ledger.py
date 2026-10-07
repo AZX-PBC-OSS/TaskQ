@@ -99,6 +99,9 @@ class LedgerClaim:
     ``fresh`` rows were inserted by THIS claim (the only grant of work — the
     attempt increments at claim); a conflicting claim returns the EXISTING
     row, whose terminal ``result`` is the memoized answer.
+    ``ledger_id`` is the claimed LEDGER ROW's own id (the RETURNING id) —
+    the strongest terminal-write key: the finalize that holds it pins the
+    outcome write to exactly this row (``LEDGER_TERMINAL_BY_ID_SQL``).
     """
 
     flow_id: JobId
@@ -110,6 +113,7 @@ class LedgerClaim:
     result: Any | None
     error_class: str | None
     error_message: str | None
+    ledger_id: JobId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +158,7 @@ async def claim_step_ledger(
     )
     assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
     return LedgerClaim(
+        ledger_id=JobId(rec["id"]),
         flow_id=JobId(rec["flow_id"]),
         job_id=JobId(rec["job_id"]),
         step_key=rec["step_key"],

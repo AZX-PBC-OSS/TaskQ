@@ -71,8 +71,15 @@ CREATE TABLE "{schema}".wf_outbox (
 
 -- ── wf_step_ledger: the step ledger (the exactly-once attempt record) ────
 -- The ledger `attempt` increments at claim, the only grant of work; the
--- UNIQUE (flow_id, step_key, attempt) triple physically blocks
--- double-recording (P3 rule 2). The ledger's terminal-outcome write rides
+-- claim arbiter (the CREATE UNIQUE INDEX in 01.00.23_03,
+-- wf_step_ledger_claim_uniq) physically blocks double-recording (P3 rule 2).
+-- THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
+-- are DIFFERENT claims per T05's key contract — a bare
+-- UNIQUE (flow_id, step_key, attempt) collapses them onto ONE row (the
+-- terminal write overwrites, the memoized replay returns the wrong child's
+-- result — the ATTACK-FIXED shape; this round is NOT landed anywhere, so the
+-- constraint was amended in place, the unique index lives in _03 beside the
+-- round's other index builds). The ledger's terminal-outcome write rides
 -- the finalize's own transaction (the ledger-terminal-atomic rule). The
 -- failure IO-capture (the `capture` jsonb) is written at failure-finalize
 -- per the workflow's none|errors-only|all policy, AFTER the redact chain
@@ -91,8 +98,7 @@ CREATE TABLE "{schema}".wf_step_ledger (
     error_message text NULL,
     capture       jsonb NULL,
     created_at    timestamptz NOT NULL DEFAULT clock_timestamp(),
-    updated_at    timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (flow_id, step_key, attempt)
+    updated_at    timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
 COMMENT ON TABLE "{schema}".wf_edge IS
@@ -102,4 +108,4 @@ COMMENT ON TABLE "{schema}".wf_join_fire IS
 COMMENT ON TABLE "{schema}".wf_outbox IS
     'The workflow delivery outbox: a fired join''s consumer bindings; the drain inserts consumer rows idempotently and flips the flag in the insert''s transaction.';
 COMMENT ON TABLE "{schema}".wf_step_ledger IS
-    'The workflow step ledger: one row per (flow, step, attempt). UNIQUE(flow_id, step_key, attempt) physically blocks double-recording; terminal writes ride the finalize''s own transaction.';
+    'The workflow step ledger: one row per (flow, step, map_index, attempt). The claim arbiter UNIQUE(flow_id, step_key, COALESCE(map_index,-1), attempt) physically blocks double-recording; terminal writes ride the finalize''s own transaction.';

@@ -11,14 +11,23 @@ from __future__ import annotations
 # INSERT ... ON CONFLICT DO UPDATE ... RETURNING, never check-then-insert
 # (verified 30 reps x 10 concurrent). A fresh claim inserts status='running'
 # (the attempt increments at claim, the only grant of work); a conflicting
-# claim returns the EXISTING row — the UNIQUE (flow_id, step_key, attempt)
-# triple physically blocks double-recording (P3 rule 2), and the ledger
-# terminal write rides the finalize's own transaction.
+# claim returns the EXISTING row — the claim arbiter
+# (wf_step_ledger_claim_uniq, 01.00.23_03: (flow_id, step_key,
+# COALESCE(map_index, -1), attempt)) physically blocks double-recording (P3
+# rule 2), and the ledger terminal write rides the finalize's own
+# transaction.
+#
+# THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
+# are DIFFERENT claims (T05's key contract) — a conflict target omitting
+# map_index collapses them onto one row (child 1's claim returns child 0's
+# row, the terminal write overwrites, the memoized replay returns the wrong
+# child's result). The expression spells the index verbatim — an ON CONFLICT
+# target infers only an arbiter carrying the identical expression.
 LEDGER_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
     (id, flow_id, job_id, step_key, map_index, attempt, status)
 VALUES ($1, $2, $3, $4, $5, $6, 'running')
-ON CONFLICT (flow_id, step_key, attempt) DO UPDATE
+ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt) DO UPDATE
     SET updated_at = clock_timestamp()
 RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
           result, error_class, error_message
@@ -46,6 +55,16 @@ LIMIT 1
 # The ledger's terminal-outcome write — rides the finalize's OWN transaction
 # (the ledger-terminal-atomic rule, hardening H9): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
+#
+# TWO keyings, one invariant — the write touches EXACTLY the claimed row:
+#   * LEDGER_TERMINAL_SQL (the map-aware fallback) keys the full arbiter
+#     tuple, COALESCE(map_index, -1) included — the same expression the
+#     claim arbiter carries, so a map child's terminal can never overwrite
+#     its sibling's row.
+#   * LEDGER_TERMINAL_BY_ID_SQL keys the claim's OWN RETURNING id — the
+#     strongest form: the caller that holds the claim's ledger-row id
+#     (claim_step_ledger → LedgerClaim.ledger_id) pins the write to that
+#     row and nothing else.
 LEDGER_TERMINAL_SQL = """\
 UPDATE {schema}.wf_step_ledger
 SET status = $4,
@@ -57,13 +76,29 @@ SET status = $4,
 WHERE flow_id = $1
   AND step_key = $2
   AND attempt = $3
+  AND COALESCE(map_index, -1) = COALESCE($9::smallint, -1)
+RETURNING id
+"""
+
+
+LEDGER_TERMINAL_BY_ID_SQL = """\
+UPDATE {schema}.wf_step_ledger
+SET status = $2,
+    result = $3::jsonb,
+    error_class = $4,
+    error_message = $5,
+    capture = $6::jsonb,
+    updated_at = clock_timestamp()
+WHERE id = $1
 RETURNING id
 """
 
 
 # A fenced-out attempt is recorded outcome='fenced' — never a running ledger
 # row left forever on a terminal flow (hardening H1: "neither landed nor
-# refused" is the state the linearization doctrine forbids).
+# refused" is the state the linearization doctrine forbids). The same two
+# keyings as the terminal write (the arbiter tuple / the claim's own id);
+# both guard status = 'running' so a terminal row is never re-fenced.
 LEDGER_FENCE_ATTEMPT_SQL = """\
 UPDATE {schema}.wf_step_ledger
 SET status = 'fenced',
@@ -72,6 +107,18 @@ SET status = 'fenced',
 WHERE flow_id = $1
   AND step_key = $2
   AND attempt = $3
+  AND COALESCE(map_index, -1) = COALESCE($5::smallint, -1)
+  AND status = 'running'
+RETURNING id
+"""
+
+
+LEDGER_FENCE_BY_ID_SQL = """\
+UPDATE {schema}.wf_step_ledger
+SET status = 'fenced',
+    error_class = $2,
+    updated_at = clock_timestamp()
+WHERE id = $1
   AND status = 'running'
 RETURNING id
 """
