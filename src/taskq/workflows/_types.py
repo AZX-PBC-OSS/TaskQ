@@ -18,6 +18,7 @@ from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
 __all__ = [
+    "AbsorbingPolicy",
     "ChildSpec",
     "ConsumerBinding",
     "DecrementHit",
@@ -48,6 +49,14 @@ __all__ = [
 #:   :class:`FailureInfo` item and the join FIRES with the typed partial
 #:   result.
 FailurePolicy = Literal["fail_closed", "collect"]
+
+
+#: The ABSORBING policies (the edges whose declared policy absorbs a
+#: failure): T06's ``collect`` and T07's ``maybe``. A ``fail_closed``
+#: edge absorbs NOTHING — the cascade owns its resolution — so the
+#: envelope's policy marker can never claim it (the typed door: the
+#: envelope must not lie about which policy ran, T07's C).
+AbsorbingPolicy = Literal["collect", "maybe"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,8 +182,9 @@ class FailureInfo:
     attempts: tuple[tuple[int, str | None, str | None], ...] = ()
     #: The edge's OWN declared policy that absorbed this failure (T07's C:
     #: the envelope must not lie about which policy ran — 'collect' and
-    #: 'maybe' absorb; the marker is on the item).
-    policy: str = "collect"
+    #: 'maybe' absorb; the marker is on the item, TYPED to the absorbing
+    #: vocabulary — a fail_closed claim is unconstructible at this door).
+    policy: AbsorbingPolicy = "collect"
 
     def to_json(self) -> dict[str, object]:
         """The fan-in item's jsonb shape (the join row's ``failures``
@@ -218,6 +228,12 @@ def _failure_info_from_json(raw: object) -> FailureInfo:
             )
         )
     traceback_raw: Any = err_raw.get("error_traceback")  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
+    # The POLICY is the typed absorbing vocabulary: the walk repairs a
+    # pre-policy item (no policy key → 'collect' — the item predates the
+    # marker) and refuses to carry an OUT-OF-VOCABULARY value through
+    # (a corrupt item reads as the default, never as a lie).
+    policy_raw: Any = decoded.get("policy", "collect")  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
+    policy: AbsorbingPolicy = policy_raw if policy_raw in ("collect", "maybe") else "collect"
     return FailureInfo(
         node_key=str(decoded.get("node_key", "")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (decoded's members are Unknown); the asserts above guard the runtime shape.
         map_index=decoded.get("map_index"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
@@ -227,7 +243,7 @@ def _failure_info_from_json(raw: object) -> FailureInfo:
             error_traceback=traceback_raw if isinstance(traceback_raw, str) else None,
         ),
         attempts=tuple(attempts),
-        policy=str(decoded.get("policy", "collect")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk (pre-policy items read 'collect').
+        policy=policy,
     )
 
 

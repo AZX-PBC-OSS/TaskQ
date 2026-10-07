@@ -525,6 +525,11 @@ async def _resolve_failed_parent(
             )
             for a in raw_attempts  # pyright: ignore[reportUnknownVariableType]  # Why: same walk.
         ]
+        # The edge's own declared policy — the statement's WHERE already
+        # constrains it to the absorbing vocabulary (collect | maybe);
+        # the assert is the runtime guard behind the typed door.
+        policy = row["policy"]
+        assert policy in ("collect", "maybe"), policy
         item = FailureInfo(
             node_key=step_key,
             map_index=map_index,
@@ -534,7 +539,7 @@ async def _resolve_failed_parent(
                 error_traceback=error_traceback,
             ),
             attempts=tuple(attempts),
-            policy=row["policy"],  # the edge's own declared policy
+            policy=policy,  # the edge's own declared policy (the assert above is the guard)
         )
         await conn.execute(
             wsql.collect_fan_in_append,
@@ -569,6 +574,11 @@ async def fan_in_skip(
         map_index,
     )
     for row in fanin_rows:
+        # The statement's WHERE constrains the policy to the absorbing
+        # vocabulary (collect | maybe) — the assert is the typed door's
+        # runtime guard.
+        policy = row["policy"]
+        assert policy in ("collect", "maybe"), policy
         item = FailureInfo(
             node_key=step_key,
             map_index=map_index,
@@ -578,7 +588,7 @@ async def fan_in_skip(
                 error_traceback=None,
             ),
             attempts=(),
-            policy=row["policy"],
+            policy=policy,
         )
         await conn.execute(
             wsql.collect_fan_in_append,

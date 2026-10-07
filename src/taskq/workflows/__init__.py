@@ -28,6 +28,7 @@ from taskq.workflows._sweep import (
     sweep_join_rederive,
 )
 from taskq.workflows._types import (
+    AbsorbingPolicy,
     ChildSpec,
     ConsumerBinding,
     DecrementHit,
@@ -76,6 +77,7 @@ __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
     "FAILURE_POLICIES",
     "MAX_FAN_IN_PER_JOIN",
+    "AbsorbingPolicy",
     "ChildSpec",
     "ConsumerBinding",
     "DeadlockRetriesExhaustedError",
