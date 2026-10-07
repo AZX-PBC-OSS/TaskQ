@@ -18,6 +18,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows.engine import render_workflow_sql
 from taskq.workflows._sweep import sweep_join_rederive
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
@@ -42,6 +43,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """THE FINGERPRINT: a sweep that WRITES FROM A SNAPSHOT (the count read
     outside the child's row lock) strands the join — the counter jumps
@@ -78,23 +80,36 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     after = await node_state(wf_conn, wf_schema, join_id)
     assert after["deps_pending"] == 0, after  # the decrement committed
 
-    # THE RED: the snapshot write puts the STALE count (1) back onto a row
-    # that is already 0 — the counter jumps backward off the ledger's
-    # truth; the join un-fires (waits forever on a terminal parent).
+    # THE RED — A REAL ENGINE MUTATION: the shipped rederive's reconcile
+    # WRITE-GUARD flipped (`<>` → `=`, the arm never writes a correction):
+    # the drifted row's counter NEVER returns to the ledger's truth — the
+    # join stays in join-wait forever on a terminal parent (the snapshot
+    # write's fingerprint made permanent). The shipped guard heals it.
+    import taskq.workflows._sql as sql_module
+
+    mutated_rederive = wf_sql.rederive_sweep.replace(
+        "AND j.deps_pending <> c.unterminal::smallint",
+        "AND j.deps_pending = c.unterminal::smallint",
+    )
+    assert mutated_rederive != wf_sql.rederive_sweep, "the mutation drill did not arm"
+    monkeypatch.setattr(sql_module, "REDERIVE_SWEEP_SQL", mutated_rederive)
+    mutated_sql = render_workflow_sql(wf_schema)
     await wf_conn.execute(
         f'UPDATE "{wf_schema}".jobs SET deps_pending = $2 WHERE id = $1',
         join_id,
         int(snapshot_count),
     )
-    drifted = await node_state(wf_conn, wf_schema, join_id)
+    await sweep_join_rederive(module_pg_pool, mutated_sql)
+    monkeypatch.undo()
+    unhealed = await node_state(wf_conn, wf_schema, join_id)
     engine_redlog.red(
         "pin1-snapshot-write",
-        "sweep writes deps_pending from a pre-decrement snapshot",
-        {"deps_pending_after": drifted["deps_pending"], "ledger_truth": 0},
+        "the rederive's reconcile write-guard flipped (the counter never returns to the ledger's truth)",
+        {"deps_pending_after_mutated_sweep": unhealed["deps_pending"], "ledger_truth": 0},
     )
-    assert drifted["deps_pending"] == 1, (
-        "the snapshot write did NOT corrupt the counter — the red comparator "
-        "is broken (it must drift; that is the fingerprint)"
+    assert unhealed["deps_pending"] == 1, (
+        "the mutated arm must NOT heal the drift — the red comparator is "
+        "broken (the reconcile write is load-bearing)"
     )
 
     # THE SHIPPED ARM heals the drift: the drifted row is join-wait again
@@ -165,9 +180,7 @@ def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> N
     # A well-formed fork validates.
     from taskq.workflows._types import ChildSpec
 
-    validate_fork(
-        ForkSpec(children=(ChildSpec(step_key="c", actor="wf", queue="default"),))
-    )
+    validate_fork(ForkSpec(children=(ChildSpec(step_key="c", actor="wf", queue="default"),)))
     engine_redlog.red(
         "pin22-build-time-refusals",
         "the unvalidated builders (empty fork / edge-less join) reached the DB",
@@ -198,7 +211,6 @@ async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
-    worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, parent)
 
     # ONE admitted view, tx2 TWICE (the duplicate-delivery shape tx2's own
     # fence does not see — tx1's rowcount gate admitted this worker once).

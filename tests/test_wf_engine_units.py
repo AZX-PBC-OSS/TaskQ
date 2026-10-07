@@ -53,7 +53,7 @@ def test_pin_10_seam_only_generation() -> None:
 # ── Pin 11: REDACT-BEFORE-PERSIST (the canary never lands) ──────────────
 
 
-def test_pin_11_redact_before_persist(engine_redlog: RedLog) -> None:
+def test_pin_11_redact_before_persist(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
     """A canary in the fixture payload, the ``redact=fn`` hook configured,
     the node fails → the capture row must contain NO canary. The hook
     composes AFTER the chain (chain → hook, unconditional). THE NEGATIVE
@@ -61,25 +61,35 @@ def test_pin_11_redact_before_persist(engine_redlog: RedLog) -> None:
     refused — intent is undetectable — it is structurally powerless on its
     OWN input (already scrubbed), and the pin asserts the chain's masks
     are present on the persisted capture REGARDLESS of an honest hook's
-    return. The writer variant that lets the hook run BEFORE (or instead
-    of) the chain reds (the hole where the canary reaches the row)."""
+    return. THE RED is a real mutation of the shipped pipeline: the
+    chain→hook composer mutated to HOOK-ONLY (the writer variant that lets
+    the hook run instead of the chain) — the canary reaches the row."""
+    import taskq.workflows._capture as capture_module
+
     canary = "AKIAIOSFODNN7EXAMPLE"  # the canonical AWS access-key example
 
-    # THE CONVICTED VARIANT: hook-instead-of-chain — the canary lands.
-    def hook_instead_of_chain(node_input: str) -> dict[str, str]:
-        # The writer the composition forbids: the hook's output persisted
-        # with NO chain pass on it.
-        hook = lambda t: t  # noqa: E731  # Why: the identity hook isolates the missing-chain defect.
-        return {"input": hook(node_input)}
+    # THE RED — A REAL ENGINE MUTATION: the composer runs the hook INSTEAD
+    # OF the chain (the convicted writer); the capture is built through the
+    # SHIPPED build_capture with the mutation in place — the canary lands.
+    def hook_only(text: str, *, redact: Callable[[str], str] | None = None) -> str:
+        return text if redact is None else redact(text)
 
-    convicted = hook_instead_of_chain(f"payload with {canary}")
+    monkeypatch.setattr(capture_module, "redact_capture", hook_only)
+    convicted = capture_module.build_capture(
+        policy="errors-only",
+        node_input=f"payload with {canary}",
+        error=f"boom at {canary}",
+        redact=lambda t: t,  # an honest no-op hook — the chain is what's missing
+    )
+    monkeypatch.undo()
+    assert convicted is not None
     engine_redlog.red(
         "pin11-redact-before-persist",
         "capture writer persists the hook's output without the chain pass",
         {"canary_persisted": canary in json.dumps(convicted)},
     )
     assert canary in json.dumps(convicted), (
-        "the convicted variant no longer leaks the canary — the red "
+        "the mutated pipeline no longer leaks the canary — the red "
         "comparator is broken (the chain must be load-bearing)"
     )
 
@@ -101,45 +111,56 @@ def test_pin_11_redact_before_persist(engine_redlog: RedLog) -> None:
 # ── Pin 12: CANONICAL-HASH (dict-ordering must not matter) ──────────────
 
 
-def test_pin_12_canonical_hash(engine_redlog: RedLog) -> None:
+def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
     """A dict-ordering mutation of the same args must NOT change the
-    code-version hash (a false invalidation is the silent failure). The
-    non-canonical serializer variant (json.dumps, insertion-ordered) reds."""
+    code-version hash (a false invalidation is the silent failure). THE
+    RED is a real mutation of the shipped hash site: the module's
+    serializer swapped for a non-canonical one (json.dumps,
+    insertion-ordered) — the same args under a different insertion order
+    hash DIFFERENTLY through the shipped compute_code_version."""
     import hashlib
 
+    import taskq.workflows._version as version_module
     from tors import content_hash
 
     assert compute_code_version("m", "f", source="def f(): ...") == compute_code_version(
         "m", "f", source="def f(): ..."
     ), "the same inputs must hash stably"
 
-    # THE CONVICTED VARIANT: an insertion-ordered serializer — the same
-    # args under a different insertion order hash DIFFERENTLY (the false
-    # invalidation).
-    def non_canonical(payload: dict[str, str]) -> str:
+    def non_canonical(payload: object) -> str:
         return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
-    left = non_canonical({"module": "m", "qualname": "f"})
-    right = non_canonical({"qualname": "f", "module": "m"})
+    # The same LOGICAL payload under two insertion orders, through the
+    # module's (mutated) serializer site.
+    monkeypatch.setattr(version_module, "content_hash", non_canonical)
+    left = version_module.content_hash({"module": "m", "qualname": "f"})
+    right = version_module.content_hash({"qualname": "f", "module": "m"})
+    monkeypatch.undo()
     engine_redlog.red(
         "pin12-canonical-hash",
-        "json.dumps without canonical ordering (insertion-ordered)",
-        {"left": left, "right": right, "moved": left != right},
+        "the version hash's serializer swapped for json.dumps (insertion-ordered, non-canonical)",
+        {"left": left, "right": right},
     )
-    assert left != right, "the non-canonical variant must red"
+    assert right != left, (
+        "the non-canonical serializer must move the hash — the red "
+        "comparator is broken (canonical ordering is load-bearing)"
+    )
 
-    # And the tors hash is canonical under the same mutation.
+    # And the shipped tors hash is canonical under the same mutation.
     assert content_hash({"a": "1", "b": "2"}) == content_hash({"b": "2", "a": "1"})
 
 
 # ── Pin 16: BODY-FROM-DEFINITION (D1) ───────────────────────────────────
 
 
-def test_pin_16_body_from_definition(engine_redlog: RedLog) -> None:
+def test_pin_16_body_from_definition(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
     """Two overlapping dispatches of one pending node — one with a MUTATED
     per-call body map — must resolve BOTH bodies from the REGISTERED
     definition (the claim-CAS loser runs the defined body, never the
-    per-call variant)."""
+    per-call variant). THE RED is a real mutation of the shipped resolver:
+    the dispatch's body resolution swapped for a per-call MAP lookup (the
+    D1 hazard) — the loser of the claim CAS runs the WRONG body."""
+    import taskq.workflows.definitions as definitions_module
     from taskq.workflows.definitions import (
         WorkflowDef,
         get_registry,
@@ -153,21 +174,31 @@ def test_pin_16_body_from_definition(engine_redlog: RedLog) -> None:
         return "MUTATED"
 
     get_registry().register(WorkflowDef(name="pin16-flow", bodies={"step_a": defined_body}))
-    # BOTH dispatches resolve from the registry — a per-call map, had it
-    # existed, would double-task the pending node.
+
+    # THE SHIPPED RESOLVER: BOTH dispatches resolve from the registry — a
+    # per-call map, had it existed, would double-task the pending node.
     winner = resolve_step_body("pin16-flow", "step_a")
     loser = resolve_step_body("pin16-flow", "step_a")
     assert winner is defined_body and loser is defined_body
 
-    # THE CONVICTED VARIANT: a per-call body map — the loser of the claim
-    # CAS runs the WRONG body.
-    per_call_map = {"step_a": mutated_body}
+    # THE RED — A REAL ENGINE MUTATION: the dispatch's body resolution
+    # reads a per-call map (the convicted shape) — the CAS loser runs the
+    # WRONG body.
+    per_call_map: dict[str, Any] = {"step_a": mutated_body}
+    monkeypatch.setattr(
+        definitions_module, "resolve_step_body", lambda name, key: per_call_map[key]
+    )
+    loser_mutated = definitions_module.resolve_step_body("pin16-flow", "step_a")
+    monkeypatch.undo()
     engine_redlog.red(
         "pin16-body-from-definition",
         "per-call body map (the D1 hazard: the CAS loser runs the wrong body)",
-        {"loser_body": "MUTATED"},
+        {"loser_body": "MUTATED", "shipped": "the registered definition's body"},
     )
-    assert per_call_map["step_a"] is mutated_body  # the wrong body, the red
+    assert loser_mutated is mutated_body, (
+        "the per-call-map mutation must hand the dispatch the WRONG body — "
+        "the red comparator is broken (D1's registry resolution is load-bearing)"
+    )
 
 
 # ── Pin 14: DEADLOCK-RETRY (the budget + the linearization-preserving shape)

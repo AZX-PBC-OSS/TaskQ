@@ -12,6 +12,8 @@ the unfenced variants kept in this file forever as the convicted shapes.
 
 from __future__ import annotations
 
+import itertools
+import uuid
 from typing import Any
 
 import asyncpg
@@ -42,6 +44,7 @@ async def test_pin_18_no_id_collision(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fork whose children derive ids from a ``{parent}.{child}``
     string-shape convention over hand-built parent ids containing dots
@@ -50,21 +53,49 @@ async def test_pin_18_no_id_collision(
     distinct children, each with its own (parent_id, map_index)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE CONVICTED VARIANT: 200 properties forking children onto the same
-    # string-derived ids.
-    # The map node's hand-built id carries NO iteration discriminator --
-    # every property's fork derives the same child id from it.
-    convicted_ids = {
-        f"props.map.import.{child}.enrich".rsplit(".", 1)[0] + ".enrich"
-        for child in range(3)
-        for _prop in range(200)
-    }
+    # THE RED — A REAL ENGINE MUTATION: the fork's id mint site swapped
+    # for the convicted string-shape convention (ids derived from a
+    # {parent}.{child}-style convention with no per-fork discriminator —
+    # 10 distinct ids TOTAL): the second fork's children collide with the
+    # first's on the PRIMARY KEY — the convicted graph cannot even be
+    # built, and a convention WITHOUT the PK would silently land the
+    # wrong graph (the same ids, the wrong parents' work). The shipped
+    # mint (uuid7 via the seam) forks 20 x 10 distinct children.
+    import taskq.workflows._fork as fork_module
+
+    convicted_calls = itertools.count()
+    monkeypatch.setattr(
+        fork_module,
+        "new_uuid",
+        lambda: uuid.UUID(int=next(convicted_calls) % 10),  # 10 distinct ids, no fork discriminator
+    )
+    convicted_fork = ForkSpec(
+        children=tuple(
+            ChildSpec(step_key="enrich", actor="wf", queue="default", map_index=m)
+            for m in range(10)
+        ),
+        join=JoinSpec(step_key="reduce", actor="wf", queue="default"),
+    )
+    convicted_parent = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="conv")
+    with pytest.raises(asyncpg.exceptions.UniqueViolationError):
+        for _ in range(2):
+            await fork_module.insert_fork(
+                wf_conn,
+                wf_sql,
+                flow_id=flow_id,
+                parent_id=convicted_parent,
+                parent_step_key="conv",
+                fork=convicted_fork,
+            )
+    monkeypatch.undo()
     engine_redlog.red(
         "pin18-id-collision",
-        "{parent}.{child} string-shape ids over dotted parents",
-        {"forks": 200, "distinct_child_ids": len(convicted_ids)},
+        "the fork's id mint swapped for a string-shape convention (no per-fork discriminator)",
+        {
+            "convicted_distinct_ids": 10,
+            "observed": "UniqueViolationError on the second fork (the PK is the only backstop)",
+        },
     )
-    assert len(convicted_ids) < 200, "the convicted variant must collide"
 
     # THE SHIPPED FORK: each parent's finalize atomically forks 10
     # children; every child id is distinct, wiring lives in (parent_id,

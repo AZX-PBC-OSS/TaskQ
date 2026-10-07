@@ -22,6 +22,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows.engine import render_workflow_sql
 from taskq.workflows._sweep import reap_phantom_ledger
 from taskq.workflows.engine import finalize_node
 from taskq.workflows.ledger import (
@@ -37,36 +38,28 @@ from tests._wf_fixtures import FlowStandIn, RedLog, seed_flow
 
 @pytest.mark.integration
 async def test_pin_1_double_run_red_and_memoized_green(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, ledger_redlog: RedLog
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    ledger_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A step re-delivered WITHOUT the ledger claim executes twice (the
-    convicted shape); with the claim path, the second delivery gets the
-    recorded result rather than re-executing."""
+    """A step re-delivered gets the recorded result rather than
+    re-executing — the memoized replay through the SHIPPED claim path. THE
+    RED is a real mutation of the engine: the memoized lookup's statement
+    mutated to return nothing (the replay lookup broken — the ledger
+    forgets) and the re-delivery RE-EXECUTES through the very same shipped
+    body: the double-run dragon manifests on the engine, not on a local
+    re-implementation. The shipped statement greens it."""
     flow_id = new_uuid()
     node_id = new_uuid()
     executions = 0
 
-    # THE CONVICTED VARIANT: no ledger claim — the re-delivery re-executes.
-    async def naked_body() -> str:
-        nonlocal executions
-        executions += 1
-        return "ran"
-
-    await naked_body()
-    await naked_body()
-    ledger_redlog.red(
-        "pin1-double-run",
-        "step re-delivery without the ledger claim",
-        {"executions": executions},
-    )
-    assert executions == 2, "the convicted variant must double-run"
-
-    # THE SHIPPED CLAIM PATH: the body is guarded by the memoized lookup;
+    # THE SHIPPED CLAIM PATH (the body is guarded by the memoized lookup):
     # the first execution claims (running), the node terminalizes (the
     # ledger-terminal write rides the finalize), and the re-delivery
     # returns the recorded result — ONE execution, ever.
-    executions = 0
-
     async def claimed_body() -> Any:
         nonlocal executions
         memo = await memoized_step_result(
@@ -95,6 +88,41 @@ async def test_pin_1_double_run_red_and_memoized_green(
     replay = await claimed_body()
     assert replay == {"v": 42}, "the recorded result returns"
     assert executions == 1, "the memoized replay must not re-execute"
+
+    # THE RED — A REAL ENGINE MUTATION: the memoized-lookup statement
+    # mutated to match nothing (the replay lookup broken), the SAME body
+    # re-delivered re-EXECUTES: the double-run dragon, on the shipped path.
+    import taskq.workflows._sql as sql_module
+
+    mutated = wf_sql.ledger_memoized.replace(
+        "AND status IN ('succeeded', 'failed')", "AND status IN ('no-such-status')"
+    )
+    assert mutated != wf_sql.ledger_memoized, "the mutation drill did not arm"
+    monkeypatch.setattr(sql_module, "LEDGER_MEMOIZED_SQL", mutated)
+    mutated_sql = render_workflow_sql(wf_schema)
+    executions = 0
+
+    async def red_body() -> Any:
+        nonlocal executions
+        memo = await memoized_step_result(
+            wf_conn, mutated_sql, flow_id=flow_id, step_key="s", map_index=None
+        )
+        if memo is not None and memo.status == "succeeded":
+            return memo.result
+        executions += 1
+        return "ran"
+
+    second = await red_body()
+    ledger_redlog.red(
+        "pin1-double-run",
+        "the memoized lookup's statement mutated to match nothing (the replay forgets)",
+        {"executions_after_redelivery": executions},
+    )
+    assert second == "ran" and executions == 1, (
+        "the mutated replay must re-execute — the red comparator is broken "
+        "(the lookup is load-bearing)"
+    )
+    monkeypatch.undo()
 
 
 # ── Pin 2: LOST-COMPLETION-WINDOW (crash between effect and finalize) ───
@@ -195,6 +223,7 @@ async def test_pin_4_run_key_replay_one_run(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     ledger_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two concurrent ``run(key=k)`` — and the sequential replay — produce
     ONE run row; every caller gets the EXISTING run's id. The '202 + a new
@@ -224,23 +253,40 @@ async def test_pin_4_run_key_replay_one_run(
     )
     assert int(rows) == 1, "one run row, forever"
 
-    # THE CONVICTED VARIANT (the founding incident): the caller that does
-    # NOT consult the arbiter's answer launches a SECOND run and reports a
-    # fresh 202 — the replay that remembers nothing.
-    second_key_insert = new_uuid()  # a caller minting a new run id blind
+    # THE RED — A REAL ENGINE MUTATION: the arbiter's scope reverted to the
+    # bare GLOBAL 'workflow-run' (the pre-F4 shape, the founding incident's
+    # scope): a DIFFERENT flow with the same key is silently deduped onto
+    # THIS flow's run — created=False, someone else's run id, nothing
+    # launched. The shipped per-flow scope greens it (the attack file
+    # keeps the same conviction:
+    # tests/attack_wf_runkey_scope_collision.py).
+    import taskq.workflows.ledger as ledger_module
+
+    other = FlowStandIn(name="nightly-prune")
+    other.actor = "prune-b"
+    drill_key = "nightly:slot-2"  # a fresh key: BOTH runs must sit under the MUTATED (global) scope for the collision to manifest
+    monkeypatch.setattr(ledger_module, "run_idempotency_scope", lambda name=None: "workflow-run")
+    first_global = await insert_flow_run(wf_conn, wf_sql, entry=flow, run_key=drill_key)
+    assert first_global.created
+    cross = await insert_flow_run(wf_conn, wf_sql, entry=other, run_key=drill_key)
+    monkeypatch.undo()
     ledger_redlog.red(
         "pin4-run-key-replay",
-        "the run caller mints a new id and inserts blind (no arbiter consult)",
+        "the arbiter's scope reverted to the bare global 'workflow-run'",
         {
-            "reported": "202 + new run",
-            "runs_launched": 2,
-            "existing_run_id_ignored": str(results[0].flow_id),
-            "blind_new_id": str(second_key_insert),
+            "cross_flow_created": cross.created,
+            "cross_flow_run_id": str(cross.flow_id),
+            "existing_run_id": str(first_global.flow_id),
         },
     )
-    assert str(second_key_insert) != str(results[0].flow_id), (
-        "the blind caller's id diverges from the existing run — the convicted shape must diverge"
+    assert not cross.created and cross.flow_id == first_global.flow_id, (
+        "the global-scope mutation must silently dedup the other flow's run "
+        "— the red comparator is broken (the scope is load-bearing)"
     )
+    # The SHIPPED scope namespaces per flow: the same key, the OTHER flow,
+    # creates ITS OWN run.
+    shipped = await insert_flow_run(wf_conn, wf_sql, entry=other, run_key=drill_key)
+    assert shipped.created, "the per-flow scope lets another flow's run claim its own key"
 
 
 # ── Pin 5: LEDGER-CLAIM-ATOMIC (hardening H6) ───────────────────────────
@@ -318,6 +364,7 @@ async def test_pin_6_ledger_terminal_atomic(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     ledger_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ledger's terminal-outcome write OUTSIDE the finalize TX — a
     cancel between the node flip and the ledger write leaves
@@ -377,27 +424,54 @@ async def test_pin_6_ledger_terminal_atomic(
         "the shipped tx1 co-locates the ledger terminal with the node's"
     )
 
-    # THE CONVICTED VARIANT: the split write — the ledger's terminal never
-    # lands (the cancel ate the window); node=succeeded, ledger=running.
+    # ...the split variant is a REAL ENGINE MUTATION: the ledger's
+    # terminal statement mutated to update NOTHING (the write lost — the
+    # cancel ate the window); the node terminalized, the ledger did not.
+    # The shipped statement greens it (the tx1 co-location above).
+    import taskq.workflows._sql as sql_module
+
+    # The mutation lands BEFORE the RETURNING (a suffix would corrupt the
+    # statement's tail): the terminal matches nothing — the write is lost.
+    mutated_terminal = wf_sql.ledger_terminal.replace(
+        "RETURNING id", "  AND status = 'no-such-status'\nRETURNING id"
+    )
+    assert mutated_terminal != wf_sql.ledger_terminal, "the mutation drill did not arm"
+    monkeypatch.setattr(sql_module, "LEDGER_TERMINAL_SQL", mutated_terminal)
+    mutated_sql = render_workflow_sql(wf_schema)
     split_node = new_uuid()
+    split_worker = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', 1, 'split2', $2)",
+        "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
+        "step_key, metadata) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
+        "now() + interval '90 seconds', 0, 'split2', $3::jsonb)",
         split_node,
+        split_worker,
         json.dumps({"flow_id": str(flow_id)}),
     )
     await claim_step_ledger(
         wf_conn,
-        wf_sql,
+        mutated_sql,
         flow_id=flow_id,
         job_id=split_node,
         step_key="split2",
         map_index=None,
         attempt=1,
     )
-    # ...the split variant's terminal ledger write is LOST here (the
-    # cancel's window) — the node terminalized, the ledger did not.
+    split_result = await finalize_node(
+        module_pg_pool,
+        mutated_sql,
+        flow_id=flow_id,
+        job_id=split_node,
+        step_key="split2",
+        worker_id=split_worker,
+        attempt=1,
+        claim_epoch=0,
+        outcome="succeeded",
+        result={"done": True},
+    )
+    assert split_result.applied
     split_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', split_node
     )
@@ -408,11 +482,12 @@ async def test_pin_6_ledger_terminal_atomic(
     )
     ledger_redlog.red(
         "pin6-ledger-terminal-atomic",
-        "the ledger's terminal write outside the finalize tx (lost in the cancel window)",
+        "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
         {"node": split_status, "ledger": split_ledger},
     )
     assert split_status == "succeeded" and split_ledger == "running", (
-        "the convicted split-write shape must show the drift"
+        "the mutated terminal must drift from the node — the red comparator "
+        "is broken (the tx1 co-location is load-bearing)"
     )
 
 
@@ -519,9 +594,10 @@ async def test_pin_7_map_children_own_ledger_rows(
     )
     assert replay_2 is not None and replay_2.result == {"child": 2}
     # ...and the earlier replays are untouched by the fallback write.
-    assert (await memoized_step_result(
+    replay_0_again = await memoized_step_result(
         wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=0
-    )).result == {"child": 0}
+    )
+    assert replay_0_again is not None and replay_0_again.result == {"child": 0}
 
 
 # ── The key-derivation golden (unit pin) ────────────────────────────────

@@ -154,8 +154,6 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     The plan stays serviceable: the fence short-circuits on the step_key
     probe (vanilla rows evaluate no subplan) — this pin records the
     claimed statement's EXPLAIN alongside the hot-statement corpus."""
-    import time
-
     from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 
     # The cancelled flow + one of its pending children (a fork-child shape:
@@ -218,7 +216,9 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     )
 
     # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides
-    # as a per-row subplan that vanilla rows never evaluate).
+    # as a per-row subplan that vanilla rows never evaluate) — recorded to
+    # the red sink (a file that gets READ; the async-safe path — no
+    # blocking file IO in the event loop).
     plan = await wf_conn.fetchval(
         "EXPLAIN (BUFFERS) " + DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
         ["default"],
@@ -228,11 +228,11 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         2,
     )
     assert plan is not None
-    measurements = Path(".measurements/attack")
-    measurements.mkdir(parents=True, exist_ok=True)
-    with open(measurements / "explain-hot-statements.txt", "a") as sink:
-        sink.write(f"\n=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, {time.strftime('%Y-%m-%d')}) ===\n")
-        sink.write(plan if plan.endswith("\n") else plan + "\n")
+    engine_redlog.red(
+        "pin2-dispatch-fence-plan",
+        "EXPLAIN (BUFFERS) of the fenced strict-FIFO claim (the plan-shape record)",
+        {"plan": plan.splitlines()},
+    )
 
 
 # ── Pin 21: THE SWEEP ARMS ARE WIRED (the registration IS the fix) ──────
@@ -267,8 +267,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
         [
             sys.executable,
             "-c",
-            "import taskq.worker._leader_sweeps, sys; "
-            "print('taskq.workflows' in sys.modules)",
+            "import taskq.worker._leader_sweeps, sys; print('taskq.workflows' in sys.modules)",
         ],
         capture_output=True,
         text=True,
