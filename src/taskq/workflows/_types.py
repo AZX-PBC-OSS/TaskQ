@@ -9,11 +9,11 @@ never DB-side or random-UUID generation (the TID251 ban).
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from taskq._json import dumps_jsonb_str
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
@@ -188,7 +188,9 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
     as ``str`` on un-coded connections — parse before indexing."""
     if not raw:
         return ()
-    decoded: Any = json.loads(raw) if isinstance(raw, str) else raw
+    # asyncpg returns jsonb as ``str`` on un-coded connections — parse
+    # before indexing (the estate's _json seam, never the stdlib import).
+    decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
     return tuple(
         ConsumerBinding(
             step_key=c["step_key"],

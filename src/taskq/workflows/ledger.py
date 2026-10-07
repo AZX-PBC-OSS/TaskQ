@@ -44,12 +44,12 @@ a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 
@@ -117,9 +117,10 @@ def step_idempotency_key(step_key: str, map_index: int | None = None) -> str:
 
 def _decode_jsonb(value: Any) -> Any:
     """asyncpg returns jsonb as ``str`` on un-coded connections -- the
-    ledger's contract is the DECODED value; parse before returning."""
+    ledger's contract is the DECODED value; parse before returning (the
+    estate's _json seam, never the stdlib import)."""
     if isinstance(value, str):
-        return json.loads(value)
+        return _json_loads(value)
     return value
 
 

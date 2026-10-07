@@ -235,6 +235,25 @@ RETURNING id
 """
 
 
+# The body-unavailable stamp (the loudness cure, R2-2): the fire arm
+# delivers a fired join's consumers even when no reducer body resolves —
+# at-least-once delivery is the contract — but the RECORD must not look
+# healthy while the work was wrong. Keyed single join row; the stamp rides
+# the fire's own transaction (a rolled-back pass rolls it back with it).
+JOIN_BODY_UNAVAILABLE_SQL = """\
+UPDATE {schema}.jobs
+SET metadata = jsonb_set(
+        metadata,
+        '{{blocking_reason}}',
+        to_jsonb($2::text),
+        true
+    )
+WHERE id = $1
+  AND NOT metadata @> '{{"blocking_reason": "body_unavailable"}}'::jsonb
+RETURNING id
+"""
+
+
 # The fenced-attempt sweep arm (hardening H1-H3): reap phantom 'running'
 # ledger rows on terminal flows so the rows-alone reconstruction reconciles
 # (a terminal flow is reconstructible from rows alone; pin 15).

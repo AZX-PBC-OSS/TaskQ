@@ -602,3 +602,95 @@ async def test_pin_17_empty_join_never_fires(
     assert result.applied
     assert await fire_count(wf_conn, wf_schema, j2) == 1, "the outer join fires once"
     assert (await node_state(wf_conn, wf_schema, j2))["deps_pending"] == 0
+
+
+# ── R2-2: THE UNREGISTERED NAME IS LOUD (the loudness asymmetry) ────────
+
+
+@pytest.mark.integration
+async def test_pin_body_unavailable_the_unregistered_name_is_loud(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    engine_redlog: RedLog,
+) -> None:
+    """R2-2 (the recertifier's MEDIUM): a flow root stamped with a workflow
+    name NO process registers fires its join and delivers its consumers —
+    and the pre-cure record was SILENT (no exception, no warn, no stamp):
+    'the record looked healthy while the work was wrong'. The asymmetry
+    doctrine says LOUD: the delivery CONTINUES (the consumers' contract —
+    never a crash, never a wedged join) but the join row is stamped
+    ``blocking_reason='body_unavailable'`` and a WARNING names the join.
+    The legacy silent shape is the convicted variant, kept red here."""
+    import structlog.testing
+
+    flow_id = await seed_flow(wf_conn, wf_schema, workflow="ghost-flow-unregistered")
+    join_id = await seed_join(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        deps=1,
+        consumers=[
+            {
+                "step_key": "downstream",
+                "actor": "wf",
+                "queue": "default",
+                "payload": {"next": True},
+                "map_index": None,
+            }
+        ],
+    )
+    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    # The parent terminalizes OUTSIDE the engine's finalize (the crash
+    # window): the sweep's heal is the fire arm under test; the memo is
+    # empty (a fresh flow id) and the stamped name resolves NOWHERE.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+        "WHERE id = $1 AND status = 'running' AND attempt = 1 AND claim_epoch = 0",
+        parent,
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+
+    # THE DELIVERY CONTINUES: the join fired, the outbox row exists — the
+    # loudness cure must never become a wedged join or a crashed arm.
+    assert summary.firable == 1, summary
+    assert await fire_count(wf_conn, wf_schema, join_id) == 1
+    outbox_rows = await wf_conn.fetch(
+        f'SELECT count(*) AS n FROM "{wf_schema}".wf_outbox '
+        "WHERE join_job_id = $1 AND consumer_step_key = 'downstream'",
+        join_id,
+    )
+    assert outbox_rows[0]["n"] == 1, "the consumers' delivery must continue"
+
+    # THE LOUD ARMS (both, red until the cure): the stamp on the record +
+    # the warn on the operator surface.
+    state = await node_state(wf_conn, wf_schema, join_id)
+    engine_redlog.red(
+        "r2-2-body-unavailable",
+        "the silent fire (no stamp, no warn) — the pre-cure shipped shape",
+        {
+            "blocking_reason": state["metadata"].get("blocking_reason"),
+            "warn_emitted": any(e.get("event") == "sweep_join_body_unavailable" for e in logs),
+        },
+    )
+    assert state["metadata"].get("blocking_reason") == "body_unavailable", (
+        "the fired join's record looks healthy while its body never ran — "
+        "the operator must see the defect (R2-2)"
+    )
+    warn_events = [e for e in logs if e.get("event") == "sweep_join_body_unavailable"]
+    assert warn_events, "the unresolvable body must warn LOUDLY, never silently"
+    assert any(e.get("workflow_name") == "ghost-flow-unregistered" for e in warn_events), (
+        "the warning must name the workflow whose definition failed to resolve"
+    )
+
+    # The RECURRING fire never re-warns (a re-fired join's PK refuses; the
+    # stamp's NOT-EXISTS predicate keeps the row write idempotent).
+    with structlog.testing.capture_logs() as second_pass_logs:
+        await sweep_join_rederive(module_pg_pool, wf_sql)
+    assert not [e for e in second_pass_logs if e.get("event") == "sweep_join_body_unavailable"], (
+        "an already-stamped fired join must not re-fire or re-warn"
+    )

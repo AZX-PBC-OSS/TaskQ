@@ -1,0 +1,6 @@
+[TaskQ] event=pair-started pg=c83e23d6b974 redis=84e448c61a07 state_dir=/tmp/pytest-of-rich/pytest-16848
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=c83e23d6b974 redis=84e448c61a07
+=========================== short test summary info ============================
+FAILED tests/test_wf_sweep_pins.py::test_pin_body_unavailable_the_unregistered_name_is_loud
+1 failed, 8 deselected in 4.57s

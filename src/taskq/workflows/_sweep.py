@@ -31,18 +31,26 @@ arm excludes them.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import asyncpg
+import structlog
 
 from taskq._ids import new_uuid
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.obs import get_logger
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
-from taskq.workflows._sql import BLOCKING_REASON_ORPHAN_PARENT, WorkflowSql
+from taskq.workflows._sql import (
+    BLOCKING_REASON_BODY_UNAVAILABLE,
+    BLOCKING_REASON_ORPHAN_PARENT,
+    WorkflowSql,
+)
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
 __all__ = ["SweepResult", "drain_outbox", "reap_phantom_ledger", "sweep_join_rederive"]
+
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +93,9 @@ async def sweep_join_rederive(
     rolls this tx back (the fire row and the outbox rows with it), the
     next pass re-fires, the body RE-RUNS — at-least-once body execution
     survives the window between the engine's own two transactions. A fired
-    join with no resolvable body delivers its declared consumers; nothing
-    else runs.
+    join with no resolvable body delivers its declared consumers — and is
+    stamped ``metadata.blocking_reason='body_unavailable'`` + warned (the
+    loudness asymmetry, R2-2: the delivery continues, the record is loud).
     """
     async with pool.acquire() as conn, conn.transaction():
         summary = await conn.fetchrow(wsql.rederive_sweep, batch_size, orphan_blocking_reason)
@@ -118,6 +127,32 @@ async def sweep_join_rederive(
                 )
                 if body is not None:
                     await body()
+                else:
+                    # THE LOUDNESS ASYMMETRY (R2-2): a fired join with no
+                    # resolvable body still delivers its declared consumers
+                    # (the delivery contract — never a crash), but the
+                    # record must not look healthy while the work was
+                    # wrong: the join row is stamped
+                    # ``blocking_reason='body_unavailable'`` and a WARNING
+                    # names it. A stamped name that fails registry
+                    # resolution is the deployment defect class (the
+                    # definitions not imported in this process — the
+                    # fleet's every worker carries them); an anonymous root
+                    # or a cold memo is the same silence by another door.
+                    # Both are loud here; neither wedges the delivery.
+                    await conn.execute(
+                        wsql.join_body_unavailable,
+                        w["join_job_id"],
+                        BLOCKING_REASON_BODY_UNAVAILABLE,
+                    )
+                    logger.warning(
+                        "sweep_join_body_unavailable",
+                        kind="sweep_join_body_unavailable",
+                        join_job_id=str(w["join_job_id"]),
+                        step_key=w["step_key"],
+                        flow_id=str(w["flow_id"]),
+                        workflow_name=w["workflow_name"],
+                    )
                 fired_joins.append(
                     FiredJoin(
                         join_job_id=JobId(w["join_job_id"]),
@@ -182,7 +217,9 @@ async def drain_outbox(
         if not rows:
             return 0
         ids = [new_uuid() for _ in rows]
-        bindings = [json.loads(r["bindings"] or "{}") for r in rows]
+        # asyncpg returns the jsonb bindings as str on un-coded connections
+        # (the estate's _json seam parses; the stdlib import is banned).
+        bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
         await conn.execute(
             wsql.outbox_drain_consumers,
             ids,
