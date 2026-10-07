@@ -26,6 +26,7 @@ async def _finite_sse_generator(
     resolve_pool: Callable[[], object | None],
     schema: str | None,
     session_verifier: Callable[[], object] | None = None,
+    topic: str = "",
 ) -> AsyncIterator[str]:
     try:
         sentinel_data = '{"status": "awaiting_progress_backend"}'

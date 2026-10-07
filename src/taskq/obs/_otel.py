@@ -83,6 +83,7 @@ __all__ = [
     "record_archived_jobs",
     "record_attempt_failure",
     "record_backpressure_error",
+    "record_cancel_actored",
     "record_cancel_requested",
     "record_consumed_message",
     "record_cron_failure",
@@ -110,20 +111,29 @@ __all__ = [
     "record_reservation_reclaim_drain_failure",
     "record_reservation_reclaim_drain_rows",
     "record_reservation_reclaim_heal_failure",
+    "record_sse_connection_closed",
+    "record_sse_connection_opened",
+    "record_sse_rejection",
     "record_sub_enqueue_failure",
     "record_sweep_timeout",
     "record_sweep_unexpected_error",
     "safe_start_span",
     "set_otel_enabled",
+    "update_cancel_pending_cache",
     "update_cron_slots_behind",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
+    "update_jobs_retry_headroom_cache",
+    "update_jobs_retrying_cache",
     "update_jobs_running_cache",
     "update_keyed_reclaim_pending",
+    "update_queue_depth_by_status_cache",
     "update_queue_depth_cache",
     "update_queue_live_workers_cache",
     "update_queue_utilization_cache",
+    "update_ratelimit_bucket_tokens_cache",
     "update_reservation_slots_cache",
+    "update_scheduled_horizon_cache",
 ]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.obs._otel")
@@ -337,6 +347,45 @@ def record_cancel_requested() -> None:
 
 
 _cancellation_requested = get_meter().create_counter("taskq.cancellation.requested")
+
+_cancels_actored = get_meter().create_counter(
+    "taskq.jobs.cancels_actored",
+    description=(
+        "Operator cancel requests this worker observed in its cancel-poll "
+        "and began acting on (the cooperative observation, or the "
+        "PG-observation fast-advance when the request was first seen at "
+        "FORCED), labeled by actor. The EXECUTING side of the cancel "
+        "story: taskq.cancellation.requested counts what the ISSUING "
+        "process incremented and dies with it, while this counter moves "
+        "on the worker whose heartbeat poll is the durable surface, so a "
+        "CLI cancel is visible in the worker scrape even after the "
+        "issuing process has exited. Attributes: actor (the running "
+        "job's registered actor name, bounded cardinality)."
+    ),
+    unit="1",
+)
+
+
+def record_cancel_actored(actor: str) -> None:
+    """Count one operator cancel the worker began acting on, labeled by actor.
+
+    Called from the cancel controller's two FIRST-observation arms only
+    (``worker/cancel.py``): the phase-1 cooperative observation, and the
+    PG-observation fast-advance when the local phase was still NONE. A
+    re-issue arm or a later tick walking an already-observed row records
+    nothing, so one cancel request is one increment no matter how many
+    heartbeat ticks it spans.
+
+    Unconditional (not gated by ``_otel_enabled``), like the other
+    cancel-plane counters: a cancel the operator asked for and the fleet
+    cannot see acting on is the exact defect this counter exists to
+    expose, and it must survive an exporter misconfiguration.
+    """
+    try:
+        _cancels_actored.add(1, {"actor": actor})
+    except Exception:
+        _log.warning("otel-metric-record-failed", instrument_name="taskq.jobs.cancels_actored")
+
 
 _backpressure_errors = get_meter().create_counter(
     "taskq.backpressure.errors",
@@ -1301,6 +1350,71 @@ _queue_depth_gauge = get_meter().create_observable_gauge(
 )
 
 
+_queue_depth_by_status_cache: dict[tuple[str, str], int] = {}
+
+
+def update_queue_depth_by_status_cache(data: Mapping[tuple[str, str], int]) -> None:
+    """Replace the per-(queue, status) depth cache with fresh data.
+
+    Fed by the leader's queue-depth loop from the same tick's grouped
+    read (the depth read's own GROUP BY extended with ``status``), so the
+    status split describes the same moment the depth gauge does. Keyed by
+    ``(queue, status)`` — the JOINABLE status split: joining it against
+    the other queue-keyed gauges works on ``queue``, and the
+    pending/scheduled split a promotion stall lives in is one label
+    away, without a PromQL join modifier.
+    """
+    global _queue_depth_by_status_cache
+    _queue_depth_by_status_cache = dict(data)
+
+
+def _observe_capped_per_queue_status(
+    cache: Mapping[tuple[str, str], float],
+) -> Iterable[Observation]:
+    """The (queue, status)-keyed sibling of :func:`_observe_capped_per_queue`.
+
+    Same rank-by-value partition, one cap over the (queue, status) PAIRS:
+    the largest _MAX_QUEUE_LABEL_VALUES pairs keep their own series and
+    everything smaller collapses onto ONE observation carrying their
+    summed depth, labeled queue='_other_', status='_other_' — the pair
+    cap's overflow mixes statuses by construction, so its status label
+    says bookkeeping, not a status.
+    """
+    ranked = sorted(cache.items(), key=lambda item: (-item[1], item[0]))
+    admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
+    overflow = ranked[_MAX_QUEUE_LABEL_VALUES:]
+    for (queue, status), value in admitted:
+        yield Observation(value, {"queue": queue, "status": status})
+    if overflow:
+        yield Observation(
+            sum(value for _pair, value in overflow),
+            {"queue": _QUEUE_LABEL_OVERFLOW, "status": _QUEUE_LABEL_OVERFLOW},
+        )
+
+
+def _observe_queue_depth_by_status(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue_status(_queue_depth_by_status_cache)
+
+
+_queue_depth_by_status_gauge = get_meter().create_observable_gauge(
+    name="taskq.queue.depth_by_status",
+    description=(
+        "Pending and scheduled jobs per (queue, status), sampled by the "
+        "leader in the same tick as taskq.queue.depth (same cap: the "
+        f"largest _MAX_QUEUE_LABEL_VALUES (queue, status) pairs keep their "
+        f"own series; the rest collapse onto one '{_QUEUE_LABEL_OVERFLOW}' "
+        "pair carrying their summed depth — bookkeeping, not alertable). "
+        "The status split of the depth gauge, kept on a separate "
+        "instrument because the shipped alert set and the cardinality "
+        "proofs pin taskq.queue.depth's one-series-per-queue label set: "
+        "join THIS gauge to the other queue-keyed gauges on queue when "
+        "the pending/scheduled split matters."
+    ),
+    unit="1",
+    callbacks=[_observe_queue_depth_by_status],
+)
+
+
 _queue_live_workers_cache: dict[str, int] = {}
 
 
@@ -1917,6 +2031,68 @@ _keyed_reclaim_pending_gauge = get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_keyed_reclaim_pending],
+)
+
+
+# ── Rate-limit bucket tokens: the scrape's live admission state ────────
+#
+# Before this gauge the admin's rate-limits page was the ONLY surface a
+# bucket's live token state reached (it peeks via
+# ``RateLimitRegistry.peek_all``); a scrape showed only the denial and
+# refund-failure RATES, never the bucket LEVEL. A bucket parked at 0
+# tokens with a healthy-looking denial rate's cause invisible, a
+# misconfigured capacity nobody could see, all page-render-only.
+#
+# Cardinality doctrine, applied exactly: STATICALLY-REGISTERED buckets
+# (the operator's own ``registry.register`` calls, bounded by the code
+# the user ships) get one series per (bucket, kind). KEYED buckets
+# (``base_name:key`` materialised per tenant/session id — caller-
+# controlled, unbounded) contribute NO per-key series: their tokens are
+# summed into one aggregate per kind under the fixed ``_other_`` bucket
+# label, the reclaim_pending precedent (keyed values NEVER labels, the
+# aggregate scalar). The kind label is the ops.py page's own bounded
+# derivation (token_bucket / sliding_window_log / sliding_window_gcra).
+
+_ratelimit_bucket_tokens_cache: dict[tuple[str, str], float] = {}
+
+
+def update_ratelimit_bucket_tokens_cache(data: Mapping[tuple[str, str], float]) -> None:
+    """Replace the rate-limit bucket-tokens cache with fresh peek data.
+
+    Fed by the leader's rate-limit sampler every 15s, keyed
+    ``(bucket, kind)``; keyed-materialised buckets arrive PRE-AGGREGATED
+    under ``bucket='_other_'`` with their own kind, so the cache's shape
+    is the series set and nothing at scrape time can mint a per-key
+    series.
+    """
+    global _ratelimit_bucket_tokens_cache
+    _ratelimit_bucket_tokens_cache = dict(data)
+
+
+def _observe_ratelimit_bucket_tokens(options: CallbackOptions) -> Iterable[Observation]:
+    for (bucket, kind), tokens in _ratelimit_bucket_tokens_cache.items():
+        yield Observation(tokens, {"bucket": bucket, "kind": kind})
+
+
+_ratelimit_bucket_tokens_gauge = get_meter().create_observable_gauge(
+    name="taskq.ratelimit.bucket_tokens",
+    description=(
+        "Admission budget currently left in each rate-limit bucket: "
+        "tokens_remaining for a token bucket, remaining admissions for a "
+        "sliding window, sampled by the leader every 15s via the same "
+        "peek the admin rate-limits page renders. Attributes: bucket, "
+        "kind (token_bucket / sliding_window_log / sliding_window_gcra, "
+        "the page's own derivation). STATICALLY-REGISTERED buckets only "
+        "as named series (bounded by the code the user ships); "
+        "keyed-materialised buckets (base_name:key) contribute NO per-key "
+        "series — their tokens are summed per kind under bucket='_other_' "
+        "(the reclaim_pending precedent: keyed values never become label "
+        "cardinality). A named series pinned at 0 is an exhausted "
+        "admission budget; read beside taskq.ratelimit.denials for the "
+        "rate."
+    ),
+    unit="1",
+    callbacks=[_observe_ratelimit_bucket_tokens],
 )
 
 
@@ -2988,6 +3164,97 @@ get_meter().create_observable_gauge(
 )
 
 
+_scheduled_horizon_seconds: float = 0.0
+
+
+def update_scheduled_horizon_cache(seconds: float) -> None:
+    """Record how far out the furthest scheduled job is armed.
+
+    ``MAX(scheduled_at) - now`` over the scheduled population, sampled by
+    the backlog detector's tick beside its label-less siblings. 0.0 when
+    nothing is scheduled; NEGATIVE when even the furthest-armed job is
+    already overdue, the promotion-stall shape where every scheduled row
+    has crossed its wake time. Label-less per the twin convention
+    (``taskq.jobs.scheduled_count``): it joins the other label-less
+    backlog operands under vector ``and`` without a join modifier.
+    """
+    global _scheduled_horizon_seconds
+    _scheduled_horizon_seconds = seconds
+
+
+def _observe_scheduled_horizon(options: CallbackOptions) -> Iterable[Observation]:
+    yield Observation(_scheduled_horizon_seconds)
+
+
+_scheduled_horizon_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.scheduled_horizon_seconds",
+    description=(
+        "Seconds between now and the FURTHEST-out scheduled job's wake "
+        "time (MAX(scheduled_at) - now, over status='scheduled'), sampled "
+        "by every worker with taskq.jobs.by_status. The wave's depth "
+        "signal: how far ahead the future-armed work reaches. 0.0 when "
+        "nothing is scheduled; NEGATIVE when even the furthest job is "
+        "overdue — every armed row has crossed its wake time and "
+        "promotion is not keeping up. Label-less twin of "
+        'taskq.jobs.by_status{status="scheduled"}, like '
+        "taskq.jobs.scheduled_count, so the three backlog operands join "
+        "without a PromQL join modifier."
+    ),
+    unit="s",
+    callbacks=[_observe_scheduled_horizon],
+)
+
+
+_cancel_pending_count: int | None = None
+
+
+def update_cancel_pending_cache(count: int | None) -> None:
+    """Record the count of non-terminal jobs with a cancel in flight.
+
+    ``cancel_phase > 0`` over the non-terminal population, sampled by the
+    leader's queue-depth loop. This is the DURABLE cancel surface a
+    scrape can see: a CLI cancel writes cancel_requested_at to the row
+    and exits, the issuing process's own counter dies with it, and this
+    gauge is what shows the protocol still has work in flight. A value
+    pinned above zero across ticks is a cancel the grace ladder is not
+    finishing (read it beside taskq.jobs.cancels_actored_total, which
+    says the worker saw it).
+
+    ``None`` (the demotion clear) yields no data point: the series goes
+    stale and the new leader's is the one answering, the same
+    empty-not-zero discipline the leader-lease TTL gauge follows — a
+    demoted process exporting 0 would be an active claim that no cancel
+    is pending, silencing the gauge exactly at a failover.
+    """
+    global _cancel_pending_count
+    _cancel_pending_count = count
+
+
+def _observe_cancel_pending(options: CallbackOptions) -> Iterable[Observation]:
+    if _cancel_pending_count is not None:
+        yield Observation(_cancel_pending_count)
+
+
+_cancel_pending_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.cancel_pending",
+    description=(
+        "Non-terminal jobs with a cancel in flight (cancel_phase > 0), "
+        "sampled by the leader with taskq.queue.depth. The durable "
+        "cancel surface: a CLI cancel writes the row and exits, so this "
+        "gauge is the only scrape-visible trace the protocol owes a "
+        "terminal write. Healthy drains to 0 within the cancel grace "
+        "ladder plus a tick or two; a sustained non-zero reading is a "
+        "cancel not finishing (read beside "
+        "taskq.jobs.cancels_actored_total, the worker-side counter that "
+        "says the cancel was observed). No dimensions: the fleet total "
+        "is the alertable shape, the per-job truth is on the row and "
+        "the admin jobs page."
+    ),
+    unit="1",
+    callbacks=[_observe_cancel_pending],
+)
+
+
 def update_running_lease_expired_cache(count: int) -> None:
     """Record the count of running jobs whose lock lease is past.
 
@@ -3036,6 +3303,105 @@ _running_lease_expired_gauge = get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_running_lease_expired],
+)
+
+
+# ── The retry ladder (the haunt's live visibility) ────────────────────
+#
+# ``taskq.jobs.attempt_failures{retryable="true"}`` counts that a retry
+# HAPPENED; nothing showed WHERE a job sat on its retry ladder. A job on
+# attempt 6 of 1000 is invisible today: by_status counts it as a healthy
+# pending row, the failure counter last moved five attempts ago, and a
+# job creeping up a tall ladder toward its ceiling is the slow shape no
+# alert operand reads. Two gauges, one grouped read, sampled by the
+# backlog detector's tick (every worker, the same unconditional cadence
+# as by_status):
+#
+# * ``taskq.jobs.retrying`` — the population: non-terminal rows with
+#   attempt > 0, per actor.
+# * ``taskq.jobs.retry_headroom`` — the MIN of max_attempts - attempt
+#   over that same population, per actor: how close the actor's worst
+#   live row is to its ceiling. The haunt-detection alert reads this
+#   one: headroom 0 means a job is ON its last attempt, and a value
+#   pinned near 0 across ticks is a retry loop running out of ladder.
+#
+# Why the MIN-headroom live read and not the bounded-rung alternative
+# (bucketing headroom into fixed bands and counting rows per band): the
+# bands would mint one extra series per band per actor (cardinality for
+# a precision the alert never reads), while the min needs the same
+# single grouped aggregate over the same population the retrying count
+# walks — ONE statement, ONE scan of the live (non-terminal) population,
+# the exactness contract by_status's alert operands already pin. The
+# live population is bounded by the fleet's outstanding work, never by
+# history (terminal rows are excluded, the growth dimension the
+# by-status sampler's design note names), so the read does not inherit
+# the O(history) shape that removed terminal statuses from by_status.
+
+
+def update_jobs_retrying_cache(data: Mapping[str, int]) -> None:
+    """Replace the per-actor retrying-count cache with fresh data.
+
+    Fed by the backlog sampler from the same grouped read as
+    :func:`update_jobs_retry_headroom_cache`, so count and headroom
+    describe one moment. An actor with no non-terminal row past its
+    first attempt vanishes from the series rather than freezing.
+    """
+    global _jobs_retrying_cache
+    _jobs_retrying_cache = dict(data)
+
+
+def _observe_jobs_retrying(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, count in _jobs_retrying_cache.items():
+        yield Observation(count, {"actor": actor})
+
+
+_jobs_retrying_cache: dict[str, int] = {}
+
+_jobs_retrying_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.retrying",
+    description=(
+        "Non-terminal jobs (pending/scheduled/running) that are past "
+        "their first attempt (attempt > 0), per actor, sampled by every "
+        "worker with taskq.jobs.by_status. The retry ladder's live "
+        "population: a job sitting at attempt 6 of 1000 is a healthy "
+        "pending row everywhere else. Beside taskq.jobs.retry_headroom, "
+        "which says how close the actor's worst row is to its ceiling."
+    ),
+    unit="1",
+    callbacks=[_observe_jobs_retrying],
+)
+
+
+def update_jobs_retry_headroom_cache(data: Mapping[str, int]) -> None:
+    """Replace the per-actor minimum-retry-headroom cache with fresh data.
+
+    Fed by the backlog sampler from the same grouped read as
+    :func:`update_jobs_retrying_cache` (one statement, one moment).
+    """
+    global _jobs_retry_headroom_cache
+    _jobs_retry_headroom_cache = dict(data)
+
+
+def _observe_jobs_retry_headroom(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, headroom in _jobs_retry_headroom_cache.items():
+        yield Observation(headroom, {"actor": actor})
+
+
+_jobs_retry_headroom_cache: dict[str, int] = {}
+
+_jobs_retry_headroom_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.retry_headroom",
+    description=(
+        "The MINIMUM of max_attempts - attempt over an actor's live "
+        "non-terminal rows with attempt > 0: how many attempts the "
+        "actor's worst in-flight job has left, sampled by every worker "
+        "with taskq.jobs.by_status. The haunt-detection operand: "
+        "headroom 0 is a job ON its last attempt, and a value pinned "
+        "near 0 across ticks is a retry loop running out of ladder. An "
+        "actor with no retrying rows vanishes from the series."
+    ),
+    unit="1",
+    callbacks=[_observe_jobs_retry_headroom],
 )
 
 
@@ -3145,3 +3511,160 @@ def record_error_reporter_failure(reporter_type: str) -> None:
     if not _otel_enabled:
         return
     _error_reporter_failures.add(1, {"reporter_type": reporter_type})
+
+
+# ── Admin SSE health ──────────────────────────────────────────────────
+#
+# The SSE endpoints cap concurrency with per-topic semaphores and answer
+# 429 past the cap, but none of that reached a scrape: 55 open streams
+# and 5 rejections were invisible in metrics (the cap's only trace was a
+# client-side error). Two instruments, both recorded in the ADMIN
+# process (the one that serves the streams), so they are exported on the
+# admin's own /jobs/health/metrics — a worker scrape never carries them.
+#
+# Cardinality: ``surface`` is the closed two-value enum {admin, progress}
+# (the admin topic stream, the per-job progress stream). ``topic`` is the
+# CLOSED enum from source: the admin endpoint validates its topic against
+# the fixed four-value vocabulary (queues/jobs/workers/history) and 400s
+# anything else BEFORE the semaphore lookup, and the progress stream's
+# topic is its one constant family key (progress-stream). No
+# caller-supplied string reaches a label, so the series set is bounded
+# at (2 surfaces x 5 topics) by construction.
+
+
+type SseSurface = Literal["admin", "progress"]
+"""Which SSE endpoint family a connection or rejection belongs to.
+
+``admin`` is the admin UI's ``/sse/{topic}`` state_change stream;
+``progress`` is the per-job progress stream. A closed enum, never
+caller-supplied text.
+"""
+
+_SSE_TOPICS: frozenset[str] = frozenset({"queues", "jobs", "workers", "history", "progress-stream"})
+"""The closed topic vocabulary: the admin endpoint's own 400-guarded
+four values (``web/admin/sse.py``'s ``_valid_topics``) plus the progress
+stream's one family key (the constant ``web/progress.py`` passes
+``acquire_sse_slot``). Enforced AT the instrument — a topic string from
+outside the vocabulary collapses onto the fixed ``_other_`` value, the
+``_bounded_queue`` mechanism — so the shared ``acquire_sse_slot``
+helper's family key (any string by signature, one constant in
+production) can never grow the label set."""
+
+_SSE_TOPIC_OVERFLOW: str = "_other_"
+
+_SSE_PROGRESS_TOPIC: str = "progress-stream"
+
+
+def _bounded_sse_topic(topic: str) -> str:
+    """Return *topic*, or the fixed overflow label when it is outside
+    the closed vocabulary. See the note above ``_SSE_TOPICS``."""
+    return topic if topic in _SSE_TOPICS else _SSE_TOPIC_OVERFLOW
+
+
+"""The progress stream's single family key (the same constant
+``web/progress.py`` passes ``acquire_sse_slot``)."""
+
+
+def _sse_cache_rebind(
+    cache: dict[tuple[str, str], int], surface: str, topic: str, delta: int
+) -> dict[tuple[str, str], int]:
+    """Compute the next SSE-connection level for *(surface, topic)*.
+
+    Rebind, never write in place: the OTel reader thread iterates the
+    cache from the gauge callback while this runs on the event-loop
+    thread (the copy-on-write discipline every gauge cache in this
+    module follows). Both writers are event-loop coroutines, so the
+    read-modify-write cannot interleave; a level that drops to zero
+    leaves the series, not a frozen zero, matching every other
+    population gauge here. The topic is admitted through the closed
+    vocabulary before the key is formed.
+    """
+    key = (surface, _bounded_sse_topic(topic))
+    level = cache.get(key, 0) + delta
+    if level < 0:
+        # A double close is a caller bug, never a negative level: clamp
+        # at 0 so the gauge cannot go negative past an exit race.
+        level = 0
+    merged = {**cache}
+    if level:
+        merged[key] = level
+    else:
+        merged.pop(key, None)
+    return merged
+
+
+_sse_connections_cache: dict[tuple[str, str], int] = {}
+
+
+def record_sse_connection_opened(surface: SseSurface, topic: str) -> None:
+    """Record one SSE connection taking a slot (the level gauge's +1).
+
+    Called at the acquire site AFTER the slot is held, so the gauge and
+    the semaphore budget move together; the close is recorded at the
+    same site the slot is released (``record_sse_connection_closed``).
+    ``topic`` is the closed vocabulary the endpoints validate before the
+    slot lookup (see the section note above).
+    """
+    global _sse_connections_cache
+    _sse_connections_cache = _sse_cache_rebind(_sse_connections_cache, surface, topic, +1)
+
+
+def record_sse_connection_closed(surface: SseSurface, topic: str) -> None:
+    """Record one SSE connection releasing its slot (the level gauge's -1).
+
+    Called from the exact finally/release sites the slot's semaphore is
+    released at, so the gauge can never claim a connection whose slot
+    was handed back.
+    """
+    global _sse_connections_cache
+    _sse_connections_cache = _sse_cache_rebind(_sse_connections_cache, surface, topic, -1)
+
+
+def _observe_sse_connections(options: CallbackOptions) -> Iterable[Observation]:
+    for (surface, topic), count in _sse_connections_cache.items():
+        yield Observation(count, {"topic": topic, "surface": surface})
+
+
+_sse_connections_gauge = get_meter().create_observable_gauge(
+    name="taskq.admin.sse.connections",
+    description=(
+        "SSE streams currently open, per (topic, surface). surface is the "
+        "closed enum 'admin' (the admin UI's /sse/{topic} stream) or "
+        "'progress' (the per-job progress stream); topic is the closed "
+        "vocabulary the endpoints validate before the slot lookup "
+        "(queues/jobs/workers/history for admin, the one constant "
+        "progress-stream family key for progress). Recorded in the "
+        "process that serves the streams, so this series is exported on "
+        "the admin's /jobs/health/metrics and never on a worker scrape. "
+        "A value pinned at the configured cap with "
+        "taskq.admin.sse.rejections_total rising is SSE saturation."
+    ),
+    unit="1",
+    callbacks=[_observe_sse_connections],
+)
+
+
+def record_sse_rejection(surface: SseSurface, topic: str) -> None:
+    """Count one SSE connection refused at the cap (the 429 site).
+
+    Called from the two 429 sites (the admin topic endpoint's inline
+    cap check, and the shared ``acquire_sse_slot`` helper the progress
+    stream uses). Same closed label vocabulary as the connections
+    gauge, so the two join: rejections rising beside connections pinned
+    at the cap is saturation; rejections alone is a burst the cap
+    absorbed.
+    Respects ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.admin.sse.rejections",
+        description=(
+            "SSE connection attempts refused because the topic's "
+            "connection cap was already held (HTTP 429). Attributes: "
+            "topic, surface (the same closed enums as "
+            "taskq.admin.sse.connections, so the two join). The other "
+            "half of the saturation signature: connections pinned at "
+            "the configured cap beside a rising rejection rate."
+        ),
+    ).add(1, {"topic": _bounded_sse_topic(topic), "surface": surface})

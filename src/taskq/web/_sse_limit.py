@@ -22,7 +22,19 @@ from collections.abc import AsyncGenerator
 
 from fastapi import HTTPException
 
+from taskq.obs import (
+    record_sse_connection_closed,
+    record_sse_connection_opened,
+    record_sse_rejection,
+)
+
 __all__ = ["SESSION_RECHECK_TIMEOUT_SECS", "acquire_sse_slot", "release_after"]
+
+#: The progress stream's one endpoint-family key (the constant
+#: ``web/progress.py`` passes ``acquire_sse_slot``); also the default
+#: ``release_after`` topic. The gauge's closed topic vocabulary keeps
+#: this a constant, never caller text.
+_PROGRESS_TOPIC = "progress-stream"
 
 _SEMAPHORES: dict[tuple[str, int], asyncio.Semaphore] = {}
 
@@ -61,26 +73,39 @@ async def acquire_sse_slot(key: str, limit: int) -> asyncio.Semaphore:
     Callers MUST release exactly once, in a ``finally`` inside the streaming
     generator -- releasing in the route handler would free the slot while the
     stream is still open.
+
+    Instrumentation (the progress surface's SSE health): the rejection is
+    counted AT the 429 (one of the two 429 sites; the admin topic endpoint
+    raises its own), and the level gauge moves at the same sites the slot
+    itself moves — the caller's acquire-success here counts +1 via
+    ``record_sse_connection_opened`` and the generator's release counts it
+    back. ``key`` is the endpoint family constant ("progress-stream"), the
+    closed topic vocabulary the connection gauge's description names —
+    never caller-supplied text, so the series set stays bounded.
     """
     semaphore = _semaphore(key, limit)
     try:
         await asyncio.wait_for(semaphore.acquire(), timeout=_ACQUIRE_TIMEOUT)
     except TimeoutError:
+        record_sse_rejection("progress", key)
         raise HTTPException(
             status_code=429,
             detail=f"too many concurrent SSE connections for {key!r}",
         ) from None
+    record_sse_connection_opened("progress", key)
     return semaphore
 
 
 async def release_after(
-    semaphore: asyncio.Semaphore, gen: AsyncGenerator[str, None]
+    semaphore: asyncio.Semaphore, gen: AsyncGenerator[str, None], topic: str = _PROGRESS_TOPIC
 ) -> AsyncGenerator[str, None]:
     """Wrap *gen*, releasing *semaphore* when it finishes for any reason.
 
     Client disconnect surfaces as ``CancelledError`` thrown into the
     generator, so the release has to be in a ``finally`` around the
-    iteration rather than after it.
+    iteration rather than after it. *topic* must be the family key the
+    slot was acquired with, so the connections gauge counts the release
+    the semaphore's release performs.
     """
     try:
         # Deterministic close of the wrapped generator on EVERY exit: a
@@ -95,3 +120,8 @@ async def release_after(
                 yield chunk
     finally:
         semaphore.release()
+        # The level gauge moves where the slot moves. *topic* must be the
+        # family key the slot was acquired with (the gauge's closed
+        # vocabulary); the default is the progress stream's own constant,
+        # the only production caller's key.
+        record_sse_connection_closed("progress", topic)
