@@ -29,6 +29,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     IdempotencyKey,
     IdentityKey,
+    JobId,
     QueueName,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
 )
@@ -236,6 +237,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     tags: list[str] | None = None,
     idempotency_max_bytes: int = MAX_IDEMPOTENCY_KEY_BYTES,
     stamp_batch_id: str | None = None,
+    parent_id: JobId | None = None,
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
@@ -386,6 +388,10 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         unique_states=resolved_unique_states,  # type: ignore[arg-type]  # Why: tuple[str, ...] from caller and tuple[JobStatus, ...] from ActorRef both satisfy the runtime contract; JobStatus is Literal[str, ...]
         metadata=metadata_dict,
         tags=_validate_and_dedup_tags(tags),
+        # LIB-2: the fan-out ledger stamp — the caller (the enqueue arm)
+        # read the ambient parent context and passed it here, the
+        # builder stays pure (no contextvar read inside).
+        parent_id=parent_id,
     )
 
 
@@ -394,6 +400,7 @@ def build_batch_args(
     batch_id: UUID,
     *,
     max_pending_by_actor: Mapping[str, int | None] | None = None,
+    parent_id: "JobId | None" = None,
 ) -> list[EnqueueArgs]:
     """Build EnqueueArgs for every item in a batch, merging ``batch_id`` into metadata.
 
@@ -408,6 +415,11 @@ def build_batch_args(
     per-item args enforce the same limit the caller's aggregated check
     just admitted; when omitted, each actor's literal is used, exactly
     as before.
+
+    ``parent_id`` is the fan-out ledger stamp (LIB-2): the caller read
+    the ambient parent context ONCE per call and passed it here, every
+    item carries it. Pure like the rest of the module — no contextvar
+    read inside.
     """
     args_list: list[EnqueueArgs] = []
     batch_id_str = str(batch_id)
@@ -434,6 +446,7 @@ def build_batch_args(
             # build_enqueue_args: any batch_id on item.metadata is stripped
             # before the library's own batch_id is stamped.
             stamp_batch_id=batch_id_str,
+            parent_id=parent_id,
         )
         args_list.append(args)
     return args_list

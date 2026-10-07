@@ -50,7 +50,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var
+from taskq.client._enqueuer import SubJobEnqueuer, _parent_job_id_var, _parent_tags_var
 from taskq.constants import (
     DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_RESERVATION_BACKOFF,
@@ -1002,6 +1002,10 @@ async def consume_one_job(
     _buf: _ProgressBuffer | None = None
 
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
+    # The fan-out ledger stamp (LIB-2): the sibling contextvar, set and
+    # reset with the tags token — every child enqueue under this attempt
+    # carries this job's id as parent_id.
+    _parent_job_id_token = _parent_job_id_var.set(job.id)
 
     # This attempt's own registration, captured for the exit path below
     # (issue 461): the lease can lapse mid-run, the same worker can
@@ -1648,6 +1652,7 @@ async def consume_one_job(
 
     finally:
         _parent_tags_var.reset(_parent_tags_token)
+        _parent_job_id_var.reset(_parent_job_id_token)
         # Why unconditional, even when the terminal write failed: the actor
         # body has stopped either way, so the resource it was holding really
         # is free, keeping the slot until its lease expires would throttle

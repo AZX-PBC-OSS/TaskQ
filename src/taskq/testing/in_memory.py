@@ -1011,6 +1011,38 @@ class InMemoryBackend:
             1 for r in self._jobs.values() if r.queue in queue_set and r.status in ACTIVE_STATUSES
         )
 
+    async def count_pending_jobs_by_queue(self, queues: list[str]) -> dict[str, int]:
+        """Grouped pending+scheduled counts per queue, the admission count the
+        max_pending cap governs (the LIB-2 backpressure read's DEPTH half).
+
+        The in-memory twin of ``sql.count_pending_jobs_by_queue``: same
+        statuses (pending + scheduled, exactly what
+        ``enqueue_max_pending_count`` counts), grouped per queue, absent
+        queues read 0 client-side.
+        """
+        if not queues:
+            return {}
+        queue_set = set(queues)
+        counts: dict[str, int] = {}
+        for r in self._jobs.values():
+            if r.queue in queue_set and r.status in ("pending", "scheduled"):
+                counts[r.queue] = counts.get(r.queue, 0) + 1
+        return counts
+
+    async def count_pending_children_by_queue(self, parent_id: JobId) -> dict[str, int]:
+        """The parent's pending children, exact and grouped by queue (the LIB-2
+        backpressure read's FAN-OUT half), the in-memory twin of
+        ``sql.count_pending_children_by_queue``.
+
+        ``parent_id`` is a plain column, no FK: a purged or never-existed
+        parent is the same defined-empty result.
+        """
+        counts: dict[str, int] = {}
+        for r in self._jobs.values():
+            if r.parent_id == parent_id and r.status in ("pending", "scheduled"):
+                counts[r.queue] = counts.get(r.queue, 0) + 1
+        return counts
+
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self)
 

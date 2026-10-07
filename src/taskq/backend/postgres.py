@@ -107,7 +107,9 @@ from taskq.backend._protocol import (
 from taskq.backend._reads import (
     _check_reclaim_visibility_risk,
     _count_active_jobs,
+    _count_pending_children_by_queue,
     _count_pending_jobs,
+    _count_pending_jobs_by_queue,
     _get,
     _get_actor_max_pending,
     _get_actor_queues,
@@ -1262,6 +1264,12 @@ class PostgresBackend:
 
     async def count_active_jobs(self, queues: list[str]) -> int:
         return await _count_active_jobs(self._worker_pool, self._sql, queues)
+
+    async def count_pending_jobs_by_queue(self, queues: list[str]) -> dict[str, int]:
+        return await _count_pending_jobs_by_queue(self._worker_pool, self._sql, queues)
+
+    async def count_pending_children_by_queue(self, parent_id: JobId) -> dict[str, int]:
+        return await _count_pending_children_by_queue(self._worker_pool, self._sql, parent_id)
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self._worker_pool, self._sql)

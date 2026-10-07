@@ -678,6 +678,16 @@ class EnqueueArgs:
     unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
+    # The fan-out ledger (LIB-2): the enqueuing parent's job id, stamped
+    # by the client layer from the ambient parent context (the sibling
+    # contextvar to the tag-inheritance one, set at worker entry). A
+    # plain column in the schema, deliberately NO foreign key: an FK
+    # would key-share-lock the parent row per child insert and block a
+    # retention purge of a parent while children pend. Dangling ids are
+    # a defined, harmless state — the pending-children count never joins
+    # to the parent row. Default None: a row enqueued outside any parent
+    # context (plain enqueue, cron fires) is nobody's child.
+    parent_id: JobId | None = None
     # RetryPolicy's backoff-curve scalars, stamped from the actor's live
     # registration at enqueue time (taskq.client._args builds this from
     # ``ref.retry``). Crash/heartbeat reclaim reads these columns to
@@ -1120,6 +1130,15 @@ class JobRow:
     tell "this job finished and was archived" from a fabricated row.
     Trailing default: rows materialised before the marker existed read
     hot.
+    """
+    parent_id: JobId | None = None
+    """The fan-out ledger (LIB-2): the enqueuing parent's job id when this
+    row is a child enqueue made under a parent's context (the sibling
+    stamp to tag inheritance, set at worker entry). Plain column, no
+    foreign key — a purged parent's pending children are a defined,
+    harmless state (see 01.00.23_01_pre_jobs_parent_id.sql). Trailing
+    default: rows materialised before the column existed read None, as
+    does every row enqueued outside a parent context.
     """
 
 
