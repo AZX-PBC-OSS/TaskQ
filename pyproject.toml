@@ -378,6 +378,7 @@ ignore = [
 # binding. S311: random module used for jitter in the deadlock-retry backoff
 # (the hardening H7 cure), not crypto.
 "src/taskq/workflows/_sql.py" = ["S608"]
+"src/taskq/workflows/_sql_status.py" = ["S608"]
 "src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]
 # Same rationale — schema name validated via the WorkflowSql bundle every
 # fixture builds; all user-supplied values use $N parameter binding. The

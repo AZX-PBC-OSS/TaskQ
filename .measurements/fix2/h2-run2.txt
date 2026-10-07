@@ -1,0 +1,301 @@
+......FFF.F..                                                            [100%]
+=================================== FAILURES ===================================
+_________ test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f07ad268aa0>
+wf_schema = 'tq_443cdedc5c'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07ace5bd00>
+wf_sql = WorkflowSql(schema='tq_443cdedc5c', terminal_mark='UPDATE tq_443cdedc5c.jobs\nSET status = $2::"tq_443cdedc5c".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+propagation_redlog = <tests._wf_fixtures.RedLog object at 0x7f07acf59250>
+
+    @pytest.mark.integration
+    async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        propagation_redlog: RedLog,
+    ) -> None:
+        """Node X feeds joinA (fail_closed) AND joinB (collect); X
+        terminal-fails. The cascade blocks A and fails the flow IN THE SAME
+        TX — the collect leg's decrement then reads the flow-alive guard and
+        is REFUSED. A FENCED DECREMENT IS NOT ABSORPTION: the edge declared
+        the collect POLICY, but the flow's death fenced the resolution — the
+        fan-in never delivered. THE TWO LIES THIS PIN FORBIDS (the phase-2
+        attack's H2):
+        * the hanging join: joinB must rest blocked-with-reason after ONE
+          sweep pass — never a reconciled-to-0, never-fired, claimable join
+          row on a failed flow;
+        * the lying envelope: the derivation must say 'failed' for this
+          failed-closed run — X's failure is NOT absorbed (the edge's POLICY
+          declaration alone absorbs nothing; the record must show the
+          absorption RAN). T07's C: the envelope must not lie about which
+          policy ran.
+        THE CONVICTED VARIANT (the drill): the absorbed predicate without the
+        fence clause (EXISTS any absorbing edge) — the derivation flips to
+        'blocked' and the envelope lie reproduces."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_a = await seed_join(wf_conn, wf_schema, flow_id, step_key="ja", deps=1)
+        join_b = await seed_join(wf_conn, wf_schema, flow_id, step_key="jb", deps=1)
+        x = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="x")
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+            "VALUES ($1, $2, $3, 'fail_closed')",
+            join_a,
+            x,
+            flow_id,
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+            "VALUES ($1, $2, $3, 'collect')",
+            join_b,
+            x,
+            flow_id,
+        )
+    
+        await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=x,
+            step_key="x",
+            worker_id=(await claim_view(wf_conn, wf_schema, x))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",
+            error_class="ValueError",
+            error_message="the mixed node",
+        )
+    
+        # THE FAIL_CLOSED LEG RAN: the flow failed, joinA blocked-with-reason.
+        root = await node_state(wf_conn, wf_schema, flow_id)
+        assert root["status"] == "failed", "the fail_closed leg must fail the flow"
+        a_state = await node_state(wf_conn, wf_schema, join_a)
+        assert a_state["metadata"].get("blocking_reason") == "failed_parent"
+    
+        # ONE SWEEP PASS: the flow-fenced join arm owns joinB's resolution.
+>       summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_propagation_pins.py:641: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:117: in sweep_join_rederive
+    summary = await conn.fetchrow(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidColumnReferenceError: invalid reference to FROM-clause entry for table "j"
+E   HINT:  There is an entry for table "j", but it cannot be referenced from this part of the query.
+
+asyncpg/protocol/protocol.pyx:165: InvalidColumnReferenceError
+____________ test_t06_pin6_sweep_heals_fail_closed_join_after_crash ____________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f07ad2696d0>
+wf_schema = 'tq_443cdedc5c'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07ace5bd00>
+wf_sql = WorkflowSql(schema='tq_443cdedc5c', terminal_mark='UPDATE tq_443cdedc5c.jobs\nSET status = $2::"tq_443cdedc5c".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+propagation_redlog = <tests._wf_fixtures.RedLog object at 0x7f07ad2b0c00>
+
+    @pytest.mark.integration
+    async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        propagation_redlog: RedLog,
+    ) -> None:
+        """The sweep composes with failures: the child's tx1 committed its
+        TERMINAL FAILURE, tx2 never ran (the crash window) — the sweep's
+        re-derive must resolve the fail_closed join the way the direct
+        path's cascade would (blocked-with-reason, never a fire over the
+        failed parent), and the collect join still fires (its counter
+        resolved; the ledger carries the failed child's full history — the
+        collector's truth)."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        fc_join, fc_children = await _seed_map(
+            wf_conn, wf_schema, flow_id, n=1, policy="fail_closed", join_step="fc_join"
+        )
+        col_join, col_children = await _seed_map(
+            wf_conn, wf_schema, flow_id, n=1, policy="collect", join_step="col_join"
+        )
+    
+        # BOTH children terminalize tx1-only (the crash window: no tx2).
+        await _terminalize(wf_conn, wf_schema, fc_children[0], outcome="failed")
+        await _terminalize(wf_conn, wf_schema, col_children[0], outcome="succeeded")
+    
+>       summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_propagation_pins.py:529: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:117: in sweep_join_rederive
+    summary = await conn.fetchrow(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidColumnReferenceError: invalid reference to FROM-clause entry for table "j"
+E   HINT:  There is an entry for table "j", but it cannot be referenced from this part of the query.
+
+asyncpg/protocol/protocol.pyx:165: InvalidColumnReferenceError
+___________ test_attack_t06_mixed_policy_node_the_collect_join_hangs ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f07ad26b200>
+wf_schema = 'tq_df0a158e0c'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07ac4c6bc0>
+wf_sql = WorkflowSql(schema='tq_df0a158e0c', terminal_mark='UPDATE tq_df0a158e0c.jobs\nSET status = $2::"tq_df0a158e0c".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t06_mixed_policy_node_the_collect_join_hangs(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """Node X feeds joinA (fail_closed) and joinB (collect). X fails:
+        the cascade blocks A and fails the flow IN THE SAME TX — then the
+        collect leg's decrement reads the flow-alive guard and refuses, so
+        joinB never resolves; the sweep then RECONCILES joinB's counter to 0
+        (its failed_required is 0 — the edge says collect) leaving a
+        never-fired, never-stamped, claimable join row. The record shows a
+        hanging join — the pin-1 claim broken; and the rollup's EXISTS
+        ``absorbed`` flag marks X absorbed, so the derivation can never say
+        'failed' for this failed-closed run."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_a = await seed_join(wf_conn, wf_schema, flow_id, step_key="ja", deps=1)
+        join_b = await seed_join(wf_conn, wf_schema, flow_id, step_key="jb", deps=1)
+        x = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="x")
+        await _seed_edge_named(wf_conn, wf_schema, join_a, x, flow_id, "fail_closed")
+        await _seed_edge_named(wf_conn, wf_schema, join_b, x, flow_id, "collect")
+    
+        await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=x,
+            step_key="x",
+            worker_id=(await claim_view(wf_conn, wf_schema, x))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",
+            error_class="ValueError",
+            error_message="the mixed node",
+        )
+    
+        root = await node_state(wf_conn, wf_schema, flow_id)
+        assert root["status"] == "failed", "the fail_closed leg must fail the flow"
+        a_state = await node_state(wf_conn, wf_schema, join_a)
+        assert a_state["metadata"].get("blocking_reason") == "failed_parent"
+    
+        b_state = await node_state(wf_conn, wf_schema, join_b)
+        fires_b = await fire_count(wf_conn, wf_schema, join_b)
+    
+        # THE SWEEP's next pass: what does the record look like after the
+        # healer runs?
+>       await sweep_join_rederive(module_pg_pool, wf_sql)
+
+tests/attack2-t06-cascade.py:401: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:117: in sweep_join_rederive
+    summary = await conn.fetchrow(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidColumnReferenceError: invalid reference to FROM-clause entry for table "j"
+E   HINT:  There is an entry for table "j", but it cannot be referenced from this part of the query.
+
+asyncpg/protocol/protocol.pyx:165: InvalidColumnReferenceError
+___________ test_attack_t06_crash_window_fail_closed_root_and_peers ____________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f07ad26b6b0>
+wf_schema = 'tq_df0a158e0c'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07ac4c6bc0>
+wf_sql = WorkflowSql(schema='tq_df0a158e0c', terminal_mark='UPDATE tq_df0a158e0c.jobs\nSET status = $2::"tq_df0a158e0c".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t06_crash_window_fail_closed_root_and_peers(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """The crash window: the child's tx1 marked it failed, the cascade
+        (tx2) never ran. The sweep heal stamps the join. THE ROOT: the
+        §17.2 cascade's flip is also lost — the maintenance leg must heal
+        it. PREDICTION UNDER ATTACK: has_live counts the blocked join row
+        (pending forever) — the root wedges 'running'; and the peers keep
+        running on the dead flow."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fc_join", deps=2)
+        failed_child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c0")
+        peer = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="c1")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, failed_child, flow_id, "fail_closed")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, peer, flow_id, "fail_closed")
+    
+        # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands, tx2 (the
+        # cascade) never runs — the direct DB write, the exact tx1 shape.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'failed\', finished_at = now(), '
+            "error_class = 'ValueError' WHERE id = $1",
+            failed_child,
+        )
+    
+>       summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack2-t06-cascade.py:112: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:117: in sweep_join_rederive
+    summary = await conn.fetchrow(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidColumnReferenceError: invalid reference to FROM-clause entry for table "j"
+E   HINT:  There is an entry for table "j", but it cannot be referenced from this part of the query.
+
+asyncpg/protocol/protocol.pyx:165: InvalidColumnReferenceError
+=========================== short test summary info ============================
+FAILED tests/test_wf_propagation_pins.py::test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption
+FAILED tests/test_wf_propagation_pins.py::test_t06_pin6_sweep_heals_fail_closed_join_after_crash
+FAILED tests/attack2-t06-cascade.py::test_attack_t06_mixed_policy_node_the_collect_join_hangs
+FAILED tests/attack2-t06-cascade.py::test_attack_t06_crash_window_fail_closed_root_and_peers
+4 failed, 9 passed in 4.34s

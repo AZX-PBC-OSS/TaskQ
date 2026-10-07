@@ -39,6 +39,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows import fan_in_skip, finalize_node
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows._status import reconstruct_workflow_status
 from taskq.workflows._sweep import sweep_join_rederive
 from tests._wf_fixtures import (
     RedLog,
@@ -567,3 +568,130 @@ def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
     )
     with pytest.raises(ValueError, match="failure_policy"):
         validate_fork(fork)
+
+
+# ── Pin 8: THE MIXED-POLICY NODE (the fence is not absorption) ──────────
+
+
+@pytest.mark.integration
+async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    propagation_redlog: RedLog,
+) -> None:
+    """Node X feeds joinA (fail_closed) AND joinB (collect); X
+    terminal-fails. The cascade blocks A and fails the flow IN THE SAME
+    TX — the collect leg's decrement then reads the flow-alive guard and
+    is REFUSED. A FENCED DECREMENT IS NOT ABSORPTION: the edge declared
+    the collect POLICY, but the flow's death fenced the resolution — the
+    fan-in never delivered. THE TWO LIES THIS PIN FORBIDS (the phase-2
+    attack's H2):
+    * the hanging join: joinB must rest blocked-with-reason after ONE
+      sweep pass — never a reconciled-to-0, never-fired, claimable join
+      row on a failed flow;
+    * the lying envelope: the derivation must say 'failed' for this
+      failed-closed run — X's failure is NOT absorbed (the edge's POLICY
+      declaration alone absorbs nothing; the record must show the
+      absorption RAN). T07's C: the envelope must not lie about which
+      policy ran.
+    THE CONVICTED VARIANT (the drill): the absorbed predicate without the
+    fence clause (EXISTS any absorbing edge) — the derivation flips to
+    'blocked' and the envelope lie reproduces."""
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    join_a = await seed_join(wf_conn, wf_schema, flow_id, step_key="ja", deps=1)
+    join_b = await seed_join(wf_conn, wf_schema, flow_id, step_key="jb", deps=1)
+    x = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="x")
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'fail_closed')",
+        join_a,
+        x,
+        flow_id,
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        join_b,
+        x,
+        flow_id,
+    )
+
+    await finalize_node(
+        module_pg_pool,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=x,
+        step_key="x",
+        worker_id=(await claim_view(wf_conn, wf_schema, x))[0],
+        attempt=1,
+        claim_epoch=0,
+        outcome="failed",
+        error_class="ValueError",
+        error_message="the mixed node",
+    )
+
+    # THE FAIL_CLOSED LEG RAN: the flow failed, joinA blocked-with-reason.
+    root = await node_state(wf_conn, wf_schema, flow_id)
+    assert root["status"] == "failed", "the fail_closed leg must fail the flow"
+    a_state = await node_state(wf_conn, wf_schema, join_a)
+    assert a_state["metadata"].get("blocking_reason") == "failed_parent"
+
+    # ONE SWEEP PASS: the flow-fenced join arm owns joinB's resolution.
+    summary = await sweep_join_rederive(module_pg_pool, wf_sql)
+    assert summary.flow_fenced >= 1, f"the flow-fenced join must be stamped: {summary}"
+
+    b_state = await node_state(wf_conn, wf_schema, join_b)
+    fires_b = await fire_count(wf_conn, wf_schema, join_b)
+    propagation_redlog.red(
+        "t06-pin8-mixed-policy-fence",
+        "the flow-fenced join arm dropped (or the absorbed predicate read "
+        "the edge's POLICY declaration as a ran absorption) — the collect "
+        "join hangs claimable-never-fired on a failed flow, and the "
+        "derivation can never say 'failed' for the failed-closed run",
+        {
+            "join_b_blocking_reason": b_state["metadata"].get("blocking_reason"),
+            "join_b_deps_pending": b_state["deps_pending"],
+            "fires": fires_b,
+        },
+    )
+    # NO HANGING CLAIMABLE JOIN: joinB rests blocked-with-reason NAMING
+    # the failed parent (the direct path's cascade stamp — the fence
+    # resolves the way the cascade would have), never fired.
+    assert b_state["metadata"].get("blocking_reason") == "failed_parent", (
+        f"THE HANGING COLLECT JOIN: joinB rests {b_state} — the flow's own "
+        "death fenced the collect leg's decrement, and nothing resolved "
+        "the join: a claimable never-fired row on a failed flow"
+    )
+    assert b_state["metadata"].get("failed_parent") == str(x), (
+        "the stamp names the failed parent"
+    )
+    assert fires_b == 0, "the join never fires over the fenced flow"
+
+    # THE ENVELOPE IS HONEST: the derivation says 'failed' — X's failure
+    # is NOT absorbed (the fence refused the resolution), never 'blocked'.
+    reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
+    assert reconstructed == "failed", (
+        f"THE ENVELOPE LIES: the rows reconstruct {reconstructed!r} for a "
+        "failed-closed run — the absorbed predicate read the edge's POLICY "
+        "declaration as a ran absorption (the flow-fenced fan-in never "
+        "delivered), so the derivation can never say 'failed' here"
+    )
+
+    # THE MUTATION DRILL (live): the absorbed predicate WITHOUT the fence
+    # clause — the EXISTS-any-absorbing-edge lie — derives 'blocked': the
+    # convicted envelope lie reproduces against this very state.
+    import dataclasses
+
+    mutated_nodes = wf_sql.workflow_nodes.replace(
+        "AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))",
+        "",
+    )
+    assert mutated_nodes != wf_sql.workflow_nodes, "the mutation drill did not arm"
+    mutated_sql = dataclasses.replace(wf_sql, workflow_nodes=mutated_nodes)
+    lied = await reconstruct_workflow_status(wf_conn, mutated_sql, flow_id)
+    assert lied == "blocked", (
+        f"the drill's conviction is broken: the mutant derived {lied!r} — "
+        "the fence clause must be load-bearing in the absorbed predicate"
+    )

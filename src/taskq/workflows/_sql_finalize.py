@@ -363,6 +363,17 @@ RETURNING j.id
 # whose declared policy absorbs the failure) — a fail_closed edge's side
 # is resolved by the cascade's block stamp (never by a decrement: the
 # join must not become firable over a failed parent).
+#
+# THE FLOW-ALIVE GUARD IS THE FENCE, NOT THE POLICY (the phase-2 attack's
+# H2): when the flow is ALREADY terminal (the fail_closed leg flipped it
+# in this same tx), the refusing decrement is a FENCED resolution — and a
+# fenced decrement is NOT absorption. The edge's declared POLICY alone
+# absorbs nothing: the sweep's flow-fenced arm (REDERIVE_SWEEP_SQL) gives
+# the join the blocked-with-reason terminal state, and the absorption
+# record (WORKFLOW_NODES_SQL / the maintenance leg's has_failed) reads
+# the join row's terminal-block stamp — never the edge's declaration —
+# so the derivation can say 'failed' for the failed-closed run (the
+# envelope never lies, T07's C).
 DECREMENT_ABSORBED_SQL = """\
 WITH flow_alive AS (
     SELECT 1 AS ok

@@ -108,6 +108,59 @@ blocked_required AS (
       AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
     RETURNING j.id
 ),
+-- THE FLOW-FENCED JOIN ARM (the phase-2 attack's H2 cure): a never-fired
+-- join row whose resolution the FLOW'S OWN DEATH fenced — the fire's
+-- flow-status leg refuses a terminal flow, so this row can never fire
+-- again, and (the convicted shape) the sweep's recount then RECONCILED
+-- its counter to 0, leaving a claimable never-fired join row on a failed
+-- flow. THE FENCE IS NOT ABSORPTION: the resolution the direct path's
+-- cascade stamps is stamped HERE — 'failed_parent' naming the failed
+-- parent when one exists (a fenced collect's failed parent IS the
+-- cause), 'flow_dead' when the parents terminalized fine and the fire
+-- the flow's death fenced was the join's last resort. The reconciled and
+-- firable arms exclude the stamped rows (a stamped row is resolved: the
+-- dead-run rescan ends here).
+flow_fenced AS (
+    UPDATE {schema}.jobs j
+    SET metadata = j.metadata
+        || jsonb_build_object(
+               'blocking_reason',
+               CASE WHEN cand.parent_id IS NOT NULL THEN $3::text ELSE $4::text END,
+               'failed_parent',
+               cand.parent_id,
+               'failed_step',
+               cand.step_key
+           )
+    FROM (
+        SELECT jj.id, fp.parent_id, fp.step_key
+        FROM {schema}.jobs jj
+        JOIN {schema}.jobs f
+          ON f.id = (jj.metadata->>'flow_id')::uuid
+        LEFT JOIN LATERAL (
+            SELECT p.id AS parent_id, p.step_key
+            FROM {schema}.wf_edge e
+            JOIN {schema}.jobs p ON p.id = e.parent_id
+            WHERE e.child_id = jj.id
+              AND p.status = 'failed'
+            ORDER BY p.id
+            LIMIT 1
+        ) fp ON true
+        WHERE f.step_key = '__flow__'
+          AND f.status IN {terminal}
+          AND jj.status = 'pending'
+          AND jj.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+          AND NOT EXISTS (
+              SELECT 1 FROM {schema}.wf_join_fire fire WHERE fire.join_job_id = jj.id
+          )
+          -- One resolution per row per pass: the arms all see the same
+          -- statement snapshot, so the exclusion (not the write order)
+          -- keeps the double-update undefined-result class out.
+          AND NOT EXISTS (SELECT 1 FROM blocked b WHERE b.id = jj.id)
+          AND NOT EXISTS (SELECT 1 FROM blocked_required br WHERE br.id = jj.id)
+    ) cand
+    WHERE j.id = cand.id
+    RETURNING j.id
+),
 reconciled AS (
     UPDATE {schema}.jobs j
     SET deps_pending = c.unterminal::smallint
@@ -116,6 +169,7 @@ reconciled AS (
       AND c.missing_parents = 0
       AND c.failed_required = 0
       AND c.edge_count > 0
+      AND NOT EXISTS (SELECT 1 FROM flow_fenced ff WHERE ff.id = j.id)
       AND j.deps_pending <> c.unterminal::smallint
     RETURNING j.id
 ),
@@ -129,10 +183,14 @@ firable AS (
       -- A fail_closed join with a failed parent is never firable (T06):
       -- the blocked_required arm owns its resolution.
       AND c.failed_required = 0
+      -- Nor is a flow-fenced join (the H2 arm owns its resolution — the
+      -- fire's flow-status leg would refuse it every pass forever).
+      AND NOT EXISTS (SELECT 1 FROM flow_fenced ff WHERE ff.id = l.id)
 )
 SELECT
     (SELECT count(*) FROM blocked) AS blocked,
     (SELECT count(*) FROM blocked_required) AS blocked_required,
+    (SELECT count(*) FROM flow_fenced) AS flow_fenced,
     (SELECT count(*) FROM reconciled) AS reconciled,
     (SELECT count(*) FROM firable) AS firable
 """

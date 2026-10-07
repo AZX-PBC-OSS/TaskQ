@@ -1,0 +1,14 @@
+ImportError while loading conftest '/tmp/opencode/wt-taskqflow/tests/conftest.py'.
+tests/conftest.py:133: in <module>
+    from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
+tests/_wf_fixtures.py:30: in <module>
+    from taskq.workflows._sql import WorkflowSql
+src/taskq/workflows/__init__.py:24: in <module>
+    from taskq.workflows._sweep import (
+src/taskq/workflows/_sweep.py:44: in <module>
+    from taskq.workflows._sql import (
+src/taskq/workflows/_sql.py:62: in <module>
+    from taskq.workflows._sql_status import (
+E     File "/tmp/opencode/wt-taskqflow/src/taskq/workflows/_sql_status.py", line 146
+E       + _absorbed_exists("n")
+E   IndentationError: unexpected indent

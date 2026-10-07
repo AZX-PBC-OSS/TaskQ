@@ -100,6 +100,14 @@ BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
 #: NOWHERE — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
 BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
+#: The flow-fenced join (the phase-2 attack's H2): a never-fired join row
+#: whose resolution the FLOW'S OWN DEATH fenced — the fire's flow-status
+#: leg refuses a terminal flow, so the join can never fire again. The
+#: sweep's flow-fenced arm stamps it (the blocked-with-reason terminal
+#: state); a join with a FAILED parent is stamped 'failed_parent' (the
+#: failure is the cause) — this name is for the join whose parents all
+#: terminalized fine and whose fire the flow's death fenced anyway.
+BLOCKING_REASON_FLOW_DEAD: Final[str] = "flow_dead"
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,33 @@ parameter binding (the JSONB-landmine rule, _sql.py's docstring).
 
 from __future__ import annotations
 
+
+# ── THE ABSORPTION RECORD (T06/T07 + the phase-2 attack's H2 cure) ──────
+# The SQL predicate deciding whether a FAILED node's failure was
+# ABSORBED — shared VERBATIM by the per-node rollup (the derivation's
+# input) and the maintenance leg (the root finalize), so the two can
+# never drift. THE FENCE IS NOT ABSORPTION: the edge's declared POLICY
+# (collect | maybe) alone absorbs nothing — the record must show the
+# absorption RAN, and a join row blocked with a TERMINAL reason
+# ('failed_parent' — a failed parent's fail-closed/fenced resolution —
+# 'orphan_parent', or 'flow_dead' — the flow's own death fencing the
+# fire) can NEVER deliver the fan-in. The EXISTS-any-absorbing-edge
+# variant marked every mixed-policy failure absorbed, and the derivation
+# could NEVER say 'failed' for a failed-closed run — the envelope lied
+# (T07's C). ``{node}`` is the failed node's row alias.
+def _absorbed_exists(node_alias: str) -> str:
+    return (
+        "EXISTS (\n"
+        "            SELECT 1\n"
+        '            FROM "{schema}".wf_edge e\n'
+        '            JOIN "{schema}".jobs j2 ON j2.id = e.child_id\n'
+        f"            WHERE e.parent_id = {node_alias}.id\n"
+        "              AND e.failure_policy IN ('collect', 'maybe')\n"
+        "              AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))\n"
+        "        )"
+    )
+
+
 # The WORKFLOW-LEVEL grouped rollup: one grouped read per status read —
 # the admin page's status panel and the wf-progress gauge share the same
 # read (the query-count pin). The flow root row itself (step_key='__flow__')
@@ -31,16 +58,16 @@ GROUP BY status
 # future scheduled_at + the unresolved signal), and the ABSORPTION record
 # (the edge ledger's declared policy for this node's failure + the
 # absorbing join's failures array — the derivation reads the record, never
-# a heuristic).
-WORKFLOW_NODES_SQL = """\
+# a heuristic). The absorption record is _absorbed_exists's POLICY-vs-
+# FENCE predicate — the edge's declaration alone absorbs nothing (the
+# envelope never lies, T07's C).
+WORKFLOW_NODES_SQL = (
+    """\
 SELECT j.id, j.step_key, j.status, j.deps_pending,
        j.metadata->>'blocking_reason' AS blocking_reason,
-       EXISTS (
-           SELECT 1
-           FROM "{schema}".wf_edge e
-           WHERE e.parent_id = j.id
-             AND e.failure_policy IN ('collect', 'maybe')
-       ) AS absorbed,
+       """
+    + _absorbed_exists("j")
+    + """ AS absorbed,
        j.metadata->>'error' AS error_jsonb,
        j.error_class, j.error_message
 FROM {schema}.jobs j
@@ -48,6 +75,7 @@ WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
   AND j.step_key <> '__flow__'
 ORDER BY j.id
 """
+)
 
 
 # The PER-MAP done/total (the counter's complement — "417/1000 · 3
@@ -96,7 +124,8 @@ GROUP BY c.step_key
 # stamp when the root has no error of its own (the cascade's flip stamps
 # the peer-cancel origin; a root the sweep finalizes carries
 # 'UnabsorbedNodeFailure').
-WORKFLOW_ROOT_MAINTAIN_SQL = """\
+WORKFLOW_ROOT_MAINTAIN_SQL = (
+    """\
 WITH roots AS (
     SELECT f.id
     FROM {schema}.jobs f
@@ -108,13 +137,15 @@ WITH roots AS (
 ),
 per_flow AS (
     SELECT r.id AS flow_id,
+           -- THE ABSORPTION RECORD (the same _absorbed_exists POLICY-vs-
+           -- FENCE predicate the per-node rollup serves — the derivation
+           -- and the root finalize can never drift): a failed node whose
+           -- failure the flow's fence never delivered is NOT absorbed.
            bool_or(
                n.status = 'failed'
-               AND NOT EXISTS (
-                   SELECT 1 FROM {schema}.wf_edge e
-                   WHERE e.parent_id = n.id
-                     AND e.failure_policy IN ('collect', 'maybe')
-               )
+               AND NOT """
+    + _absorbed_exists("n")
+    + """
            ) AS has_failed,
            -- The derivation's ROW 1 (the reclaim's input): a
            -- crashed/abandoned node is live work, and a running node
@@ -160,3 +191,4 @@ maintained AS (
 )
 SELECT count(*)::int AS roots_updated FROM maintained
 """
+)
