@@ -39,7 +39,9 @@ scales, and can be proven to have covered its population.
 A common first version selects a fixed page, fans out, notices it did
 not reach the end, logs that fact, and returns.
 
-```python
+```python no-exec — not executed: defect illustration, `fetch_eligible`/`EmptyPayload` belong to the reader's app
+from taskq import JobContext, actor
+
 @actor(name="screen_candidates", queue="cron")
 async def screen_candidates(payload: EmptyPayload, ctx: JobContext[EmptyPayload]) -> None:
     rows = await fetch_eligible(limit=250)  # a fixed page
@@ -93,7 +95,7 @@ Split the sweep into two actors. A **root** pages the population and enqueues wo
 does one item. The root's last act, if its page was full, is to enqueue *itself* with the
 advanced cursor.
 
-```python
+```python no-exec — not executed: fragment, `fetch_page`/`encode_cursor`/`do_the_work`/`logger` belong to the reader's app
 from datetime import timedelta
 
 from pydantic import BaseModel
@@ -164,7 +166,7 @@ async def refresh_item(payload: ItemPayload) -> None:
 
 And the trigger, which is now a starter rather than a pacer:
 
-```python
+```python no-exec — not executed: registration has side effects; names bound by an earlier fence
 from taskq import cron
 
 # Every 15 minutes: start a chain if one is not already in flight. The cadence
@@ -292,7 +294,7 @@ chain stops after one link. No exception, no failed job, nothing in a dashboard 
 Conversely, the `unique_for` preflight *does* filter on status, but it only runs at all when
 **both** `unique_for` and `identity_key` are present:
 
-```python
+```python no-exec — not executed: signature excerpt of the preflight condition (backend/_enqueue.py)
 if args.unique_for is not None and args.identity_key is not None:
 ```
 
@@ -360,8 +362,7 @@ parse. If that row's exception escapes the loop, the pass dies for every *other*
 because the pass is a job, it retries into the same malformed row and dies again. One bad record
 takes out the hour.
 
-```python
-for row in rows:
+```python no-exec — not executed: fragment, names bound by an earlier fence
     try:
         await ctx.jobs.enqueue(refresh_item, build_payload(row), idempotency_key=key_for(row))
     except Exception:
@@ -464,7 +465,7 @@ on is a guard whose lifetime is the root's lifetime, because a thin root outlive
 
 The run guard is a handful of lines and it single-flights the *work* rather than the trigger:
 
-```python
+```python no-exec — not executed: fragment, `begin_run_if_idle`/`EmptyPayload` belong to the reader's app
 @actor(name="refresh_sweep_root", queue="cron")
 async def refresh_sweep_root(payload: EmptyPayload, ctx: JobContext[EmptyPayload]) -> None:
     run_id = await begin_run_if_idle()  # your table; returns None if one is active
