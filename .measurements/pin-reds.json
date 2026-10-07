@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin14-deadlock-retry",
-    "mutation": "no retry (the single-shot operator under storm contention)",
-    "red": "{\"aborted_with_DeadlockDetectedError\": true, \"retries\": 0}"
+    "pin": "pin13-attempt-fence",
+    "mutation": "finalize CAS with row status only (no attempt/epoch conjunct)",
+    "red": "{\"status\": \"succeeded\", \"zombie_attempt\": 1, \"row_attempt\": 2}"
   }
 ]
