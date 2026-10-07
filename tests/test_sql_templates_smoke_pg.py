@@ -292,6 +292,20 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "a correlated lateral fragment, never a standalone statement; "
         "interpolated verbatim into the round-robin dispatch variant",
     ),
+    "taskq.backend._dispatch_sql:_WF_DISPATCH_FENCE_TEMPLATE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
+        ),
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04)",
+        "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
+        "substituted by _wf_dispatch_fence per alias, never .format), never "
+        "a standalone statement; its rendered text rides the two dispatch "
+        "variants' laterals/lock steps and the claimable probe — B2's own "
+        "fence, so the guard must see it (a guard that doesn't see the "
+        "fence is a window with no bars)",
+    ),
     "taskq.backend._sweeps:_SWEEP_1_BODY": (
         ("taskq.backend._sweeps:_SWEEP_1_SQL",),
         "-- Leader-only reclaim sweep",

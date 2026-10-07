@@ -56,6 +56,7 @@ from taskq.workflows._sql_ledger import (
     LEDGER_TERMINAL_SQL,
 )
 from taskq.workflows._sql_sweep import (
+    JOIN_BODY_UNAVAILABLE_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
     OUTBOX_FETCH_UNDELIVERED_SQL,
@@ -81,6 +82,10 @@ TERMINAL_SQL_SET: Final[str] = "('succeeded','failed','cancelled','crashed','aba
 #: carried on the row's metadata jsonb, never a new ENUM).
 BLOCKING_REASON_JOIN: Final[str] = "join"
 BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
+#: The loudness stamp (R2-2): a fired join whose reducer body resolved
+#: NOWHERE — the consumers' delivery continues (the delivery contract),
+#: but the record names the defect instead of looking healthy.
+BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,7 @@ class WorkflowSql:
     fork_join_consumers: str
     rederive_sweep: str
     sweep_fire: str
+    join_body_unavailable: str
     ledger_claim: str
     ledger_memoized: str
     ledger_terminal: str
@@ -153,6 +159,7 @@ class WorkflowSql:
             fork_join_consumers=render(FORK_JOIN_CONSUMERS_SQL),
             rederive_sweep=render(REDERIVE_SWEEP_SQL),
             sweep_fire=render(SWEEP_FIRE_SQL),
+            join_body_unavailable=render(JOIN_BODY_UNAVAILABLE_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_terminal=render(LEDGER_TERMINAL_SQL),

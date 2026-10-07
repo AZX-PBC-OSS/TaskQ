@@ -266,6 +266,74 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
     ),
     # ── Batch-scoped ──
+    # ── Workflow engine (taskq.workflows._sql_*): every write below is
+    #    keyed to ONE flow-scoped entity (a parent id, an arbiter tuple, a
+    #    row id) or to a caller-bound batch — the workflow code's write
+    #    sets are bounded by the FORK BATCH (the fan-out chunk, ≤ 500 rows
+    #    per statement) and by one node's declared fan-out, never by the
+    #    jobs backlog. The bounded-writes walk first saw these when T04's
+    #    package joined the audit's surface (the certification's R2-1).
+    "TERMINAL_MARK_SQL": (
+        "WHERE id = $1",
+        "keyed single running job, the finalize's fenced terminal CAS "
+        "(status + worker + attempt + claim_epoch)",
+    ),
+    "DECREMENT_SQL": (
+        "WHERE e.parent_id = $1",
+        "the finalize's tx2 decrement: its write set is the joined children "
+        "of ONE parent node (the edge ledger's rows for $1) — bounded by "
+        "that node's declared fan-out, never the backlog",
+    ),
+    "FORK_JOIN_CONSUMERS_SQL": (
+        "WHERE id = $1",
+        "keyed single join row (the fork's consumer-bind stamp)",
+    ),
+    "JOIN_BODY_UNAVAILABLE_SQL": (
+        "WHERE id = $1",
+        "keyed single join row (the body-unavailable stamp — R2-2's "
+        "loudness cure rides the fire's own transaction)",
+    ),
+    "LEDGER_CLAIM_SQL": (
+        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt)",
+        "INSERT ... ON CONFLICT DO UPDATE: the write set is the ONE arbiter "
+        "row the conflict target keys (the full ledger arbiter + attempt) — "
+        "keyed, one row per claim",
+    ),
+    "LEDGER_TERMINAL_SQL": (
+        "COALESCE(map_index, -1) = COALESCE($9::smallint, -1)",
+        "keyed single ledger row (the full arbiter tuple: flow + step + "
+        "attempt + map_index)",
+    ),
+    "LEDGER_TERMINAL_BY_ID_SQL": (
+        "WHERE id = $1",
+        "keyed single ledger row (the claim's own RETURNING id)",
+    ),
+    "LEDGER_FENCE_ATTEMPT_SQL": (
+        "COALESCE(map_index, -1) = COALESCE($5::smallint, -1)",
+        "keyed single ledger row (the full arbiter tuple), status-guarded "
+        "'running'",
+    ),
+    "LEDGER_FENCE_BY_ID_SQL": (
+        "WHERE id = $1",
+        "keyed single ledger row (the claim's own RETURNING id), "
+        "status-guarded 'running'",
+    ),
+    "OUTBOX_DRAIN_FLIP_SQL": (
+        "WHERE id = ANY($1::uuid[])",
+        "the drain's undelivered-flag flip; its write set is the ids the "
+        "LIMIT-ed OUTBOX_FETCH_UNDELIVERED_SQL window fetched in the same "
+        "transaction (the caller-discipline class of _ARCHIVE_CTE_SQL; the "
+        "exactly-once drain is pin 20's)",
+    ),
+    "PHANTOM_REAP_SQL": (
+        "WHERE l.status = 'running'",
+        "the phantom reaper: its write set is 'running' ledger rows whose "
+        "FLOW is terminal — by definition rows whose worker died mid-attempt "
+        "(the crash window), a population bounded by crash traffic between "
+        "passes, not by the backlog; each reaped row leaves the predicate, "
+        "so a second pass returns zero (the same self-draining shape "
+        "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
+    ),
 }
 
 
