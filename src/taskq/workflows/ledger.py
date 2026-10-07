@@ -66,12 +66,22 @@ __all__ = [
 
 #: The run-level idempotency scope (G2). The step-level scope is
 #: ``workflow:{flow_id}`` (one flow run namespaces its own step keys).
+#: THE SCOPE IS NAMESPACED PER FLOW (the run-key collision attack's cure):
+#: :func:`run_idempotency_scope` composes ``workflow-run:<flow name>`` —
+#: the bare constant is the PRE-FIX shape, a GLOBAL scope in which two
+#: DIFFERENT workflows sharing a naive key (a slot timestamp, ``"nightly"``)
+#: collide silently (the second flow's run returned the FIRST flow's run
+#: id + status, launched nothing).
 RUN_IDEMPOTENCY_SCOPE: Final[str] = "workflow-run"
 
 
-def run_idempotency_scope() -> str:
-    """The run-key arbiter's scope."""
-    return RUN_IDEMPOTENCY_SCOPE
+def run_idempotency_scope(flow_name: str | None = None) -> str:
+    """The run-key arbiter's scope: ``workflow-run:<flow name>`` when the
+    flow definition is named (the shipped shape — one flow's keys never
+    dedup another flow's run), the bare prefix when anonymous."""
+    if not flow_name:
+        return RUN_IDEMPOTENCY_SCOPE
+    return f"{RUN_IDEMPOTENCY_SCOPE}:{flow_name}"
 
 
 def step_idempotency_scope(flow_id: JobId) -> str:
@@ -224,7 +234,7 @@ async def insert_flow_run(
         entry.retry_kind,
         entry.trace_id,
         dumps_jsonb_str({"flow_id": str(flow_id)}),
-        run_idempotency_scope(),
+        run_idempotency_scope(getattr(entry, "name", None)),
         run_key,
     )
     if inserted is not None:
@@ -233,7 +243,9 @@ async def insert_flow_run(
     # The arbiter's conflict path: the EXISTING run's id + status, never a
     # second silent run (the founding-incident shape — "202 + a new run" —
     # is the convicted variant, kept RED forever by the pin).
-    existing = await conn.fetchrow(wsql.flow_run_read, run_idempotency_scope(), run_key)
+    existing = await conn.fetchrow(
+        wsql.flow_run_read, run_idempotency_scope(getattr(entry, "name", None)), run_key
+    )
     assert existing is not None  # the arbiter conflict implies the row exists
     return RunClaim(
         flow_id=JobId(existing["id"]),

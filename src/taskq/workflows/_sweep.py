@@ -120,7 +120,17 @@ async def sweep_join_rederive(
                     w["flow_id"],
                     c.step_key,
                     c.map_index,
-                    _jsonb({"actor": c.actor, "queue": c.queue, "payload": c.payload}),
+                    # THE TRACE RIDES THE OUTBOX: the join's own trace when
+                    # it has one, else the FIRE's id — the consumers of one
+                    # fire share one trace chain (§18.2).
+                    _jsonb(
+                        {
+                            "actor": c.actor,
+                            "queue": c.queue,
+                            "payload": c.payload,
+                            "trace_id": w["trace_id"] or str(w["fire_id"]),
+                        }
+                    ),
                 )
                 for w in winners
                 for c in _consumer_bindings(w["consumers"])
@@ -165,13 +175,20 @@ async def drain_outbox(
             ids,
             [b.get("actor", "workflow") for b in bindings],
             [b.get("queue", "default") for b in bindings],
-            [r["bindings"] for r in rows],
+            # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
+            # the DECLARED payload, never the transport envelope it rode
+            # in on (the envelope's actor/queue are the placement columns
+            # above; the payload key is the body's own contract).
+            [_jsonb(b.get("payload")) for b in bindings],
             [default_max_attempts] * len(rows),
             [default_retry_kind] * len(rows),
             [r["join_job_id"] for r in rows],
             [r["map_index"] for r in rows],
             [r["consumer_step_key"] for r in rows],
-            [None] * len(rows),
+            # THE TRACE (§18.2's stamp-at-enqueue): the fire wrote the
+            # join's trace — or the fire's own id — into the bindings;
+            # the consumer row carries it, never a NULL.
+            [b.get("trace_id") for b in bindings],
             # The consumer row's metadata: the flow link, no blocking
             # reason (a normal step, dispatchable like any other).
             [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],

@@ -158,9 +158,12 @@ wins AS (
             AND fl.status NOT IN {terminal}
       )
     ON CONFLICT (join_job_id) DO NOTHING
-    RETURNING join_job_id, flow_id, step_key
+    -- The inserted row's OWN id IS the fire id (fire_ids[f.rn] — the
+    -- RETURNING list cannot reference the statement's source relations).
+    RETURNING id AS fire_id, join_job_id, flow_id, step_key
 )
-SELECT w.join_job_id, w.step_key, w.flow_id, j.metadata->'consumers' AS consumers
+SELECT w.join_job_id, w.step_key, w.flow_id, w.fire_id, j.trace_id,
+       j.metadata->'consumers' AS consumers
 FROM wins w
 JOIN {schema}.jobs j ON j.id = w.join_job_id
 """
