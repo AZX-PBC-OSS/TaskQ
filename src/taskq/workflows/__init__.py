@@ -42,6 +42,7 @@ from taskq.workflows._types import (
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.definitions import (
     FAILURE_POLICIES,
+    MAX_FAN_IN_PER_JOIN,
     DuplicateStepBodyError,
     DuplicateWorkflowError,
     StepBody,
@@ -74,6 +75,7 @@ from taskq.workflows.ledger import (
 __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
     "FAILURE_POLICIES",
+    "MAX_FAN_IN_PER_JOIN",
     "ChildSpec",
     "ConsumerBinding",
     "DeadlockRetriesExhaustedError",

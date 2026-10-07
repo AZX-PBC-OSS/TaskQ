@@ -284,10 +284,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "of ONE parent node (the edge ledger's rows for $1) — bounded by "
         "that node's declared fan-out, never the backlog",
     ),
-    "DECREMENT_COLLECT_SQL": (
+    "DECREMENT_ABSORBED_SQL": (
         "WHERE e.parent_id = $1",
-        "T06's collect-side decrement — DECREMENT_SQL's shape scoped to "
-        "the COLLECT edges of one parent; the same fan-out bound",
+        "T06/T07's absorbed-side decrement — DECREMENT_SQL's shape scoped "
+        "to the ABSORBING edges (collect | maybe) of one parent; the same "
+        "fan-out bound",
     ),
     "FAIL_CLOSED_CASCADE_SQL": (
         "WHERE e.parent_id = $1",
@@ -298,8 +299,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "COLLECT_FAN_IN_APPEND_SQL": (
         "WHERE j.id = $1",
-        "keyed single join row (T06's collect fan-in appends the failed "
-        "child's FailureInfo item)",
+        "keyed single join row (T06's collect fan-in appends the failed child's FailureInfo item)",
     ),
     "FORK_JOIN_CONSUMERS_SQL": (
         "WHERE id = $1",
@@ -318,8 +318,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "LEDGER_TERMINAL_SQL": (
         "COALESCE(map_index, -1) = COALESCE($9::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple: flow + step + "
-        "attempt + map_index)",
+        "keyed single ledger row (the full arbiter tuple: flow + step + attempt + map_index)",
     ),
     "LEDGER_TERMINAL_BY_ID_SQL": (
         "WHERE id = $1",
@@ -327,13 +326,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "LEDGER_FENCE_ATTEMPT_SQL": (
         "COALESCE(map_index, -1) = COALESCE($5::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple), status-guarded "
-        "'running'",
+        "keyed single ledger row (the full arbiter tuple), status-guarded 'running'",
     ),
     "LEDGER_FENCE_BY_ID_SQL": (
         "WHERE id = $1",
-        "keyed single ledger row (the claim's own RETURNING id), "
-        "status-guarded 'running'",
+        "keyed single ledger row (the claim's own RETURNING id), status-guarded 'running'",
     ),
     "OUTBOX_DRAIN_FLIP_SQL": (
         "WHERE id = ANY($1::uuid[])",

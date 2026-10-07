@@ -252,16 +252,18 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
 """
 
 
-# The COLLECT fan-in (T06's second semantics): a failed child whose edge
-# declared 'collect' does NOT cascade — its failure fans in as the typed
-# FailureInfo item APPENDED to each collect join's ``metadata.failures``
-# array (the full attempt history rides the item — the ledger rows are
-# read in THIS statement; the detail never leaves the ledger/attempts).
-# The join row's counters still resolve through the decrement (the failed
-# child IS resolved): the join fires when the LAST child terminalizes,
-# strictly after every ladder attempt (the fan-in lands in the same tx,
-# before the fire's decrement reads 0). The statement returns the HISTORY
-# (the ledger's truth); the engine builds the typed item through the
+# The ABSORBED fan-in (T06's collect / T07's maybe): a failed child whose
+# edge declared an ABSORBING policy does NOT cascade — its failure fans in
+# as the typed FailureInfo item APPENDED to each absorbing join's
+# ``metadata.failures`` array (the full attempt history rides the item —
+# the ledger rows are read in THIS statement; the detail never leaves the
+# ledger/attempts). The join row's counters still resolve through the
+# decrement (the failed child IS resolved): the join fires when the LAST
+# child terminalizes, strictly after every ladder attempt (the fan-in
+# lands in the same tx, before the fire's decrement reads 0). The
+# statement returns the HISTORY + THE EDGE'S OWN POLICY (the item names
+# the policy that absorbed it — the envelope must not lie about which
+# policy ran, T07's C); the engine builds the typed item through the
 # FailureInfo door — one wire shape, never a re-spelled envelope.
 COLLECT_FAN_IN_SQL = """\
 WITH history AS (
@@ -279,20 +281,21 @@ WITH history AS (
       AND l.status IN ('succeeded', 'failed')
 )
 SELECT j.id AS join_job_id,
+       e.failure_policy AS policy,
        COALESCE((SELECT history.attempts FROM history), '[]'::jsonb) AS attempts
 FROM {schema}.jobs j
 JOIN {schema}.wf_edge e ON e.child_id = j.id
 WHERE e.parent_id = $1::uuid
-  AND e.failure_policy = 'collect'
+  AND e.failure_policy IN ('collect', 'maybe')
   AND j.status = 'pending'
   AND j.deps_pending > 0
 """
 
 
-# The fan-in's append (the collect join row's ``failures`` array grows by
-# THIS child's item) — keyed per join row (the fan-in read above returns
-# the joins; this write lands the item). Keyed single row; the append is
-# jsonb concat on the array.
+# The fan-in's append (the absorbing join row's ``failures`` array grows
+# by THIS child's item) — keyed per join row (the fan-in read above
+# returns the joins; this write lands the item). Keyed single row; the
+# append is jsonb concat on the array.
 COLLECT_FAN_IN_APPEND_SQL = """\
 UPDATE {schema}.jobs j
 SET metadata = jsonb_set(
@@ -306,11 +309,12 @@ RETURNING j.id
 """
 
 
-# The failed child's collect-side decrement: DECREMENT_SQL's shape scoped
-# to the COLLECT edges only — a fail_closed edge's side is resolved by the
-# cascade's block stamp (never by a decrement: the join must not become
-# firable over a failed parent).
-DECREMENT_COLLECT_SQL = """\
+# The failed child's ABSORBED-side decrement (T06/T07): DECREMENT_SQL's
+# shape scoped to the ABSORBING policies (collect | maybe — the edges
+# whose declared policy absorbs the failure) — a fail_closed edge's side
+# is resolved by the cascade's block stamp (never by a decrement: the
+# join must not become firable over a failed parent).
+DECREMENT_ABSORBED_SQL = """\
 WITH flow_alive AS (
     SELECT 1 AS ok
     FROM {schema}.jobs f
@@ -322,7 +326,7 @@ SET deps_pending = j.deps_pending - 1
 FROM {schema}.wf_edge e
 WHERE e.parent_id = $1
   AND e.child_id = j.id
-  AND e.failure_policy = 'collect'
+  AND e.failure_policy IN ('collect', 'maybe')
   AND j.deps_pending > 0
   AND j.status = 'pending'
   AND EXISTS (SELECT 1 FROM flow_alive)

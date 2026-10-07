@@ -168,7 +168,7 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         spec.step_key,
         spec.deps_pending,
         spec.trace_id,
-        _jsonb(_join_metadata(spec.flow_id, spec.consumers))
+        _jsonb(_join_metadata(spec.flow_id, spec.consumers, child_driven=spec.child_driven))
         if spec.deps_pending > 0
         else _jsonb(_metadata(spec.flow_id, blocking_reason=None)),
         spec.idempotency_scope,
@@ -429,7 +429,7 @@ async def _run_tx2(
                 error_message=error_message,
                 error_traceback=error_traceback,
             )
-            dec_rows = await conn.fetch(wsql.decrement_collect, parent_id, flow_id)
+            dec_rows = await conn.fetch(wsql.decrement_absorbed, parent_id, flow_id)
         else:
             dec_rows = await conn.fetch(wsql.decrement, parent_id, flow_id)
         hits = tuple(DecrementHit(JobId(r["id"]), r["deps_pending"]) for r in dec_rows)
@@ -495,10 +495,12 @@ async def _resolve_failed_parent(
         flow_id,
     )
 
-    # THE COLLECT FAN-IN — the typed partial result's failure items. The
-    # ledger's attempt rows for THIS child are the history; the item is
-    # appended inside the same tx (a rolled-back tx rolls the item back —
-    # the re-fire re-derives it).
+    # THE ABSORBED FAN-IN (collect | maybe) — the typed partial result's
+    # failure items. The ledger's attempt rows for THIS child are the
+    # history; the item is appended inside the same tx (a rolled-back tx
+    # rolls the item back — the re-fire re-derives it). Each item NAMES
+    # the policy that absorbed it (the edge's own declared policy — the
+    # envelope must not lie about which policy ran, T07's C).
     fanin_rows = await conn.fetch(
         wsql.collect_fan_in,
         parent_id,
@@ -531,6 +533,7 @@ async def _resolve_failed_parent(
                 error_traceback=error_traceback,
             ),
             attempts=tuple(attempts),
+            policy=row["policy"],  # the edge's own declared policy
         )
         await conn.execute(
             wsql.collect_fan_in_append,
@@ -555,17 +558,7 @@ async def fan_in_skip(
     the item on the join row (the ledger stays the attempted-terminals'
     record; T08's two-source rule reads never-granted terminals elsewhere).
 
-    Returns the number of collect joins the skip fanned into."""
-    item = FailureInfo(
-        node_key=step_key,
-        map_index=map_index,
-        error=ErrorInfo(
-            error_class="Skipped",
-            error_message="the child was skipped (a skip is not an attempt)",
-            error_traceback=None,
-        ),
-        attempts=(),
-    )
+    Returns the number of absorbing joins the skip fanned into."""
     fanin_rows = await conn.fetch(
         wsql.collect_fan_in,
         parent_id,
@@ -574,6 +567,17 @@ async def fan_in_skip(
         map_index,
     )
     for row in fanin_rows:
+        item = FailureInfo(
+            node_key=step_key,
+            map_index=map_index,
+            error=ErrorInfo(
+                error_class="Skipped",
+                error_message="the child was skipped (a skip is not an attempt)",
+                error_traceback=None,
+            ),
+            attempts=(),
+            policy=row["policy"],
+        )
         await conn.execute(
             wsql.collect_fan_in_append,
             row["join_job_id"],

@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin5-ledger-claim-atomic",
-    "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
-    "red": "{\"ledger\": \"running\", \"flow\": \"succeeded\"}"
+    "pin": "pin4-run-key-replay",
+    "mutation": "the arbiter's scope reverted to the bare global 'workflow-run'",
+    "red": "{\"cross_flow_created\": false, \"cross_flow_run_id\": \"01a117de-a2f9-7700-a17d-a45cd8b82136\", \"existing_run_id\": \"01a117de-a2f9-7700-a17d-a45cd8b82136\"}"
   }
 ]
