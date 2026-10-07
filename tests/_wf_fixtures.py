@@ -83,8 +83,9 @@ def propagation_redlog() -> Iterator[RedLog]:
 
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
-#: blocked/running/pending runs are LIVE runs (the root stays running —
-#: or its pre-start pending); complete runs report succeeded.
+#: The mapping is the TERMINAL states' expectation; the LAW is stated in
+#: :func:`g7_check` (the root row is a cache, and each terminal root has
+#: exactly one writer whose semantics decide what it may claim).
 G7_DERIVED_TO_ROOT: dict[str, str] = {
     "complete": "succeeded",
     "failed": "failed",
@@ -115,7 +116,30 @@ async def wf_g7_status_truth(
 
 async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql) -> None:
     """The G7 assertion's body (one home — the fixture and the teeth-drill
-    pin both run THIS, never a re-spelled copy)."""
+    pin both run THIS, never a re-spelled copy).
+
+    THE LAW (the cache's semantics, stated from each terminal root's
+    writer — the phase-2 attack's H4 round made this check ALWAYS-ON for
+    real, so the law must red lies and never red the flips' windows):
+
+    * the root row is a CACHE of the derivation;
+    * a root claiming 'succeeded' is written by ONE writer only — the
+      maintenance leg's complete branch (all rows terminal, none failed,
+      none cancelled) — so the rows MUST derive 'complete'. A
+      prematurely-complete root over rows that derive anything else is
+      THE status-cache lie this check exists to catch (the teeth pin's
+      own lie is this shape);
+    * a root claiming 'failed' may never contradict a COMPLETED run (the
+      cascade and the maintenance leg both write it from a non-absorbed
+      failure on the rows; the rows cannot un-fail);
+    * a root claiming 'cancelled' is the cancel arm's linearization
+      point — the rows may lag it in every direction (a straggler child
+      terminal-failing after the flip derives 'failed'; the flip
+      stands) — nothing to assert against;
+    * a LIVE root ('running'/'pending') may lag the rows' terminal
+      verdict by one sweep pass — the maintenance leg's lag window (the
+      H1 cure heals it in one pass; the H1 pin carries that teeth).
+    """
     from taskq.workflows._status import reconstruct_workflow_status
 
     flows = await wf_conn.fetch(
@@ -123,13 +147,21 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     )
     for flow in flows:
         reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(flow["id"]))
-        expected = G7_DERIVED_TO_ROOT.get(reconstructed, "running")
-        assert flow["status"] == expected, (
-            f"the reported status drifted from the rows: flow {flow['id']} "
-            f"reports {flow['status']!r} but the rows reconstruct "
-            f"{reconstructed!r} (expected the root {expected!r}) — the "
-            "status cache has arrived (G7)"
-        )
+        status = flow["status"]
+        if status == "succeeded":
+            assert reconstructed == "complete", (
+                f"the reported status drifted from the rows: flow {flow['id']} "
+                f"reports 'succeeded' but the rows reconstruct "
+                f"{reconstructed!r} — the status cache has arrived (G7): a "
+                "prematurely-complete root is written by nothing but a "
+                "cache"
+            )
+        elif status == "failed":
+            assert reconstructed != "complete", (
+                f"the reported status drifted from the rows: flow {flow['id']} "
+                f"reports 'failed' but the rows reconstruct 'complete' — "
+                "the wrong verdict on a completed run (G7)"
+            )
 
 
 @pytest.fixture

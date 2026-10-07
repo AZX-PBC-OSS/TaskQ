@@ -1,0 +1,90 @@
+.E                                                                       [100%]
+==================================== ERRORS ====================================
+________ ERROR at teardown of test_t08_g7_teeth_the_lying_fixture_reds _________
+
+    def finalizer() -> None:
+        """Yield again, to finalize."""
+    
+        async def async_finalizer() -> None:
+            try:
+                await gen_obj.__anext__()
+            except StopAsyncIteration:
+                pass
+            else:
+                msg = "Async generator fixture didn't stop."
+                msg += "Yield only once."
+                raise ValueError(msg)
+    
+>       runner.run(async_finalizer(), context=context)
+
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:424: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:416: in async_finalizer
+    await gen_obj.__anext__()
+tests/_wf_fixtures.py:114: in wf_g7_status_truth
+    await g7_check(wf_conn, wf_schema, wf_sql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc06812c9b0>
+wf_schema = 'tq_85d901137e'
+wf_sql = WorkflowSql(schema='tq_85d901137e', terminal_mark='UPDATE tq_85d901137e.jobs\nSET status = $2::"tq_85d901137e".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql) -> None:
+        """The G7 assertion's body (one home — the fixture and the teeth-drill
+        pin both run THIS, never a re-spelled copy).
+    
+        THE LAW (the cache's semantics, stated from each terminal root's
+        writer — the phase-2 attack's H4 round made this check ALWAYS-ON for
+        real, so the law must red lies and never red the flips' windows):
+    
+        * the root row is a CACHE of the derivation;
+        * a root claiming 'succeeded' is written by ONE writer only — the
+          maintenance leg's complete branch (all rows terminal, none failed,
+          none cancelled) — so the rows MUST derive 'complete'. A
+          prematurely-complete root over rows that derive anything else is
+          THE status-cache lie this check exists to catch (the teeth pin's
+          own lie is this shape);
+        * a root claiming 'failed' may never contradict a COMPLETED run (the
+          cascade and the maintenance leg both write it from a non-absorbed
+          failure on the rows; the rows cannot un-fail);
+        * a root claiming 'cancelled' is the cancel arm's linearization
+          point — the rows may lag it in every direction (a straggler child
+          terminal-failing after the flip derives 'failed'; the flip
+          stands) — nothing to assert against;
+        * a LIVE root ('running'/'pending') may lag the rows' terminal
+          verdict by one sweep pass — the maintenance leg's lag window (the
+          H1 cure heals it in one pass; the H1 pin carries that teeth).
+        """
+        from taskq.workflows._status import reconstruct_workflow_status
+    
+        flows = await wf_conn.fetch(
+            f"SELECT id, status FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__'"
+        )
+        for flow in flows:
+            reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(flow["id"]))
+            status = flow["status"]
+            if status == "succeeded":
+>               assert reconstructed == "complete", (
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    f"the reported status drifted from the rows: flow {flow['id']} "
+                    f"reports 'succeeded' but the rows reconstruct "
+                    f"{reconstructed!r} — the status cache has arrived (G7): a "
+                    "prematurely-complete root is written by nothing but a "
+                    "cache"
+E                   AssertionError: the reported status drifted from the rows: flow 01a11895-a71a-70a0-a427-b00d69d1dbda reports 'succeeded' but the rows reconstruct 'running' — the status cache has arrived (G7): a prematurely-complete root is written by nothing but a cache
+
+tests/_wf_fixtures.py:152: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=e1ea01518585 redis=1de1057efaf7 state_dir=/tmp/pytest-of-rich/pytest-17126
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=e1ea01518585 redis=1de1057efaf7
+=========================== short test summary info ============================
+ERROR tests/test_wf_status_pins.py::test_t08_g7_teeth_the_lying_fixture_reds
+1 passed, 1 error in 2.91s

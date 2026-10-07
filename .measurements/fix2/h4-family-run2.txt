@@ -1,0 +1,71 @@
+bringing up nodes...
+bringing up nodes...
+
+................................................F....................... [100%]
+=================================== FAILURES ===================================
+________________________ test_pin_5_ledger_claim_atomic ________________________
+[gw1] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f356a6b37a0>
+wf_schema = 'tq_c407ddf3d0'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f356a6dcac0>
+wf_sql = WorkflowSql(schema='tq_c407ddf3d0', terminal_mark='UPDATE tq_c407ddf3d0.jobs\nSET status = $2::"tq_c407ddf3d0".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+ledger_redlog = <tests._wf_fixtures.RedLog object at 0x7f356a6aa9c0>
+
+    @pytest.mark.integration
+    async def test_pin_5_ledger_claim_atomic(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        ledger_redlog: RedLog,
+    ) -> None:
+        """The claim and the attempt's ledger ``running`` row in SEPARATE
+        transactions — a cancel landing in the window fences NOTHING (the
+        attempt isn't on the record yet) and the row appears POST-CANCEL as a
+        phantom ``running``. THE CURE: claim + ledger insert = ONE statement
+        (the shipped shape — the ledger row IS the claim; the phantom the
+        window produced is reconciled by the reaper arm, pin 15). The
+        two-transaction variant reds."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        node_id = new_uuid()
+    
+        # THE CANCEL LANDS FIRST (the flow terminal — the two-transaction
+        # variant's dispatch already committed its node flip; only the ledger
+        # write follows, post-cancel).
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1",
+            flow_id,
+        )
+        # THE CONVICTED SHAPE: the post-cancel ledger write lands a 'running'
+        # row on a TERMINAL flow — the phantom (the attempt is on the record
+        # too late to be fenced by the cancel's own scan).
+        phantom = await claim_step_ledger(
+            wf_conn,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=node_id,
+            step_key="too-late",
+            map_index=None,
+            attempt=1,
+        )
+        assert phantom.status == "running"
+        flow_status = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+        )
+        ledger_redlog.red(
+            "pin5-ledger-claim-atomic",
+            "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
+            {"ledger": "running", "flow": flow_status},
+        )
+>       assert flow_status == "succeeded", "the flow terminalized before the ledger write"
+E       AssertionError: the flow terminalized before the ledger write
+E       assert 'cancelled' == 'succeeded'
+E         
+E         - succeeded
+E         + cancelled
+
+tests/test_workflows_ledger_pins.py:340: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_workflows_ledger_pins.py::test_pin_5_ledger_claim_atomic - ...
+1 failed, 71 passed in 16.37s

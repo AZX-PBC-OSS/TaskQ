@@ -221,6 +221,14 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
     )
     with pytest.raises(AssertionError, match="drifted from the rows"):
         await g7_check(wf_conn, wf_schema, wf_sql)
+    # THE TRUTH RESTORED: the drill's lie is in-body only — the always-on
+    # teardown runs the same check the drill just convicted (the H4 round
+    # made the teardown real), so the record must end lawful: the rows
+    # (a pending node) are the truth, the root is the cache.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'running' WHERE id = $1",
+        flow_id,
+    )
 
 
 # ── The gauge's cardinality law ─────────────────────────────────────────
