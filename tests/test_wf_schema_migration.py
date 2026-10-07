@@ -201,11 +201,13 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     assert '"violates": false' in out, out
 
 
-def test_import_law_red_drill() -> None:
+def test_import_law_red_drill(tmp_path: Path) -> None:
     """The revert drill: the pin CAN fail — a module-level import of the
     workflows package in ``taskq/__init__.py`` is convicted by the same AST
     harness (the fixture mutation, parsed in isolation; the RED output is
-    the offender list)."""
+    the offender list). The mutated fixture module's scratch file rides
+    pytest's ``tmp_path`` — never the repo tree (a stray untracked module
+    turns a repo-wide lint red)."""
     import ast
     import types
 
@@ -215,12 +217,12 @@ def test_import_law_red_drill() -> None:
     real_init = Path(taskq.__file__).read_text()
     mutated = "import taskq.workflows\n" + real_init
     fixture = types.ModuleType("taskq_fixture_mutated_init")
-    fixture.__dict__["__file__"] = str(MEASUREMENTS / "fixture_mutated_init.py")
+    scratch = tmp_path / "fixture_mutated_init.py"
+    fixture.__dict__["__file__"] = str(scratch)
     # Point the harness's source getter at the mutated text: the harness
     # parses module source, so the drill parses the MUTATED source and asks
     # the same question the pin asks.
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (Path(fixture.__dict__["__file__"])).write_text(mutated)
+    scratch.write_text(mutated)
     tree = ast.parse(mutated)
     names = {
         name
