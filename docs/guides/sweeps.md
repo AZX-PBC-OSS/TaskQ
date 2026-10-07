@@ -42,6 +42,7 @@ not reach the end, logs that fact, and returns.
 ```python no-exec — not executed: defect illustration, `fetch_eligible`/`EmptyPayload` belong to the reader's app
 from taskq import JobContext, actor
 
+
 @actor(name="screen_candidates", queue="cron")
 async def screen_candidates(payload: EmptyPayload, ctx: JobContext[EmptyPayload]) -> None:
     rows = await fetch_eligible(limit=250)  # a fixed page
@@ -539,7 +540,8 @@ depends on the retry budget:
 SET status = CASE
         WHEN j.cancel_phase != 0
             THEN 'cancelled'          -- the operator's request, honoured
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
+        WHEN j.retry_kind = 'indefinite'
+            OR (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
             THEN 'pending'            -- redispatched, budget intact
         ELSE 'crashed'                -- budget exhausted, terminal
     END
