@@ -232,6 +232,12 @@ def _job_row(
         # backfills them): both populations seeded so the column proves
         # it round-trips through COPY, not just that the DDL accepts it.
         "assignment_routed": i % 4 == 0,
+        # The fan-out ledger (01.00.23_01): a deterministic parent
+        # pointer on every 10th row - dangling by construction (the
+        # ledger has no FK and never joins to the parent row), so the
+        # COPY column proves it round-trips, not just that the DDL
+        # accepts it.
+        "parent_id": _uuid5(f"job-parent:{slice_id}:{i}") if i % 10 == 0 else None,
     }
 
 

@@ -877,6 +877,12 @@ class DiffSide:
             "retry_jitter": row.retry_jitter,
             "assignment_routed": row.assignment_routed,
             "archived": row.archived,
+            # The fan-out ledger's pointer, serialized RAW (a plain UUID):
+            # linkage is a fact the differential must see even when the
+            # parent is dangling — the parent's own row need not be a
+            # scenario-registered job, so token_of would erase it into
+            # "<new>".
+            "parent_id": row.parent_id,
             "attempts": [
                 {
                     "attempt": a.attempt,
@@ -1215,8 +1221,9 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
 
     The differential can only catch PG↔memory divergence in fields the
     projection serializes - a field added to ``JobRow`` but never projected
-    here is a silent blind spot (the retry-curve scalars, ``interrupt_count``
-    and ``assignment_routed`` were exactly that). The field list derives
+    here is a silent blind spot (the retry-curve scalars, ``interrupt_count``,
+    ``assignment_routed`` and the LIB-2 ``parent_id`` ledger were exactly
+    that). The field list derives
     from the dataclass itself - one source of truth - so adding a
     ``JobRow`` field without projecting it fails this test. The planted
     row carries non-default values for the previously unprojected fields
@@ -1225,6 +1232,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     side = _memory_side(())
     memory = side.backend
     assert isinstance(memory, InMemoryBackend)
+    fanout_parent = new_job_id()
     planted = replace(
         make_job_row(status="pending"),
         actor="obs_actor",
@@ -1249,6 +1257,9 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
         claim_epoch=7,
         assignment_routed=True,
         archived=True,
+        # The LIB-2 ledger: a NON-default pointer — a default-valued
+        # field proves nothing about the projection.
+        parent_id=fanout_parent,
     )
     memory._jobs[JobId(planted.id)] = planted  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established same-module pattern (DiffSide.plant).
     side.register_job_id("j1", JobId(planted.id))
@@ -1275,3 +1286,4 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     assert obs["interrupt_count"] == 4
     assert obs["claim_epoch"] == 7
     assert obs["assignment_routed"] is True
+    assert obs["parent_id"] == fanout_parent

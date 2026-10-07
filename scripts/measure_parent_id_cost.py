@@ -1,4 +1,4 @@
-# ruff: noqa: S608, T201  # Why: a measurement script, not a test; prints its own table.
+# ruff: noqa: S608  # Why: a measurement script, not a test; prints its own table.
 
 """LIB-2 (issue #670) cost measurements: the parent_id column + partial
 index + the pending-children aggregate, as NUMBERS for the PR body.
@@ -31,13 +31,12 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import UUID
 
 _MIGRATION_SQL = (
     'ALTER TABLE "{s}".jobs ADD COLUMN parent_id uuid',
     'ALTER TABLE "{s}".jobs_archive ADD COLUMN parent_id uuid',
-    'CREATE INDEX IF NOT EXISTS jobs_parent_pending_idx '
+    "CREATE INDEX IF NOT EXISTS jobs_parent_pending_idx "
     'ON "{s}".jobs (parent_id) '
     "WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL",
 )
@@ -91,7 +90,7 @@ async def _seed_hot(backend: object, seed: int) -> float:
     chunk = 5_000
     for i in range(0, seed, chunk):
         written = await backend.enqueue_batch_fast(_mk_args(min(chunk, seed - i), "hot_q"))  # type: ignore[attr-defined]
-        assert written > 0  # noqa: S101 — the COPY arm must write what it is given
+        assert written > 0  # the COPY arm must write what it is given
     return (time.perf_counter() - t0) * 1000
 
 
@@ -118,7 +117,7 @@ async def stage_write(backend: object, parent: UUID) -> dict[str, float]:
     out: dict[str, float] = {
         "copy_unparented_ms_per_2000": unparented,
     }
-    from taskq.backend._protocol import EnqueueArgs  # noqa: PLC0415
+    from taskq.backend._protocol import EnqueueArgs
 
     if "parent_id" in {f.name for f in EnqueueArgs.__dataclass_fields__.values()}:
         await burst(True, 500)
@@ -148,7 +147,7 @@ async def stage_count(backend: object, parent: UUID) -> dict[str, float]:
 
 async def stage_plan(backend: object, parent: UUID, schema: str) -> dict[str, str]:
     """The EXPLAIN plan shape on the populated hot table (the pin's evidence)."""
-    pool = backend._worker_pool  # noqa: SLF001
+    pool = backend._worker_pool
     plan_raw = await pool.fetchval(  # type: ignore[union-attr]
         f"""
         EXPLAIN (FORMAT JSON)
@@ -181,7 +180,6 @@ async def stage_migration(dsn: str, schema: str, seed: int) -> dict[str, float]:
     import asyncpg
 
     from taskq.migrate import apply_pending
-    from taskq.testing.fixtures import _open_pg_backend_on_schema
 
     conn = await asyncpg.connect(dsn)
     try:

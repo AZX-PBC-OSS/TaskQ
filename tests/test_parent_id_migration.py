@@ -62,9 +62,7 @@ def test_migration_creates_index_non_concurrently() -> None:
     statements only, with the by-hand CONCURRENTLY guidance in the header
     comment."""
     sql = _migration_sql()
-    statements = "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
+    statements = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     assert "CONCURRENTLY" not in statements
     assert "maintenance window" in sql  # the ops guidance is in the file
 

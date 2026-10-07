@@ -8,13 +8,16 @@ The pins here are the honest-verdict contract:
 
 * DEPTH counts exactly what admission counts (pending + scheduled, the
   ``enqueue_max_pending_count`` predicate), one indexed aggregate round
-  trip per call.
-* CAP is the queue's actor effective ``max_pending`` from the
-  ``ActorCapacityCache`` TTL snapshot (stored operator cap; the
-  ``@actor`` literal is not visible to this process).
+  trip per call — the queue-local, ops view, reported not
+  verdict-bearing.
+* CAP is the BINDING routing actor's stored ``max_pending`` (the
+  smallest-headroom routing actor's own all-queue count is the verdict
+  basis) from the ``ActorCapacityCache`` TTL snapshot (stored operator
+  cap; the ``@actor`` literal is not visible to this process).
 * FAN-OUT: children of a parent fan-out carry an exact ``parent_id``
-  stamp; the pending-children count outside the queried queue joins the
-  verdict.
+  stamp; the pending children OUTSIDE the queried queue are the
+  parent's ``children_depth`` inflow (they are the binding actor's own
+  rows, so its all-queue load already includes them).
 * FAIL-OPEN: any unavailable half reads as the explicit ``unknown``
   state with a reason — NEVER a fabricated verdict (the
   ``maybe_warn_unserved_queue`` posture).
@@ -84,10 +87,13 @@ async def test_depth_counts_admission_statuses_exactly() -> None:
     assert entry.depth == 4  # 3 pending + 1 scheduled; the running row is not counted
 
 
-async def test_over_and_ok_boundary_is_depth_lt_cap() -> None:
-    """depth >= cap reads 'over'; depth < cap reads 'ok'.
+async def test_over_and_ok_boundary_is_admission_load_lt_cap() -> None:
+    """admission_load >= cap reads 'over'; admission_load < cap reads 'ok'.
 
-    The flip is driven from the CAP side (a stored-override raise, the
+    The verdict basis is the BINDING actor's own all-queue count against
+    its stored cap — never the queue-local depth (an actor's traffic
+    split across queues would false-OK a depth-vs-cap read). The flip is
+    driven from the CAP side (a stored-override raise, the
     ``taskq actor-config set`` shape, cache invalidated): the terminal
     writes fence on claimed rows, so draining a pending row is not a
     lever a test can pull.
@@ -126,7 +132,9 @@ async def test_tightest_cap_wins_when_multiple_actors_route() -> None:
     backend.register_actor_config(actor="b_tight", queue="q", max_pending=2)
     # b_tight's OWN pending rows: 2 of them, at its cap.
     for _ in range(2):
-        await backend.enqueue(make_enqueue_args(actor="b_tight", queue="q", scheduled_at=_NOW - timedelta(seconds=1)))
+        await backend.enqueue(
+            make_enqueue_args(actor="b_tight", queue="q", scheduled_at=_NOW - timedelta(seconds=1))
+        )
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"])).queues["q"]
@@ -312,8 +320,12 @@ async def test_unknown_when_cap_is_the_code_literal_only() -> None:
 # ── The fan-out half: exact parent_id accounting ─────────────────────────
 
 
-async def test_fanout_children_outside_the_queue_join_the_verdict() -> None:
-    """Parent in queue ``p``, children pending in ``c``: querying ``p`` counts them."""
+async def test_fanout_children_outside_the_queue_count_as_children_depth() -> None:
+    """Parent in queue ``p``, children pending in ``c``: querying ``p``
+    reports them as the parent's ``children_depth`` inflow — they are
+    the binding actor's own rows, so its all-queue admission load
+    includes them (the corrected mechanism, not a queue-local
+    "children join the verdict" read)."""
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="p", max_pending=2)
     parent_id = new_job_id()
@@ -364,6 +376,7 @@ async def test_children_in_the_queried_queue_are_not_double_counted() -> None:
     assert entry.state == "ok"
     assert entry.depth == 4
     assert entry.children_depth == 0
+
 
 async def test_no_parent_in_play_children_depth_is_none() -> None:
     """Without a parent, the fan-out half is absent (None), the verdict is depth vs cap."""
@@ -517,7 +530,9 @@ async def test_dangling_parent_purged_by_retention_reads_well_formed() -> None:
     parent = make_enqueue_args(queue="q", scheduled_at=_NOW - timedelta(seconds=1))
     parent_row = await backend.enqueue(parent)
     child = make_enqueue_args(queue="c", scheduled_at=_NOW - timedelta(seconds=1))
-    await backend.enqueue(replace(child, parent_id=parent_row.id))  # the child lands in a DIFFERENT queue
+    await backend.enqueue(
+        replace(child, parent_id=parent_row.id)
+    )  # the child lands in a DIFFERENT queue
 
     # The parent goes terminal and the retention sweep archives it,
     # children pending. The terminal write fences on a claimed row, so

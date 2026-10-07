@@ -77,7 +77,13 @@ if TYPE_CHECKING:
 
     from taskq.actor import ActorRef
 
-__all__ = ["SubJobEnqueuer", "current_parent_id", "parent_tags", "set_parent_job_id", "set_parent_tags"]
+__all__ = [
+    "SubJobEnqueuer",
+    "current_parent_id",
+    "parent_tags",
+    "set_parent_job_id",
+    "set_parent_tags",
+]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -148,9 +154,7 @@ def current_parent_id() -> JobId | None:
 
 
 @contextlib.contextmanager
-def parent_tags(
-    tags: tuple[str, ...], job_id: JobId | None = None
-) -> Generator[None, None, None]:
+def parent_tags(tags: tuple[str, ...], job_id: JobId | None = None) -> Generator[None, None, None]:
     """Context manager that sets the parent context for the duration of the block.
 
     The ONE context the worker entry installs: the parent's tags for
@@ -270,9 +274,7 @@ class SubJobEnqueuer:
             # shipped default is the honest fallback (a custom-schema
             # deployment reaching an unmigrated database through a worker
             # is already a boot failure).
-            raise SchemaNotMigratedError(
-                getattr(exc, "schema", None) or "taskq"
-            ) from exc
+            raise SchemaNotMigratedError(getattr(exc, "schema", None) or "taskq") from exc
 
     async def enqueue[P: BaseModel, R: BaseModel | None](
         self,

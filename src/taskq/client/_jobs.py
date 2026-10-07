@@ -913,7 +913,9 @@ class JobsClient:
         # is read ONCE per call (LIB-2): every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
-            items, resolved_batch_id, max_pending_by_actor=effective_mp,
+            items,
+            resolved_batch_id,
+            max_pending_by_actor=effective_mp,
             parent_id=current_parent_id(),
         )
 
@@ -1645,7 +1647,9 @@ class JobsClient:
         # is read ONCE per call (LIB-2): every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
-            items, resolved_batch_id, max_pending_by_actor=effective_mp,
+            items,
+            resolved_batch_id,
+            max_pending_by_actor=effective_mp,
             parent_id=current_parent_id(),
         )
 

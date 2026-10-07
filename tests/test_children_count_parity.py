@@ -238,7 +238,7 @@ async def test_count_survives_purge_churn(clean_jobs_app: JobsApp) -> None:
             await pool.execute(
                 f'DELETE FROM "{schema}".jobs '
                 "WHERE queue = 'churn' AND ctid IN ("
-                f'SELECT ctid FROM "{schema}".jobs WHERE queue = \'churn\' LIMIT 50)'
+                f"SELECT ctid FROM \"{schema}\".jobs WHERE queue = 'churn' LIMIT 50)"
             )
             await asyncio.sleep(0)
 
