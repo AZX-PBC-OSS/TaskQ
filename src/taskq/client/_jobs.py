@@ -63,11 +63,13 @@ from taskq.client._args import (
     enqueue_span,
     validate_idempotency,
 )
+from taskq.client._backpressure import read_backpressure
 from taskq.client._capacity import (
     DEFAULT_CAPACITY_CACHE_TTL,
     DEFAULT_CAPACITY_READ_TIMEOUT,
     ActorCapacityCache,
 )
+from taskq.client._enqueuer import current_parent_id
 from taskq.client._handle import JobHandle
 from taskq.constants import DEFAULT_CHUNK_SIZE, MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import (
@@ -76,7 +78,7 @@ from taskq.exceptions import (
     PayloadValidationError,
     SchemaNotMigratedError,
 )
-from taskq.types import BulkCancelResult, CancelResult
+from taskq.types import BackpressureSnapshot, BulkCancelResult, CancelResult
 
 if TYPE_CHECKING:
     import asyncpg
@@ -695,6 +697,7 @@ class JobsClient:
                 priority=priority,
                 fairness_key=fairness_key,
                 metadata=metadata,
+                parent_id=current_parent_id(),
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
                 idempotency_scope=idempotency_scope,
@@ -906,8 +909,13 @@ class JobsClient:
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Build per-item EnqueueArgs carrying the resolved limits for the
-        # backend's per-actor admission check.
-        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
+        # backend's per-actor admission check. The ambient parent context
+        # is read ONCE per call (LIB-2): every item is a child of the
+        # same parent when one is set.
+        args_list = build_batch_args(
+            items, resolved_batch_id, max_pending_by_actor=effective_mp,
+            parent_id=current_parent_id(),
+        )
 
         queue = items[0].actor_ref.queue
         has_batch_extras = failure_policy is not None or finalizer is not None
@@ -942,6 +950,7 @@ class JobsClient:
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
                 idempotency_max_bytes=self._idempotency_max_bytes,
+                parent_id=current_parent_id(),
             )
 
         # Build BatchRow when failure_policy OR finalizer is set (C3:
@@ -1162,6 +1171,7 @@ class JobsClient:
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
                 idempotency_max_bytes=self._idempotency_max_bytes,
+                parent_id=current_parent_id(),
             )
 
         # Build a lazy generator of EnqueueArgs. The payload is validated
@@ -1179,6 +1189,11 @@ class JobsClient:
         # using a single actor's result_adapter for all handles (mixed-actor
         # batches would get wrong deserialization).
         item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
+
+        # The ambient parent context, read ONCE per call (LIB-2): the
+        # generator is consumed lazily, possibly mid-transaction, so the
+        # contextvar is read at arm entry, never inside the generator.
+        ambient_parent_id = current_parent_id()
 
         # Effective per-actor caps, memoized as actors appear (same
         # resolution as :meth:`enqueue` / :meth:`enqueue_batch`): without
@@ -1233,6 +1248,7 @@ class JobsClient:
                         # backend consumes this generator mid-transaction
                         # where no await is possible.
                         max_pending=effective_mp[ref.name],
+                        parent_id=ambient_parent_id,
                     )
                 except ValidationError as exc:
                     raise _item_payload_error(idx, ref.name, exc) from exc
@@ -1408,7 +1424,10 @@ class JobsClient:
                 # errors, crosses untouched.
                 try:
                     chunk_args = build_batch_args(
-                        chunk_items, resolved_batch_id, max_pending_by_actor=effective_mp
+                        chunk_items,
+                        resolved_batch_id,
+                        max_pending_by_actor=effective_mp,
+                        parent_id=ambient_parent_id,
                     )
                     chunk_rows = await self._backend.enqueue_batch(
                         chunk_args, connection=connection
@@ -1622,8 +1641,13 @@ class JobsClient:
                 )
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
-        # Phase 2: Build per-item EnqueueArgs
-        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
+        # Phase 2: Build per-item EnqueueArgs. The ambient parent context
+        # is read ONCE per call (LIB-2): every item is a child of the
+        # same parent when one is set.
+        args_list = build_batch_args(
+            items, resolved_batch_id, max_pending_by_actor=effective_mp,
+            parent_id=current_parent_id(),
+        )
 
         # Phase 3: COPY FROM via backend
         count = await self._backend.enqueue_batch_fast(args_list, connection=connection)
@@ -1693,6 +1717,65 @@ class JobsClient:
         """
         with self._translate_schema_errors():
             return await self._backend.get(job_id)
+
+    async def backpressure(
+        self,
+        queues: Sequence[str],
+        *,
+        parent_id: JobId | None = None,
+    ) -> BackpressureSnapshot:
+        """Read the submit path's backpressure state for *queues*.
+
+        A read-only typed read (the LIB-2 design, mirroring the
+        reader-method precedent of :meth:`get_row` / :meth:`list`) —
+        deliberately NOT an ``enqueue`` kwarg: ``enqueue`` is generic
+        ``JobHandle[R]`` and no flag may flip the reply type.
+
+        Per queue (see :class:`~taskq.types.QueueBackpressure`):
+
+        * ``depth`` — jobs holding a pending slot (pending + scheduled,
+          exactly what the admission cap counts), ONE indexed aggregate
+          for the whole call (``count_pending_jobs_by_queue``, the
+          ``count_active_jobs`` pattern). The worker-side leader
+          sampler's cache is in-process on the worker and not readable
+          cross-process; the depth here is a real count, not a pretense.
+        * ``effective_max_pending`` — the queue's ACTOR cap from the
+          ``ActorCapacityCache`` TTL snapshot (the data model has no
+          per-queue depth threshold; the tightest stored cap among the
+          routing actors is the boundary).
+        * ``children_depth`` — when a fan-out parent is in play
+          (*parent_id*, or the ambient worker context
+          ``current_parent_id()``), the parent's pending children
+          OUTSIDE the queue, exact via the ``parent_id`` ledger stamp
+          (01.00.23_01): the inflow that could still land here and
+          compete for the same cap. Children already in the queue are in
+          its ``depth`` and are never counted twice.
+        * ``state`` — ``over`` when depth + children >= cap (the next
+          enqueue for the queue's actor is likely refused with
+          ``MaxPendingExceededError``), ``ok`` below it, ``unknown``
+          when any half could not be seen (sick database, staged reads
+          the backend lacks, no capacity snapshot, a cap that lives only
+          in the ``@actor`` literal). ``reason`` names the absent half.
+          Fail-open, never a fabricated verdict.
+
+        ADVISORY semantics: the race between this check and the later
+        enqueue is acceptable (the signal predicts admission, it does
+        not reserve it); the cap half carries the capacity cache's TTL
+        staleness bound (default 5s). Cost: one indexed aggregate round
+        trip per call, plus one more only when a parent is in play;
+        ``unknown`` on backend trouble — the read never raises except
+        for a missing schema (:class:`SchemaNotMigratedError`, the
+        actionable setup defect).
+        """
+        with self._translate_schema_errors():
+            await self._capacity_cache.refresh()
+            return await read_backpressure(
+                self._backend,
+                self._capacity_cache,
+                list(dict.fromkeys(queues)),
+                parent_id=parent_id if parent_id is not None else current_parent_id(),
+                read_timeout=DEFAULT_CAPACITY_READ_TIMEOUT,
+            )
 
     async def list(self, filter: JobFilter) -> JobPage:
         """List jobs matching *filter*, returning a :class:`JobPage`.

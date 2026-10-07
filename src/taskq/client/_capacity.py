@@ -400,6 +400,65 @@ class ActorCapacityCache:
             "seconds ago may not be in it yet)",
         )
 
+    async def refresh(self) -> None:
+        """Refresh the snapshot if stale; never raises.
+
+        The read-side entry point (the LIB-2 backpressure read warms the
+        snapshot through this before peeking): the same single-flight,
+        TTL-bounded, fail-open refresh every enqueue pays — at most one
+        small whole-table read per ``ttl`` per process, a failed or
+        timed-out read keeps the last good snapshot (or none) and logs
+        its warning at the 1/ttl rate. The queue-assignment snapshot
+        rides the same cadence when the backend implements the optional
+        ``get_actor_queues`` read.
+        """
+        await self._refresh()
+
+    def snapshot_age(self) -> float | None:
+        """How old the CURRENT snapshot is, in seconds, zero I/O, never raises.
+
+        ``None`` when no snapshot exists (no successful refresh yet) —
+        the LIB-2 read carries that as the snapshot's
+        ``cap_age_seconds=None`` and its ``unknown`` cap reasons, so a
+        typed verdict states its own staleness instead of omitting it.
+        The clock is the same monotonic one :meth:`_refresh` stamps, so
+        the age is reliable across system-clock steps.
+        """
+        if self._refreshed_at is None:
+            return None
+        return max(0.0, time.monotonic() - self._refreshed_at)
+
+    def peek_queue_caps(self, queue: str) -> dict[str, int | None] | None:
+        """The routing actors for *queue* and their stored caps, from the
+        CURRENT snapshot — zero I/O, no refresh, no lock, never raises.
+
+        Returns ``None`` when no snapshot is available (no successful
+        refresh yet, or the backend lacks the optional
+        ``get_actor_queues`` read / its read failed) — the caller's
+        fail-open posture reads that as the backpressure snapshot's
+        ``unknown`` state, never a fabricated verdict. Returns an EMPTY
+        dict when the snapshot is live but no ``actor_config`` row
+        routes *queue* (the unserved-queue corner,
+        :meth:`maybe_warn_unserved_queue`'s predicate). Otherwise the
+        routing actor names mapped to their STORED ``max_pending``:
+        present with an ``int`` (the operator's cap), ``None`` when the
+        row is absent or its column is NULL — both fall back to the
+        ``@actor`` literal, which this process cannot see, the caller
+        reads that as ``unknown`` for the cap half.
+
+        Why a sync peek: the same shape as :meth:`peek_max_pending` —
+        the verdict composes the queue's depth against this cap with no
+        I/O of its own; the caller warms the snapshot with ONE
+        :meth:`refresh` call first.
+        """
+        if not self._has_snapshot or self._queues is None:
+            return None
+        return {
+            actor: self._rows.get(actor)
+            for actor, routed in self._queues.items()
+            if routed == queue
+        }
+
     async def effective_max_pending(
         self, actor: str, literal: int | None, *, per_call: int | None = None
     ) -> int | None:

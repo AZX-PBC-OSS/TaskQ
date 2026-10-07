@@ -45,6 +45,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     IdempotencyKey,
     IdentityKey,
+    JobId,
     JobRow,
     JobStatus,
 )
@@ -56,7 +57,11 @@ from taskq.client._args import (
     build_enqueue_args,
     enqueue_span,
 )
-from taskq.client._capacity import ActorCapacityCache
+from taskq.client._backpressure import read_backpressure
+from taskq.client._capacity import (
+    DEFAULT_CAPACITY_READ_TIMEOUT,
+    ActorCapacityCache,
+)
 from taskq.client._handle import JobHandle
 from taskq.exceptions import (
     BatchIdExistsError,
@@ -64,19 +69,33 @@ from taskq.exceptions import (
     PartialBatchError,
     SubEnqueueError,
 )
+from taskq.types import BackpressureSnapshot
 
 if TYPE_CHECKING:
     import asyncpg
 
     from taskq.actor import ActorRef
 
-__all__ = ["SubJobEnqueuer", "parent_tags", "set_parent_tags"]
+__all__ = ["SubJobEnqueuer", "current_parent_id", "parent_tags", "set_parent_job_id", "set_parent_tags"]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 _parent_tags_var: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
     "taskq_parent_tags",
     default=(),
+)
+
+# The fan-out ledger's contextvar (LIB-2): the enqueuing parent's job id,
+# the sibling of the tag-inheritance var above. Set together at worker
+# entry (worker/run.py and worker/_consumer.py set BOTH — the ledger
+# stamp and the tag inheritance are one parent context), read by every
+# child-creating enqueue arm. The ledger is EXACT accounting: children
+# carry parent_id regardless of whether they inherit tags
+# (inherit_tags=False suppresses decoration, not linkage), and the
+# backpressure read counts pending children by it exactly.
+_parent_job_id_var: contextvars.ContextVar[JobId | None] = contextvars.ContextVar(
+    "taskq_parent_job_id",
+    default=None,
 )
 
 
@@ -91,23 +110,56 @@ def set_parent_tags(tags: tuple[str, ...]) -> contextvars.Token[tuple[str, ...]]
     return _parent_tags_var.set(tags)
 
 
+def set_parent_job_id(job_id: JobId) -> contextvars.Token[JobId | None]:
+    """Set the enqueuing parent's job id for child fan-out accounting.
+
+    Called by the worker entry points beside :func:`set_parent_tags` (or
+    through :func:`parent_tags`' ``job_id`` parameter). The returned
+    token must be used to reset the context after the actor completes,
+    use ``_parent_job_id_var.reset(token)``.
+    """
+    return _parent_job_id_var.set(job_id)
+
+
+def current_parent_id() -> JobId | None:
+    """The ambient parent's job id, ``None`` outside any parent context.
+
+    What every child-creating enqueue arm stamps into
+    ``EnqueueArgs.parent_id``. Scoped to the async task the worker entry
+    set it in; the entry's reset is what unwinds it (a stale id must
+    never leak into a later enqueue on the same loop).
+    """
+    return _parent_job_id_var.get()
+
+
 @contextlib.contextmanager
-def parent_tags(tags: tuple[str, ...]) -> Generator[None, None, None]:
-    """Context manager that sets parent tags for the duration of the block.
+def parent_tags(
+    tags: tuple[str, ...], job_id: JobId | None = None
+) -> Generator[None, None, None]:
+    """Context manager that sets the parent context for the duration of the block.
 
-    Ensures the ContextVar is reset on all exit paths (success, exception,
-    cancellation). Use this at worker entry points instead of manual
-    set/reset::
+    The ONE context the worker entry installs: the parent's tags for
+    sub-job tag inheritance, and — when *job_id* is passed — the
+    parent's job id for the fan-out ledger (``parent_id`` stamped on
+    every child enqueue, the exact pending-children accounting the
+    backpressure read serves).
 
-        with parent_tags(tuple(job.tags)):
+    Ensures both ContextVars are reset on all exit paths (success,
+    exception, cancellation). Use this at worker entry points instead of
+    manual set/reset::
+
+        with parent_tags(tuple(job.tags), job_id=job.id):
             # actor invocation, sub-job enqueues, etc.
             ...
     """
     token = _parent_tags_var.set(tags)
+    id_token = _parent_job_id_var.set(job_id) if job_id is not None else None
     try:
         yield
     finally:
         _parent_tags_var.reset(token)
+        if id_token is not None:
+            _parent_job_id_var.reset(id_token)
 
 
 class SubJobEnqueuer:
@@ -167,6 +219,32 @@ class SubJobEnqueuer:
         of paying its own per-job snapshot refresh.
         """
         return self._capacity_cache
+
+    async def backpressure(
+        self,
+        queues: Sequence[str],
+        *,
+        parent_id: JobId | None = None,
+    ) -> BackpressureSnapshot:
+        """Read the submit path's backpressure state for *queues*.
+
+        The actor body's slice of the LIB-2 read (the fan-out decision
+        happens HERE, in the parent's execution): same contract as
+        :meth:`JobsClient.backpressure` — depth/cap/children halves, the
+        fail-open ``unknown`` state, advisory semantics — reading this
+        enqueuer's own backend and capacity cache. ``parent_id`` defaults
+        to the ambient parent context: inside an actor body that is THIS
+        job, so the verdict includes this parent's pending children with
+        no arguments. See :class:`~taskq.types.BackpressureSnapshot`.
+        """
+        await self._capacity_cache.refresh()
+        return await read_backpressure(
+            self._backend,
+            self._capacity_cache,
+            list(dict.fromkeys(queues)),
+            parent_id=parent_id if parent_id is not None else current_parent_id(),
+            read_timeout=DEFAULT_CAPACITY_READ_TIMEOUT,
+        )
 
     async def enqueue[P: BaseModel, R: BaseModel | None](
         self,
@@ -259,6 +337,11 @@ class SubJobEnqueuer:
                 unique_for=unique_for,
                 unique_states=unique_states,
                 max_pending=effective_max_pending,
+                # LIB-2: the fan-out ledger stamp — the ambient parent's
+                # job id when this runs under a parent context, None
+                # otherwise (the builder stays pure, the arm reads the
+                # contextvar once).
+                parent_id=current_parent_id(),
             )
             if _batch_id is not None:
                 # H5: stamp batch_id AFTER build_enqueue_args, which strips
@@ -452,7 +535,10 @@ class SubJobEnqueuer:
                     )
                     self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
             args_list = build_batch_args(
-                items, resolved_batch_id, max_pending_by_actor=effective_mp
+                items,
+                resolved_batch_id,
+                max_pending_by_actor=effective_mp,
+                parent_id=current_parent_id(),
             )
 
             if in_transaction and self._backend.supports_transactional_simulation:
