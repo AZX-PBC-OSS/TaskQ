@@ -9,8 +9,34 @@ module scope — the import-discipline pin convicts a violation.
 The engine is core-deps-only (tors, asyncpg, uuid_utils — all base
 dependencies); the ``flows`` extra carries no requirements of its own and
 exists as the operator-facing opt-in marker.
+
+Module homes (concerns separate): ``engine`` owns the finalize mechanics
+(tx1/tx2, the dispatch exclusion, the deadlock retry); ``_fork`` owns the
+fork's atomic write set; ``_sweep`` owns the sweep arms (the lock-first
+re-derive + fire, the outbox drain, the phantom reaper); ``_sql`` owns the
+named statement constants; ``_types`` owns the specs/results and the
+metadata wire shapes; ``ledger`` owns the step-ledger claim + the run-key
+arbiter; ``context`` owns ``ctx.step``; ``definitions`` owns the
+registered-definition registry; ``_capture`` owns the failure IO-capture
+writer; ``_version`` owns the canonical code-version hash.
 """
 
+from taskq.workflows._sweep import (
+    SweepResult,
+    drain_outbox,
+    reap_phantom_ledger,
+    sweep_join_rederive,
+)
+from taskq.workflows._types import (
+    ChildSpec,
+    ConsumerBinding,
+    DecrementHit,
+    FinalizeResult,
+    FiredJoin,
+    ForkSpec,
+    JoinSpec,
+    NodeSpec,
+)
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.definitions import (
     DuplicateStepBodyError,
@@ -23,23 +49,10 @@ from taskq.workflows.definitions import (
 )
 from taskq.workflows.engine import (
     DISPATCH_EXCLUSION_CLAUSE,
-    ChildSpec,
-    ConsumerBinding,
-    ConsumerDefaults,
     DeadlockRetriesExhaustedError,
-    DecrementHit,
-    FinalizeResult,
-    FiredJoin,
-    ForkSpec,
-    JoinSpec,
-    NodeSpec,
-    SweepResult,
-    drain_outbox,
     finalize_node,
     insert_node,
-    reap_phantom_ledger,
     render_workflow_sql,
-    sweep_join_rederive,
 )
 from taskq.workflows.ledger import (
     LedgerClaim,
@@ -56,7 +69,6 @@ __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
     "ChildSpec",
     "ConsumerBinding",
-    "ConsumerDefaults",
     "DeadlockRetriesExhaustedError",
     "DecrementHit",
     "DuplicateStepBodyError",

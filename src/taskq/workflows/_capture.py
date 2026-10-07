@@ -37,7 +37,7 @@ measured house shape).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Final, TypedDict
+from typing import Any, Final
 
 from tors import truncate_to_bounds, utf8_byte_len
 
@@ -49,12 +49,7 @@ from tors import truncate_to_bounds, utf8_byte_len
 # tests/test_tors_scrub_secrets_composition.py.
 from taskq.obs._redact_exc import mask_credentials  # pyright: ignore[reportPrivateUsage]
 
-__all__ = ["CapturePolicy", "build_capture", "redact_capture"]
-
-#: The workflow capture policies (declared on the workflow at T09's API;
-#: the default is ``errors-only``). Failure-finalize captures the input +
-#: error for ``errors-only`` and ``all``; success-finalize never captures.
-CapturePolicy = str
+__all__ = ["build_capture", "redact_capture"]
 
 CAPTURE_POLICY_NONE: Final[str] = "none"
 CAPTURE_POLICY_ERRORS_ONLY: Final[str] = "errors-only"
@@ -69,14 +64,6 @@ TRUNCATED_MARKER: Final[str] = "__truncated__"
 
 #: The default capture byte cap (the configurable cap, T09's settings row).
 DEFAULT_CAPTURE_MAX_BYTES: Final[int] = 8 * 1024
-
-
-class Capture(TypedDict, total=False):
-    """The capture row's shape (the ledger ``capture`` jsonb column)."""
-
-    input: str
-    error: str
-    TRUNCATED_MARKER: int  # Why: the marker IS the JSON key the contract names.
 
 
 def _truncate_to_byte_cap(text: str, max_bytes: int) -> tuple[str, int | None]:

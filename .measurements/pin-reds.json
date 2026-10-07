@@ -1,0 +1,7 @@
+[
+  {
+    "pin": "pin20-outbox-flush-stranded",
+    "mutation": "crash between fire-commit and consumer-insert (no drain yet)",
+    "red": "{\"fired\": true, \"consumers_dispatched\": 0}"
+  }
+]

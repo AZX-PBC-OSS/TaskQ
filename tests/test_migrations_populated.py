@@ -177,6 +177,14 @@ def _job_row(
         "id": row_id,
         "actor": ("actor_a", "actor_b", "actor_c", "test_actor")[i % 4],
         "queue": "default",
+        # 01.00.23's workflow columns: the seeder's rows are VANILLA rows
+        # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
+        # explicitly so the runtime column intersection never KeyErrors.
+        "parent_id": None,
+        "deps_pending": 0,
+        "map_index": None,
+        "step_key": None,
+        "code_version": None,
         "identity_key": f"ident-{i % 50}" if i % 4 == 0 else None,
         "fairness_key": f"fair-{i % 10}" if i % 7 == 0 else None,
         "payload": _payload(i),

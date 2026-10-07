@@ -97,11 +97,20 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_backoff",
     "retry_jitter",
     "assignment_routed",
-    # LIB-2: the fan-out ledger. Trailing position, mirrored into
-    # jobs_archive by the explicit archive CSVs (_leader_shared.py builds
-    # both sides from this tuple). Plain column, no FK — see
-    # 01.00.23_01_pre_jobs_parent_id.sql.
+    # 01.00.23 (the workflow round): the archive-mirror columns. The
+    # archive sweep's INSERT names every column explicitly (the positional
+    # `SELECT j.*` doctrine died with 01.00.03), so the mirror parity the
+    # pin enforces (test_copy_from_columns_match_jobs_table_exactly) needs
+    # them here; the workflow-aware pruner (T18) defines their retention.
+    # The parent_id column doubles as LIB-2's fan-out ledger key: trailing
+    # position, mirrored into jobs_archive by the explicit archive CSVs
+    # (_leader_shared.py builds both sides from this tuple). Plain column,
+    # no FK — see 01.00.23_01_pre_jobs_parent_id.sql.
     "parent_id",
+    "deps_pending",
+    "map_index",
+    "step_key",
+    "code_version",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
@@ -126,6 +135,14 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "rate_limit_blocked_count",
         "interrupt_count",
         "claim_epoch",
+        # The workflow columns (01.00.23): vanilla enqueues never set them
+        # (the DDL defaults apply -- deps_pending DEFAULT 0, the rest NULL);
+        # the workflow-row INSERT path is the engine's own statements.
+        "parent_id",
+        "deps_pending",
+        "map_index",
+        "step_key",
+        "code_version",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
