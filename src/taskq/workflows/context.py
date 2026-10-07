@@ -17,7 +17,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import ConnLike, JobId
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.ledger import (
     LedgerClaim,
     claim_step_ledger,
@@ -30,12 +31,15 @@ StepFn = Callable[..., Awaitable[Any]]
 
 
 class WorkflowSteps:
-    """The step surface bound to one (flow run, node attempt)."""
+    """The step surface bound to one (flow run, node attempt). The TYPED
+    doors: a live DB connection (``ConnLike``) + the schema's statement
+    bundle (``WorkflowSql``) — arbitrary objects are checker errors (the
+    T01 negative probes pin it)."""
 
     def __init__(
         self,
-        conn: Any,
-        wsql: Any,
+        conn: ConnLike,
+        wsql: WorkflowSql,
         *,
         flow_id: JobId,
         job_id: JobId,

@@ -1,0 +1,3 @@
+THE TYPE GATE REDS — a typed door leaks:
+  line 30: pyright 1.1.414 did NOT flag the MUST_ERROR probe (the Any leak ships)
+  line 30: ty 0.0.85 did NOT flag the MUST_ERROR probe (the Any leak ships)

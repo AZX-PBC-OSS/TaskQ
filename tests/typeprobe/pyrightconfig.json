@@ -1,0 +1,16 @@
+{
+  // T01's probe-corpus config — DELIBERATELY SEPARATE from the root
+  // pyproject [tool.pyright]: the root's `tests` executionEnvironment
+  // sets reportArgumentType = false (the repo-wide relaxation for the
+  // suite's duck-typed seams), which would MUTE exactly the violations
+  // the MUST_ERROR probes assert. This config re-arms the reports the
+  // probes pin; the CI `type-probes` job runs the gate against it with
+  // the pinned checkers (the typeprobe dependency group:
+  // pyright 1.1.414 + ty 0.0.85 — see the gate script for the ty half).
+  "include": ["."],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.12",
+  "venvPath": "../..",
+  "venv": ".venv",
+  "reportMissingTypeStubs": false
+}

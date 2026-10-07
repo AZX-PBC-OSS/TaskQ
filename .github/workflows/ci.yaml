@@ -108,6 +108,29 @@ jobs:
       - name: Type check with pyright
         run: uv run --no-sync pyright src/taskq tests
 
+  type-probes:
+    # T01's negative type-probe corpus: the workflows API's wrong-shape
+    # calls MUST red on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85
+    # — the `typeprobe` group, pinned exactly; the exclude-newer
+    # quarantine is waived for ty because the pin IS the review). The
+    # corpus is checked under tests/typeprobe's own pyrightconfig.json —
+    # the root config's `tests` environment sets reportArgumentType=false,
+    # which would mute exactly the violations the probes assert. The gate
+    # script asserts per-marker coverage and CAN fail (drilled: an
+    # `entry: Any` door reverts the gate to red — recorded
+    # .measurements/attack/F9-red-type-gate.txt).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          sync-args: --locked --group typeprobe
+
+      - name: The MUST_ERROR corpus reds on both pinned checkers
+        run: uv run --no-sync python tests/typeprobe/_gate.py
+
   test:
     # The per-interpreter suite: ALL extras installed, the whole test suite
     # -n 2, not -n 4: the lanes were calibrated for the 8-core larger

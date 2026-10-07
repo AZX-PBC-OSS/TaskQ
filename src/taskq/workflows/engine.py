@@ -73,7 +73,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
 import asyncpg
 
@@ -182,12 +182,13 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
 # ── The deadlock retry (hardening H7) ───────────────────────────────────
 
 
-async def _deadlock_retry(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+async def _deadlock_retry[T](coro_factory: Callable[[], Awaitable[T]]) -> T:
     """Run *coro_factory* retrying on a real Postgres deadlock (H7).
 
     Each attempt builds a fresh coroutine (the aborted TX had no effect;
     the retry is linearization-preserving). Backoff: jittered exponential —
-    S311-scoped (timing jitter, not crypto).
+    S311-scoped (timing jitter, not crypto). Generic in the awaited result
+    (the TYPED door — the caller's result type survives the retry).
     """
     for attempt in range(_DEADLOCK_RETRIES + 1):
         try:
@@ -198,6 +199,7 @@ async def _deadlock_retry(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
                     f"deadlock retry budget exhausted after {_DEADLOCK_RETRIES + 1} attempts"
                 ) from None
             await asyncio.sleep(_DEADLOCK_BACKOFF_BASE_S * (2**attempt) * (0.5 + random.random()))
+    raise AssertionError("unreachable: the retry loop returns or raises")  # pragma: no cover
 
 
 # ── Finalize: tx1 + tx2 ─────────────────────────────────────────────────

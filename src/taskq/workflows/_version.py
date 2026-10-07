@@ -62,8 +62,10 @@ def code_version_payload(
         "schema": _PAYLOAD_VERSION,
         "module": module,
         "qualname": qualname,
-        "source": source if source is not None else "",
-        "pinned": pinned if pinned is not None else "",
+        # None and "" fold to the SAME record (an absent source/pin is the
+        # empty document — the hash covers the field either way).
+        "source": source or "",
+        "pinned": pinned or "",
     }
     return payload
 

@@ -201,7 +201,10 @@ exclude-newer = "24 hours"
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false }
+# ty is T01's probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
+# the probe gate's reds are asserted against that release, so the quarantine
+# cutoff is waived for it the same way: the pin IS the review.
+exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false, ty = "0d" }
 # Security floors for packages TaskQ does not depend on directly. A bare
 # `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
 # fixed, and fails the lock loudly if a parent ever pins back below the floor
@@ -302,6 +305,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# T01's probe GATE: it invokes the pinned checkers by name ("pyright"/"ty",
+# resolved from the venv) on the repo's own probe corpus — fixed argv, no
+# user input reaches a command line; the partial executable path and the
+# subprocess calls are the gate's whole job.
+"tests/typeprobe/_gate.py" = ["S603", "S607"]
 # The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
 # every other module goes through, so the ban cannot apply to its definition.
 "src/taskq/_ids.py" = ["TID251"]
@@ -599,7 +607,11 @@ include = ["src", "tests", "examples"]
 # either, and every cross-test import (e.g. tests.conftest, the differential
 # harness's DiffSide) degrades to Unknown — "Type of parameter is unknown"
 # across every importing file while the defining file stays clean.
-exclude = [".worktrees"]
+# tests/typeprobe/ is excluded for the opposite reason: the probe corpus is
+# INTENTIONALLY full of checker errors (the T01 negative probes) — the
+# `type-probes` CI job owns it under its own pyrightconfig.json, the root
+# run would only re-flag what that gate already asserts.
+exclude = [".worktrees", "tests/typeprobe"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
@@ -858,6 +870,16 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.16.5,<0.17",
     "testcontainers[postgres,redis]>=4.14.2",
+]
+# T01's negative type-probe corpus checkers, pinned EXACTLY: the probes'
+# MUST_ERROR markers are asserted against specific checker releases (a
+# floating checker moves the corpus's reds under the gate's feet; the tests
+# executionEnvironment's reportArgumentType=false does NOT apply here — the
+# probe corpus is checked under its own pyrightconfig.json, the finding the
+# gate exists to keep pinned).
+typeprobe = [
+    "pyright==1.1.414",
+    "ty==0.0.85",
 ]
 # Containerized e2e tier (tests/e2e): container image builds for worker
 # containers. Kept out of the default dev group so plain `uv sync` and
