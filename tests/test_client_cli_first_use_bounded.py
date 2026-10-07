@@ -1256,6 +1256,9 @@ _KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("unique_for_lock_timeout_ms", 5000.0),
     ("idempotency_lock_timeout_ms", 5000.0),
     ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
+    # The claim cursor's knob, mirrored at the opt-in default (0 =
+    # disabled): the predictor is default-on, the cure waits for evidence.
+    ("claim_cursor_reset_seconds", 0.0),
 )
 """The BackendSettings members whose defaults the doubles must carry -
 WorkerSettings' own (5000.0 ms each for the enqueue lock budgets, the

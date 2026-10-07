@@ -285,6 +285,55 @@ Do not scale dispatchers out to fix this: more concurrent claim rounds multiply 
 
 ---
 
+## TaskQClaimLatencyDegraded
+
+**What fired.** `taskq_claim_degradation_ratio > 10` for 5 minutes, by `queue`: this worker's claim-query latency p99 is more than ten times its own rolling 24-hour baseline (minute-bucketed p99s, kept for a day). The ratio is the PREDICTOR of the MVCC death spiral: a long or overlapping transaction pins the MVCC horizon, VACUUM cannot reclaim, and the claim query's B-tree scans degenerate through the dead tuples the queue's own churn leaves behind - brandur.org/postgres-queues measured 15x lock-time degradation this way, and PlanetScale's 2026 re-run confirmed SKIP LOCKED only "lifts the floor, not the ceiling" (identical dead-tuple scans under both). The ratio exists because an absolute threshold cannot see this failure: a fleet that degrades slowly makes each new latency its own normal (and [TaskQDispatchLatencyHigh](#taskqdispatchlatencyhigh), the absolute twin, stays silent).
+
+**How to confirm.**
+
+- Metric: `taskq_claim_degradation_ratio{queue="..."}` climbing past 10 while `taskq_claim_claims_per_second{queue="..."}` falls is the spiral's last visible stage (the claim path slowing until throughput collapses). The percentiles (`taskq_claim_latency_p50_seconds` and its p95/p99 siblings) show the distribution moving as a whole: p50 moving with p99 is the whole scan degrading, not one straggler.
+- SQL: find the transaction pinning the horizon - the one thing every dead tuple needs gone before VACUUM can touch it:
+
+  ```sql
+  SELECT pid, state,
+         now() - xact_start AS xact_age,
+         now() - state_change AS idle_age,
+         left(query, 120) AS query_head
+  FROM pg_stat_activity
+  WHERE xact_start IS NOT NULL
+    AND now() - xact_start > interval '5 minutes'
+  ORDER BY xact_start;
+  ```
+
+  A long-running transaction of any shape is the pin: an idle-in-transaction app session holding a connection mid-transaction, a long migration, a `pg_dump` with a snapshot, a stuck `LISTEN`/event-loop transaction.
+- Confirm the dead-tuple pressure it causes:
+
+  ```sql
+  SELECT n_dead_tup, n_live_tup, last_autovacuum
+  FROM pg_stat_user_tables
+  WHERE relname = 'jobs' AND schemaname = 'taskq';
+  ```
+
+  `n_dead_tup` climbing while `last_autovacuum` stalls in the past is the horizon pinned; the claim scans pay for every one of those rows.
+
+**Why the timeouts do not save you.** Postgres ships three relevant knobs, and none of them catches this failure:
+
+- `idle_in_transaction_session_timeout` (default 0 = off) fires only when a session sits IDLE inside a transaction - an *actively working* long transaction (a batch migration, a COPY) never trips it;
+- `transaction_timeout` (Postgres 17+, default 0 = off) caps a transaction's total lifetime, but the pinning transactions in production are usually *legitimate* - a 20-minute migration is not a leak - so operators leave the knob off, and an app pool's idle-in-transaction session may not be the one pinning anything anyway;
+- `statement_timeout` bounds ONE statement, not the transaction: a transaction that runs a million short statements never trips it while pinning the horizon for its whole life.
+
+And even when a timeout fires, it fixes the future, not the present: the dead tuples accumulated while the horizon was pinned stay until VACUUM reaches them.
+
+**How to remediate.**
+
+1. Kill or complete the pinning transaction: `SELECT pg_terminate_backend(<pid>);` for an app-held one (the app retries; that is what retries are for), or let the migration finish. The horizon unpins the moment the last snapshot that can see the dead tuples ends.
+2. Confirm VACUUM drains: `n_dead_tup` falls and `taskq_claim_degradation_ratio` returns toward 1. The ratio falls within a claim-window of the vacuum, which is the confirmation the incident is over - do not re-page on the absolute gauge's slow decay.
+3. Check what held the horizon: an application session left `idle in transaction` needs `idle_in_transaction_session_timeout` set on THAT role (`ALTER ROLE app SET idle_in_transaction_session_timeout = '5min'`), which is a targeted fix that cannot break legitimate long migrations.
+
+**Mitigation, bounded and measured:** the claim cursor (`TASKQ_CLAIM_CURSOR_RESET_SECONDS`, opt-in - default off) bounds the claim query's candidates at the worker's per-queue high-water mark of claimed ids, so the candidate probe's seek lands on live tuples instead of walking the dead zone. It is a selection predicate (a below-cursor row strands until the jitter reset forgets the cursor - the knob's interval, ±50%), round-robin queues are exempt, and its end-to-end win on this codebase's claim CTE is plan-dependent (the spiral's planner-blindness keeps some probes on index choices the bound cannot position) - measured in `perf-evidence-mvcc-horizon.md` and gated in `tests/perf/test_mvcc_claim_degradation.py`. The gauges are the part that works everywhere; the cursor is the bounded experiment for fleets whose shape matches the isolated measurement.
+
+---
+
 ## TaskQLeaderLockContention
 
 **What fired.** `sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1` sustained for 10 minutes: maintenance-lock acquisitions are being lost AND no worker holds leadership. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`.

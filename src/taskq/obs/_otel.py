@@ -607,6 +607,14 @@ def _bounded_queue(queue: str) -> str:
     )
 
 
+def bounded_queue_label(queue: str) -> str:
+    """The label-bound cardinality cap's public obs-layer seam: the same
+    first-N-then-overflow admission :func:`_bounded_queue` applies, for
+    the obs-internal consumers outside this module (the claim-health
+    gauges) that must not reach the private helper by name."""
+    return _bounded_queue(queue)
+
+
 _published_messages = get_meter().create_counter(
     "messaging.client.published.messages",
     description=(

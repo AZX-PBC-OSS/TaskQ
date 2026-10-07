@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from typing import Final
 
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL,
     DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
+    DISPATCH_STRICT_FIFO_CURSOR_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
 from taskq.backend._sql import (
@@ -191,6 +193,13 @@ class SqlTemplates:
     dispatch_strict_fifo: str
     dispatch_round_robin: str
     dispatch_claimable_probe: str
+    # The claim cursor's renders: the strict-FIFO claim and the
+    # claimable probe with the id lower bound ($6 / $2 respectively) the
+    # worker's per-queue high-water mark binds. See
+    # backend/_claim_cursor.py; round-robin has no cursor render (the
+    # documented exemption).
+    dispatch_strict_fifo_cursor: str
+    dispatch_claimable_probe_cursor: str
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
@@ -1919,6 +1928,8 @@ SELECT * FROM "{s}".job_attempts_archive WHERE job_id = $1 ORDER BY attempt""",
         dispatch_strict_fifo=DISPATCH_STRICT_FIFO_SQL.format(schema=s),
         dispatch_round_robin=DISPATCH_ROUND_ROBIN_SQL.format(schema=s),
         dispatch_claimable_probe=DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=s),
+        dispatch_strict_fifo_cursor=DISPATCH_STRICT_FIFO_CURSOR_SQL.format(schema=s),
+        dispatch_claimable_probe_cursor=DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL.format(schema=s),
         # ── Static read SQL ────────────────────────────────────────
         get_events=f"""\
 SELECT id AS event_id, job_id, occurred_at, kind, detail

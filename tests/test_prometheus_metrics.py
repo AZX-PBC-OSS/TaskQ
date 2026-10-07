@@ -211,6 +211,14 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_worker_loop_stall_attributions_total",
         "counter",
     ),
+    # The MVCC-horizon hygiene gauges (obs/_claim_health.py): the claim
+    # query's latency percentiles and rate, and the degradation ratio the
+    # TaskQClaimLatencyDegraded alert keys on.
+    ("taskq.claim.latency_p50_seconds", "taskq_claim_latency_p50_seconds", "gauge"),
+    ("taskq.claim.latency_p95_seconds", "taskq_claim_latency_p95_seconds", "gauge"),
+    ("taskq.claim.latency_p99_seconds", "taskq_claim_latency_p99_seconds", "gauge"),
+    ("taskq.claim.claims_per_second", "taskq_claim_claims_per_second", "gauge"),
+    ("taskq.claim.degradation_ratio", "taskq_claim_degradation_ratio", "gauge"),
 ]
 
 _RULES_YAML = (
@@ -250,6 +258,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQRunningLeaseExpired",
     "TaskQQueueUnserved",
     "TaskQStrandedJobs",
+    "TaskQClaimLatencyDegraded",
 }
 
 
@@ -271,6 +280,27 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_histogram("taskq.dispatch.duration", unit="s").record(0.01, {"queue": "q"})
     meter.create_observable_gauge(
         "taskq.queue.depth", unit="1", callbacks=[lambda _: [Observation(5, {"queue": "q"})]]
+    )
+    # The MVCC-horizon hygiene gauges (obs/_claim_health.py): unit="s"
+    # for the latency percentiles (their names already end in the unit
+    # word), unit="1" for the rate and the ratio.
+    for _name in (
+        "taskq.claim.latency_p50_seconds",
+        "taskq.claim.latency_p95_seconds",
+        "taskq.claim.latency_p99_seconds",
+    ):
+        meter.create_observable_gauge(
+            _name, unit="s", callbacks=[lambda _: [Observation(0.01, {"queue": "q"})]]
+        )
+    meter.create_observable_gauge(
+        "taskq.claim.claims_per_second",
+        unit="1",
+        callbacks=[lambda _: [Observation(3.0, {"queue": "q"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.claim.degradation_ratio",
+        unit="1",
+        callbacks=[lambda _: [Observation(1.2, {"queue": "q"})]],
     )
     meter.create_histogram("taskq.lock.expires_in_seconds", unit="s").record(
         30.0, {"worker_id": "w1"}
@@ -433,13 +463,13 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 23 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 24 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 23
+    assert len(rules) == 24
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -452,10 +482,10 @@ def test_rules_yaml_parses_correctly() -> None:
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 23 alerts with the names."""
+    """rules.yaml contains exactly 24 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 23
+    assert len(rules) == 24
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 
