@@ -24,6 +24,20 @@ CREATE INDEX IF NOT EXISTS jobs_wf_join_wait_idx
     ON "{schema}".jobs (id)
     WHERE status = 'pending' AND deps_pending > 0;
 
+-- The sweep's FIRE-arm probe (SWEEP_FIRE_SQL's locked CTE): join-wait rows
+-- REGARDLESS of the counter. deps_pending > 0 must NOT be in this
+-- predicate's definition (the SWEEP_FIRE_SQL index-served question): the
+-- fire arm identifies its rows by the LEDGER's count, never by the cache —
+-- the rederive statement in the same transaction just reconciled the
+-- firable rows' cache to 0, so a counter-carrying predicate would hide
+-- exactly the rows the arm exists to fire. The two partials split the
+-- population by which arm's WHERE each serves: the rederive's lock-first
+-- scan keeps jobs_wf_join_wait_idx (its WHERE implies deps_pending > 0),
+-- the fire's scan rides this one.
+CREATE INDEX IF NOT EXISTS jobs_wf_join_fire_probe_idx
+    ON "{schema}".jobs (id)
+    WHERE status = 'pending' AND metadata @> '{{"blocking_reason": "join"}}'::jsonb;
+
 -- Children by parent: the fork-debt reconcile, the map's retry-in-place
 -- lookup, and the status rollup's per-parent reads. Partial on workflow
 -- child rows only.
@@ -44,11 +58,32 @@ CREATE INDEX IF NOT EXISTS wf_outbox_undelivered_idx
     WHERE NOT delivered;
 
 -- The ledger's per-flow reconstruction read (rows-only status rebuild, the
--- admin timeline, the drain of phantom 'running' rows). The UNIQUE
--- (flow_id, step_key, attempt) constraint covers the (flow_id, …) prefix;
--- this covers the per-job lookup the finalize fence and the claim path use.
+-- admin timeline, the drain of phantom 'running' rows). The claim arbiter
+-- (wf_step_ledger_claim_uniq, below) covers the (flow_id, …) prefix; this
+-- covers the per-job lookup the finalize fence and the claim path use.
 CREATE INDEX IF NOT EXISTS wf_step_ledger_job_idx
     ON "{schema}".wf_step_ledger (job_id);
+
+-- THE STEP LEDGER'S CLAIM ARBITER (T05's key contract, attack-hardened):
+-- one row per (flow, step, map child, attempt) — map children of one step
+-- key are DIFFERENT claims, so the arbiter keys on COALESCE(map_index, -1)
+-- (the non-map step's NULL folds to -1; a bare
+-- UNIQUE (flow_id, step_key, attempt) collapses map children onto ONE row:
+-- the terminal write overwrites, the memoized replay returns the wrong
+-- child's result). The expression matches LEDGER_CLAIM_SQL's
+-- `ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt)`
+-- verbatim — an ON CONFLICT target infers only an arbiter spelled with the
+-- identical expression.
+CREATE UNIQUE INDEX IF NOT EXISTS wf_step_ledger_claim_uniq
+    ON "{schema}".wf_step_ledger (flow_id, step_key, COALESCE(map_index, -1), attempt);
+
+-- The phantom reaper's scan target (PHANTOM_REAP_SQL): 'running' rows only
+-- — the arm's whole population, tiny by construction (in-flight attempts),
+-- so the reap's EXISTS over terminal flows probes this partial instead of
+-- scanning the ledger.
+CREATE INDEX IF NOT EXISTS wf_step_ledger_running_idx
+    ON "{schema}".wf_step_ledger (flow_id)
+    WHERE status = 'running';
 
 -- OPS NOTE — locking impact: each build takes SHARE on its table (blocks
 -- writes, never reads) for the build's duration. A build scans the whole

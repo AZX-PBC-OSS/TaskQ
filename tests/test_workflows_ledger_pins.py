@@ -415,6 +415,114 @@ async def test_pin_6_ledger_terminal_atomic(
     )
 
 
+# ── Pin 7: THE LEDGER PK'S MAP CHILDREN (the arbiter keys map_index) ────
+
+
+@pytest.mark.integration
+async def test_pin_7_map_children_own_ledger_rows(
+    wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """Two map children of ONE step key (map_index 0 and 1, first attempt
+    each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
+    each replay returns ITS OWN child's result (T05's key contract; the
+    conviction — an arbiter omitting map_index — is the RED drill, the
+    shipped statements are what the drill mutates)."""
+    flow_id = new_uuid()
+    node_0, node_1 = new_uuid(), new_uuid()
+
+    claim_0 = await claim_step_ledger(
+        wf_conn, wf_sql, flow_id=flow_id, job_id=node_0, step_key="enrich", map_index=0, attempt=1
+    )
+    claim_1 = await claim_step_ledger(
+        wf_conn, wf_sql, flow_id=flow_id, job_id=node_1, step_key="enrich", map_index=1, attempt=1
+    )
+    assert claim_0.ledger_id is not None and claim_1.ledger_id is not None
+    assert claim_0.ledger_id != claim_1.ledger_id, "one claim row per map child"
+
+    # Each child's finalize keys the terminal write by ITS OWN claim's
+    # RETURNING id (the strongest form) — the outcomes cannot cross.
+    for claim, node, res in (
+        (claim_0, node_0, {"child": 0}),
+        (claim_1, node_1, {"child": 1}),
+    ):
+        worker_id = new_uuid()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
+            "step_key, metadata) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
+            "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+            node,
+            worker_id,
+            json.dumps({"flow_id": str(flow_id)}),
+        )
+        result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=node,
+            step_key="enrich",
+            worker_id=worker_id,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+            result=res,
+            ledger_id=claim.ledger_id,
+        )
+        assert result.applied
+
+    replay_0 = await memoized_step_result(
+        wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=0
+    )
+    replay_1 = await memoized_step_result(
+        wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=1
+    )
+    assert replay_0 is not None and replay_0.result == {"child": 0}
+    assert replay_1 is not None and replay_1.result == {"child": 1}
+
+    # THE MAP-AWARE FALLBACK (the arbiter-tuple keying): a finalize without
+    # the claim id still keys COALESCE(map_index, -1) — the fallback write
+    # hits ITS OWN map child's row, never the sibling's.
+    node_2 = new_uuid()
+    claim_2 = await claim_step_ledger(
+        wf_conn, wf_sql, flow_id=flow_id, job_id=node_2, step_key="enrich", map_index=2, attempt=1
+    )
+    assert claim_2.status == "running"
+    worker_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
+        "step_key, metadata) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
+        "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+        node_2,
+        worker_id,
+        json.dumps({"flow_id": str(flow_id)}),
+    )
+    result = await finalize_node(
+        module_pg_pool,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=node_2,
+        step_key="enrich",
+        worker_id=worker_id,
+        attempt=1,
+        claim_epoch=0,
+        outcome="succeeded",
+        result={"child": 2},
+        map_index=2,
+    )
+    assert result.applied
+    replay_2 = await memoized_step_result(
+        wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=2
+    )
+    assert replay_2 is not None and replay_2.result == {"child": 2}
+    # ...and the earlier replays are untouched by the fallback write.
+    assert (await memoized_step_result(
+        wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=0
+    )).result == {"child": 0}
+
+
 # ── The key-derivation golden (unit pin) ────────────────────────────────
 
 

@@ -211,12 +211,21 @@ async def _run_tx1(
     fork: ForkSpec | None,
     capture: dict[str, object] | None,
     step_key: str,
+    map_index: int | None = None,
+    ledger_id: JobId | None = None,
 ) -> bool:
     """tx1 in ONE transaction: the fenced terminal mark; the ledger's
     terminal write; the fork's children + edges + join node. Returns
     whether the fence admitted the write (the rowcount gate tx2 keys on).
     A fenced write records the attempt 'fenced' on the ledger (H1) — never
-    a running row left forever on a terminal flow."""
+    a running row left forever on a terminal flow.
+
+    THE LEDGER TERMINAL'S KEY: the claim's OWN RETURNING id when the caller
+    holds it (*ledger_id* — ``LEDGER_TERMINAL_BY_ID_SQL``, the write pins
+    exactly the claimed row), otherwise the full arbiter tuple with the
+    COALESCE(map_index, -1) expression (``LEDGER_TERMINAL_SQL``) — a map
+    child's terminal can never overwrite its sibling's row (the ledger-PK
+    attack's overwrite arm)."""
     async with conn.transaction():
         rec = await conn.fetchrow(
             wsql.terminal_mark,
@@ -234,20 +243,42 @@ async def _run_tx1(
         if rec is None:
             # Fenced out (a reclaimed row, a cancelled flow, a wrong
             # worker): the ledger says 'fenced', tx2 never runs.
-            await conn.execute(wsql.ledger_fence_attempt, flow_id, step_key, attempt, error_class)
+            if ledger_id is not None:
+                await conn.execute(wsql.ledger_fence_by_id, ledger_id, error_class)
+            else:
+                await conn.execute(
+                    wsql.ledger_fence_attempt,
+                    flow_id,
+                    step_key,
+                    attempt,
+                    error_class,
+                    map_index,
+                )
             return False
 
-        await conn.execute(
-            wsql.ledger_terminal,
-            flow_id,
-            step_key,
-            attempt,
-            outcome,
-            _jsonb(result),
-            error_class,
-            error_message,
-            _jsonb(capture),
-        )
+        if ledger_id is not None:
+            await conn.execute(
+                wsql.ledger_terminal_by_id,
+                ledger_id,
+                outcome,
+                _jsonb(result),
+                error_class,
+                error_message,
+                _jsonb(capture),
+            )
+        else:
+            await conn.execute(
+                wsql.ledger_terminal,
+                flow_id,
+                step_key,
+                attempt,
+                outcome,
+                _jsonb(result),
+                error_class,
+                error_message,
+                _jsonb(capture),
+                map_index,
+            )
 
         if fork is not None:
             await insert_fork(
@@ -367,6 +398,8 @@ async def finalize_node(
     capture_max_bytes: int = 8 * 1024,
     redact: Callable[[str], str] | None = None,
     node_input: str | None = None,
+    map_index: int | None = None,
+    ledger_id: JobId | None = None,
 ) -> FinalizeResult:
     """Finalize one workflow node: tx1 then (rowcount-gated) tx2.
 
@@ -375,6 +408,11 @@ async def finalize_node(
     a zombie's write from an abandoned attempt loses to the reclaim +
     re-claim's fresh attempt (hardening H8). A fenced finalize records the
     attempt 'fenced' on the ledger (H1) and reports ``applied=False``.
+
+    The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
+    ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
+    *map_index* — either way the write touches exactly the claimed row, so
+    two map children of one step key never overwrite each other's outcome.
     """
     assert_valid_transition("running", outcome, job_id)
 
@@ -412,6 +450,8 @@ async def finalize_node(
                 fork=fork,
                 capture=capture,
                 step_key=step_key,
+                map_index=map_index,
+                ledger_id=ledger_id,
             )
 
     applied = await _deadlock_retry(_tx1)
