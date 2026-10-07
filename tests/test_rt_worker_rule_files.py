@@ -105,6 +105,16 @@ _CRON_SKIP_SEVERITIES = {
     "TaskQCronSkippedSlots": "warning",
 }
 
+#: The MVCC-horizon hygiene family: the claim query's degradation ratio
+#: (the live p99 against its rolling 24h baseline - the pinned-horizon
+#: signature an absolute threshold cannot see, a slow fleet being its own
+#: new normal). A degradation signal at warning, like the sweep family.
+_MVCC_ALERTS = ("TaskQClaimLatencyDegraded",)
+
+_MVCC_SEVERITIES = {
+    "TaskQClaimLatencyDegraded": "warning",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
 _ALL_RUNBOOKED_ALERTS = (
@@ -115,6 +125,7 @@ _ALL_RUNBOOKED_ALERTS = (
     + _UNSERVED_ALERTS
     + _CRON_BUDGET_ALERTS
     + _CRON_SKIP_ALERTS
+    + _MVCC_ALERTS
 )
 
 

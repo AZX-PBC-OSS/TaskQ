@@ -251,10 +251,12 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         (
             "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
             "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_CURSOR_SQL",
         ),
         "-- WITH RECURSIVE: both variants' label-routed keys enumerations",
         "the shared dispatch template still carries __TOKEN__ fragment holes; "
-        "its two rendered variants are the statements production sends",
+        "its three rendered variants are the statements production sends "
+        "(plain strict-FIFO, round-robin, and the strict-FIFO cursor render)",
     ),
     "taskq.backend._dispatch_sql:_RR_KEYS_CTE": (
         ("taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",),
@@ -269,10 +271,25 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "strict-FIFO dispatch variant",
     ),
     "taskq.backend._dispatch_sql:_STRICT_FIFO_CANDIDATES_LATERAL": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_CURSOR_SQL",
+        ),
+        "LIMIT $2::int * $5::int",
+        "a correlated lateral fragment, never a standalone statement; "
+        "interpolated into the strict-FIFO dispatch variants - the plain "
+        "render substitutes its __CLAIM_CURSOR_BOUND_J2__ hole with nothing, "
+        "the cursor render with the id lower bound (backend/_claim_cursor.py)",
+    ),
+    "taskq.backend._dispatch_sql:_STRICT_FIFO_CANDIDATES_LATERAL_PLAIN": (
         ("taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",),
         None,
-        "a correlated lateral fragment, never a standalone statement; "
-        "interpolated verbatim into the strict-FIFO dispatch variant",
+        "the candidates lateral with the claim-cursor hole resolved as the "
+        "plain render resolves it (empty); a fragment, never a standalone "
+        "statement - the live-planner EXPLAIN pins consume exactly this text, "
+        "so the containment demand below keeps the resolution honest: if the "
+        "plain render stops carrying the resolved fragment verbatim, this "
+        "registration reds",
     ),
     "taskq.backend._dispatch_sql:_ROUND_ROBIN_CANDIDATES_LATERAL": (
         ("taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",),

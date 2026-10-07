@@ -373,6 +373,10 @@ class _ClientSettings:
     # bound is used if a client is ever handed a dispatcher_pool, and
     # mirrors WorkerSettings.dispatcher_command_timeout's default.
     dispatch_oversample: int = 2
+    # The claim cursor's knob, declared on BackendSettings and mirrored
+    # at the opt-in default (0 = disabled): a client-built backend never
+    # dispatches, and an unconfigured one keeps the disabled posture.
+    claim_cursor_reset_seconds: float = 0.0
     dispatcher_command_timeout: float = 5.0
     # Mirrors WorkerSettings.result_max_bytes' default: the client never
     # writes a terminal result, but the backend's storage-boundary guard

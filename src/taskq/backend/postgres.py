@@ -63,6 +63,7 @@ from taskq.backend._batch_sql import (
     reset_batch_failures as _reset_batch_failures,
 )
 from taskq.backend._cancel_bulk import _cancel_where
+from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._dispatch import (
     QueueModeCache,
     _resolve_queue_modes,
@@ -346,6 +347,15 @@ class PostgresBackend:
         # FakeClock exactly like every other clocked seam.
         self._queue_mode_cache = QueueModeCache(clock=self._clock.monotonic)
 
+        # The claim cursor: this backend's per-queue high-water mark of
+        # successfully-claimed ids (backend/_claim_cursor.py). One per
+        # backend = one per worker's dispatch loop, the per-worker memory
+        # the design specifies. The clock is the backend's own so tests
+        # drive the jitter reset like every other clocked seam; the knob
+        # (claim_cursor_reset_seconds) is re-read from settings on every
+        # dispatch round, so a settings change applies without rebuilding.
+        self._claim_cursor = ClaimCursor(clock=self._clock.monotonic)
+
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
     @property
@@ -469,6 +479,15 @@ class PostgresBackend:
         assert self._dispatcher_pool is not None, (
             "dispatcher_pool must be set before dispatch_batch"
         )
+        # The knob is re-read per round (the oversample plumbing pattern):
+        # a settings change applies without rebuilding the backend, and 0
+        # (the documented OFF switch) hands the round no cursor at all -
+        # the plain renders run and the cursor neither bounds nor
+        # advances.
+        claim_cursor: ClaimCursor | None = self._claim_cursor
+        claim_cursor.reset_seconds = self._deps.settings.claim_cursor_reset_seconds
+        if claim_cursor.reset_seconds <= 0:
+            claim_cursor = None
         return await _dispatch(
             self._dispatcher_pool,
             self._sql,
@@ -480,6 +499,7 @@ class PostgresBackend:
             limit,
             lock_lease,
             queue_mode_cache=self._queue_mode_cache,
+            claim_cursor=claim_cursor,
         )
 
     @staticmethod

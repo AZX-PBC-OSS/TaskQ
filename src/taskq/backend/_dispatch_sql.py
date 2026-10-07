@@ -263,6 +263,7 @@ from taskq.backend._protocol import ConnLike
 from taskq.constants import QUEUE_CONCURRENCY_PREFIX
 from taskq.obs import (
     get_logger,
+    record_claim_latency,
     record_dispatch_duration,
     record_dispatch_failure,
     safe_start_span,
@@ -270,8 +271,10 @@ from taskq.obs import (
 from taskq.obs._redact_exc import record_exception_text, render_exception
 
 __all__ = [
+    "DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL",
     "DISPATCH_CLAIMABLE_PROBE_SQL",
     "DISPATCH_ROUND_ROBIN_SQL",
+    "DISPATCH_STRICT_FIFO_CURSOR_SQL",
     "DISPATCH_STRICT_FIFO_SQL",
     "dispatch_batch",
 ]
@@ -715,7 +718,7 @@ per_actor_capacity AS (
         WHERE j.actor = pa.actor
           AND j.queue = pq.q
           AND NOT j.assignment_routed
-          AND j.status = 'pending'
+          AND j.status = 'pending'__CLAIM_CURSOR_BOUND_J__
         ORDER BY j.priority DESC, j.scheduled_at, j.id
         LIMIT 1
       ) anyq
@@ -1287,7 +1290,7 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
           AND NOT j2.assignment_routed
           AND j2.status = 'pending'
           AND j2.scheduled_at <= statement_timestamp()
-          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())__CLAIM_CURSOR_BOUND_J2__
         ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
         -- The scan bound is a pure parameter expression, NEVER
         -- pac.residual * $5: a LIMIT the planner cannot fold to a
@@ -1334,6 +1337,23 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
             (SELECT qc.headroom FROM queue_cap_headroom qc
               WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
           ) * $5::int"""
+
+# The plain render's candidates lateral: the hole resolved EXACTLY as
+# DISPATCH_STRICT_FIFO_SQL resolves it (empty), by the same replace the
+# render runs - never a restated resolution. The EXPLAIN pins that probe
+# the standalone fragment against a live planner
+# (tests/test_migration_lock_scope_dead_index.py,
+# tests/test_sweepaudit_dispatch_bound.py) must measure the text
+# production dispatches: sending the raw hole to Postgres is a
+# PostgresSyntaxError, the exact defect class the parse-smoke guard
+# exists for (the guard's own registration of this constant keeps the
+# resolution honest - if the plain render and this fragment drift apart,
+# that registration reds). The cursor render resolves the same hole with
+# the bound instead; only the perf harness substitutes per-variant, and
+# it does so from the raw template fragment above.
+_STRICT_FIFO_CANDIDATES_LATERAL_PLAIN: str = _STRICT_FIFO_CANDIDATES_LATERAL.replace(
+    "__CLAIM_CURSOR_BOUND_J2__", ""
+)
 
 _ROUND_ROBIN_CANDIDATES_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
@@ -1573,6 +1593,8 @@ def _render_dispatch_sql(
     repended_lateral: str,
     ranked_order_by: str,
     eligible_candidates_order_by: str,
+    cursor_bound_j2: str = "",
+    cursor_bound_j: str = "",
 ) -> str:
     """Substitute the per-variant fragments into the shared dispatch template.
 
@@ -1586,6 +1608,15 @@ def _render_dispatch_sql(
     template itself; only the two candidates arms differ per variant,
     through ``candidates_lateral`` (label-routed) and ``repended_lateral``
     (assignment-routed).
+
+    ``cursor_bound`` is the claim cursor's id lower bound fragments: "" for
+    the plain renders (byte-identical to the pre-cursor statements, so
+    the shipped plan shapes carry zero risk from the cursor's existence)
+    and the ``AND <j2|j>.id >= $6::uuid`` pair for the strict-FIFO cursor
+    render (see DISPATCH_STRICT_FIFO_CURSOR_SQL). The substitutions run
+    LAST so the tokens the fragments carry (the strict candidates
+    lateral's innermost probe, the shared template's has_pending probe)
+    resolve in the ASSEMBLED statement, wherever the fragment sat.
 
     The queue-cap namespace tokens (``__QUEUE_CAP_PREFIX__`` and its derived
     length) are substituted from :data:`taskq.constants.QUEUE_CONCURRENCY_PREFIX`
@@ -1607,6 +1638,8 @@ def _render_dispatch_sql(
         .replace("__QUEUE_CAP_PREFIX__", QUEUE_CONCURRENCY_PREFIX)
         .replace("__QUEUE_CAP_PREFIX_LEN__", str(len(QUEUE_CONCURRENCY_PREFIX)))
         .replace("__QUEUE_CAP_QUEUE_START__", str(len(QUEUE_CONCURRENCY_PREFIX) + 1))
+        .replace("__CLAIM_CURSOR_BOUND_J2__", cursor_bound_j2)
+        .replace("__CLAIM_CURSOR_BOUND_J__", cursor_bound_j)
     )
 
 
@@ -1619,6 +1652,35 @@ DISPATCH_STRICT_FIFO_SQL: str = _render_dispatch_sql(
     repended_lateral=_REPENDED_STRICT_FIFO_LATERAL,
     ranked_order_by="id.priority DESC, id.scheduled_at, id.id",
     eligible_candidates_order_by="l.priority DESC, l.scheduled_at",
+)
+
+# The strict-FIFO claim WITH the claim cursor's id lower bound (the
+# worker-side half of the MVCC-horizon hygiene pair). Identical to
+# DISPATCH_STRICT_FIFO_SQL except the two __CLAIM_CURSOR_BOUND__ sites:
+# the label-routed candidates lateral's innermost probe and the
+# has_pending admission probe both gain `AND j2.id >= $6::uuid` / `AND
+# j.id >= $6::uuid`, where $6 is the worker's per-queue high-water mark
+# of successfully-claimed ids (the OLDEST live cursor among the round's
+# queues - one scalar, because the seek only materializes from a
+# plan-constant bound; measured: a per-lateral COALESCE(var) bound stays
+# an Index Cond but loses the Index Searches positioning and lands at
+# naive cost). Re-pended rows and round-robin queues are deliberately
+# EXEMPT: re-pended ids predate the cursor (bounding them would burst
+# every snooze/retry path into per-window batches) and RR cohort
+# fairness is id-order-blind by design. The stranding the bound can
+# cause is bounded by the jitter reset (backend/_claim_cursor.py) and
+# pinned end-to-end in tests/test_dispatch_claim_cursor_pg.py.
+DISPATCH_STRICT_FIFO_CURSOR_SQL: str = _render_dispatch_sql(
+    _DISPATCH_SQL_TEMPLATE,
+    fairness_rank_column="NULL::bigint AS fairness_rank",
+    keys_cte=_PA_KEYS_CTE,
+    keys_source="pa_keys",
+    candidates_lateral=_STRICT_FIFO_CANDIDATES_LATERAL,
+    repended_lateral=_REPENDED_STRICT_FIFO_LATERAL,
+    ranked_order_by="id.priority DESC, id.scheduled_at, id.id",
+    eligible_candidates_order_by="l.priority DESC, l.scheduled_at",
+    cursor_bound_j2="\n          AND j2.id >= $6::uuid",
+    cursor_bound_j="\n          AND j.id >= $6::uuid",
 )
 
 DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
@@ -1711,6 +1773,62 @@ LIMIT 1
 """
 
 
+# The claimable probe WITH the claim cursor's id lower bound: the
+# window-expansion loop's arbiter must see the SAME world the
+# cursor-bounded claim just failed to claim from, or a round whose
+# candidates all sit below the cursor (the bounded-stranding state) would
+# read as a locked-out window, burn its expansion budget re-claiming the
+# same bounded set, and inflate the dispatch-failure counters while it
+# waits out the jitter reset. The bound rides both arms ($2::uuid, the
+# same scalar the cursor-bounded claim statement receives - the oldest
+# live cursor among the round's queues); a queue without a cursor never
+# reaches this statement (the round runs the plain renders instead).
+DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL: str = """\
+SELECT 1
+FROM "{schema}".actor_config ac
+WHERE EXISTS (
+    SELECT 1
+    FROM unnest($1::text[]) AS pq(q)
+    CROSS JOIN LATERAL (
+        SELECT 1
+        FROM "{schema}".jobs j
+        WHERE j.actor = ac.actor
+          AND j.queue = pq.q
+          -- Producer-placed rows only, by the marker, never the
+          -- started_at proxy: an operator-retried row that failed
+          -- before its first claim is assignment_routed with
+          -- started_at still NULL, and the proxy would enumerate its
+          -- stale queue label as routable here.
+          AND NOT j.assignment_routed
+          AND j.status = 'pending'
+          AND j.id >= $2::uuid
+        LIMIT 1
+    ) hit
+)
+OR (
+    ac.queue = ANY($1::text[])
+    AND EXISTS (
+        SELECT 1
+        FROM "{schema}".jobs j
+        WHERE j.actor = ac.actor
+          -- The assignment-routed half: the marker, not
+          -- started_at IS NOT NULL, same divergent-row shape as
+          -- above, and this arm rides jobs_assignment_routed_probe_idx
+          -- whose partial predicate is the marker itself.
+          AND j.assignment_routed
+          AND j.status = 'pending'
+          -- The re-pended arm stays CURSOR-UNBOUND even here, matching
+          -- the claim statement's own exemption (re-pended ids predate
+          -- the cursor): an unbound arm is the probe's honest answer to
+          -- "is anything routable", the exact question the expansion
+          -- arbiter asks.
+          LIMIT 1
+    )
+)
+LIMIT 1
+"""
+
+
 async def dispatch_batch(
     conn: ConnLike,
     *,
@@ -1720,13 +1838,25 @@ async def dispatch_batch(
     worker_id: UUID,
     lock_lease: timedelta,
     oversample: int = 2,
+    claim_cursor: "UUID | None" = None,
 ) -> list[asyncpg.Record]:
     """Execute the rendered dispatch CTE on a live asyncpg connection.
 
     Returns the raw ``asyncpg.Record`` rows.  Decoding to JobRow happens
     in the caller (PostgresBackend) so this helper stays free of
     backend-shaped types and is unit-testable in isolation.
+
+    *claim_cursor* is the claim cursor's id lower bound for the round;
+    it is ONLY legal when *sql* is a cursor render (the statements that
+    carry the ``$6::uuid`` bound), and the caller is responsible for the
+    pairing - a mismatch fails fast here rather than silently claiming
+    unbounded or mis-binding a statement.
     """
+    if claim_cursor is not None and "$6" not in sql:
+        raise ValueError(
+            "claim_cursor bound passed for a non-cursor SQL render: the plain "
+            "statements have no $6 parameter to bind"
+        )
     queue_list = list(queues)
     queue_attr = queue_list[0] if queue_list else ""
     queues_attr = ",".join(queue_list)
@@ -1742,7 +1872,12 @@ async def dispatch_batch(
     ) as span:
         t0 = time.monotonic()
         try:
-            rows = await conn.fetch(sql, queue_list, limit_n, worker_id, lock_lease, oversample)
+            if claim_cursor is None:
+                rows = await conn.fetch(sql, queue_list, limit_n, worker_id, lock_lease, oversample)
+            else:
+                rows = await conn.fetch(
+                    sql, queue_list, limit_n, worker_id, lock_lease, oversample, claim_cursor
+                )
         except Exception as exc:
             # A round that raised is still a round the producer spent: the
             # duration and the failure counter are recorded here because
@@ -1750,6 +1885,7 @@ async def dispatch_batch(
             # path, so a pod failing every round would otherwise be
             # indistinguishable, in the metric stream, from one polling an
             # empty queue.
+            record_claim_latency(queue_attr, time.monotonic() - t0)
             record_dispatch_duration(queue_attr, time.monotonic() - t0)
             record_dispatch_failure(queue_attr)
             # Why redacted: this text leaves the trust boundary for whatever
@@ -1781,6 +1917,11 @@ async def dispatch_batch(
             limit_n=limit_n,
         )
 
+    # The claim statement's OWN latency, success and failure alike: the
+    # degradation-ratio gauges (obs/_claim_health.py) are the MVCC-horizon
+    # predictor and must describe THIS statement, not the round's other
+    # stages (those ride taskq.dispatch.duration's histogram).
+    record_claim_latency(queue_attr, elapsed)
     record_dispatch_duration(queue_attr, elapsed)
 
     return list(rows)

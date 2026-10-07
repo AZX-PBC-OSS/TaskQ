@@ -142,6 +142,26 @@ groups:
             ceiling. Investigate PG load, index health on jobs_dispatch_idx,
             and batch size configuration.
 
+      - alert: TaskQClaimLatencyDegraded
+        expr: taskq_claim_degradation_ratio > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ claim latency degraded {{ $labels.queue }} (ratio > 10x baseline)"
+          description: >-
+            The claim query's latency p99 is more than 10x its rolling 24h
+            baseline on this worker (taskq_claim_degradation_ratio), the
+            signature of a pinned MVCC horizon: a long or overlapping
+            transaction is holding VACUUM off and the claim query's B-tree
+            scans are degenerating through the dead tuples the queue's own
+            churn leaves behind. This ratio sees the degradation an absolute
+            threshold cannot (a slow fleet is its own new normal). Find the
+            pinning transaction and let VACUUM drain; the claim cursor
+            (TASKQ_CLAIM_CURSOR_RESET_SECONDS) is the bounded mitigation on
+            the candidate-probe surface. Runbook:
+            docs/guides/runbooks.md#taskqclaimlatencydegraded.
+
       - alert: TaskQProgressPublishFailures
         expr: rate(taskq_progress_publish_failures_total[5m]) > 0
         for: 5m

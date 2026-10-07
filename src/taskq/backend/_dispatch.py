@@ -23,6 +23,7 @@ from uuid import UUID
 import asyncpg
 
 from taskq._json import sanitize_nul_str
+from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._dispatch_sql import (
     dispatch_batch as dispatch_batch_helper,
 )
@@ -198,6 +199,7 @@ async def _dispatch_batch(
     lock_lease: timedelta,
     *,
     queue_mode_cache: QueueModeCache | None = None,
+    claim_cursor: ClaimCursor | None = None,
 ) -> list[JobRow]:
     """Dispatch up to *limit* pending jobs from *queues*.
 
@@ -235,6 +237,17 @@ async def _dispatch_batch(
     failure, not a claim record.
     """
     queue_attr = queues[0] if queues else ""
+    # The round's claim-cursor bound: the OLDEST live per-queue cursor
+    # among the round's queues (one scalar - the seek only materializes
+    # from a plan-constant bound; a per-lateral variable bound was
+    # measured to lose the Index Searches positioning and land at naive
+    # cost). None when no round queue holds a live cursor, or the feature
+    # is off: the plain renders run then. Per-queue isolation note: a
+    # queue with no cursor never binds a round on its own; a queue WITH a
+    # cursor binds the round at its own high-water mark, and any queue's
+    # rows below the round's bound strand for at most one jitter reset
+    # (the bounded trade backend/_claim_cursor.py documents).
+    _round_queues = set(queues)
     # Autocommit, deliberately: the claim is one atomic UPDATE … RETURNING
     # whose row locks end with the statement, and nothing else in the round
     # needs a shared snapshot, the mode resolve and the claimable probe are
@@ -307,6 +320,17 @@ async def _dispatch_batch(
             oversample = dispatch_oversample
             expansions = 0
             while True:
+                # The bound is re-read per attempt: the jitter reset can
+                # expire a cursor mid-round (the expansion loop), and the
+                # next attempt must then run the plain shape, not a stale
+                # bound. Round-robin rounds are exempt (no cursor render
+                # exists for them; see DISPATCH_STRICT_FIFO_CURSOR_SQL).
+                round_bound: UUID | None = None
+                if claim_cursor is not None and "round_robin" not in queue_modes:
+                    bounds = [b for q in queues if (b := claim_cursor.bound(q)) is not None]
+                    round_bound = min(bounds) if bounds else None
+                if round_bound is not None:
+                    sql_stmt = sql.dispatch_strict_fifo_cursor
                 records = await dispatch_batch_helper(
                     conn,
                     sql=sql_stmt,
@@ -315,6 +339,7 @@ async def _dispatch_batch(
                     worker_id=worker_id,
                     lock_lease=lock_lease,
                     oversample=oversample,
+                    claim_cursor=round_bound,
                 )
                 if records or expansions >= _MAX_DISPATCH_WINDOW_EXPANSIONS:
                     break
@@ -336,7 +361,17 @@ async def _dispatch_batch(
                 # re-running without limit.
                 probe_started = time.monotonic()
                 try:
-                    probe_rows = await conn.fetch(sql.dispatch_claimable_probe, queues)
+                    if round_bound is not None:
+                        # The cursor-aware probe: the arbiter must see the
+                        # same world the bounded claim just failed from,
+                        # or a fully-stranded round would read as a
+                        # locked-out window and burn its expansion budget
+                        # re-claiming the same bounded set.
+                        probe_rows = await conn.fetch(
+                            sql.dispatch_claimable_probe_cursor, queues, round_bound
+                        )
+                    else:
+                        probe_rows = await conn.fetch(sql.dispatch_claimable_probe, queues)
                 except Exception:
                     record_dispatch_duration(queue_attr, time.monotonic() - probe_started)
                     record_dispatch_failure(queue_attr)
@@ -359,6 +394,18 @@ async def _dispatch_batch(
             # the pool") and degrade to the retry-next-round warning, the
             # poison row then loops through claim and reclaim forever -
             # the real-PG pin caught exactly that.
+            # The cursor advances on ADMISSION (the statement claimed the
+            # row; a later decode failure terminalizes the row through
+            # its own fence without un-claiming it), per row, only for
+            # queues this round polled (the re-pended arm can claim a row
+            # whose label this worker does not poll - that label earns no
+            # cursor entry, or a round-scoped store could grow with the
+            # fleet's queue vocabulary).
+            if claim_cursor is not None and records:
+                for rec in records:
+                    rec_queue = rec["queue"]
+                    if rec_queue in _round_queues:
+                        claim_cursor.advance(rec_queue, rec["id"])
             rows = await _decode_claimed_rows(conn, sql, records, worker_id, queue_attr)
             # Claims deliberately write NO job_events rows (see this
             # function's docstring above): the dispatch log line and OTEL

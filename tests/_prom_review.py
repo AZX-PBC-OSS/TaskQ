@@ -931,6 +931,7 @@ READER = PrometheusMetricReader(registry=REGISTRY)
 metrics.set_meter_provider(MeterProvider(metric_readers=[READER]))
 
 from taskq.obs import (  # noqa: E402
+    record_claim_latency,
     record_cron_skipped_slots,
     record_sweep_timeout,
     record_sweep_unexpected_error,
@@ -942,6 +943,19 @@ otel_mod.set_otel_enabled(True)
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
 record_cron_skipped_slots("probe_fail_actor", 1)
+
+# The claim-health family: the degradation ratio's 5-minute baseline
+# warm-up cannot be staged in a live worker probe (a probe run is
+# seconds), so the emitter drives the REAL record_claim_latency hook with
+# synthetic monotonic stamps - six minute-buckets of ~1ms p99s, then a
+# 50ms p99 - and the scrape serves the ratio the real math produces (50x).
+import time as _time  # noqa: E402
+
+_base = _time.monotonic() + 100.0
+for _m in range(6):
+    for _i in range(10):
+        record_claim_latency("probe_queue", 0.001, now=_base + _m * 60.0 + _i)
+record_claim_latency("probe_queue", 0.050, now=_base + 400.0)
 
 with open(os.environ["PROBE_SCRAPE_PATH"], "w") as fh:
     fh.write(generate_latest(REGISTRY).decode())

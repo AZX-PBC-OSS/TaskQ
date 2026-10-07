@@ -44,7 +44,8 @@ from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
-    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
+    _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pin must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -200,7 +201,13 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
     """
     conn = await asyncpg.connect(pg_dsn)
     try:
-        lateral = _STRICT_FIFO_CANDIDATES_LATERAL.format(schema=dispatch_schema)
+        lateral = (
+            # The PLAIN render's fragment, not the raw template: the
+            # fragment carries the claim-cursor hole, and a raw hole in an
+            # EXPLAIN is a PostgresSyntaxError (the CI red this constant
+            # exists to cure).
+            _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN.format(schema=dispatch_schema)
+        )
         # Mirrors the production candidates CTE's FROM shape
         # (pac CROSS JOIN LATERAL sq CROSS JOIN LATERAL (<lateral>) j) so
         # the lateral's outer references resolve exactly as at dispatch
