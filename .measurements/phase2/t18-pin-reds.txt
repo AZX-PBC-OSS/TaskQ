@@ -1,0 +1,4 @@
+1 failed, 2 deselected in 2.96s
+1 failed, 2 deselected in 2.92s
+== GREEN pin2: 1 passed, 2 deselected in 2.97s
+== GREEN pin4: 1 passed, 2 deselected in 4.18s

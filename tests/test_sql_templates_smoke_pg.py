@@ -313,6 +313,17 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "{worker_crashed_class} holes; _SWEEP_1_SQL is the rendered statement "
         "production sends",
     ),
+    "taskq.worker._leader_shared:_WORKFLOW_LIVENESS_GUARD_SQL": (
+        (
+            "taskq.worker._leader_shared:_ARCHIVE_CANDIDATE_SQL",
+            "taskq.worker._leader_shared:_ARCHIVE_CANDIDATE_ACTOR_SQL",
+        ),
+        'JOIN "{schema}".jobs fl ON fl.id = e.flow_id',
+        "a NOT-EXISTS guard fragment, never a standalone statement; "
+        "composed onto the archive candidate windows (the prune + the "
+        "per-actor variant) — T18's parent-prune hold; the guard's "
+        "rendered text is validated through the products' prepare",
+    ),
     "taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_BODY": (
         ("taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_SQL",),
         "-- The consumed-fixed-quota veto is this table's analogue of the",

@@ -7,6 +7,16 @@ binding. See _sql.py for the bundle and the JSONB-landmine rule.
 
 from __future__ import annotations
 
+from typing import Final
+
+#: THE FAN-IN'S BYTE CAP (T18's UNBOUNDED-JSONB policy, GAPS-ESTATE D5):
+#: the collect's ``failures`` jsonb truncates here — over the cap the
+#: join row COMPACTS to the bounded summary (the ``__truncated__`` marker
+#: + the ledger pointer); the full detail stays on the ledger/attempts.
+#: Sized to keep a 1000-child collect's row comfortably bounded while a
+#: normal collect's items never compact.
+FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
+
 TERMINAL_MARK_SQL = """\
 UPDATE {schema}.jobs
 SET status = $2::"{schema}".job_status,
@@ -296,12 +306,51 @@ WHERE e.parent_id = $1::uuid
 # by THIS child's item) — keyed per join row (the fan-in read above
 # returns the joins; this write lands the item). Keyed single row; the
 # append is jsonb concat on the array.
+# The fan-in's append, BOUNDED (T18's UNBOUNDED-JSONB policy, GAPS-ESTATE
+# D5 — the ONE home): the collect's ``failures`` array truncates at the
+# byte cap — over the cap, the row COMPACTS: the array is replaced by the
+# bounded summary (the ``"__truncated__": N`` marker counting the items no
+# longer spelled on the row + the ledger pointer), and the FULL detail
+# stays on the ledger/attempts (the record never loses it — the ledger is
+# the collector's source of truth, the join row the bounded summary).
+# Keyed per join row; the append is jsonb concat on the array. The three
+# arms, in order: (1) the row already compacted (a non-array summary) →
+# the marker increments, the row stays bounded forever; (2) the append
+# fits → the array grows by the item; (3) the append would exceed the cap
+# → the compaction (marker = every item the summary no longer spells).
 COLLECT_FAN_IN_APPEND_SQL = """\
 UPDATE {schema}.jobs j
 SET metadata = jsonb_set(
         j.metadata,
         '{{failures}}',
-        COALESCE(j.metadata->'failures', '[]'::jsonb) || $2::jsonb,
+        CASE
+            WHEN jsonb_typeof(COALESCE(j.metadata->'failures', '[]'::jsonb)) <> 'array'
+                THEN jsonb_set(
+                        j.metadata->'failures',
+                        '{{__truncated__}}',
+                        to_jsonb(
+                            COALESCE(
+                                (j.metadata->'failures'->>'__truncated__')::int, 0
+                            ) + 1
+                        )
+                    )
+            WHEN octet_length(
+                     (
+                         COALESCE(j.metadata->'failures', '[]'::jsonb) || $2::jsonb
+                     )::text
+                 ) <= $3::int
+                THEN COALESCE(j.metadata->'failures', '[]'::jsonb) || $2::jsonb
+            ELSE jsonb_build_object(
+                     '__truncated__',
+                     jsonb_array_length(COALESCE(j.metadata->'failures', '[]'::jsonb))
+                         + 1,
+                     'detail_home',
+                     'the FailureInfo details live in wf_step_ledger (the '
+                     'ledger/attempts); this row carries the bounded summary',
+                     'flow_id',
+                     j.metadata->>'flow_id'
+                 )
+        END,
         true
     )
 WHERE j.id = $1

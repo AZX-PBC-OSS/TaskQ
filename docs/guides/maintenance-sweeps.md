@@ -472,3 +472,44 @@ problem by *where the text comes from*:
 - [workers.md](workers.md#leader-election), which loop runs which sweep, and the leader's loop inventory.
 - [architecture.md](../architecture.md#which-component-drives-each-transition): the trailing-watermark derivation the batch bounds enforce.
 - [upgrading.md](upgrading.md): adopt-by-restart for the lock rename and the migration 01.00.06_01 maintenance-window note.
+
+## 7. The workflow-liveness guard (T18)
+
+The retention and result-expiry arms are WORKFLOW-AWARE: two WHERE-class
+guards on the EXISTING arms (no new sweep process, §22.6's exclusivity
+preserved — the guards never touch reclaim-owned rows):
+
+* **The result-expiry hold** (`sweep_expired_results`): a child row's
+  `result_expires_at` may not fire while its join is UN-FIRED — while a
+  joined node in join-wait (`pending` + `deps_pending > 0`) counts the row
+  as a parent. The expiry passes the row by; after the join fires, the
+  subtree ages together (§10.3). This is **Oban-Pro's `preserve_workflows`
+  lesson** (`PROPOSAL §2.2-3`, verbatim: "A lost *parent row* (retention
+  pruning) is the actual hazard → the pruner must be workflow-aware"): the
+  failure mode the guard prevents is the reduce's batch read seeing
+  NULLs/holes — **the record showing a silent partial while every health
+  probe stays green**.
+* **The parent-prune hold** (the archive candidate windows): retention
+  must not prune a parent row of a NON-terminal run — the sweep's ledger
+  recount (the lock-first re-derive) reads parent rows as truth; a pruned
+  parent mid-run breaks the recount. Terminal/cancelled runs prune on the
+  NORMAL schedule (the guard is liveness-scoped, NOT a retention exemption
+  for the workflow extra — the over-hold shape is its own pin).
+
+**The operator surface:** the preserve-workflows posture is not a flag —
+the guards are unconditional on any schema the workflow round has applied,
+because a lost parent row is a correctness hazard, not a tuning knob. On a
+schema the workflow round has NOT applied, the candidate predicate falls
+back to the unguarded shape (semantically exact there: no workflow tables,
+no liveness to protect), logged once per process
+(`prune-workflow-guard-fallback`).
+
+**The rolling-deploy note:** the result-expiry arm tolerates the missing
+workflow tables the same way the workflow sweep arms do (the per-tick
+tolerance) — during the window the expiry does not run, which is the HOLD
+direction (results survive), never the eat direction.
+
+**The clock mechanism, named (for the test reader):** the guards' clock is
+the DATABASE's own `statement_timestamp()` — a test forces the expiry by
+SHORTENING `result_expires_at` on the rows (an UPDATE), because a
+FakeClock advance moves nothing the expiry sweep reads.

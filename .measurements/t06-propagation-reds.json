@@ -1,7 +1,7 @@
 [
   {
-    "pin": "t08-reconstruction-rows-only",
-    "mutation": "a status cache (the reconstruction consulting anything but rows \u2014 the pinned never-again variant)",
-    "red": "{\"reconstructed\": \"cancelled\"}"
+    "pin": "t06-pin4-skip-zero-ledger-rows",
+    "mutation": "the skip helper wrote a ledger row \u2014 a skip recorded as an attempt (the convicted variant)",
+    "red": "{\"failures_on_row\": [{\"error\": {\"error_class\": \"Skipped\", \"error_message\": \"the child was skipped (a skip is not an attempt)\", \"error_traceback\": null}, \"policy\": \"collect\", \"attempts\": [], \"node_key\": \"c0\", \"map_index\": null}]}"
   }
 ]

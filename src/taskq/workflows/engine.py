@@ -89,6 +89,7 @@ from taskq.workflows._sql import (
     BLOCKING_REASON_FAILED_PARENT,
     WorkflowSql,
 )
+from taskq.workflows._sql_finalize import FANIN_FAILURES_BYTE_CAP
 from taskq.workflows._types import (
     DecrementHit,
     FailureInfo,
@@ -539,6 +540,7 @@ async def _resolve_failed_parent(
             wsql.collect_fan_in_append,
             row["join_job_id"],
             _jsonb(item.to_json()),
+            FANIN_FAILURES_BYTE_CAP,
         )
 
 
@@ -582,6 +584,7 @@ async def fan_in_skip(
             wsql.collect_fan_in_append,
             row["join_job_id"],
             _jsonb(item.to_json()),
+            FANIN_FAILURES_BYTE_CAP,
         )
     return len(fanin_rows)
 

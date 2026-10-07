@@ -919,6 +919,27 @@ WITH expired AS MATERIALIZED (
     FROM "{schema}".jobs
     WHERE result_expires_at < statement_timestamp()
       AND result IS NOT NULL
+      -- THE WORKFLOW-LIVENESS GUARD (T18, EXPIRY-EATS-CHILDREN): a
+      -- child row's result may not expire while its join is UN-FIRED —
+      -- while a joined node in join-wait (pending + deps_pending > 0,
+      -- the join-wait representation) counts this row as a parent. The
+      -- expiry passes the row by; after the join fires, the subtree
+      -- ages together (§10.3's retention). Oban-Pro's preserve_workflows
+      -- lesson, in the sweep's own WHERE: the reduce's batch read
+      -- (SELECT result ... WHERE parent_id = $1) must see EVERY
+      -- child's result when it fires — a swept result mid-map reads
+      -- NULLs/holes, the silent partial. Index-backed: the guard's
+      -- probe rides wf_edge_parent_idx + the join-wait partial
+      -- (jobs_wf_join_wait_idx), one bounded probe per candidate row.
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{schema}".wf_edge e
+          JOIN "{schema}".jobs c ON c.id = e.child_id
+          WHERE e.parent_id = jobs.id
+            AND c.status = 'pending'
+            AND c.deps_pending > 0
+            AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      )
     LIMIT $1
 )
 UPDATE "{schema}".jobs j

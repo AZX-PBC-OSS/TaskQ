@@ -440,10 +440,52 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # drift between the fleet-wide and per-actor forms; the plan pins bind
 # the composed statements (tests/test_index_audit.py), so a composition
 # that changed the executed text fails on arrival.
-_ARCHIVE_CANDIDATE_PREDICATE_SQL = (
+# The terminal-status SQL literal — the statement-side twin of
+# statemachine.TERMINAL_STATUSES (the same derivation the engine's
+# TERMINAL_SQL_SET pin covers; the import rides taskq.backend — the import
+# law binds taskq.workflows only, and backend is the engine's own layer).
+_TERMINAL_SQL_LITERAL = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+
+# The BASE candidate predicate: terminal status + the retention age.
+_ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
     'SELECT id FROM "{schema}".jobs'
     ' WHERE status = $1::"{schema}".job_status'
     "   AND finished_at < statement_timestamp() - $2::interval"
+)
+
+# THE WORKFLOW-LIVENESS GUARD (T18, PRUNED-PARENT): retention must not
+# prune a PARENT row of a NON-TERMINAL run -- the sweep's ledger recount
+# (the lock-first re-derive) reads parent rows as truth; a pruned parent
+# mid-run breaks the recount (the recount's count is corrupted by the
+# missing row). A row that is NO parent (no wf_edge row points at it)
+# prunes on the normal schedule, and a TERMINAL/CANCELLED run's rows
+# prune on the NORMAL schedule too (the guard is LIVENESS-scoped, not a
+# retention exemption -- the over-hold shape is its own convicted
+# variant, the pin rides it). Index-backed: the guard's probe rides
+# wf_edge_parent_idx + the flow root's primary key, one bounded probe
+# per candidate. The rolling-deploy tolerance composes it AWAY (see
+# _compose_candidate_sql): a pre-workflow schema has no wf_edge table,
+# and a guard that cannot resolve is the prune's death -- the fallback is
+# the UNGUARDED predicate, which is semantically EXACT there (no
+# workflow tables = no liveness to protect); the fallback is logged once
+# per process (a stuck fallback would otherwise mute the guard silently;
+# a per-batch line would be noise during a deploy).
+_WORKFLOW_LIVENESS_GUARD_SQL = (
+    "   AND NOT EXISTS ("
+    '       SELECT 1 FROM "{schema}".wf_edge e'
+    '       JOIN "{schema}".jobs fl ON fl.id = e.flow_id'
+    '       WHERE e.parent_id = "{schema}".jobs.id'
+    "         AND fl.status NOT IN " + _TERMINAL_SQL_LITERAL + ")"
+)
+
+#: The rolling-deploy fallback: logged once per process, never per batch.
+_workflow_guard_fallback_logged = False
+
+#: The composed candidate windows: the GUARDED predicate is the shipped
+#: shape (the guard rides every candidate read — the prune and the
+#: per-actor variant compose the SAME guard).
+_ARCHIVE_CANDIDATE_PREDICATE_SQL = (
+    _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL + _WORKFLOW_LIVENESS_GUARD_SQL
 )
 
 _ARCHIVE_CANDIDATE_SQL = _ARCHIVE_CANDIDATE_PREDICATE_SQL + " ORDER BY finished_at" + " LIMIT $3"
@@ -884,19 +926,56 @@ async def prune_terminal_jobs(
                 break
             size = _effective_prune_batch_size(batch_size, sizer)
             _record_prune_batch_size("prune", size, sizer)
-            rows = await _run_prune_archive_batch(
-                conn,
-                candidate_sql=candidate_sql,
-                write_sql=write_sql,
-                status=status,
-                retention=retention,
-                size=size,
-                archive_interval=archive_interval,
-                actor=None,
-                statement_timeout_ms=statement_timeout_ms,
-                sweep_name="prune",
-                sizer=sizer,
-            )
+            try:
+                rows = await _run_prune_archive_batch(
+                    conn,
+                    candidate_sql=candidate_sql,
+                    write_sql=write_sql,
+                    status=status,
+                    retention=retention,
+                    size=size,
+                    archive_interval=archive_interval,
+                    actor=None,
+                    statement_timeout_ms=statement_timeout_ms,
+                    sweep_name="prune",
+                    sizer=sizer,
+                )
+            except asyncpg.UndefinedTableError:
+                # THE ROLLING-DEPLOY TOLERANCE (T18's own guard's edge): a
+                # schema the 01.00.23 round has not landed on yet has NO
+                # wf_edge table — the guard cannot resolve, and an
+                # untolerated miss is the prune's death (a
+                # non-transient error class fatal to the leader). The
+                # fallback is the UNGUARDED predicate, semantically EXACT
+                # there (no workflow tables = no liveness to protect);
+                # logged once per process, never per batch.
+                global _workflow_guard_fallback_logged
+                if not _workflow_guard_fallback_logged:
+                    log.warning(
+                        "prune-workflow-guard-fallback",
+                        kind="prune_workflow_guard_fallback",
+                        reason="wf_edge does not exist (the workflow round "
+                        "has not applied) — the candidate runs unguarded",
+                    )
+                    _workflow_guard_fallback_logged = True
+                candidate_sql = (
+                    _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
+                    + " ORDER BY finished_at"
+                    + " LIMIT $3"
+                )
+                rows = await _run_prune_archive_batch(
+                    conn,
+                    candidate_sql=candidate_sql,
+                    write_sql=write_sql,
+                    status=status,
+                    retention=retention,
+                    size=size,
+                    archive_interval=archive_interval,
+                    actor=None,
+                    statement_timeout_ms=statement_timeout_ms,
+                    sweep_name="prune",
+                    sizer=sizer,
+                )
             if not rows:
                 break
             batch_total = 0
