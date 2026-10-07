@@ -260,6 +260,7 @@ import structlog
 from opentelemetry.trace import SpanKind, StatusCode
 
 from taskq.backend._protocol import ConnLike
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import QUEUE_CONCURRENCY_PREFIX
 from taskq.obs import (
     get_logger,
@@ -277,6 +278,52 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+
+# ── THE DISPATCH FENCE (P3 rule 4's second leg, T04) ────────────────────
+# Cancel = one transaction — the flow flip is the linearization point, and
+# every other statement re-checks flow status inside its own statement.
+# THREE legs ship: the fire guard's flow-status EXISTS, the FINALIZE fence
+# (the terminal-mark CAS), and THIS — the claim's leg. A pending workflow
+# child of a CANCELLED flow (the common population at cancel time: the
+# fork's children, the not-yet-fired consumers) must not be claimed and
+# must not EXECUTE on a dead flow; ``AND deps_pending = 0`` alone fenced
+# only the join-wait rows.
+#
+# THE ASYMMETRY DOCTRINE (why the leg and not a cancel-time re-pend): the
+# leg REFUSES cleanly and the sweep re-derives the truth — a refused claim
+# is re-derivable by the maintenance arms, a claimed one is not un-runnable;
+# a cancel TX that re-pended/killed children would over-reject (it would
+# have to guess which rows a concurrent fork is about to write) and would
+# widen the cancel transaction's write set. Refusal is the cheap,
+# recoverable direction; that is the asymmetry the doctrine prefers.
+#
+# PLAN SHAPE (serviceable, EXPLAIN recorded in
+# .measurements/attack/explain-hot-statements.txt): the leg short-circuits
+# on the step_key probe — vanilla rows (step_key IS NULL, the fleet's whole
+# population in the depth oracles) evaluate NO subplan, so the candidate
+# chain's row-visit counts and the depth contract are unchanged; workflow
+# rows pay one primary-key EXISTS probe each (a bounded per-row probe, the
+# same cost class as the reservation-headroom fold's pkey laterals).
+# Rendered per alias by _wf_dispatch_fence; the tokens are substituted in
+# _render_dispatch_sql (never .format — the templates keep {schema} for the
+# call-site render).
+def _wf_dispatch_fence(alias: str) -> str:
+    terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+    return f"""\
+      -- THE DISPATCH FENCE (P3 rule 4's second leg, T04): a pending
+      -- workflow child of a TERMINAL flow is unclaimable (see the
+      -- _wf_dispatch_fence derivation above the template). Short-circuits
+      -- on the step_key probe — vanilla rows evaluate no subplan.
+      AND NOT (
+          {alias}.step_key IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM "{{schema}}".jobs wf_flow
+              WHERE wf_flow.id = ({alias}.metadata->>'flow_id')::uuid
+                AND wf_flow.status IN {terminal}
+          )
+      )"""
 
 
 # Shared dispatch CTE template.  ``{schema}`` is left intact so callers
@@ -325,6 +372,12 @@ pa_actors AS (
 -- (Defined here, ahead of capped_running and per_actor_capacity,
 -- because capped_running's driver reads its DISTINCT actor set.)
 rr_tail_keys AS (
+  -- NO dispatch fence here, deliberately: this enumeration is the
+  -- RE-PENDED population's cohort walk (assignment_routed only), and a
+  -- workflow row is never assignment_routed (the engine's enqueue paths
+  -- never set the marker) — the fence's admission sites are the
+  -- candidates laterals, the lock steps, the terminal race guard, and
+  -- this probe's capacity question is answered per actor, not per row.
   (
     SELECT j5.actor, COALESCE(j5.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j5
@@ -719,6 +772,12 @@ per_actor_capacity AS (
           AND NOT j.assignment_routed
           AND j.status = 'pending'
           AND j.deps_pending = 0
+        -- NO dispatch fence on this capacity probe, deliberately: it
+        -- answers "does the actor hold ANY due routable row" (an
+        -- admission-capacity question, one row answers it), never "is
+        -- THIS row admitted" — the fence's refusal happens at the
+        -- candidates laterals and the lock steps, where the row itself
+        -- is read.
         ORDER BY j.priority DESC, j.scheduled_at, j.id
         LIMIT 1
       ) anyq
@@ -952,6 +1011,7 @@ locked AS (
     WHERE j2.id = t.id
       AND j2.status = 'pending'
       AND j2.deps_pending = 0
+__WF_FENCE_J2__
     FOR UPDATE OF j2 SKIP LOCKED
   ) j
 ),
@@ -981,6 +1041,7 @@ sliding_locked AS (
   ))
     AND j2.status = 'pending'
     AND j2.deps_pending = 0
+__WF_FENCE_J2__
   -- Same rotation cut as top_ids: the SKIP LOCKED slide walks the
   -- materialized ranked stream in this order, so a peer holding the
   -- window's leading rows yields the least-recently-claimed actors
@@ -1139,6 +1200,7 @@ SET status = 'running',
 WHERE j.id = ANY(ARRAY(SELECT id FROM eligible))
   AND j.status = 'pending'
   AND j.deps_pending = 0
+__WF_FENCE_J__
 RETURNING j.*;
 """
 
@@ -1293,6 +1355,7 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
           AND NOT j2.assignment_routed
           AND j2.status = 'pending'
           AND j2.deps_pending = 0
+__WF_FENCE__
           AND j2.scheduled_at <= statement_timestamp()
           AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
         ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
@@ -1421,6 +1484,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
                 AND NOT j2.assignment_routed
                 AND j2.status = 'pending'
                 AND j2.deps_pending = 0
+__WF_FENCE__
                 AND COALESCE(j2.fairness_key, '__null__') = k.fkey
                 AND j2.scheduled_at <= statement_timestamp()
                 AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1497,6 +1561,7 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
             AND j2.assignment_routed
             AND j2.status = 'pending'
             AND j2.deps_pending = 0
+__WF_FENCE__
             AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
             AND j2.scheduled_at <= statement_timestamp()
             AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1554,6 +1619,7 @@ _REPENDED_ROUND_ROBIN_LATERAL = """\
               AND j2.assignment_routed
               AND j2.status = 'pending'
               AND j2.deps_pending = 0
+__WF_FENCE__
               AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
               AND j2.scheduled_at <= statement_timestamp()
               AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1617,6 +1683,12 @@ def _render_dispatch_sql(
         .replace("__QUEUE_CAP_PREFIX__", QUEUE_CONCURRENCY_PREFIX)
         .replace("__QUEUE_CAP_PREFIX_LEN__", str(len(QUEUE_CONCURRENCY_PREFIX)))
         .replace("__QUEUE_CAP_QUEUE_START__", str(len(QUEUE_CONCURRENCY_PREFIX) + 1))
+        # The dispatch fence (P3 rule 4's second leg): the laterals'
+        # candidate alias is j2 in all four variants, the template's lock
+        # steps alias j2 and its terminal UPDATE aliases j.
+        .replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
+        .replace("__WF_FENCE_J2__", _wf_dispatch_fence("j2"))
+        .replace("__WF_FENCE_J__", _wf_dispatch_fence("j"))
     )
 
 
@@ -1700,6 +1772,7 @@ WHERE EXISTS (
           AND NOT j.assignment_routed
           AND j.status = 'pending'
           AND j.deps_pending = 0
+__WF_FENCE_J__
         LIMIT 1
     ) hit
 )
@@ -1716,11 +1789,14 @@ OR (
           AND j.assignment_routed
           AND j.status = 'pending'
           AND j.deps_pending = 0
+__WF_FENCE_J__
         LIMIT 1
     )
 )
 LIMIT 1
-"""
+""".replace(
+    "__WF_FENCE_J__", _wf_dispatch_fence("j")
+)
 
 
 async def dispatch_batch(
