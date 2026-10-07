@@ -1417,7 +1417,7 @@ __WF_FENCE__
             pac.residual,
             (SELECT qc.headroom FROM queue_cap_headroom qc
               WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
-          ) * $5::int"""
+          ) * $5::int""".replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
 
 # The plain render's candidates lateral: the hole resolved EXACTLY as
 # DISPATCH_STRICT_FIFO_SQL resolves it (empty), by the same replace the
@@ -1538,7 +1538,7 @@ __WF_FENCE__
       -- re-walk of any cohort's rows.
       WHERE k.actor = pac.actor
         AND k.queue = sq.queue_name
-    ) w"""
+    ) w""".replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
 
 # The assignment-routed candidates arm, strict-FIFO variant: re-pended
 # rows (assignment_routed, any queue label) of actors whose
@@ -1604,7 +1604,7 @@ __WF_FENCE__
       LIMIT rc.residual * $5::int
     ) p
     WHERE tk.actor = rc.actor
-      AND rc.residual > 0"""
+      AND rc.residual > 0""".replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
 
 # The assignment-routed candidates arm, round-robin variant: the same
 # per-cohort bounded probes, with the fairness window running over the
@@ -1667,7 +1667,7 @@ __WF_FENCE__
       -- this filter narrows it over the materialized recursion output.
       WHERE tk.actor = rc.actor
     ) w
-    WHERE rc.residual > 0"""
+    WHERE rc.residual > 0""".replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
 
 
 def _render_dispatch_sql(
@@ -1727,10 +1727,10 @@ def _render_dispatch_sql(
         .replace("__QUEUE_CAP_QUEUE_START__", str(len(QUEUE_CONCURRENCY_PREFIX) + 1))
         .replace("__CLAIM_CURSOR_BOUND_J2__", cursor_bound_j2)
         .replace("__CLAIM_CURSOR_BOUND_J__", cursor_bound_j)
-        # The dispatch fence (P3 rule 4's second leg): the laterals'
-        # candidate alias is j2 in all four variants, the template's lock
-        # steps alias j2 and its terminal UPDATE aliases j.
-        .replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
+        # The dispatch fence (P3 rule 4's second leg): the laterals arrive
+        # PRE-FENCED (baked at their definitions — the index pins execute
+        # the fragments raw); the template's own sites are the lock steps
+        # (alias j2) and the terminal race guard (alias j).
         .replace("__WF_FENCE_J2__", _wf_dispatch_fence("j2"))
         .replace("__WF_FENCE_J__", _wf_dispatch_fence("j"))
     )
