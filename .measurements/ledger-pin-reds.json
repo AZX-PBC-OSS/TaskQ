@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin5-ledger-claim-atomic",
-    "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
-    "red": "{\"ledger\": \"running\", \"flow\": \"succeeded\"}"
+    "pin": "pin1-double-run",
+    "mutation": "the memoized lookup's statement mutated to match nothing (the replay forgets)",
+    "red": "{\"executions_after_redelivery\": 1}"
   }
 ]

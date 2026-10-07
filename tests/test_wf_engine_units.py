@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -53,7 +54,9 @@ def test_pin_10_seam_only_generation() -> None:
 # ── Pin 11: REDACT-BEFORE-PERSIST (the canary never lands) ──────────────
 
 
-def test_pin_11_redact_before_persist(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pin_11_redact_before_persist(
+    engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A canary in the fixture payload, the ``redact=fn`` hook configured,
     the node fails → the capture row must contain NO canary. The hook
     composes AFTER the chain (chain → hook, unconditional). THE NEGATIVE
@@ -120,8 +123,9 @@ def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.Monkey
     hash DIFFERENTLY through the shipped compute_code_version."""
     import hashlib
 
-    import taskq.workflows._version as version_module
     from tors import content_hash
+
+    import taskq.workflows._version as version_module
 
     assert compute_code_version("m", "f", source="def f(): ...") == compute_code_version(
         "m", "f", source="def f(): ..."
@@ -153,7 +157,9 @@ def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.Monkey
 # ── Pin 16: BODY-FROM-DEFINITION (D1) ───────────────────────────────────
 
 
-def test_pin_16_body_from_definition(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pin_16_body_from_definition(
+    engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two overlapping dispatches of one pending node — one with a MUTATED
     per-call body map — must resolve BOTH bodies from the REGISTERED
     definition (the claim-CAS loser runs the defined body, never the

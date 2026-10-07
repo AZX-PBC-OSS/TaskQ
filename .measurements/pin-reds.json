@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin20-outbox-flush-stranded",
-    "mutation": "crash between fire-commit and consumer-insert (no drain yet)",
-    "red": "{\"fired\": true, \"consumers_dispatched\": 0}"
+    "pin": "pin24-flow-status-leg",
+    "mutation": "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)",
+    "red": "{\"deps_pending_fingerprint\": 0, \"fired_on_cancelled_flow\": true}"
   }
 ]
