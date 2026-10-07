@@ -1,0 +1,86 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+____________________ test_wf_pre_workflow_expiry_tolerance _____________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fc2fc740500>
+module_pg_schema = ModulePgSchema(schema_name='tq_649df8404a', pg_dsn='postgresql://taskq:taskq@localhost:42569/tq_db_649df8404a98')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_expiry_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The result-expiry arm on a schema with NO workflow tables: the arm
+        RUNS (the unguarded fallback — exact there) and expires the row; the
+        convicted variant (the guarded statement raw — the tolerance dropped)
+        raises the leader-killing miss."""
+        pre = module_pg_schema.schema_name + "_prewf"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+>       await _seed_expired_result(clean_pg_conn, schema_name, actor="van", key="tol-1")
+
+tests/test_wf_pre_workflow_tolerance_pins.py:75: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_pre_workflow_tolerance_pins.py:54: in _seed_expired_result
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column "step_key" of relation "jobs" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=cfd8cd9f4f7b redis=4fafcb2b37e7 state_dir=/tmp/pytest-of-rich/pytest-17132
+__________________ test_wf_pre_workflow_actor_prune_tolerance __________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fc2fc741040>
+module_pg_schema = ModulePgSchema(schema_name='tq_649df8404a', pg_dsn='postgresql://taskq:taskq@localhost:42569/tq_db_649df8404a98')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_actor_prune_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The per-actor prune arm on a schema with NO workflow tables and an
+        actor_overrides entry: the arm survives (the per-batch unguarded
+        fallback — the pre-tolerance shape was the leader's death) and prunes
+        the actor's aged rows; the convicted variant (the guarded actor
+        candidate raw) raises the miss."""
+        pre = module_pg_schema.schema_name + "_prewf2"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+>       await _seed_expired_result(clean_pg_conn, schema_name, actor="override_me", key="tol-2")
+
+tests/test_wf_pre_workflow_tolerance_pins.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_pre_workflow_tolerance_pins.py:54: in _seed_expired_result
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column "step_key" of relation "jobs" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=cfd8cd9f4f7b redis=4fafcb2b37e7
+=========================== short test summary info ============================
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_expiry_tolerance
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_actor_prune_tolerance
+2 failed in 3.23s

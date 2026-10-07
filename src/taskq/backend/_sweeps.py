@@ -108,6 +108,7 @@ from functools import lru_cache
 from typing import NamedTuple
 from uuid import UUID
 
+import asyncpg
 import structlog
 
 from taskq.backend._protocol import ConnLike, JobId
@@ -159,6 +160,11 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: The rolling-deploy fallback's log-once latch (the prune's own pattern):
+#: the expiry arm's unguarded fallback is logged once per process, never
+#: per tick.
+_expiry_guard_fallback_logged = False
 
 # Schema identifier is interpolated at call time after validation against
 # _IDENT_RE.  Prepared-statement cache is not preserved across calls, but
@@ -892,7 +898,31 @@ FROM expired
 WHERE (r.bucket_name, r.slot_index) = (expired.bucket_name, expired.slot_index)
   AND r.job_id IS NOT NULL"""
 
-_SWEEP_RESULT_TTL_SQL = """\
+_SWEEP_RESULT_TTL_GUARD_SQL = """\
+      -- THE WORKFLOW-LIVENESS GUARD (T18, EXPIRY-EATS-CHILDREN): a
+      -- child row's result may not expire while its join is UN-FIRED —
+      -- while a joined node in join-wait (pending + deps_pending > 0,
+      -- the join-wait representation) counts this row as a parent. The
+      -- expiry passes the row by; after the join fires, the subtree
+      -- ages together (§10.3's retention). Oban-Pro's preserve_workflows
+      -- lesson, in the sweep's own WHERE: the reduce's batch read
+      -- (SELECT result ... WHERE parent_id = $1) must see EVERY
+      -- child's result when it fires — a swept result mid-map reads
+      -- NULLs/holes, the silent partial. Index-backed: the guard's
+      -- probe rides wf_edge_parent_idx + the join-wait partial
+      -- (jobs_wf_join_wait_idx), one bounded probe per candidate row.
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{schema}".wf_edge e
+          JOIN "{schema}".jobs c ON c.id = e.child_id
+          WHERE e.parent_id = jobs.id
+            AND c.status = 'pending'
+            AND c.deps_pending > 0
+            AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      )
+"""
+
+_SWEEP_RESULT_TTL_BASE_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sweep comments
 -- above: LIMIT $1 caps one call's write set; MATERIALIZED stops the
 -- planner from inlining the LIMIT-ed CTE into the UPDATE in a way that
@@ -919,27 +949,6 @@ WITH expired AS MATERIALIZED (
     FROM "{schema}".jobs
     WHERE result_expires_at < statement_timestamp()
       AND result IS NOT NULL
-      -- THE WORKFLOW-LIVENESS GUARD (T18, EXPIRY-EATS-CHILDREN): a
-      -- child row's result may not expire while its join is UN-FIRED —
-      -- while a joined node in join-wait (pending + deps_pending > 0,
-      -- the join-wait representation) counts this row as a parent. The
-      -- expiry passes the row by; after the join fires, the subtree
-      -- ages together (§10.3's retention). Oban-Pro's preserve_workflows
-      -- lesson, in the sweep's own WHERE: the reduce's batch read
-      -- (SELECT result ... WHERE parent_id = $1) must see EVERY
-      -- child's result when it fires — a swept result mid-map reads
-      -- NULLs/holes, the silent partial. Index-backed: the guard's
-      -- probe rides wf_edge_parent_idx + the join-wait partial
-      -- (jobs_wf_join_wait_idx), one bounded probe per candidate row.
-      AND NOT EXISTS (
-          SELECT 1
-          FROM "{schema}".wf_edge e
-          JOIN "{schema}".jobs c ON c.id = e.child_id
-          WHERE e.parent_id = jobs.id
-            AND c.status = 'pending'
-            AND c.deps_pending > 0
-            AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
-      )
     LIMIT $1
 )
 UPDATE "{schema}".jobs j
@@ -965,6 +974,16 @@ SET result = NULL,
 FROM expired
 WHERE j.id = expired.id
   AND j.result IS NOT NULL"""
+
+# THE GUARDED STATEMENT (the shipped shape) = the base + the T18
+# workflow-liveness guard, spliced at the window's LIMIT (the
+# _leader_shared composition pattern — ONE statement text, both
+# constants from one home; the rolling-deploy tolerance's fallback
+# runs the base).
+_SWEEP_RESULT_TTL_SQL = _SWEEP_RESULT_TTL_BASE_SQL.replace(
+    "    LIMIT $1\n",
+    _SWEEP_RESULT_TTL_GUARD_SQL + "    LIMIT $1\n",
+)
 
 _SWEEP_EVENT_TTL_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sweep comments
@@ -2025,15 +2044,48 @@ async def sweep_expired_results(
     elapsed TTL and the absent result. See ``_SWEEP_RESULT_TTL_SQL``'s
     comment.
 
+    THE ROLLING-DEPLOY TOLERANCE (the doc's named mechanism, real): the
+    T18 workflow-liveness guard probes ``wf_edge`` — a schema the
+    workflow round has not landed on has NO such table, and the guarded
+    statement's miss is ``UndefinedTableError``. The arm TOLERATES it
+    per call, the way the prune's candidate predicate does: the fallback
+    runs the UNGUARDED base statement — semantically EXACT there (no
+    workflow tables = no join-wait rows to protect, the hold's subject
+    does not exist) — logged once per process (a stuck fallback would
+    otherwise mute the guard silently; a per-tick line would be noise
+    during a deploy). The tolerance is PER CALL: the next call tries the
+    guarded statement again, so a migration landing mid-stream resumes
+    guarded.
+
     Returns the count of results expired by this call.
     """
-    return await _run_single_statement_sweep(
-        conn,
-        schema=schema,
-        sql_template=_SWEEP_RESULT_TTL_SQL,
-        name="sweep_expired_results",
-        batch_size=batch_size,
-    )
+    try:
+        return await _run_single_statement_sweep(
+            conn,
+            schema=schema,
+            sql_template=_SWEEP_RESULT_TTL_SQL,
+            name="sweep_expired_results",
+            batch_size=batch_size,
+        )
+    except asyncpg.UndefinedTableError:
+        global _expiry_guard_fallback_logged
+        if not _expiry_guard_fallback_logged:
+            logger.warning(
+                "expiry-workflow-guard-fallback",
+                kind="expiry_workflow_guard_fallback",
+                reason="wf_edge does not exist (the workflow round has not "
+                "applied) — the expiry arm runs unguarded, which is "
+                "semantically exact there (no workflow tables, no "
+                "join-wait rows to hold for)",
+            )
+            _expiry_guard_fallback_logged = True
+        return await _run_single_statement_sweep(
+            conn,
+            schema=schema,
+            sql_template=_SWEEP_RESULT_TTL_BASE_SQL,
+            name="sweep_expired_results",
+            batch_size=batch_size,
+        )
 
 
 async def sweep_expired_events(

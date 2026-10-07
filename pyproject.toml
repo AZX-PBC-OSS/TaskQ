@@ -398,6 +398,7 @@ ignore = [
 "tests/test_wf_status_pins.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
 "tests/test_wf_pruner_pins.py" = ["S608"]
+"tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]
 # The phase-2 attack's recorded red files (the certification report's
 # evidence paths — name-frozen, dash-named): the same rationale as the wf
 # pin files above (the schema identifier is the only interpolation, and

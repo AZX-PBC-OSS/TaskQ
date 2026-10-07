@@ -485,6 +485,48 @@ _WORKFLOW_LIVENESS_GUARD_SQL = (
 #: The rolling-deploy fallback: logged once per process, never per batch.
 _workflow_guard_fallback_logged = False
 
+
+def _log_workflow_guard_fallback_once() -> None:
+    """The fallback's log-once latch (one home — the fleet-wide arm and
+    the per-actor arm both fall back through this)."""
+    global _workflow_guard_fallback_logged
+    if not _workflow_guard_fallback_logged:
+        log.warning(
+            "prune-workflow-guard-fallback",
+            kind="prune_workflow_guard_fallback",
+            reason="wf_edge does not exist (the workflow round "
+            "has not applied) — the candidate runs unguarded",
+        )
+        _workflow_guard_fallback_logged = True
+
+
+def _unguarded_candidate_sql(schema: str) -> str:
+    """The UNGUARDED candidate window (the fallback's statement): the
+    base predicate + the caller's tail — semantically exact on a schema
+    the workflow round has not applied (no wf_edge table = no liveness to
+    protect). The schema identifier is the only interpolation
+    (require_schema-validated by every caller)."""
+    require_schema(schema)
+    return (
+        _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
+        + " ORDER BY finished_at"
+        + " LIMIT $3"
+    )
+
+
+def _unguarded_candidate_actor_sql(schema: str) -> str:
+    """The per-actor variant of the same fallback: the base predicate +
+    the actor equality (the actor filter rides along as a Filter, like
+    status)."""
+    require_schema(schema)
+    return (
+        _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
+        + "   AND actor = $4"
+        + " ORDER BY finished_at"
+        + " LIMIT $3"
+    )
+
+
 #: The composed candidate windows: the GUARDED predicate is the shipped
 #: shape (the guard rides every candidate read — the prune and the
 #: per-actor variant compose the SAME guard).
@@ -952,24 +994,16 @@ async def prune_terminal_jobs(
                 # non-transient error class fatal to the leader). The
                 # fallback is the UNGUARDED predicate, semantically EXACT
                 # there (no workflow tables = no liveness to protect);
-                # logged once per process, never per batch.
-                global _workflow_guard_fallback_logged
-                if not _workflow_guard_fallback_logged:
-                    log.warning(
-                        "prune-workflow-guard-fallback",
-                        kind="prune_workflow_guard_fallback",
-                        reason="wf_edge does not exist (the workflow round "
-                        "has not applied) — the candidate runs unguarded",
-                    )
-                    _workflow_guard_fallback_logged = True
-                candidate_sql = (
-                    _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
-                    + " ORDER BY finished_at"
-                    + " LIMIT $3"
-                )
+                # logged once per process, never per batch. THE FALLBACK
+                # IS PER BATCH: the unguarded statement rides a LOCAL (the
+                # pre-rewrite shape reassigned ``candidate_sql``, leaving
+                # the REST of the drain unguarded after a migration
+                # landed mid-prune — the next batch re-tries the guarded
+                # statement and resumes guarded).
+                _log_workflow_guard_fallback_once()
                 rows = await _run_prune_archive_batch(
                     conn,
-                    candidate_sql=candidate_sql,
+                    candidate_sql=_unguarded_candidate_sql(schema),
                     write_sql=write_sql,
                     status=status,
                     retention=retention,
@@ -1009,19 +1043,41 @@ async def prune_terminal_jobs(
                         break
                     size = _effective_prune_batch_size(batch_size, sizer)
                     _record_prune_batch_size("prune", size, sizer)
-                    rows = await _run_prune_archive_batch(
-                        conn,
-                        candidate_sql=candidate_sql,
-                        write_sql=write_sql,
-                        status=status,
-                        retention=actor_retention,
-                        size=size,
-                        archive_interval=archive_interval,
-                        actor=actor_name,
-                        statement_timeout_ms=statement_timeout_ms,
-                        sweep_name="prune",
-                        sizer=sizer,
-                    )
+                    try:
+                        rows = await _run_prune_archive_batch(
+                            conn,
+                            candidate_sql=candidate_sql,
+                            write_sql=write_sql,
+                            status=status,
+                            retention=actor_retention,
+                            size=size,
+                            archive_interval=archive_interval,
+                            actor=actor_name,
+                            statement_timeout_ms=statement_timeout_ms,
+                            sweep_name="prune",
+                            sizer=sizer,
+                        )
+                    except asyncpg.UndefinedTableError:
+                        # THE SAME ROLLING-DEPLOY TOLERANCE, PER-ACTOR ARM:
+                        # the per-actor candidate composes the SAME
+                        # workflow-liveness guard (the pre-rewrite shape
+                        # had NO tolerance here — a pre-workflow schema
+                        # with actor_overrides configured was the leader's
+                        # death). Same per-batch fallback, same log-once.
+                        _log_workflow_guard_fallback_once()
+                        rows = await _run_prune_archive_batch(
+                            conn,
+                            candidate_sql=_unguarded_candidate_actor_sql(schema),
+                            write_sql=write_sql,
+                            status=status,
+                            retention=actor_retention,
+                            size=size,
+                            archive_interval=archive_interval,
+                            actor=actor_name,
+                            statement_timeout_ms=statement_timeout_ms,
+                            sweep_name="prune",
+                            sizer=sizer,
+                        )
                     if not rows:
                         break
                     batch_total = 0
