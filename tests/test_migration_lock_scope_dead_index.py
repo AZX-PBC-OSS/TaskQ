@@ -290,10 +290,14 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # compare; see the migration's header for the per-page full-sort
         # it removes.
         "jobs_seam_idx",
-        # 01.00.23 (pre): the workflow round's two jobs indexes, both
+        # 01.00.23 (pre): the workflow round's three jobs indexes, all
         # partial on workflow rows (the sweep's lock-first join-wait walk;
-        # the children-by-parent walk).
+        # the fire arm's join-wait probe — deliberately WITHOUT
+        # deps_pending > 0: the firable row's cache was just reconciled
+        # to 0 by the rederive in the same transaction; the
+        # children-by-parent walk).
         "jobs_wf_join_wait_idx",
+        "jobs_wf_join_fire_probe_idx",
         "jobs_wf_children_idx",
     }
 )
