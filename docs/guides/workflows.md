@@ -87,7 +87,12 @@ against the measured 23.8 — **the 1000 point is the outlier, named as
 such** (least-squares gives ≈4.7 µs + 16.3 ms and still misses the
 endpoints). The landed implementation's own refit
 (`.measurements/edge-scale-curve.json` — the scale pin re-runs it) reads
-~0.6 µs/edge + ~2.8 ms base, with the same shape. THE GOVERNING BUDGET,
+**~1.7 µs/edge + ~2.7 ms base** (the artifact's refit block: marginal
+1.684, base 2.705, the refit at the 1000 bound 4.39 ms, the outlier
+residual −1.05 ms — the recorded points are 200 → 3.04 ms, 1000 →
+3.34 ms, 5000 → 11.1 ms; the base-dominated criterion genuinely holds:
+base 2.7 ms vs the 1000-edge marginal term ~1.7 ms), with the same
+shape. THE GOVERNING BUDGET,
 STATED HONESTLY: at the ~3-16 ms BASE term no fan-in meets a 5 ms-class
 budget; the declared-edge cost is dominated by the BASE (paid once per
 sweep pass regardless of fan-in), not the edges — the marginal edge cost
