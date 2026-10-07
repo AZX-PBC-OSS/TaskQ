@@ -1,0 +1,135 @@
+......F.                                                                 [100%]
+=================================== FAILURES ===================================
+_____________ test_t06_pin1_fail_closed_join_resolves_never_hangs ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f7995c15130>
+wf_schema = 'tq_f29d7160ad'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f79959f9c00>
+wf_sql = WorkflowSql(schema='tq_f29d7160ad', terminal_mark='UPDATE tq_f29d7160ad.jobs\nSET status = $2::"tq_f29d7160ad".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+propagation_redlog = <tests._wf_fixtures.RedLog object at 0x7f7995cddb50>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7995ef6970>
+
+    @pytest.mark.integration
+    async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        propagation_redlog: RedLog,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
+        joined node's side of the counter is resolved by the flow-scoped
+        transition (blocked-with-reason naming the parent), the flow fails.
+        THE CONVICTED VARIANT (the pre-T06 shipped shape): the parent's failed
+        finalize plain-decrements (or never resolves), the join stays
+        join-wait / fires silently over a partial — the record shows a hanging
+        join. The mutation drill: the cascade statement's block arm dropped —
+        the join never resolves, the pin reds."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=2, policy="fail_closed")
+    
+        result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=children[0],
+            step_key="c0",
+            worker_id=(await claim_view(wf_conn, wf_schema, children[0]))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",  # the ladder exhausted: a TERMINAL failure
+            error_class="ValueError",
+            error_message="boom",
+        )
+        assert result.applied
+    
+        # THE JOIN NEVER FIRES (the counter's side is resolved by the block,
+        # not by a decrement): no fire row, ever.
+        assert await fire_count(wf_conn, wf_schema, join_id) == 0
+    
+        # THE RESOLUTION: the joined node is blocked-with-reason NAMING the
+        # failed parent — never a hanging join-wait row.
+        state = await node_state(wf_conn, wf_schema, join_id)
+        propagation_redlog.red(
+            "t06-pin1-stranded-join",
+            "the cascade's block arm dropped (the pre-T06 shipped shape: the "
+            "join stays join-wait or fires over the failed parent)",
+            {
+                "status": state["status"],
+                "deps_pending": state["deps_pending"],
+                "blocking_reason": state["metadata"].get("blocking_reason"),
+            },
+        )
+        assert state["metadata"].get("blocking_reason") == "failed_parent", (
+            f"the join is unresolved: {state} — a failed parent must not strand "
+            "the join (the record never shows a hanging join)"
+        )
+        assert state["metadata"].get("failed_step") == "c0"
+        assert state["status"] == "pending", "blocked is a pending-row representation"
+    
+        # THE FLOW FAILED (§17.2's cascade): the root's flip is the
+        # linearization point.
+        flow_state = await node_state(wf_conn, wf_schema, flow_id)
+        assert flow_state["status"] == "failed", "the workflow fails closed"
+    
+        # THE MUTATION DRILL (the REAL engine mutation — the phase-2 audit's
+        # replacement for the broken RED1 evidence): the cascade's BLOCK ARM
+        # dead (``AND false``), rendered through the REAL engine's own
+        # finalize on a FRESH shape — the shipped tx2 runs the mutant, the
+        # join NEVER resolves (the convicted strand, observed in the row),
+        # and the flow fails with NO blocked join (the cascade's flow arm is
+        # gated on the block arm — the mutant's other conviction).
+        import taskq.workflows._sql_finalize as finalize_sql_module
+    
+        mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
+            "AND NOT j.metadata @> '{{\"blocking_reason\": \"failed_parent\"}}'::jsonb",
+            "AND false",
+        )
+        assert mutated_cascade != finalize_sql_module.FAIL_CLOSED_CASCADE_SQL, (
+            "the mutation drill did not arm"
+        )
+        monkeypatch.setattr(finalize_sql_module, "FAIL_CLOSED_CASCADE_SQL", mutated_cascade)
+        mutated_sql = render_workflow_sql(wf_schema)
+        flow2 = await seed_flow(wf_conn, wf_schema)
+        join2, children2 = await _seed_map(wf_conn, wf_schema, flow2, n=2, policy="fail_closed")
+        await finalize_node(
+            module_pg_pool,
+            mutated_sql,
+            flow_id=flow2,
+            job_id=children2[0],
+            step_key="c0",
+            worker_id=(await claim_view(wf_conn, wf_schema, children2[0]))[0],
+            attempt=1,
+            claim_epoch=0,
+            outcome="failed",
+            error_class="ValueError",
+        )
+        monkeypatch.undo()
+        state2 = await node_state(wf_conn, wf_schema, join2)
+        propagation_redlog.red(
+            "t06-pin1-block-arm-dropped",
+            "the cascade's block arm dead in the REAL engine's tx2 — the join "
+            "never resolves (the pre-T06 shipped shape: the record shows a "
+            "hanging join) and the flow's flip never lands (the flow arm is "
+            "gated on the block arm)",
+            {
+                "blocking_reason": state2["metadata"].get("blocking_reason"),
+                "deps_pending": state2["deps_pending"],
+                "flow_status": (await node_state(wf_conn, wf_schema, flow2))["status"],
+            },
+        )
+>       assert state2["metadata"].get("blocking_reason") == "join", (
+            f"the drill's conviction is broken: the mutant's cascade left the "
+            f"join {state2} — the block arm must be load-bearing"
+        )
+E       AssertionError: the drill's conviction is broken: the mutant's cascade left the join {'status': 'pending', 'deps_pending': 2, 'metadata': {'flow_id': '01a1189e-be5d-7281-b6ed-66fbdad24abd', 'failed_step': 'c0', 'failed_parent': '01a1189e-be5e-7913-8af9-11fdba287692', 'blocking_reason': 'failed_parent'}, 'result': None} — the block arm must be load-bearing
+E       assert 'failed_parent' == 'join'
+E         
+E         - join
+E         + failed_parent
+
+tests/test_wf_propagation_pins.py:223: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_propagation_pins.py::test_t06_pin1_fail_closed_join_resolves_never_hangs
+1 failed, 7 passed in 5.08s

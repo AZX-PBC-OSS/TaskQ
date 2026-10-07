@@ -34,6 +34,7 @@ from taskq.backend._sweeps import (
     sweep_expired_results,
 )
 from taskq.migrate import apply_pending
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import prune_terminal_jobs
 
 #: The crash window's own shape: the workflow round's COLUMN file applied
@@ -72,7 +73,7 @@ async def _seed_expired_result(
 
 @pytest.mark.integration
 async def test_wf_pre_workflow_expiry_tolerance(
-    clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
 ) -> None:
     """The result-expiry arm on a schema with NO workflow tables: the arm
     RUNS (the unguarded fallback — exact there) and expires the row; the
@@ -98,7 +99,7 @@ async def test_wf_pre_workflow_expiry_tolerance(
 
 @pytest.mark.integration
 async def test_wf_pre_workflow_actor_prune_tolerance(
-    clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
 ) -> None:
     """The per-actor prune arm on a schema with NO workflow tables and an
     actor_overrides entry: the arm survives (the per-batch unguarded

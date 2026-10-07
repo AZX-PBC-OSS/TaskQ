@@ -41,6 +41,7 @@ from taskq.workflows import fan_in_skip, finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import reconstruct_workflow_status
 from taskq.workflows._sweep import sweep_join_rederive
+from taskq.workflows.engine import render_workflow_sql
 from tests._wf_fixtures import (
     RedLog,
     claim_view,
@@ -116,6 +117,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
     joined node's side of the counter is resolved by the flow-scoped
@@ -172,35 +174,72 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "failed", "the workflow fails closed"
 
-    # THE MUTATION DRILL: drop the cascade's block arm → the pin's own
-    # conviction (the unresolved join) reproduces.
-    mutated = wf_sql.fail_closed_cascade.replace(
-        'AND NOT j.metadata @> \'{"blocking_reason": "failed_parent"}\'::jsonb',
-        "AND false",  # the block arm matches nothing: the convicted strand
+    # THE MUTATION DRILL (the REAL engine mutation — the phase-2 audit's
+    # replacement for the broken RED1 evidence): the cascade's BLOCK ARM
+    # dead (``AND false``), rendered through the REAL engine's own
+    # finalize on a FRESH shape — the shipped tx2 runs the mutant, the
+    # join NEVER resolves (the convicted strand, observed in the row),
+    # and the flow fails with NO blocked join (the cascade's flow arm is
+    # gated on the block arm — the mutant's other conviction).
+    import taskq.workflows._sql_finalize as finalize_sql_module
+
+    mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
+        'AND NOT j.metadata @> \'{{"blocking_reason": "failed_parent"}}\'::jsonb',
+        "AND false",
     )
-    assert mutated != wf_sql.fail_closed_cascade, "the mutation drill did not arm"
+    assert mutated_cascade != finalize_sql_module.FAIL_CLOSED_CASCADE_SQL, (
+        "the mutation drill did not arm"
+    )
+    import taskq.workflows._sql as sql_module
+
+    mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
+        'AND NOT j.metadata @> \'{{"blocking_reason": "failed_parent"}}\'::jsonb',
+        "AND false",
+    )
+    assert mutated_cascade != finalize_sql_module.FAIL_CLOSED_CASCADE_SQL, (
+        "the mutation drill did not arm"
+    )
+    # The bundle's build reads the constant from _sql.py's namespace (the
+    # bundle re-exports the statement constants) — the patch goes THERE,
+    # then the bundle re-renders (the finalize pins' own pattern).
+    monkeypatch.setattr(sql_module, "FAIL_CLOSED_CASCADE_SQL", mutated_cascade)
+    mutated_sql = render_workflow_sql(wf_schema)
     flow2 = await seed_flow(wf_conn, wf_schema)
     join2, children2 = await _seed_map(wf_conn, wf_schema, flow2, n=2, policy="fail_closed")
-    await _terminalize(wf_conn, wf_schema, children2[0], outcome="succeeded")
     await finalize_node(
         module_pg_pool,
-        wf_sql,
+        mutated_sql,
         flow_id=flow2,
-        job_id=children2[1],
+        job_id=children2[0],
         step_key="c0",
-        worker_id=(await claim_view(wf_conn, wf_schema, children2[1]))[0],
+        worker_id=(await claim_view(wf_conn, wf_schema, children2[0]))[0],
         attempt=1,
         claim_epoch=0,
         outcome="failed",
         error_class="ValueError",
     )
-    # The shipped rule blocked join2 above? No — flow2's cascade ran with
-    # the SHIPPED statement; the mutated statement is the conviction
-    # comparator, executed directly against the same shape:
-    await wf_conn.fetch(mutated, children2[1], json.dumps({}), "x", json.dumps({}), flow2)
+    monkeypatch.undo()
     state2 = await node_state(wf_conn, wf_schema, join2)
-    assert state2["metadata"].get("blocking_reason") == "failed_parent", (
-        "the shipped cascade did not block the join (the drill's control arm)"
+    propagation_redlog.red(
+        "t06-pin1-block-arm-dropped",
+        "the cascade's block arm dead in the REAL engine's tx2 — the join "
+        "never resolves (the pre-T06 shipped shape: the record shows a "
+        "hanging join) and the flow's flip never lands (the flow arm is "
+        "gated on the block arm)",
+        {
+            "blocking_reason": state2["metadata"].get("blocking_reason"),
+            "deps_pending": state2["deps_pending"],
+            "flow_status": (await node_state(wf_conn, wf_schema, flow2))["status"],
+        },
+    )
+    assert state2["metadata"].get("blocking_reason") == "join", (
+        f"the drill's conviction is broken: the mutant's cascade left the "
+        f"join {state2} — the block arm must be load-bearing"
+    )
+    flow2_state = await node_state(wf_conn, wf_schema, flow2)
+    assert flow2_state["status"] == "running", (
+        f"the mutant's flow flip landed without a blocked join: {flow2_state} "
+        "(the flow arm's gate is part of the conviction)"
     )
 
 
@@ -380,13 +419,15 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     # THE TS ORDERING: the fire is strictly after the last ladder attempt
     # (the fan-in + fire ride the terminalizing tx; the ledger's last
     # attempt row precedes the fire row).
-    fire_ts, last_attempt_ts = await wf_conn.fetchrow(
+    fire_row = await wf_conn.fetchrow(
         f'SELECT f.fired_at, (SELECT max(updated_at) FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'c2') AS last_attempt "
         f'FROM "{wf_schema}".wf_join_fire f WHERE f.join_job_id = $2',
         flow_id,
         join_id,
     )
+    assert fire_row is not None
+    fire_ts, last_attempt_ts = fire_row["fired_at"], fire_row["last_attempt"]
     assert fire_ts >= last_attempt_ts, (
         "the fan-in fires strictly after the last ladder attempt (P3 spike3's verified ordering)"
     )
