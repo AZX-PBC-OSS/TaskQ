@@ -36,6 +36,7 @@ to ``tests/web_admin/``.
 import asyncio
 import contextlib
 import glob
+import inspect
 import os
 import signal
 from collections.abc import AsyncIterator, Iterator
@@ -1119,14 +1120,29 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
-    # G7's ALWAYS-ON registration (T08): every test in the WORKFLOW pin
-    # files ends with the reported==reconstructed check (the fixture in
-    # tests/_wf_fixtures.py). The family is name-scoped (the wf pin files'
-    # own prefix) so the fixture never forces PG setup on a test that
-    # doesn't use it.
+    # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
+    # pin files ends with the reported==reconstructed check (the fixture
+    # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
+    # cure): a ``usefixtures`` MARKER added here is INERT — the items'
+    # fixture closures are computed before this hook runs, so the marker
+    # never reached the fixture set (the attack's proof: two pins ended
+    # root-contradicts-rows and passed their teardowns). Appending to
+    # ``fixturenames`` IS the effective registration: the closure list is
+    # read at setup time. The scope is the wf pin files' own prefix, and
+    # only the ASYNC items: the check's fixtures need the PG connection,
+    # and a sync item would drag PG into a unit lane (the sync pins
+    # assert the derivation table directly, in memory).
     for item in items:
-        if item.path.name.startswith(("test_wf_", "test_workflows_")):
-            item.add_marker(pytest.mark.usefixtures("wf_g7_status_truth"))
+        if not item.path.name.startswith(("test_wf_", "test_workflows_")):
+            continue
+        # The Function narrow: the closure list and the test function are
+        # a Function item's attributes (the hook's items list is Item).
+        if not isinstance(item, pytest.Function):
+            continue
+        if not inspect.iscoroutinefunction(item.function):
+            continue
+        if "wf_g7_status_truth" not in item.fixturenames:
+            item.fixturenames.append("wf_g7_status_truth")
 
 
 def interpreter_is_traced() -> bool:

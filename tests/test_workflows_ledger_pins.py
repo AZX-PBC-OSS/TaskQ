@@ -313,7 +313,7 @@ async def test_pin_5_ledger_claim_atomic(
     # variant's dispatch already committed its node flip; only the ledger
     # write follows, post-cancel).
     await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded' WHERE id = $1",
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1",
         flow_id,
     )
     # THE CONVICTED SHAPE: the post-cancel ledger write lands a 'running'
@@ -337,7 +337,7 @@ async def test_pin_5_ledger_claim_atomic(
         "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
         {"ledger": "running", "flow": flow_status},
     )
-    assert flow_status == "succeeded", "the flow terminalized before the ledger write"
+    assert flow_status == "cancelled", "the flow terminalized before the ledger write"
 
     # THE SHIPPED REAPER reconciles the phantom: the record is rows-alone
     # reconstructible again. The CLAIM's own atomicity (ONE statement: the

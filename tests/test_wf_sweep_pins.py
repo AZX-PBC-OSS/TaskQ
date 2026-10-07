@@ -469,7 +469,9 @@ async def test_pin_15_phantom_running_reaped(
     """A fenced/abandoned attempt's ledger row left 'running' forever on a
     terminal flow — the rows-alone reconstruction cannot reconcile it. The
     shipped arm reaps any phantom: status → 'fenced'."""
-    flow_id = await seed_flow(wf_conn, wf_schema, status="succeeded")  # terminal flow
+    flow_id = await seed_flow(
+        wf_conn, wf_schema, status="cancelled"
+    )  # terminal flow (a cancel's flip — the G7-lawful terminal)
     phantom = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -516,7 +518,9 @@ async def test_pin_22_reaped_flow_forgets_its_reducer_cache(
 
     async def body() -> None: ...
 
-    flow_id = await seed_flow(wf_conn, wf_schema, status="succeeded")  # terminal flow
+    flow_id = await seed_flow(
+        wf_conn, wf_schema, status="cancelled"
+    )  # terminal flow (a cancel's flip — the G7-lawful terminal)
     phantom = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
