@@ -104,18 +104,30 @@ class FlowStandIn:
         self.trace_id: str | None = None
 
 
-async def seed_flow(conn: asyncpg.Connection, schema: str, *, status: str = "running") -> JobId:
+async def seed_flow(
+    conn: asyncpg.Connection, schema: str, *, status: str = "running", workflow: str | None = None
+) -> JobId:
     """The flow-run row: a jobs row, step_key = the entry marker, the run
-    scope. Its status IS the run's status (the linearization point)."""
+    scope. Its status IS the run's status (the linearization point).
+    ``workflow`` stamps the root's metadata with the workflow's registered
+    name — the sweep's fire arm resolves a healed join's reducer body from
+    that REGISTERED DEFINITION (the durable, cross-process leg; the
+    process-local memo is a cache). The stamp is what ``insert_flow_run``
+    writes for a named flow; the seed passes it through so the pins drive
+    the shipped shape."""
     flow_id = new_uuid()
+    metadata: dict[str, object] = {"flow_id": str(flow_id)}
+    if workflow:
+        metadata["workflow"] = workflow
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, idempotency_scope, idempotency_key) "
+        "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
         "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', $2, "
-        "'__flow__', 'workflow-run', $3)",
+        "'__flow__', $4::jsonb, 'workflow-run', $3)",
         flow_id,
         status,
         f"flow:{flow_id}",
+        json.dumps(metadata),
     )
     return JobId(flow_id)
 

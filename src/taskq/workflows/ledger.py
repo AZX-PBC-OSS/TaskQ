@@ -249,6 +249,15 @@ async def insert_flow_run(
     pin).
     """
     flow_id = new_uuid()
+    # THE WORKFLOW NAME STAMP (the reducer resolution's durable leg): the
+    # root's metadata names the workflow whose REGISTERED DEFINITION
+    # carries the run's step bodies — the sweep's fire arm resolves a
+    # healed join's reducer from that definition (D1, BODY-FROM-
+    # DEFINITION), in whatever process heals. Schema-level, not
+    # process-level: the memo in workflows/_reducers.py is a cache only.
+    root_metadata: dict[str, object] = {"flow_id": str(flow_id)}
+    if entry.name:
+        root_metadata["workflow"] = entry.name
     inserted = await conn.fetchrow(
         wsql.flow_run_insert,
         flow_id,
@@ -258,7 +267,7 @@ async def insert_flow_run(
         entry.max_attempts,
         entry.retry_kind,
         entry.trace_id,
-        dumps_jsonb_str({"flow_id": str(flow_id)}),
+        dumps_jsonb_str(root_metadata),
         run_idempotency_scope(entry.name),
         run_key,
     )
