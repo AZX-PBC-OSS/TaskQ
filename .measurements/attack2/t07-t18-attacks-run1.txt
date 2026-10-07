@@ -1,0 +1,112 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=3611937374
+rootdir: /tmp/opencode/wt-taskqflow
+configfile: pyproject.toml
+plugins: anyio-4.15.1, cov-7.1.0, hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, respx-0.23.1, randomly-5.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 240.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [4 items]
+
+...F                                                                     [100%]
+=================================== FAILURES ===================================
+____________ test_attack_t07_timeout_sweep_racing_the_last_attempt _____________
+[gw3] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f3f1eb26140>
+wf_conn = <asyncpg.connection.Connection object at 0x7f3f1c43af30>
+wf_schema = 'tq_d665ac2f4a'
+wf_sql = WorkflowSql(schema='tq_d665ac2f4a', terminal_mark='UPDATE tq_d665ac2f4a.jobs\nSET status = $2::"tq_d665ac2f4a".job_sta...pf.flow_id\n      AND NOT pf.has_live\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+
+    @pytest.mark.integration
+    async def test_attack_t07_timeout_sweep_racing_the_last_attempt(
+        module_pg_pool: asyncpg.Pool,
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """The deadline sweep takes a RUNNING child mid-final-attempt (its
+        schedule_to_close elapsed); the child's real finalize lands after.
+        The fence must lose CLEANLY: the child stays the sweep's 'failed'
+        (no zombie success), a fail_closed join blocks-with-reason, nothing
+        fires."""
+        from taskq.backend._sweeps import sweep_deadline_exceeded
+    
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="to_join", deps=1)
+        child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="t0")
+        await _seed_edge_named(wf_conn, wf_schema, join_id, child, flow_id, "fail_closed")
+    
+        # the deadline elapses WHILE the child is running (the running row's
+        # schedule_to_close in the past — the sweep's own eligibility).
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
+            "WHERE id = $1",
+            child,
+        )
+>       swept = await sweep_deadline_exceeded(module_pg_pool, schema=wf_schema)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack2-t07-t18.py:280: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <asyncpg.pool.Pool object at 0x7f3f1eb26140>, schema = 'tq_d665ac2f4a'
+batch_size = 100, statement_timeout_ms = 1750
+
+    async def sweep_deadline_exceeded(
+        conn: ConnLike,
+        *,
+        schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    ) -> int:
+        """Sweep 2: fail overdue ``schedule_to_close`` jobs, one bounded batch per call.
+    
+        One call transitions at most ``batch_size`` rows in one short
+        transaction (server-side ``statement_timeout`` included); repeated
+        calls drain the eligible backlog a batch at a time.
+    
+        Transitions to ``'failed'`` with ``error_class = 'DeadlineExceeded'``.
+        Writes one ``job_attempts`` row and one ``job_events`` row per swept
+        job, batched into one statement each, in the same transaction as
+        the parent UPDATE.
+    
+        ``started_at`` for never-dispatched jobs is NULL; the attempt INSERT
+        uses ``COALESCE(started_at, clock_timestamp())`` to satisfy the
+        ``job_attempts.started_at NOT NULL`` constraint.
+    
+        PG uses server-side ``statement_timestamp()`` for the deadline range
+        bound (STABLE, so the partial index serves it as an Index Cond ,
+        see the module docstring) and ``clock_timestamp()`` for the
+        finished-at timestamp (not ``now()``, which is fixed at transaction
+        start, see the module docstring); this function takes no ``now``
+        argument.
+    
+        Returns the count of rows swept by this call.
+        """
+        require_schema(schema)
+        _validate_positive("batch_size", batch_size)
+        _validate_positive("statement_timeout_ms", statement_timeout_ms)
+    
+        sql = _render_sweep_sql(_SWEEP_2_SQL, schema)
+        attempt_sql = _render_sweep_sql(_SWEEP_2_ATTEMPTS_BATCH_SQL, schema)
+        event_sql = _render_sweep_sql(INSERT_EVENTS_DETAIL_BATCH_SQL, schema)
+    
+        swept: list[_DeadlineRow] = []
+        actor_counts: Counter[str] = Counter()
+    
+>       async with conn.transaction():
+                   ^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pool' object has no attribute 'transaction'
+
+src/taskq/backend/_sweeps.py:1771: AttributeError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=pair-reused pg=f948d4809b00 redis=6b0293908cff
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=f948d4809b00 redis=6b0293908cff
+=========================== short test summary info ============================
+FAILED tests/attack2-t07-t18.py::test_attack_t07_timeout_sweep_racing_the_last_attempt
+========================= 1 failed, 3 passed in 6.47s ==========================

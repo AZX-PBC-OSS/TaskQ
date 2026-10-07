@@ -212,7 +212,8 @@ async def sweep_join_rederive(
         # ROOT's status from the rows (the crash-window heals: a
         # non-absorbed failure → failed; all-terminal → succeeded). Bounded
         # by the root batch; the per-root node scan rides the flow-nodes
-        # expression index (01.00.25_01) — never a seq scan.
+        # expression index (01.00.25_02 — the uuid-cast expression, the
+        # workflow-rows-only partial) — never a seq scan.
         await conn.execute(wsql.workflow_root_maintain, batch_size)
     return SweepResult(
         blocked=summary["blocked"],

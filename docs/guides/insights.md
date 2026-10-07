@@ -484,7 +484,12 @@ from those seeded runs.
 ## The workflow-debug SQL recipes (T08)
 
 Per-run reads, bounded by the run's own node count; every read is
-index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_01). The status panel
+index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_02 — the index
+expression carries the same uuid cast the reads carry, and the partial
+covers the workflow rows only (`metadata ? 'flow_id'`, which every read
+names exactly). The representation, stated once: the flow_id linkage is
+the uuid STRING in `metadata.flow_id`; the reads cast it to uuid. The
+status panel
 and the `taskq.wf_progress_nodes_total` gauge share the grouped read (one
 query per status read — the query-count pin).
 

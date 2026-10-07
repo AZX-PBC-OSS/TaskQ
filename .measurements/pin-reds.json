@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin24-flow-status-leg",
-    "mutation": "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)",
-    "red": "{\"deps_pending_fingerprint\": 0, \"fired_on_cancelled_flow\": true}"
+    "pin": "pin17-empty-join",
+    "mutation": "child-row recount (count children WHERE non-terminal)",
+    "red": "{\"j2_child_rows\": 0, \"fires_early\": true}"
   }
 ]

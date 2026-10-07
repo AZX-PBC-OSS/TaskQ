@@ -1,0 +1,80 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=1844274320
+rootdir: /tmp/opencode/wt-taskqflow
+configfile: pyproject.toml
+plugins: anyio-4.15.1, cov-7.1.0, hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, respx-0.23.1, randomly-5.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 900.0s
+timeout method: signal
+timeout func_only: False
+created: 1/1 worker
+1 worker [1 item]
+
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________ test_every_alert_rule_fires_on_real_names_and_labels _____________
+[gw0] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+live = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1889.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_e808f16078'}, value=1.0)]})
+follower = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1333.0), Sample...e_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2', 'schema': 'tq_e808f16078'}, value=1.0)]})
+hostile_mid = Exposition(samples=(Sample(name='python_gc_objects_collected_total', labels={'generation': '0'}, value=1287.0), Sample..., 'otel_scope_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2'}, value=2.9609230579808354)]})
+emitter = Exposition(samples=(Sample(name='target_info', labels={'service_instance_id': '16fa3369-7c51-4d4a-99a0-5a834d4f956b', ...ilures', labels={'otel_scope_name': 'taskq', 'otel_scope_schema_url': '', 'otel_scope_version': '0.2.2'}, value=0.0)]})
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-17081/popen-gw0/test_every_alert_rule_fires_on0')
+
+    @pytest.mark.skipif(
+        not docker_available(),
+        reason="promtool runs in the prom/prometheus container; Docker unreachable",
+    )
+    def test_every_alert_rule_fires_on_real_names_and_labels(
+        live: Exposition,
+        follower: Exposition,
+        hostile_mid: Exposition,
+        emitter: Exposition,
+        tmp_path: Any,
+    ) -> None:
+        """Every shipped rule must fire against its pathology, built from the
+        metric names + label sets the real worker exposition served; the
+        healthy shapes must stay silent."""
+        rules_data = yaml.safe_load(RULES_PATH.read_text())
+    
+        # Gate: every taskq/messaging series the rules reference is one the
+        # real probes emitted (the healthy run for every family a healthy
+        # worker carries; the hostile run adds the failure-only counters -
+        # taskq_heartbeat_misses_total among them; the emitter probe adds the
+        # three cannot-stage-live counters - the two sweep-abort counters
+        # whose PG-abort pathology cannot be staged against a live shared
+        # schema, and the cron skipped-slots counter no live run reaches -
+        # whose emission paths are the real public
+        # record_sweep_*/record_cron_skipped_slots API). Label values and
+        # PromQL syntax are stripped before scanning; a rule operand the
+        # bridge never serves would make the rule unevaluatable against real
+        # data.
+        emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
+        for rule in rules_data["groups"][0]["rules"]:
+            expr = re.sub(r'"[^"]*"', '""', str(rule["expr"]))
+            expr = re.sub(r"\{[^}]*\}", "{}", expr)
+            # Range selectors ([5m]) carry durations, not series names.
+            expr = re.sub(r"\[[^\]]*\]", "[]", expr)
+            # ...so do offset durations (`offset 5m`).
+            expr = re.sub(r"offset\s+\d+[smhd]", "offset", expr)
+            # Grouping clauses (by/without/on/ignoring) name LABELS, not series.
+            expr = re.sub(r"\b(by|without|on|ignoring)\s*\([^)]*\)", r"\1 ()", expr)
+            for token in set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_:]*", expr)):
+                if token in _PROMQL_KEYWORDS:
+                    continue
+>               assert token in emitted, (
+                    f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
+                )
+E               AssertionError: rule TaskQWorkflowBlockedStuck references taskq_wf_progress_nodes_total, which the real scrapes never emitted
+E               assert 'taskq_wf_progress_nodes_total' in {'messaging_client_consumed_messages_total', 'messaging_client_published_messages_total', 'messaging_process_duration_...'messaging_process_duration_seconds_count', 'messaging_process_duration_seconds_sum', 'process_cpu_seconds_total', ...}
+
+tests/test_prometheus_metrics_review.py:1468: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=0c640f7a1894 redis=17e77595dde8 state_dir=/tmp/pytest-of-rich/pytest-17081
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=0c640f7a1894 redis=17e77595dde8
+=========================== short test summary info ============================
+FAILED tests/test_prometheus_metrics_review.py::test_every_alert_rule_fires_on_real_names_and_labels
+======================== 1 failed in 129.09s (0:02:09) =========================

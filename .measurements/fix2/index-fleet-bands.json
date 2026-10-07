@@ -1,0 +1,109 @@
+{
+  "fleet": {
+    "flows": 40,
+    "nodes_per_flow": 500,
+    "vanilla_rows": 200000,
+    "total_rows": 220040
+  },
+  "before_text_index": {
+    "rollup": {
+      "p50_ms": 21.183,
+      "samples_ms": [
+        21.627,
+        21.612,
+        21.953,
+        19.758,
+        21.183,
+        20.977,
+        19.593
+      ]
+    },
+    "nodes": {
+      "p50_ms": 20.742,
+      "samples_ms": [
+        20.587,
+        20.833,
+        19.31,
+        21.837,
+        20.901,
+        19.388,
+        20.742
+      ]
+    },
+    "root-maintain": {
+      "p50_ms": 57.88,
+      "samples_ms": [
+        58.781,
+        56.079,
+        58.049,
+        59.07,
+        57.448,
+        55.602,
+        57.88
+      ]
+    },
+    "wf-progress-sampler": {
+      "p50_ms": 23.852,
+      "samples_ms": [
+        24.772,
+        24.191,
+        23.964,
+        23.852,
+        22.44,
+        21.733,
+        22.463
+      ]
+    }
+  },
+  "after_uuid_index": {
+    "rollup": {
+      "p50_ms": 0.12,
+      "samples_ms": [
+        0.163,
+        0.138,
+        0.12,
+        0.112,
+        0.112,
+        0.122,
+        0.113
+      ]
+    },
+    "nodes": {
+      "p50_ms": 0.287,
+      "samples_ms": [
+        0.287,
+        0.278,
+        0.292,
+        0.272,
+        0.274,
+        0.337,
+        0.345
+      ]
+    },
+    "root-maintain": {
+      "p50_ms": 17.622,
+      "samples_ms": [
+        16.693,
+        17.622,
+        18.018,
+        17.104,
+        17.671,
+        17.579,
+        18.021
+      ]
+    },
+    "wf-progress-sampler": {
+      "p50_ms": 23.378,
+      "samples_ms": [
+        23.565,
+        23.79,
+        23.579,
+        22.618,
+        22.736,
+        23.378,
+        21.53
+      ]
+    }
+  },
+  "representation": "the flow_id linkage is the uuid STRING in metadata.flow_id; every read casts it to uuid; the index expression carries the same cast (01.00.25_02) \u2014 index + reads + stamp aligned on ONE representation"
+}

@@ -1,0 +1,6 @@
+OLD INDEX (01.00.25_01) — rollup: RED — the pin cannot pass on this shape (jobs seq-scanned)
+OLD INDEX (01.00.25_01) — nodes: RED — the pin cannot pass on this shape (jobs seq-scanned)
+OLD INDEX (01.00.25_01) — root-maintain: RED — the pin cannot pass on this shape (jobs seq-scanned)
+CURED INDEX (01.00.25_02) — rollup: GREEN — index-driven
+CURED INDEX (01.00.25_02) — nodes: GREEN — index-driven
+CURED INDEX (01.00.25_02) — root-maintain: GREEN — index-driven

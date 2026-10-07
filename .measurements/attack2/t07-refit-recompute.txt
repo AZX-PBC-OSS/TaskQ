@@ -1,0 +1,10 @@
+recorded points: {'200': 3.042, '1000': 3.339, '5000': 11.127}
+endpoint fit: marginal=1.684 us/edge  base=2.705 ms  refit@1000=4.389 ms  outlier(1000) residual=-1.050 ms
+least-squares: marginal=0.002 us/edge  base=5.832 ms
+recorded refit block: {"marginal_us_per_edge": 1.684, "base_ms": 2.705, "refit_at_bound_ms": 4.39, "outlier_residual_ms": -1.051, "outlier": "1000", "big_edge_explain": "index-driven (no seq scan on jobs/wf_edge)"}
+artifact-vs-record recomputation: CONSISTENT
+
+the GUIDE claims: 'the landed implementation's own refit reads ~0.6 us/edge + ~2.8 ms base'
+HEAD artifact says: 1.684 us/edge + 2.705 ms base
+T07's original artifact said: 0.811 us/edge + 2.576 ms base (git show 1efc1057)
+base-dominated check: base 2.71 ms vs 1000-edge marginal term 1.68 us/edge *1000 = 1.68 ms

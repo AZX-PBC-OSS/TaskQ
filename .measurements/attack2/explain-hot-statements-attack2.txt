@@ -1,0 +1,111 @@
+===== FAIL_CLOSED_CASCADE_SQL
+Result loops=1 time=11.076ms
+  Bitmap Heap Scan on wf_edge loops=1 time=0.015ms
+    Bitmap Index Scan idx=wf_edge_parent_idx loops=1 time=0.007ms
+  ModifyTable on jobs loops=1 time=0.338ms
+    Nested Loop loops=1 time=0.043ms
+      Index Scan on jobs idx=jobs_wf_join_fire_probe_idx loops=1 time=0.013ms
+      CTE Scan loops=1 time=0.026ms
+  ModifyTable on jobs loops=1 time=10.554ms
+    Nested Loop loops=1 time=1.702ms
+      Nested Loop loops=1 time=0.209ms
+        CTE Scan loops=1 time=0.003ms
+        Bitmap Heap Scan on wf_edge loops=1 time=0.147ms
+          Bitmap Index Scan idx=wf_edge_pkey loops=1 time=0.041ms
+      Index Scan on jobs idx=jobs_pkey loops=1000 time=0.001ms
+  Aggregate loops=1 time=0.342ms
+    CTE Scan loops=1 time=0.338ms
+  Aggregate loops=1 time=10.725ms
+    CTE Scan loops=1 time=10.679ms
+[total 11.076 ms]
+
+===== DECREMENT_ABSORBED_SQL
+ModifyTable on jobs loops=1 time=0.007ms
+  Index Scan on jobs idx=jobs_pkey loops=1 time=0.005ms
+  Result loops=1 time=0.006ms
+    Nested Loop loops=0 time=0.000ms
+      Index Scan on jobs idx=jobs_wf_join_wait_idx loops=0 time=0.000ms
+      Index Scan on wf_edge idx=wf_edge_pkey loops=0 time=0.000ms
+[total 0.007 ms]
+
+===== COLLECT_FAN_IN_SQL
+Nested Loop loops=1 time=0.043ms
+  Aggregate loops=0 time=0.000ms
+    Index Scan on wf_step_ledger idx=wf_step_ledger_claim_uniq loops=0 time=0.000ms
+  Index Only Scan on jobs idx=jobs_wf_join_wait_idx loops=1 time=0.026ms
+  Bitmap Heap Scan on wf_edge loops=1 time=0.014ms
+    Bitmap Index Scan idx=wf_edge_parent_idx loops=1 time=0.005ms
+[total 0.043 ms]
+
+===== COLLECT_FAN_IN_APPEND_SQL
+ModifyTable on jobs loops=1 time=0.170ms
+  Index Scan on jobs idx=jobs_pkey loops=1 time=0.012ms
+[total 0.17 ms]
+
+===== WORKFLOW_ROLLUP_SQL
+Aggregate loops=1 time=0.633ms
+  Sort loops=1 time=0.583ms
+    Seq Scan on jobs loops=1 time=0.485ms
+[total 0.633 ms]
+
+===== WORKFLOW_NODES_SQL
+Sort loops=1 time=1.250ms
+  Seq Scan on jobs loops=1 time=0.968ms
+    Seq Scan on wf_edge loops=1 time=0.107ms
+[total 1.25 ms]
+
+===== WORKFLOW_ROOT_MAINTAIN_SQL
+Aggregate loops=1 time=0.077ms
+  Limit loops=1 time=0.055ms
+    LockRows loops=1 time=0.054ms
+      Sort loops=1 time=0.054ms
+        Bitmap Heap Scan on jobs loops=1 time=0.050ms
+          Bitmap Index Scan idx=jobs_actor_running_idx loops=1 time=0.016ms
+  ModifyTable on jobs loops=1 time=0.072ms
+    Nested Loop loops=1 time=0.071ms
+      Subquery Scan loops=1 time=0.070ms
+        Aggregate loops=1 time=0.070ms
+          Sort loops=1 time=0.069ms
+            Hash Join loops=1 time=0.066ms
+              Seq Scan on jobs loops=1 time=0.005ms
+              Hash loops=1 time=0.055ms
+                CTE Scan loops=1 time=0.055ms
+          Bitmap Heap Scan on wf_edge loops=0 time=0.000ms
+            Bitmap Index Scan idx=wf_edge_parent_idx loops=0 time=0.000ms
+      Index Scan on jobs idx=jobs_pkey loops=0 time=0.000ms
+  CTE Scan loops=1 time=0.071ms
+[total 0.077 ms]
+
+===== WORKFLOW_MAP_PROGRESS_SQL
+Aggregate loops=1 time=0.025ms
+  Sort loops=1 time=0.024ms
+    Bitmap Heap Scan on jobs loops=1 time=0.009ms
+      Bitmap Index Scan idx=jobs_wf_children_idx loops=1 time=0.002ms
+[total 0.025 ms]
+
+===== SWEEP_RESULT_TTL (T18 guarded candidate)
+ModifyTable on jobs loops=1 time=0.010ms
+  Limit loops=1 time=0.006ms
+    Nested Loop loops=1 time=0.005ms
+      Bitmap Heap Scan on jobs loops=1 time=0.004ms
+        Bitmap Index Scan idx=jobs_result_expires_at_idx loops=1 time=0.002ms
+      Materialize loops=0 time=0.000ms
+        Nested Loop loops=0 time=0.000ms
+          Index Scan on jobs idx=jobs_wf_join_fire_probe_idx loops=0 time=0.000ms
+          Bitmap Heap Scan on wf_edge loops=0 time=0.000ms
+            Bitmap Index Scan idx=wf_edge_pkey loops=0 time=0.000ms
+  Hash Join loops=1 time=0.008ms
+    CTE Scan loops=1 time=0.006ms
+    Hash loops=0 time=0.000ms
+      Seq Scan on jobs loops=0 time=0.000ms
+[total 0.01 ms]
+
+===== ARCHIVE_CANDIDATE (T18 guarded)
+Limit loops=1 time=0.008ms
+  Nested Loop loops=1 time=0.008ms
+    Index Only Scan on jobs idx=jobs_finished_at_idx loops=1 time=0.007ms
+    Nested Loop loops=0 time=0.000ms
+      Bitmap Heap Scan on wf_edge loops=0 time=0.000ms
+        Bitmap Index Scan idx=wf_edge_parent_idx loops=0 time=0.000ms
+      Index Scan on jobs idx=jobs_pkey loops=0 time=0.000ms
+[total 0.008 ms]

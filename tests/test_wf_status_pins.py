@@ -493,88 +493,112 @@ async def test_t08_rollup_cost_gate_index_driven(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
-    """At the T04-class shape the grouped rollup is INDEX-DRIVEN (the
-    EXPLAIN assert: no seq scan of jobs) and inside the recorded band
-    (the ≤ 5 ms initial bound, re-measured and recorded — the pin asserts
-    the plan, the band moves only by argument in review). The ride:
-    jobs_wf_flow_nodes_idx (01.00.25_01)."""
+    """At the FLEET shape the flow-scoped reads are INDEX-DRIVEN (the
+    EXPLAIN assert: no seq scan of the fleet table) and inside the recorded
+    band. THE SHAPE IS THE LOAD-BEARING PART (the phase-2 attack's H3b):
+    the pre-rewrite pin measured a table that contained ONLY the measured
+    flow's own rows — where the measured flow IS the whole table, a seq
+    scan and an index scan cost the same and the plan assert cannot fail.
+    Here the measured run is ONE AMONG MANY on a fleet table (40 runs +
+    a 60k-row vanilla population), the production shape — the seq-scan
+    shape (the pre-cure index: the raw-TEXT key the reads' uuid cast
+    broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
+    per-node read at this very shape —
+    .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
+    The ride: jobs_wf_flow_nodes_idx (01.00.25_02 — the index expression
+    carries the same uuid cast the reads carry; the partial covers the
+    workflow rows only)."""
     import time
 
-    # The shape: one run with a fleet-scale node population (60k nodes —
-    # the T04 fleet shape's own scale class).
-    flow_id = await seed_flow(wf_conn, wf_schema)
-    n = 60_000
+    n_vanilla = 60_000
+    n_flows = 40
+    n_nodes = 500
+    statuses = ("succeeded", "running", "pending", "failed")
+
+    # THE VANILLA POPULATION: production's fleet table is mostly NOT
+    # workflow rows — this is what makes the plan assert honest (a seq
+    # scan must traverse THIS to find the measured run).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
-        f"VALUES ($1::uuid, 'wf', 'default', '{{}}'::jsonb, 3, 'transient', "
-        f"'pending'::\"{wf_schema}\".job_status, 'big_run', 0, "
-        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')))",
-        new_uuid(),
-        str(flow_id),
+        "retry_kind, status, step_key, scheduled_at, idempotency_scope, idempotency_key) "
+        "SELECT gen_random_uuid(), 'van', 'default', '{}', 3, 'transient', "
+        f"(ARRAY['succeeded','failed']::text[])[1 + (g % 2)]::{wf_schema}.job_status, "
+        "'v', now() - interval '1 hour', 'scope', 'van-' || g "
+        "FROM generate_series(1, $1) g",
+        n_vanilla,
     )
-    parent_ids = [new_uuid() for _ in range(n)]
-    statuses = ("succeeded", "running", "pending", "failed")
-    from taskq.workflows._types import _metadata
 
-    meta = json.dumps(_metadata(flow_id, blocking_reason=None))
-    for start in range(0, n, 500):
-        chunk = parent_ids[start : start + 500]
+    flow_ids: list[JobId] = []
+    for f in range(n_flows):
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        flow_ids.append(flow_id)
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
             "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
-            "SELECT u.id, u.actor, u.queue, u.payload, u.max_attempts, u.retry_kind, "
-            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, '
-            "u.idempotency_scope, u.idempotency_key "
-            "FROM unnest($1::uuid[], $2::text[], $3::text[], $4::jsonb[], "
-            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], "
-            "$10::text[], $11::text[]) "
-            "AS u(id, actor, queue, payload, max_attempts, retry_kind, status, "
-            "step_key, metadata, idempotency_scope, idempotency_key) ",
-            chunk,
-            ["wf"] * len(chunk),
-            ["default"] * len(chunk),
-            ["{}"] * len(chunk),
-            [3] * len(chunk),
-            ["transient"] * len(chunk),
-            [statuses[i % len(statuses)] for i in range(start, start + len(chunk))],
-            ["c"] * len(chunk),
-            [meta] * len(chunk),
-            [f"workflow:{flow_id}"] * len(chunk),
-            [f"wf:{flow_id}:c:{i}" for i in range(start, start + len(chunk))],
+            "SELECT gen_random_uuid(), 'wf', 'default', '{}', 3, 'transient', "
+            f"(ARRAY['succeeded','running','pending','failed']::text[])[1 + (g % 4)]::{wf_schema}.job_status, "
+            "'c', jsonb_build_object('flow_id', $1::text, 'blocking_reason', 'join'), "
+            "'workflow:' || $1::text, 'wf:' || $1::text || ':' || g "
+            "FROM generate_series(1, $2) g",
+            str(flow_id),
+            n_nodes,
         )
 
-    # THE PLAN ASSERT: no seq scan of jobs/wf_edge (the flow-nodes
-    # expression index serves the read).
-    plan_rows = await wf_conn.fetch(f"EXPLAIN (FORMAT JSON) {wf_sql.workflow_rollup}", flow_id)
-    plan_text = json.dumps([dict(r) for r in plan_rows], default=str)
-    for node_block in plan_text.split('{"Node Type": "')[1:]:
-        rel_start = node_block.find('"Relation Name": "')
-        if rel_start == -1:
-            continue
-        rel = node_block[rel_start + len('"Relation Name": "') :][: len("jobs")]
-        assert "Seq Scan" not in node_block[:rel_start] or rel not in ("jobs", "wf_edge"), (
-            f"the rollup seq-scans {rel} — the index-driven gate reds"
-        )
-
-    # THE BAND: the ≤ 5 ms initial bound, re-measured and RECORDED (the
-    # band moves only by argument in review). The measured steady state is
-    # the VACUUMED read (index-only scans need the visibility map; a
-    # freshly-seeded table heap-visits every row — the two measurements
-    # both recorded, the argument in the artifact).
+    # THE STEADY STATE: the VACUUMED table (index scans need the
+    # visibility map; a freshly-seeded table heap-visits every row — the
+    # two measurements both recorded, the argument in the artifact).
     await wf_conn.execute("VACUUM (ANALYZE)")
-    samples = []
+
+    # THE PLAN ASSERT: no seq scan of jobs/wf_edge in ANY flow-scoped read
+    # (the rollup, the per-node read, the maintenance leg — the fleet
+    # gauge's sampler is deliberately fleet-wide: it groups the WHOLE
+    # fleet, there is no run id to key it; its recorded band is its own).
+    async def assert_index_driven(sql: str, *args: object) -> None:
+        plan_rows = await wf_conn.fetch(f"EXPLAIN (FORMAT JSON) {sql}", *args)
+        plan = plan_rows[0][0]
+        if isinstance(plan, str):
+            plan = json.loads(plan)
+
+        def walk(node: dict[str, Any]) -> None:
+            node_type = node.get("Node Type")
+            rel = node.get("Relation Name")
+            # The FLEET TABLE is the gate's subject: a seq scan of jobs at
+            # the fleet shape is the monster class. (wf_edge is EMPTY in
+            # this shape — a seq scan of an empty relation is the
+            # planner's correct, zero-cost pick, not a fleet walk; the
+            # per-node probes ride wf_edge_parent_idx when rows exist.)
+            assert not (node_type == "Seq Scan" and rel == "jobs"), (
+                f"the read seq-scans {rel} at the fleet shape — the "
+                "index-driven gate reds (the cure: 01.00.25_02's uuid-cast "
+                "expression + the workflow-rows-only partial)"
+            )
+            for child in node.get("Plans", []) or []:
+                walk(child)  # pyright: ignore[reportArgumentType]
+
+        walk(plan[0]["Plan"])  # pyright: ignore[reportIndexType]
+
+    measured_flow = flow_ids[-1]
+    await assert_index_driven(wf_sql.workflow_rollup, measured_flow)
+    await assert_index_driven(wf_sql.workflow_nodes, measured_flow)
+    await assert_index_driven(wf_sql.workflow_root_maintain, 200)
+
+    # THE BAND: the fleet-shape read is O(the run's own node count) — the
+    # measured p50 sits in the sub-millisecond class at the 500-node run
+    # shape (measured 0.12-0.24 ms; the band is set from the measurement
+    # with CI-noise margin, G11/G12: bands are SET from measurements,
+    # then pinned — the band moves only by argument in review).
+    samples: list[float] = []
     for _ in range(5):
         start_ns = time.perf_counter_ns()
-        rows = await module_pg_pool.fetch(wf_sql.workflow_rollup, flow_id)
+        rows = await module_pg_pool.fetch(wf_sql.workflow_rollup, measured_flow)
         samples.append((time.perf_counter_ns() - start_ns) / 1e6)
         assert rows, "the rollup answered"
     p50 = sorted(samples)[len(samples) // 2]
-    band_budget_ms = 40.0
+    band_budget_ms = 10.0
     assert p50 <= band_budget_ms, (
         f"the grouped rollup p50 {p50:.2f} ms exceeds the recorded band "
-        f"({band_budget_ms} ms) — re-argue the band in review, never edit "
-        "it silently"
+        f"({band_budget_ms} ms) at the fleet shape — re-argue the band in "
+        "review, never edit it silently"
     )
 
     from tests._wf_fixtures import MEASUREMENTS
@@ -583,34 +607,38 @@ async def test_t08_rollup_cost_gate_index_driven(
     (MEASUREMENTS / "wf-rollup-band.json").write_text(
         json.dumps(
             {
-                "shape": {"nodes": n, "flow": str(flow_id)},
+                "shape": {
+                    "fleet_rows": n_vanilla + n_flows * (n_nodes + 1),
+                    "runs": n_flows,
+                    "nodes_per_run": n_nodes,
+                    "measured_flow": str(measured_flow),
+                },
                 "p50_ms": round(p50, 3),
                 "samples_ms": [round(s, 3) for s in samples],
-                "initial_bound_ms": 5,
                 "recorded_band_ms": band_budget_ms,
                 "argument": (
-                    "the initial <=5 ms bound was pre-implementation; the "
-                    "measured index-driven read at the 60k shape is ~25 ms "
-                    "(~0.4 us/node, linear in the RUN'S OWN node count — "
-                    "the read is per run id, never the fleet table); the "
-                    "plan gate (no seq scan) is the load-bearing assert"
+                    "the pin REWRITTEN for the fleet shape (the phase-2 "
+                    "attack's H3b): the pre-rewrite shape measured a table "
+                    "containing ONLY the measured flow's rows — the "
+                    "measured flow WAS the whole table, so the plan assert "
+                    "could not fail on a seq scan. At the fleet shape the "
+                    "pre-cure index (01.00.25_01's raw-TEXT key) served NO "
+                    "flow-scoped read: the rollup read p50 21.2 ms and the "
+                    "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
+                    "fleet table (.measurements/fix2/index-before-text-"
+                    "index.txt). The cure (01.00.25_02: the uuid-cast "
+                    "expression + the metadata?'flow_id' partial, the "
+                    "reads carrying the proving clauses) puts every "
+                    "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
+                    "O(the run's own node count). The plan gate is the "
+                    "load-bearing assert; the band is set from THIS "
+                    "measurement. The fleet-wide gauge sampler ("
+                    "_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY "
+                    "DESIGN (no run id to key); its band is recorded in "
+                    "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
                 ),
-                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_01)",
+                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_02)",
             },
             indent=2,
         )
     )
-    # THE BAND: the ≤ 5 ms initial bound was set PRE-implementation (the
-    # ticket's own protocol: "re-measure at implementation and record the
-    # band — the pin asserts the plan, the band moves only by argument in
-    # review"). The measured, VACUUMED, index-driven read at the 60k-node
-    # shape is ~25 ms p50 — ~0.4 µs per node, LINEAR IN THE RUN'S OWN NODE
-    # COUNT (the read is per run id: the admin surface and the gauge read
-    # ONE run's rows, never the fleet table). THE ARGUMENT for the band's
-    # revision, recorded: the initial bound priced a shape the
-    # implementation does not have — the rollup's work is the run's node
-    # count x the index-entry walk (~0.4 µs each, index-only after
-    # VACUUM), so a 60k-node run reads in ~25 ms and a 2k-node run (the
-    # demo/fanout scale) reads in ~1 ms. The plan gate is the load-bearing
-    # assert (no seq scan — the monster class); the band is set from THIS
-    # measurement (G11/G12: bands are SET from measurements, then pinned).

@@ -167,6 +167,7 @@ _NEVER_GRANTED_SQL = """\
 SELECT step_key, status
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1::uuid
+  AND metadata ? 'flow_id'
   AND step_key <> '__flow__'
   AND status IN ('cancelled', 'crashed', 'abandoned')
 """

@@ -1,0 +1,63 @@
+===== BEFORE (01.00.25_01 — the raw-TEXT index key) — the fleet shape (40 runs x 500 nodes + 200000 vanilla rows)
+
+----- rollup: the plan
+Aggregate rows=4.0 time=20.128ms
+  Gather Merge rows=12.0 time=20.122ms
+    Aggregate rows=4.0 time=16.009ms
+      Sort rows=166.67 time=15.987ms
+        Seq Scan on jobs rows=166.67 time=15.944ms
+
+----- rollup: p50 21.183 ms (samples [21.627, 21.612, 21.953, 19.758, 21.183, 20.977, 19.593])
+
+----- nodes: the plan
+Gather Merge rows=500.0 time=20.387ms
+  Sort rows=166.67 time=15.913ms
+    Seq Scan on jobs rows=166.67 time=15.854ms
+  Nested Loop rows=0.0 time=0.007ms
+    Seq Scan on wf_edge rows=0.0 time=0.006ms
+    Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+
+----- nodes: p50 20.742 ms (samples [20.587, 20.833, 19.31, 21.837, 20.901, 19.388, 20.742])
+
+----- root-maintain: the plan
+Aggregate rows=1.0 time=60.374ms
+  Limit rows=40.0 time=3.138ms
+    LockRows rows=40.0 time=3.133ms
+      Sort rows=40.0 time=3.077ms
+        Bitmap Heap Scan on jobs rows=40.0 time=3.063ms
+          BitmapAnd rows=0.0 time=0.412ms
+            Bitmap Index Scan idx=jobs_identity_active_idx rows=10040.0 time=0.227ms
+            Bitmap Index Scan idx=jobs_wf_flow_nodes_idx rows=5040.0 time=0.167ms
+  ModifyTable on jobs rows=0.0 time=60.364ms
+    Nested Loop rows=0.0 time=60.361ms
+      Subquery Scan rows=0.0 time=60.360ms
+        Aggregate rows=0.0 time=60.359ms
+          Sort rows=20000.0 time=52.012ms
+            Hash Join rows=20000.0 time=49.691ms
+              Seq Scan on jobs rows=20000.0 time=39.164ms
+              Hash rows=40.0 time=3.152ms
+                CTE Scan rows=40.0 time=3.139ms
+          Nested Loop rows=0.0 time=0.000ms
+            Bitmap Heap Scan on wf_edge rows=0.0 time=0.000ms
+              Bitmap Index Scan idx=wf_edge_parent_idx rows=0.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+          Nested Loop rows=0.0 time=0.000ms
+            Bitmap Heap Scan on wf_edge rows=0.0 time=0.000ms
+              Bitmap Index Scan idx=wf_edge_parent_idx rows=0.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+      Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+  CTE Scan rows=0.0 time=60.362ms
+
+----- root-maintain: p50 57.880 ms (samples [58.781, 56.079, 58.049, 59.07, 57.448, 55.602, 57.88])
+
+----- wf-progress-sampler: the plan
+Aggregate rows=4.0 time=27.474ms
+  Gather Merge rows=12.0 time=27.461ms
+    Sort rows=4.0 time=22.864ms
+      Aggregate rows=4.0 time=22.842ms
+        Nested Loop rows=6666.67 time=22.068ms
+          Seq Scan on jobs rows=6666.67 time=19.019ms
+          Memoize rows=1.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=1.0 time=0.003ms
+
+----- wf-progress-sampler: p50 23.852 ms (samples [24.772, 24.191, 23.964, 23.852, 22.44, 21.733, 22.463])

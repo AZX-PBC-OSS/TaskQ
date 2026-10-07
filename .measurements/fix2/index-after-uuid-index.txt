@@ -1,0 +1,58 @@
+===== AFTER (01.00.25_02 — the uuid-cast index) — the fleet shape (40 runs x 500 nodes + 200000 vanilla rows)
+
+----- rollup: the plan
+Aggregate rows=4.0 time=0.160ms
+  Index Scan on jobs idx=jobs_wf_flow_nodes_idx rows=500.0 time=0.137ms
+
+----- rollup: p50 0.120 ms (samples [0.163, 0.138, 0.12, 0.112, 0.112, 0.122, 0.113])
+
+----- nodes: the plan
+Sort rows=500.0 time=0.181ms
+  Index Scan on jobs idx=jobs_wf_flow_nodes_idx rows=500.0 time=0.111ms
+    Nested Loop rows=0.0 time=0.001ms
+      Seq Scan on wf_edge rows=0.0 time=0.001ms
+      Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+
+----- nodes: p50 0.287 ms (samples [0.287, 0.278, 0.292, 0.272, 0.274, 0.337, 0.345])
+
+----- root-maintain: the plan
+Aggregate rows=1.0 time=17.786ms
+  Limit rows=40.0 time=2.012ms
+    LockRows rows=40.0 time=2.009ms
+      Sort rows=40.0 time=1.979ms
+        Bitmap Heap Scan on jobs rows=40.0 time=1.970ms
+          BitmapAnd rows=0.0 time=0.271ms
+            Bitmap Index Scan idx=jobs_identity_active_idx rows=10040.0 time=0.147ms
+            Bitmap Index Scan idx=jobs_wf_flow_nodes_idx rows=5040.0 time=0.108ms
+  ModifyTable on jobs rows=0.0 time=17.780ms
+    Nested Loop rows=0.0 time=17.778ms
+      Subquery Scan rows=0.0 time=17.777ms
+        Aggregate rows=0.0 time=17.777ms
+          Sort rows=20000.0 time=11.093ms
+            Nested Loop rows=20000.0 time=9.202ms
+              CTE Scan rows=40.0 time=2.016ms
+              Index Scan on jobs idx=jobs_wf_flow_nodes_idx rows=500.0 time=0.155ms
+          Nested Loop rows=0.0 time=0.000ms
+            Bitmap Heap Scan on wf_edge rows=0.0 time=0.000ms
+              Bitmap Index Scan idx=wf_edge_parent_idx rows=0.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+          Nested Loop rows=0.0 time=0.000ms
+            Bitmap Heap Scan on wf_edge rows=0.0 time=0.000ms
+              Bitmap Index Scan idx=wf_edge_parent_idx rows=0.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+      Index Scan on jobs idx=jobs_pkey rows=0 time=0.000ms
+  CTE Scan rows=0.0 time=17.778ms
+
+----- root-maintain: p50 17.622 ms (samples [16.693, 17.622, 18.018, 17.104, 17.671, 17.579, 18.021])
+
+----- wf-progress-sampler: the plan
+Aggregate rows=4.0 time=23.889ms
+  Gather Merge rows=12.0 time=23.880ms
+    Sort rows=4.0 time=18.956ms
+      Aggregate rows=4.0 time=18.939ms
+        Nested Loop rows=6666.67 time=18.311ms
+          Seq Scan on jobs rows=6666.67 time=15.967ms
+          Memoize rows=1.0 time=0.000ms
+            Index Scan on jobs idx=jobs_pkey rows=1.0 time=0.001ms
+
+----- wf-progress-sampler: p50 23.378 ms (samples [23.565, 23.79, 23.579, 22.618, 22.736, 23.378, 21.53])

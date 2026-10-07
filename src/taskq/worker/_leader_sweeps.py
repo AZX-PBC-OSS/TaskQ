@@ -524,7 +524,13 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             wsql,
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
-        return summary.blocked + summary.blocked_required + summary.flow_fenced + summary.reconciled + len(summary.fired)
+        return (
+            summary.blocked
+            + summary.blocked_required
+            + summary.flow_fenced
+            + summary.reconciled
+            + len(summary.fired)
+        )
 
     async def wf_outbox_drain_call() -> int:
         from taskq.workflows import drain_outbox
@@ -1651,7 +1657,8 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # port). One grouped read (the same read class the
                     # admin's status panel uses — one query per status
                     # read), index-driven (jobs_wf_flow_nodes_idx,
-                    # 01.00.25_01). The DECLARED-WORKFLOW dimension: the
+                    # 01.00.25_02 — the uuid-cast expression, the
+                    # workflow-rows-only partial). The DECLARED-WORKFLOW dimension: the
                     # registered names keep their series; every other
                     # workflow's runs collapse onto `_other_` (summed) —
                     # never per-node labels (the cardinality doctrine).

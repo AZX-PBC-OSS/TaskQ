@@ -1,0 +1,34 @@
+/tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:41:15 - error: Argument missing for parameter "error_traceback" (reportCallIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:49:15 - error: Argument missing for parameter "error_traceback" (reportCallIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:60:15 - error: Argument of type "Literal['boom']" cannot be assigned to parameter "error" of type "ErrorInfo" in function "__init__"
+    "Literal['boom']" is not assignable to "ErrorInfo" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:68:34 - error: Argument of type "Literal[42]" cannot be assigned to parameter "status" of type "str" in function "__init__"
+    "Literal[42]" is not assignable to "str" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:70:56 - error: Argument of type "Literal['2']" cannot be assigned to parameter "deps_pending" of type "int" in function "__init__"
+    "Literal['2']" is not assignable to "int" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:86:38 - error: Argument of type "list[dict[str, str]]" cannot be assigned to parameter "nodes" of type "tuple[NodeView, ...]" in function "derive_workflow_status"
+    "list[dict[str, str]]" is not assignable to "tuple[NodeView, ...]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:92:12 - error: Arguments missing for parameters "terminal_mark", "decrement", "decrement_absorbed", "fail_closed_cascade", "collect_fan_in", "collect_fan_in_append", "fire", "outbox_insert", "outbox_fetch_undelivered", "outbox_drain_consumers", "outbox_drain_flip", "fork_children", "fork_edges", "fork_join_node", "fork_join_consumers", "rederive_sweep", "sweep_fire", "join_body_unavailable", "ledger_claim", "ledger_memoized", "ledger_terminal", "ledger_terminal_by_id", "ledger_fence_attempt", "ledger_fence_by_id", "phantom_reap", "node_insert", "node_edge", "flow_status", "flow_run_insert", "flow_run_read", "workflow_rollup", "workflow_nodes", "workflow_map_progress", "workflow_root_maintain" (reportCallIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:94:9 - error: Argument type is unknown
+    Argument corresponds to parameter "conn" in function "fan_in_skip" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:96:23 - error: Argument of type "Literal['00000000-0000-0000-0000-000000000000']" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "Literal['00000000-0000-0000-0000-000000000000']" is not assignable to "UUID" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:97:25 - error: Argument of type "Literal['00000000-0000-0000-0000-000000000000']" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "Literal['00000000-0000-0000-0000-000000000000']" is not assignable to "UUID" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:102:5 - error: Type of "wrong" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:102:13 - error: Arguments missing for parameters "parent_id", "step_key", "map_index" (reportCallIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:103:5 - error: Type of "_" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:111:5 - error: Type of "orphan" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:111:14 - error: Type of "join" is unknown (reportUnknownMemberType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:111:34 - error: Cannot access attribute "join" for class "int"
+    Attribute "join" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:112:5 - error: Type of "_" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:116:12 - error: Arguments missing for parameters "terminal_mark", "decrement", "decrement_absorbed", "fail_closed_cascade", "collect_fan_in", "collect_fan_in_append", "fire", "outbox_insert", "outbox_fetch_undelivered", "outbox_drain_consumers", "outbox_drain_flip", "fork_children", "fork_edges", "fork_join_node", "fork_join_consumers", "rederive_sweep", "sweep_fire", "join_body_unavailable", "ledger_claim", "ledger_memoized", "ledger_terminal", "ledger_terminal_by_id", "ledger_fence_attempt", "ledger_fence_by_id", "phantom_reap", "node_insert", "node_edge", "flow_status", "flow_run_insert", "flow_run_read", "workflow_rollup", "workflow_nodes", "workflow_map_progress", "workflow_root_maintain" (reportCallIssue)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:118:9 - error: Argument of type "Literal['not-a-conn']" cannot be assigned to parameter "conn" of type "ConnLike" in function "reconstruct_workflow_status"
+    Type "Literal['not-a-conn']" is not assignable to type "ConnLike"
+      "Literal['not-a-conn']" is not assignable to "Connection[Record]"
+      "Literal['not-a-conn']" is not assignable to "PoolConnectionProxy[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow/tests/typeprobe/attack2_wf_phase2_types.py:120:15 - error: Argument of type "Literal['00000000-0000-0000-0000-000000000000']" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "Literal['00000000-0000-0000-0000-000000000000']" is not assignable to "UUID" (reportArgumentType)
+20 errors, 0 warnings, 0 informations
