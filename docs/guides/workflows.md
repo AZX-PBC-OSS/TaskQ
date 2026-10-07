@@ -163,6 +163,28 @@ absorbed-failure clause in the status derivation,
 ledger/attempts — the join row's array is the bounded summary (the JSONB
 size-cap policy, `docs/guides/maintenance-sweeps.md`).
 
+## The retention coupling (T18)
+
+The pruner is WORKFLOW-AWARE: the result-expiry sweep may not eat a map's
+children before the join fires (a child's `result_expires_at` is held
+while a join-wait node counts it — after the join fires, the subtree ages
+together, §10.3), and retention may not prune a parent row of a
+NON-terminal run (the sweep's ledger recount reads parent rows as
+truth). Terminal runs prune on the normal schedule. The guards are
+WHERE-class conditions on the EXISTING arms — no new sweep process; the
+failure mode the guards prevent is Oban-Pro's documented
+`preserve_workflows` lesson (the reduce reading holes — the silent
+partial). See `docs/guides/maintenance-sweeps.md` §7.
+
+**The JSONB size cap / compaction policy (GAPS-ESTATE D5's one home):**
+the collect's FailureInfo list on the join row is BOUNDED — an append
+that would exceed the byte cap (`FANIN_FAILURES_BYTE_CAP`, 64 KiB)
+compacts the row to the bounded summary (the `"__truncated__": N` marker
+counting the items no longer spelled + the ledger pointer); the FULL
+detail stays on the ledger/attempts — the record never loses it. The
+compacted row stays bounded forever (a later append increments the
+marker).
+
 ## The three cancel legs
 
 Cancel = one transaction — the flow flip is the linearization point; every
