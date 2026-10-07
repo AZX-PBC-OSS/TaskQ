@@ -1792,6 +1792,11 @@ class BackendSettings(Protocol):
 
     schema_name: str
     dispatch_oversample: int
+    # The claim cursor's jitter reset interval, seconds; 0 disables the
+    # cursor (the opt-in default). Read per dispatch round (the
+    # oversample plumbing pattern), so a settings change applies without
+    # rebuilding the backend.
+    claim_cursor_reset_seconds: float
     dispatcher_command_timeout: float
     result_max_bytes: int
     # Rows per committed batch for every job_events writer the backend

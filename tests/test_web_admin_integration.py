@@ -79,6 +79,7 @@ class _TestBackendSettings:
 
     schema_name: str = _SCHEMA_LABEL
     dispatch_oversample: int = 2
+    claim_cursor_reset_seconds: float = 0.0
     dispatcher_command_timeout: float = 5.0
     result_max_bytes: int = MAX_RESULT_BYTES
     event_writer_batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE

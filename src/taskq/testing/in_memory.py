@@ -66,6 +66,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
+from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._cursor import (
     decode_batch_cursor,
     decode_cursor,
@@ -299,9 +300,22 @@ class InMemoryBackend:
         # reschedule delay at min(row cap, this ceiling), mirroring the
         # PG sweep's bound parameter.
         self._max_retry_backoff = max_retry_backoff
+        # The claim cursor's knob, carried like the knobs above: the
+        # dispatch twin reads it per round (0 disables the cursor - the
+        # naive shape). The default mirrors WorkerSettings'
+        # claim_cursor_reset_seconds' OPT-IN default (0 = disabled, the
+        # A/B-measured posture), NOT the mechanism's 60s cadence constant
+        # (backend/_claim_cursor.py CLAIM_CURSOR_RESET_SECONDS) - the
+        # posture and the cadence are deliberately different numbers.
+        self._claim_cursor_reset_seconds: float = 0.0
         self._worker_id: UUID = new_uuid()
 
         self._jobs: _JobStore = _JobStore(clock)
+        # The claim cursor: this backend's per-queue high-water mark of
+        # successfully-claimed ids, the twin of PostgresBackend's (see
+        # backend/_claim_cursor.py). Clocked by the backend's own clock so
+        # tests drive the jitter reset like every other clocked seam.
+        self._claim_cursor = ClaimCursor(clock=clock.monotonic)
         self._attempts: dict[JobId, list[AttemptRow]] = {}
         self._events: list[EventRow] = []
         # The event-prune watermark twin (PG: job_events_prune_state,
