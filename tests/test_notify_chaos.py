@@ -121,7 +121,7 @@ def pg_dsn_function_scoped(
 
 
 @pytest.mark.integration
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_notify")
 async def test_tc1_kill_listener_via_terminate_backend(pg_dsn: str) -> None:
     """Kill listener connection via pg_terminate_backend.
     Spawn notify_listener_loop, kill its connection from another session,
@@ -190,7 +190,7 @@ async def test_tc1_kill_listener_via_terminate_backend(pg_dsn: str) -> None:
 
 @pytest.mark.slow
 @pytest.mark.integration
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_notify")
 async def test_tc2_pg_container_stop_start(
     pg_container_function_scoped: PostgresContainer,
 ) -> None:
@@ -393,7 +393,7 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_notify")
 async def test_tc4_notify_storm_coalescing(pg_dsn: str) -> None:
     """NOTIFY storm - coalescing under 1000 wakes/s, no starvation.
     Fires pg_notify 1000 times in a tight loop. Asserts the subscriber
@@ -463,7 +463,7 @@ async def test_tc4_notify_storm_coalescing(pg_dsn: str) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_notify")
 async def test_tc5_reconnect_delivers_missed_jobs(pg_dsn: str) -> None:
     """Reconnect after pg_terminate_backend delivers missed jobs.
     Kills the listener connection, then immediately enqueues two jobs.
