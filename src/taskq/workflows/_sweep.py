@@ -43,6 +43,7 @@ from taskq.obs import get_logger
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
     BLOCKING_REASON_BODY_UNAVAILABLE,
+    BLOCKING_REASON_FAILED_PARENT,
     BLOCKING_REASON_ORPHAN_PARENT,
     WorkflowSql,
 )
@@ -60,6 +61,9 @@ class SweepResult:
     blocked: int
     reconciled: int
     firable: int
+    #: T06's heal: fail_closed joins whose parent terminal-failed while
+    #: their own tx2 never ran — blocked-with-reason by this pass.
+    blocked_required: int = 0
     fired: tuple[FiredJoin, ...] = ()
 
 
@@ -69,12 +73,14 @@ async def sweep_join_rederive(
     *,
     batch_size: int = 200,
     orphan_blocking_reason: str = BLOCKING_REASON_ORPHAN_PARENT,
+    failed_parent_blocking_reason: str = BLOCKING_REASON_FAILED_PARENT,
 ) -> SweepResult:
     """The lock-first re-derive arm: ONE batched statement (lock the
     join-wait children SKIP LOCKED → count un-terminal parents from the
     edge ledger → reconcile the cache → block the orphan-parent rows →
-    report counts), then the set-based fire arm for the firable set (the
-    flow-status leg rides INSIDE the fire statement — a post-cancel
+    block the fail-closed joins whose parent terminal-failed (T06's heal)
+    → report counts), then the set-based fire arm for the firable set
+    (the flow-status leg rides INSIDE the fire statement — a post-cancel
     re-derive refuses; the unfenced variant is pin 5's red, kept forever).
 
     The whole pass runs in ONE transaction: the rederive statement's row
@@ -98,7 +104,9 @@ async def sweep_join_rederive(
     loudness asymmetry, R2-2: the delivery continues, the record is loud).
     """
     async with pool.acquire() as conn, conn.transaction():
-        summary = await conn.fetchrow(wsql.rederive_sweep, batch_size, orphan_blocking_reason)
+        summary = await conn.fetchrow(
+            wsql.rederive_sweep, batch_size, orphan_blocking_reason, failed_parent_blocking_reason
+        )
         assert summary is not None  # the statement always returns its summary row
         firable = summary["firable"]
         fired: tuple[FiredJoin, ...] = ()
@@ -187,6 +195,7 @@ async def sweep_join_rederive(
                 await conn.executemany(wsql.outbox_insert, outbox_rows)
     return SweepResult(
         blocked=summary["blocked"],
+        blocked_required=summary["blocked_required"],
         reconciled=summary["reconciled"],
         firable=firable,
         fired=fired,

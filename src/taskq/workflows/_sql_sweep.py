@@ -48,7 +48,20 @@ counts AS (
                WHERE e.child_id IS NOT NULL
                  AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
-           ) AS unterminal
+           ) AS unterminal,
+           -- T06's compose: a FAILED parent on a FAIL_CLOSED edge never
+           -- fires the join — the heal resolves it the way the direct
+           -- path's cascade would have (the crash window ate the child's
+           -- tx2): the blocked_required arm stamps it, the firable arm
+           -- excludes it. A collect join's failed parent is RESOLVED
+           -- (terminal — the fan-in landed at its finalize); the count
+           -- above is all it reads.
+           count(*) FILTER (
+               WHERE e.child_id IS NOT NULL
+                 AND p.id IS NOT NULL
+                 AND p.status = 'failed'
+                 AND e.failure_policy = 'fail_closed'
+           ) AS failed_required
     FROM locked l
     -- LEFT-JOIN, not INNER: a join-wait row with NO edge rows (a public
     -- path that never wrote its edges) must be ENUMERATED — the inner
@@ -75,12 +88,33 @@ blocked AS (
       AND NOT j.metadata @> '{{"blocking_reason": "orphan_parent"}}'::jsonb
     RETURNING j.id
 ),
+-- T06's heal: the fail_closed join whose parent TERMINAL-FAILED while
+-- this join's own tx2 never ran (the crash window) — the same
+-- blocked-with-reason resolution the direct path's cascade stamps, so
+-- the record never shows a hanging join whatever process healed.
+blocked_required AS (
+    UPDATE {schema}.jobs j
+    SET metadata = jsonb_set(
+            j.metadata,
+            '{{blocking_reason}}',
+            to_jsonb($3::text),
+            true
+        )
+    FROM counts c
+    WHERE j.id = c.child_id
+      AND c.failed_required > 0
+      AND c.missing_parents = 0
+      AND c.edge_count > 0
+      AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
+    RETURNING j.id
+),
 reconciled AS (
     UPDATE {schema}.jobs j
     SET deps_pending = c.unterminal::smallint
     FROM counts c
     WHERE j.id = c.child_id
       AND c.missing_parents = 0
+      AND c.failed_required = 0
       AND c.edge_count > 0
       AND j.deps_pending <> c.unterminal::smallint
     RETURNING j.id
@@ -92,9 +126,13 @@ firable AS (
     WHERE c.edge_count > 0
       AND c.missing_parents = 0
       AND c.unterminal = 0
+      -- A fail_closed join with a failed parent is never firable (T06):
+      -- the blocked_required arm owns its resolution.
+      AND c.failed_required = 0
 )
 SELECT
     (SELECT count(*) FROM blocked) AS blocked,
+    (SELECT count(*) FROM blocked_required) AS blocked_required,
     (SELECT count(*) FROM reconciled) AS reconciled,
     (SELECT count(*) FROM firable) AS firable
 """
@@ -142,7 +180,17 @@ counts AS (
                WHERE e.child_id IS NOT NULL
                  AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
-           ) AS unterminal
+           ) AS unterminal,
+           -- T06: a failed parent on a fail_closed edge never fires (the
+           -- rederive's blocked_required arm owns that row's resolution;
+           -- the fire arm excludes it from the firable set — the same
+           -- guard, stated twice because both statements re-derive).
+           count(*) FILTER (
+               WHERE e.child_id IS NOT NULL
+                 AND p.id IS NOT NULL
+                 AND p.status = 'failed'
+                 AND e.failure_policy = 'fail_closed'
+           ) AS failed_required
     FROM locked l
     -- LEFT-JOIN, not INNER (the rederive arm's hardened shape): an
     -- edge-less join-wait row is enumerated and EXCLUDED from firable
@@ -161,6 +209,7 @@ firable AS (
         WHERE c.edge_count > 0
           AND c.missing_parents = 0
           AND c.unterminal = 0
+          AND c.failed_required = 0
     ) f
 ),
 wins AS (

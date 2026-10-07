@@ -74,6 +74,14 @@ def ledger_redlog() -> Iterator[RedLog]:
 
 
 @pytest.fixture
+def propagation_redlog() -> Iterator[RedLog]:
+    """The red sink for the T06 propagation pins (the phase-2 family)."""
+    log = RedLog("t06-propagation-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
 async def wf_conn(clean_pg_conn: asyncpg.Connection) -> asyncpg.Connection:
     """The per-test clean connection on the module's migrated schema."""
     return clean_pg_conn

@@ -72,6 +72,58 @@ terminal flow's entry at the reap (a terminal flow's joins can never
 fire). A raising body there rolls the sweep pass back; the next tick
 re-fires.
 
+## The failed-parent propagation (T06)
+
+A parent's TERMINAL failure — the retry ladder EXHAUSTED, or a
+non-retryable class — resolves the joins counting it by the edges' DECLARED
+failure policy, recorded on the edge ledger (`wf_edge.failure_policy`) at
+fork/join time. The absorption is on the record; the derivation never
+infers it.
+
+**`fail_closed` (the default)** — the join fails CLOSED by a flow-scoped
+transition set, ONE statement in the failing child's tx2:
+
+* the joined node blocks: `metadata.blocking_reason='failed_parent'` +
+  `metadata.failed_parent=<the failed node>` — its side of the counter is
+  resolved by THIS stamp (the rederive arm locks `blocking_reason='join'`
+  rows only), so the record never shows a hanging join;
+* the running peers are PEER-CANCELLED: `status='cancelled'` with the
+  cancel-origin marker `error_class='CancelledByPeerFailure'` (the `by`
+  leg — the same outcome reads the same way whichever path produced it)
+  and the structured record `metadata.peer_cancel =
+  {"by": "peer_failure", "cascade_from": <the failed node>}`;
+* the workflow fails: the flow root flips to `failed` (§17.2's cascade) —
+  the linearization point every flow-status leg then reads.
+
+The sweep composes: a child whose tx1 committed the terminal failure but
+whose tx2 never ran (the crash window) is healed by the rederive arm's
+`failed_required` count — the fail_closed join is blocked-with-reason by
+the HEAL, never fired over the failed parent.
+
+**THE D6 SENTENCE:** the peer-cascade fires only on TERMINAL failure — a
+child mid-ladder does not trigger it (a ladder retry emits no terminal, P3
+decision 7), so a fail-closed map with a long-ladder child keeps its peers
+running until exhaustion. BY DESIGN, not an oversight: over-rejecting
+(murdering peers on an attempt-failure) is the worse asymmetry; the peers'
+work is real work the flow may still need.
+
+**`collect`** — child failures do NOT cascade. Each child runs to its own
+terminal; at exhaustion the failure fans in as the typed `FailureInfo`
+item, APPENDED to the join row's `metadata.failures` array, and the join
+FIRES with the typed partial result. `FailureInfo` EMBEDS the estate's
+error envelope — never re-spelled: `ErrorInfo(error_class, error_message,
+error_traceback)` (`taskq.backend._protocol`, its bound constants carried
+as-is), with `attempts` / `node_key` / `map_index` as the workflow-only
+extensions. `attempts` carries the FULL attempt history (one entry per
+ladder attempt, every error payload). The fan-in + the fire ride the
+terminalizing tx: the fire is strictly AFTER the last ladder attempt
+(the ts-ordered pin). A SKIP fans in with ZERO ledger rows — a skip is
+not an attempt. The workflow SUCCEEDS with the failure report (the
+absorbed-failure clause in the status derivation,
+`docs/guides/observability.md`); the failure detail's home is the
+ledger/attempts — the join row's array is the bounded summary (the JSONB
+size-cap policy, `docs/guides/maintenance-sweeps.md`).
+
 ## The three cancel legs
 
 Cancel = one transaction — the flow flip is the linearization point; every
@@ -150,6 +202,7 @@ families:
 | `tests/test_wf_fork_pins.py` | the fork family: the id-collision (18), fork atomicity (19), the outbox drain exactly-once (20) |
 | `tests/test_workflows_ledger_pins.py` | the ledger family: the double-run (1), the lost-completion window (2), the concurrent claim (3), the run-key replay (4), the claim-atomic window (5), the terminal-atomic split-write (6), the map-children arbiter (7) |
 | `tests/test_wf_engine_units.py` | the in-process pins: the seam-only generation (10), redact-before-persist (11), the canonical hash (12), the deadlock budget (14), body-from-definition (16) |
+| `tests/test_wf_propagation_pins.py` | the T06 propagation family: the stranded join (pin 1), the peer-cancel record (pin 2), the collect exhaustion fan-in + the ts ordering (pin 3), the skip's zero ledger rows (pin 4), the mid-ladder composition (pin 5), the sweep's crash-window heal (pin 6), the policy validator (pin 7) |
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands |
 

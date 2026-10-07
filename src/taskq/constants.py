@@ -17,6 +17,7 @@ __all__ = [
     "CANCEL_ORIGIN_ABANDONED",
     "CANCEL_ORIGIN_COOPERATIVE",
     "CANCEL_ORIGIN_FORCED",
+    "CANCEL_ORIGIN_PEER_FAILURE",
     "CANCEL_ORIGIN_PENDING",
     "CANCEL_ORIGIN_UNREQUESTED",
     "DEFAULT_CHUNK_SIZE",
@@ -260,6 +261,18 @@ enum change would break every consumer of the eight-value union for a
 distinction that is not a different state. The cancel is recorded
 durably on the row itself: a row whose cancel timestamp is set is
 cancelled, never re-available.
+"""
+
+CANCEL_ORIGIN_PEER_FAILURE: Final[str] = "CancelledByPeerFailure"
+"""``error_class`` the workflow fail-closed peer-cascade stamps (T06).
+
+A running peer was cancelled because a SIBLING's terminal failure failed
+their shared join closed — the cancel nobody requested and no hook ran
+for. The structured record rides the row's ``metadata.peer_cancel``
+(``{"by": "peer_failure", "cascade_from": <the failed node's id>}``); the
+error_class marker is the `by` leg, so the admin's cancel-origin reads
+and the cancelled-jobs dashboards read the peer-cancel the same way they
+read every other cancel origin (the same-outcome-same-record doctrine).
 """
 
 ERROR_CLASS_DEADLINE_EXCEEDED: Final[str] = "DeadlineExceeded"

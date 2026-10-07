@@ -31,6 +31,8 @@ from taskq.workflows._types import (
     ChildSpec,
     ConsumerBinding,
     DecrementHit,
+    FailureInfo,
+    FailurePolicy,
     FinalizeResult,
     FiredJoin,
     ForkSpec,
@@ -39,6 +41,7 @@ from taskq.workflows._types import (
 )
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.definitions import (
+    FAILURE_POLICIES,
     DuplicateStepBodyError,
     DuplicateWorkflowError,
     StepBody,
@@ -52,6 +55,7 @@ from taskq.workflows.definitions import (
 from taskq.workflows.engine import (
     DISPATCH_EXCLUSION_CLAUSE,
     DeadlockRetriesExhaustedError,
+    fan_in_skip,
     finalize_node,
     insert_node,
     render_workflow_sql,
@@ -69,12 +73,15 @@ from taskq.workflows.ledger import (
 
 __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
+    "FAILURE_POLICIES",
     "ChildSpec",
     "ConsumerBinding",
     "DeadlockRetriesExhaustedError",
     "DecrementHit",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
+    "FailureInfo",
+    "FailurePolicy",
     "FinalizeResult",
     "FiredJoin",
     "ForkSpec",
@@ -89,6 +96,7 @@ __all__ = [
     "WorkflowSteps",
     "claim_step_ledger",
     "drain_outbox",
+    "fan_in_skip",
     "finalize_node",
     "get_registry",
     "insert_flow_run",

@@ -99,7 +99,7 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
     # THE UNFENCED VARIANT REDS: the sweep fire without the flow-status leg
     # fires the join the cancel killed.
     rederive = wf_sql.rederive_sweep  # the reconcile runs first (it is not the fence under test)
-    await wf_conn.fetch(rederive, 50, "orphan_parent")
+    await wf_conn.fetch(rederive, 50, "orphan_parent", "failed_parent")
     unfenced = _drop_flow_leg_sql(wf_sql, wf_sql.sweep_fire)
     fire_ids = [new_uuid()]
     winners = await wf_conn.fetch(unfenced, fire_ids, 50)
@@ -343,7 +343,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
     twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
     await seed_edge(wf_conn, wf_schema, twin, missing_parent, flow_id)
     mutated_summary = await wf_conn.fetchrow(
-        _drop_missing_parent_arm_sql(wf_sql), 50, "orphan_parent"
+        _drop_missing_parent_arm_sql(wf_sql), 50, "orphan_parent", "failed_parent"
     )
     assert mutated_summary is not None and mutated_summary["firable"] >= 1, mutated_summary
     winners = await wf_conn.fetch(

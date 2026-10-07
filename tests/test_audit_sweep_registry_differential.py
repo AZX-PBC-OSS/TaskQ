@@ -191,7 +191,7 @@ class ScriptConn:
         join-wait rows in the double's world — the fire arm never engages,
         the pass is one benign read per tick. No legacy sweep calls
         ``fetchrow`` — this cannot disturb the legacy scenarios."""
-        return {"blocked": 0, "reconciled": 0, "firable": 0}
+        return {"blocked": 0, "blocked_required": 0, "reconciled": 0, "firable": 0}
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         return []

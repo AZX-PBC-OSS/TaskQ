@@ -284,6 +284,23 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "of ONE parent node (the edge ledger's rows for $1) — bounded by "
         "that node's declared fan-out, never the backlog",
     ),
+    "DECREMENT_COLLECT_SQL": (
+        "WHERE e.parent_id = $1",
+        "T06's collect-side decrement — DECREMENT_SQL's shape scoped to "
+        "the COLLECT edges of one parent; the same fan-out bound",
+    ),
+    "FAIL_CLOSED_CASCADE_SQL": (
+        "WHERE e.parent_id = $1",
+        "T06's fail-closed peer-cascade: every arm's write set is keyed to "
+        "ONE failed parent's edges (the blocked joins counting it, their "
+        "still-non-terminal peer parents, the one flow root) — bounded by "
+        "the join's declared fan-in, never the backlog",
+    ),
+    "COLLECT_FAN_IN_APPEND_SQL": (
+        "WHERE j.id = $1",
+        "keyed single join row (T06's collect fan-in appends the failed "
+        "child's FailureInfo item)",
+    ),
     "FORK_JOIN_CONSUMERS_SQL": (
         "WHERE id = $1",
         "keyed single join row (the fork's consumer-bind stamp)",

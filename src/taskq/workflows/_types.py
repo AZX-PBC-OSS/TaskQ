@@ -10,27 +10,44 @@ never DB-side or random-UUID generation (the TID251 ban).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
 __all__ = [
     "ChildSpec",
     "ConsumerBinding",
     "DecrementHit",
+    "FailureInfo",
+    "FailurePolicy",
     "FinalizeResult",
     "FiredJoin",
     "ForkSpec",
     "JoinSpec",
     "NodeSpec",
     "_consumer_bindings",
+    "_failure_info_from_json",
     "_join_metadata",
     "_jsonb",
     "_metadata",
 ]
+
+#: A join edge's declared failure policy (T06's two semantics):
+#:
+#: * ``fail_closed`` (the default) — a parent's TERMINAL failure fails the
+#:   join closed: the joined node blocks (``blocking_reason='failed_parent'``
+#:   naming the failed parent), the flow fails (§17.2's cascade), and the
+#:   running peers are peer-cancelled (the record
+#:   ``by='peer_failure', cascade_from=<node>``). The record never shows a
+#:   hanging join.
+#: * ``collect`` — child failures do NOT cascade: each child runs to its
+#:   own terminal; at exhaustion the failure fans in as a
+#:   :class:`FailureInfo` item and the join FIRES with the typed partial
+#:   result.
+FailurePolicy = Literal["fail_closed", "collect"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +89,9 @@ class JoinSpec:
     queue: str
     payload: dict[str, object] | None = None
     consumers: tuple[ConsumerBinding, ...] = ()
+    #: The declared failure policy recorded on the join's incoming edges
+    #: (T06): what a parent's TERMINAL failure does to this join.
+    failure_policy: FailurePolicy = "fail_closed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +124,9 @@ class NodeSpec:
     payload: dict[str, object] | None = None
     parent_id: JobId | None = None
     parents: tuple[JobId, ...] = ()
+    #: The failure policy recorded on THIS node's incoming edges when it is
+    #: a joined node (the public join path's declaration — T06).
+    failure_policy: FailurePolicy = "fail_closed"
     map_index: int | None = None
     deps_pending: int = 0
     consumers: tuple[ConsumerBinding, ...] = ()
@@ -118,6 +141,80 @@ class NodeSpec:
 class DecrementHit:
     join_job_id: JobId
     deps_pending: int
+
+
+@dataclass(frozen=True, slots=True)
+class FailureInfo:
+    """One collected child failure (T06's Item failure — the fan-in item).
+
+    THE ENVELOPE IS THE ESTATE'S, never re-spelled (GAPS-ESTATE F9):
+    ``error`` IS :class:`taskq.backend._protocol.ErrorInfo` — the same
+    typed envelope every terminal write uses, its bound constants
+    (``ERROR_CLASS_MAX_CHARS`` et al.) carried as-is. ``attempts`` /
+    ``node_key`` / ``map_index`` are the workflow-only extensions.
+
+    ``attempts`` carries the FULL attempt history (one entry per ladder
+    attempt, every error payload — P3 spike3's measured invariant); a
+    SKIP's fan-in carries ``attempts=()`` (a skip is not an attempt —
+    zero ledger rows).
+    """
+
+    node_key: str
+    map_index: int | None
+    error: ErrorInfo
+    attempts: tuple[tuple[int, str | None, str | None], ...] = ()
+
+    def to_json(self) -> dict[str, object]:
+        """The fan-in item's jsonb shape (the join row's ``failures``
+        array entry — the shape :func:`_failure_info_from_json` reads
+        back; one home for the wire shape)."""
+        return {
+            "node_key": self.node_key,
+            "map_index": self.map_index,
+            "error": {
+                "error_class": self.error.error_class,
+                "error_message": self.error.error_message,
+                "error_traceback": self.error.error_traceback,
+            },
+            "attempts": [
+                {"attempt": a, "error_class": ec, "error_message": em}
+                for a, ec, em in self.attempts
+            ],
+        }
+
+
+def _failure_info_from_json(raw: object) -> FailureInfo:
+    """Decode one fan-in item's jsonb (the typed read-side door — the
+    admin/collector surfaces consume the TYPED shape, never a bare dict)."""
+    decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
+    assert isinstance(decoded, dict)
+    # The walk repairs caller-agnostic JSON values (the _json.py walk's
+    # Any-contract): every branch asserts the runtime shape it consumes.
+    err_raw: Any = decoded.get("error") or {}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: decoded is Any by the parse contract; the asserts below are the runtime shape guards.
+    assert isinstance(err_raw, dict)
+    attempts_raw: Any = decoded.get("attempts") or []  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
+    assert isinstance(attempts_raw, list)
+    attempts: list[tuple[int, str | None, str | None]] = []
+    for entry in attempts_raw:  # pyright: ignore[reportUnknownVariableType]  # Why: list membership is Unknown under the Any-contract; the assert is the guard.
+        assert isinstance(entry, dict)
+        attempts.append(
+            (
+                int(entry["attempt"]),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same Any-contract walk; the ledger wrote ints.
+                entry.get("error_class"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+                entry.get("error_message"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+            )
+        )
+    traceback_raw: Any = err_raw.get("error_traceback")  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
+    return FailureInfo(
+        node_key=str(decoded.get("node_key", "")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (decoded's members are Unknown); the asserts above guard the runtime shape.
+        map_index=decoded.get("map_index"),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+        error=ErrorInfo(
+            error_class=str(err_raw.get("error_class", "")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+            error_message=str(err_raw.get("error_message", "")),  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: same walk.
+            error_traceback=traceback_raw if isinstance(traceback_raw, str) else None,
+        ),
+        attempts=tuple(attempts),
+    )
 
 
 @dataclass(frozen=True, slots=True)
