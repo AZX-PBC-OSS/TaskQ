@@ -308,22 +308,33 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # Rendered per alias by _wf_dispatch_fence; the tokens are substituted in
 # _render_dispatch_sql (never .format — the templates keep {schema} for the
 # call-site render).
-def _wf_dispatch_fence(alias: str) -> str:
-    terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
-    return f"""\
+_WF_DISPATCH_FENCE_TEMPLATE = """\
       -- THE DISPATCH FENCE (P3 rule 4's second leg, T04): a pending
       -- workflow child of a TERMINAL flow is unclaimable (see the
       -- _wf_dispatch_fence derivation above the template). Short-circuits
       -- on the step_key probe — vanilla rows evaluate no subplan.
       AND NOT (
-          {alias}.step_key IS NOT NULL
+          __WF_ALIAS__.step_key IS NOT NULL
           AND EXISTS (
               SELECT 1
-              FROM "{{schema}}".jobs wf_flow
-              WHERE wf_flow.id = ({alias}.metadata->>'flow_id')::uuid
-                AND wf_flow.status IN {terminal}
+              FROM "{schema}".jobs wf_flow
+              WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                AND wf_flow.status IN __WF_TERMINAL__
           )
-      )"""
+      )
+"""
+
+
+def _wf_dispatch_fence(alias: str) -> str:
+    # The terminal-status set renders from statemachine.TERMINAL_STATUSES
+    # (the same derivation the engine's TERMINAL_SQL_SET pin covers) — the
+    # substituted values are the engine's own vocabulary (a table alias
+    # and that set), never caller input; every user-controlled value in
+    # the statement is $n-bound by the templates this composes into.
+    terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+    return _WF_DISPATCH_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias).replace(
+        "__WF_TERMINAL__", terminal
+    )
 
 
 # Shared dispatch CTE template.  ``{schema}`` is left intact so callers
@@ -1794,9 +1805,7 @@ __WF_FENCE_J__
     )
 )
 LIMIT 1
-""".replace(
-    "__WF_FENCE_J__", _wf_dispatch_fence("j")
-)
+""".replace("__WF_FENCE_J__", _wf_dispatch_fence("j"))
 
 
 async def dispatch_batch(

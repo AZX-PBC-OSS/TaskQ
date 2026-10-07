@@ -22,9 +22,8 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows.engine import render_workflow_sql
 from taskq.workflows._sweep import reap_phantom_ledger
-from taskq.workflows.engine import finalize_node
+from taskq.workflows.engine import finalize_node, render_workflow_sql
 from taskq.workflows.ledger import (
     claim_step_ledger,
     insert_flow_run,

@@ -514,7 +514,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # call imports lazily. The arms take the dispatcher pool and
         # manage their own bounded transactions; each returns a count.
         from taskq.workflows import sweep_join_rederive
-        from taskq.workflows._sql import render_workflow_sql
+        from taskq.workflows.engine import render_workflow_sql
 
         wsql = render_workflow_sql(ctx.deps.settings.schema_name)
         summary = await sweep_join_rederive(
@@ -526,7 +526,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
     async def wf_outbox_drain_call() -> int:
         from taskq.workflows import drain_outbox
-        from taskq.workflows._sql import render_workflow_sql
+        from taskq.workflows.engine import render_workflow_sql
 
         return await drain_outbox(
             ctx.deps.dispatcher_pool,
@@ -536,7 +536,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
     async def wf_phantom_reap_call() -> int:
         from taskq.workflows import reap_phantom_ledger
-        from taskq.workflows._sql import render_workflow_sql
+        from taskq.workflows.engine import render_workflow_sql
 
         return await reap_phantom_ledger(
             ctx.deps.dispatcher_pool,
