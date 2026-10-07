@@ -96,10 +96,27 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1", flow_id
     )
 
-    # THE UNFENCED VARIANT REDS: the sweep fire without the flow-status leg
-    # fires the join the cancel killed.
-    rederive = wf_sql.rederive_sweep  # the reconcile runs first (it is not the fence under test)
-    await wf_conn.fetch(rederive, 50, "orphan_parent", "failed_parent")
+    # THE SHIPPED SWEEP: the flow-fenced join arm (the H2 cure) resolves
+    # the join BEFORE the fire arm even attempts it — a never-fired join
+    # row on a TERMINAL flow is stamped 'flow_dead' (never retried
+    # forever); the fire's own flow-status leg remains the second fence
+    # (a fire racing the stamp still refuses). The drill's victim must be
+    # PRISTINE (the stamp replaces the join marker, correctly dropping
+    # the row out of every later sweep — the twin is the unfenced fire's
+    # victim, the same pattern pin 8's comparator uses).
+    rederive = wf_sql.rederive_sweep
+    await wf_conn.fetch(rederive, 50, "orphan_parent", "failed_parent", "flow_dead")
+    stamped = await node_state(wf_conn, wf_schema, join_id)
+    stamped_meta = (
+        stamped["metadata"]
+        if isinstance(stamped["metadata"], dict)
+        else json.loads(stamped["metadata"] or "{}")
+    )
+    assert stamped_meta["blocking_reason"] == "flow_dead", stamped
+    assert await fire_count(wf_conn, wf_schema, join_id) == 0
+
+    twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
+    await seed_edge(wf_conn, wf_schema, twin, parent, flow_id)
     unfenced = _drop_flow_leg_sql(wf_sql, wf_sql.sweep_fire)
     fire_ids = [new_uuid()]
     winners = await wf_conn.fetch(unfenced, fire_ids, 50)
@@ -113,8 +130,11 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         "is broken (the leg must be load-bearing)"
     )
 
-    # THE SHIPPED ARM on an identical state: the flow-status leg INSIDE the
-    # fire statement refuses — zero fires, the counter frozen.
+    # THE SHIPPED ARMS on an identical state: the flow-fenced arm (the H2
+    # cure) RESOLVES the join — a never-fired join row on a TERMINAL flow
+    # can never fire, so the sweep stamps it 'flow_dead' instead of
+    # reconciling it to a claimable never-fired row and re-firing-refusing
+    # it every pass; the fire's flow-status leg remains the second fence.
     join2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="join2", deps=1)
     parent2 = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
     await seed_edge(wf_conn, wf_schema, join2, parent2, flow_id)
@@ -124,11 +144,15 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         parent2,
     )
     summary = await sweep_join_rederive(module_pg_pool, wf_sql)
-    assert summary.firable == 1, summary  # the count says fire...
-    assert await fire_count(wf_conn, wf_schema, join2) == 0, "...but the flow is dead"
-    assert (await node_state(wf_conn, wf_schema, join2))["deps_pending"] == 0, (
-        "the cache reconciled (count = 0 un-terminal); the FIRE is what the leg refuses"
+    assert summary.flow_fenced >= 1, summary  # the dead flow's join resolved...
+    assert await fire_count(wf_conn, wf_schema, join2) == 0, "...and it never fires"
+    join2_state = await node_state(wf_conn, wf_schema, join2)
+    join2_meta = (
+        join2_state["metadata"]
+        if isinstance(join2_state["metadata"], dict)
+        else json.loads(join2_state["metadata"] or "{}")
     )
+    assert join2_meta["blocking_reason"] == "flow_dead", join2_state
 
 
 # ── Pin 2: THE DISPATCH FENCE (P3 rule 4's SECOND leg, in the claim) ────
@@ -343,7 +367,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
     twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
     await seed_edge(wf_conn, wf_schema, twin, missing_parent, flow_id)
     mutated_summary = await wf_conn.fetchrow(
-        _drop_missing_parent_arm_sql(wf_sql), 50, "orphan_parent", "failed_parent"
+        _drop_missing_parent_arm_sql(wf_sql), 50, "orphan_parent", "failed_parent", "flow_dead"
     )
     assert mutated_summary is not None and mutated_summary["firable"] >= 1, mutated_summary
     winners = await wf_conn.fetch(

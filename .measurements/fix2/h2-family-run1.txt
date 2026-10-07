@@ -1,0 +1,142 @@
+bringing up nodes...
+bringing up nodes...
+
+...................F........F........................................... [100%]
+=================================== FAILURES ===================================
+________________ test_pin_8_misnamed_child_blocked_with_reason _________________
+[gw3] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fb82c8f7110>
+wf_schema = 'tq_558c2cb9a0'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fb82eb1a5c0>
+wf_sql = WorkflowSql(schema='tq_558c2cb9a0', terminal_mark='UPDATE tq_558c2cb9a0.jobs\nSET status = $2::"tq_558c2cb9a0".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7fb82c88cc30>
+
+    @pytest.mark.integration
+    async def test_pin_8_misnamed_child_blocked_with_reason(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        engine_redlog: RedLog,
+    ) -> None:
+        """A child edge pointing at a MISSING parent: the shipped arm stamps
+        the blocked-with-reason state (metadata.blocking_reason='orphan_parent')
+        and NEVER fires; the convicted variant (a JOIN that drops the missing
+        parent) fires the orphan silently."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+        missing_parent = new_uuid()  # never inserted: the misnamed-child edge
+        await seed_edge(wf_conn, wf_schema, join_id, missing_parent, flow_id)
+    
+        # THE SHIPPED ARM: blocked-with-reason, no fire.
+        shipped = await sweep_join_rederive(module_pg_pool, wf_sql)
+        assert shipped.blocked == 1, shipped  # the missing-parent join stamped
+        state = await node_state(wf_conn, wf_schema, join_id)
+        state_meta = (
+            state["metadata"] if isinstance(state["metadata"], dict) else json.loads(state["metadata"])
+        )
+        assert state_meta["blocking_reason"] == "orphan_parent", state
+        assert await fire_count(wf_conn, wf_schema, join_id) == 0, "the orphan never fires"
+    
+        # THE CONVICTED VARIANT REDS (on a throwaway twin join -- the shipped
+        # arm's stamp REPLACES the join marker, which correctly drops the
+        # blocked row out of every later sweep; the twin is the pristine
+        # victim): BOTH statements lose the missing-parent arm, the count
+        # reads a MISSING parent as counted-and-terminal, and the sweep fires
+        # the orphan (the spike's silent-fire shape).
+        twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
+        await seed_edge(wf_conn, wf_schema, twin, missing_parent, flow_id)
+>       mutated_summary = await wf_conn.fetchrow(
+            _drop_missing_parent_arm_sql(wf_sql), 50, "orphan_parent", "failed_parent"
+        )
+
+tests/test_wf_sweep_pins.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncpg/protocol/protocol.pyx:184: in bind_execute
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions._base.InterfaceError: the server expects 4 arguments for this query, 3 were passed
+E   HINT:  Check the query against the passed list of arguments.
+
+asyncpg/protocol/prepared_stmt.pyx:149: InterfaceError
+__________________ test_pin_5_sweep_fire_refuses_post_cancel ___________________
+[gw2] linux -- Python 3.13.15 /tmp/opencode/wt-taskqflow/.venv/bin/python
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f92cb54e120>
+wf_schema = 'tq_13a4532961'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f92d1673280>
+wf_sql = WorkflowSql(schema='tq_13a4532961', terminal_mark='UPDATE tq_13a4532961.jobs\nSET status = $2::"tq_13a4532961".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7f92cb50cc30>
+
+    @pytest.mark.integration
+    async def test_pin_5_sweep_fire_refuses_post_cancel(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        engine_redlog: RedLog,
+    ) -> None:
+        """The tx1→tx2 crash window x cancel x sweep: the child's tx1 commits,
+        the worker dies before tx2, the CANCEL lands (the flow flip — the
+        join-wait row's own kill has not reached it), the sweep's re-derive
+        finds count=0 and attempts the guarded fire — the fire must REFUSE via
+        the flow-status leg INSIDE the sweep's own fire statement."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+        parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    
+        # tx1 commits (the parent terminalizes); tx2 NEVER runs (the crash
+        # window) — the decrement is still pending.
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+            "WHERE id = $1 AND status = 'running' AND attempt = 1 AND claim_epoch = 0",
+            parent,
+        )
+        # THE CANCEL lands — the flow flip ONLY (the join-wait row's own kill
+        # has not landed; that race is exactly what the leg exists for).
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1", flow_id
+        )
+    
+        # THE UNFENCED VARIANT REDS: the sweep fire without the flow-status leg
+        # fires the join the cancel killed.
+        rederive = wf_sql.rederive_sweep  # the reconcile runs first (it is not the fence under test)
+>       await wf_conn.fetch(rederive, 50, "orphan_parent", "failed_parent")
+
+tests/test_wf_sweep_pins.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncpg/protocol/protocol.pyx:184: in bind_execute
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions._base.InterfaceError: the server expects 4 arguments for this query, 3 were passed
+E   HINT:  Check the query against the passed list of arguments.
+
+asyncpg/protocol/prepared_stmt.pyx:149: InterfaceError
+=========================== short test summary info ============================
+FAILED tests/test_wf_sweep_pins.py::test_pin_8_misnamed_child_blocked_with_reason
+FAILED tests/test_wf_sweep_pins.py::test_pin_5_sweep_fire_refuses_post_cancel
+2 failed, 70 passed in 10.39s

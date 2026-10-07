@@ -524,7 +524,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             wsql,
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
-        return summary.blocked + summary.reconciled + len(summary.fired)
+        return summary.blocked + summary.blocked_required + summary.flow_fenced + summary.reconciled + len(summary.fired)
 
     async def wf_outbox_drain_call() -> int:
         from taskq.workflows import drain_outbox

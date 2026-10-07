@@ -44,6 +44,7 @@ from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
     BLOCKING_REASON_BODY_UNAVAILABLE,
     BLOCKING_REASON_FAILED_PARENT,
+    BLOCKING_REASON_FLOW_DEAD,
     BLOCKING_REASON_ORPHAN_PARENT,
     WorkflowSql,
 )
@@ -64,6 +65,11 @@ class SweepResult:
     #: T06's heal: fail_closed joins whose parent terminal-failed while
     #: their own tx2 never ran — blocked-with-reason by this pass.
     blocked_required: int = 0
+    #: The H2 cure: never-fired join rows whose resolution the FLOW'S own
+    #: death fenced (the fire's flow-status leg refuses a terminal flow) —
+    #: stamped blocked-with-reason by this pass, never a hanging claimable
+    #: join on a dead flow.
+    flow_fenced: int = 0
     fired: tuple[FiredJoin, ...] = ()
 
 
@@ -74,12 +80,16 @@ async def sweep_join_rederive(
     batch_size: int = 200,
     orphan_blocking_reason: str = BLOCKING_REASON_ORPHAN_PARENT,
     failed_parent_blocking_reason: str = BLOCKING_REASON_FAILED_PARENT,
+    flow_dead_blocking_reason: str = BLOCKING_REASON_FLOW_DEAD,
 ) -> SweepResult:
     """The lock-first re-derive arm: ONE batched statement (lock the
     join-wait children SKIP LOCKED → count un-terminal parents from the
     edge ledger → reconcile the cache → block the orphan-parent rows →
     block the fail-closed joins whose parent terminal-failed (T06's heal)
-    → report counts), then the set-based fire arm for the firable set
+    → stamp the flow-fenced joins (the H2 cure: a never-fired join row on
+    a TERMINAL flow can never fire again — the fence is not absorption,
+    the arm resolves it blocked-with-reason) → report counts), then the
+    set-based fire arm for the firable set
     (the flow-status leg rides INSIDE the fire statement — a post-cancel
     re-derive refuses; the unfenced variant is pin 5's red, kept forever).
 
@@ -105,7 +115,11 @@ async def sweep_join_rederive(
     """
     async with pool.acquire() as conn, conn.transaction():
         summary = await conn.fetchrow(
-            wsql.rederive_sweep, batch_size, orphan_blocking_reason, failed_parent_blocking_reason
+            wsql.rederive_sweep,
+            batch_size,
+            orphan_blocking_reason,
+            failed_parent_blocking_reason,
+            flow_dead_blocking_reason,
         )
         assert summary is not None  # the statement always returns its summary row
         firable = summary["firable"]
@@ -203,6 +217,7 @@ async def sweep_join_rederive(
     return SweepResult(
         blocked=summary["blocked"],
         blocked_required=summary["blocked_required"],
+        flow_fenced=summary["flow_fenced"],
         reconciled=summary["reconciled"],
         firable=firable,
         fired=fired,
