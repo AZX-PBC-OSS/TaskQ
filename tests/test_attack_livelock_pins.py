@@ -556,7 +556,7 @@ async def test_zero_delay_repark_is_floored_off_the_head_of_the_dispatch_order()
 
 
 @pytest.mark.integration
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_livelock")
 async def test_leader_lease_takeability_is_immune_to_python_clock_skew(
     module_pg_schema: ModulePgSchema,
 ) -> None:

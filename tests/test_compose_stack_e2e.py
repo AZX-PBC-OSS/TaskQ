@@ -48,8 +48,18 @@ from taskq.testing._shared_containers import creator_labels, skip_test_without_d
 
 pytestmark = [
     pytest.mark.integration,
-    # The first test's setup bears the cold image build (uv sync inside the
-    # Dockerfile); the default 300s per-test timeout is not enough for it.
+    # The slow lane's member, not the fast matrix's: the stack's lifecycle is
+    # one module-scoped ``docker compose up -d --build`` whose setup bears the
+    # cold image build (uv sync inside the Dockerfile) — 88% of the module's
+    # summed time is setup, ~105s of wall per fast-matrix leg it rides
+    # (measured 2026-10-06, the CI-runtime measurement). The fast lanes'
+    # ``-m "not slow"`` deselects it here; the slow-suite lane runs it on the
+    # same standard runner (Docker + --all-extras) at -n 2, where the module's
+    # auto xdist_group keeps the whole stack on one worker — exactly one
+    # compose boot, as here.
+    # The 900s timeout below stays: the cold build fits no 300s budget in
+    # either lane.
+    pytest.mark.slow,
     pytest.mark.timeout(900),
 ]
 
