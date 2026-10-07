@@ -59,6 +59,15 @@ dependencies = [
     "uuid-utils>=1.0.0,<2",
 ]
 
+flows = []
+# The workflows engine (src/taskq/workflows/) is core-deps-only by design:
+# tors (canonical hashes, truncation, secret scrubbing), asyncpg, uuid_utils —
+# every one already a base dependency, so the extra carries no requirements of
+# its own. It exists as the operator-facing opt-in marker (the §16.1 import
+# law: `import taskq` never imports taskq.workflows; the package only loads
+# when a caller imports it directly), matching the lazy-extra discipline of
+# the obs prometheus module.
+
 [project.scripts]
 taskq = "taskq.cli:main"
 
@@ -355,9 +364,20 @@ ignore = [
 # static module-level tuple of column names, not user input — so there is
 # no injection surface; all row values still use $N parameter binding.
 "src/taskq/worker/_leader_shared.py" = ["S608"]
-# Same rationale — the smoke script's only interpolated identifier is the
-# SCHEMA constant it passes through render()/apply_pending(), which validate
-# against _IDENT_RE; every row value uses $N parameter binding.
+# The workflows engine's named statement constants (the backend/_sql_templates
+# pattern, GAPS-ESTATE F10). Schema name is validated against _IDENT_RE at
+# WorkflowSql construction; every user-supplied value uses $N parameter
+# binding. S311: random module used for jitter in the deadlock-retry backoff
+# (the hardening H7 cure), not crypto.
+"src/taskq/workflows/_sql.py" = ["S608"]
+"src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]
+# Same rationale — schema name validated via the WorkflowSql bundle every
+# fixture builds; all user-supplied values use $N parameter binding.
+"tests/test_workflows_schema_pins.py" = ["S608"]
+"tests/test_workflows_engine_pins.py" = ["S608", "S311"]
+"tests/test_workflows_ledger_pins.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
 "validation/**" = ["S608"]
 "tests/test_postgres_terminal_writes.py" = ["S608"]
 # Same rationale as test_postgres_terminal_writes.py — schema name is

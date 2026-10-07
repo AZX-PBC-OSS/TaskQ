@@ -328,7 +328,8 @@ rr_tail_keys AS (
   (
     SELECT j5.actor, COALESCE(j5.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j5
-    WHERE j5.status = 'pending' AND j5.assignment_routed
+    WHERE j5.status = 'pending'
+      AND j5.deps_pending = 0 AND j5.assignment_routed
     ORDER BY j5.actor, COALESCE(j5.fairness_key, '__null__')
     LIMIT 1
   )
@@ -338,7 +339,8 @@ rr_tail_keys AS (
   CROSS JOIN LATERAL (
     SELECT j6.actor, COALESCE(j6.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j6
-    WHERE j6.status = 'pending' AND j6.assignment_routed
+    WHERE j6.status = 'pending'
+      AND j6.deps_pending = 0 AND j6.assignment_routed
       AND (j6.actor, COALESCE(j6.fairness_key, '__null__')) > (cur.actor, cur.fkey)
     ORDER BY j6.actor, COALESCE(j6.fairness_key, '__null__')
     LIMIT 1
@@ -716,6 +718,7 @@ per_actor_capacity AS (
           AND j.queue = pq.q
           AND NOT j.assignment_routed
           AND j.status = 'pending'
+          AND j.deps_pending = 0
         ORDER BY j.priority DESC, j.scheduled_at, j.id
         LIMIT 1
       ) anyq
@@ -948,6 +951,7 @@ locked AS (
     FROM "{schema}".jobs j2
     WHERE j2.id = t.id
       AND j2.status = 'pending'
+      AND j2.deps_pending = 0
     FOR UPDATE OF j2 SKIP LOCKED
   ) j
 ),
@@ -976,6 +980,7 @@ sliding_locked AS (
     WHERE r2.max_concurrent IS NULL
   ))
     AND j2.status = 'pending'
+    AND j2.deps_pending = 0
   -- Same rotation cut as top_ids: the SKIP LOCKED slide walks the
   -- materialized ranked stream in this order, so a peer holding the
   -- window's leading rows yields the least-recently-claimed actors
@@ -1133,6 +1138,7 @@ SET status = 'running',
 -- write must never be re-dispatched blind.
 WHERE j.id = ANY(ARRAY(SELECT id FROM eligible))
   AND j.status = 'pending'
+  AND j.deps_pending = 0
 RETURNING j.*;
 """
 
@@ -1286,6 +1292,7 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
           -- contract in the module docstring), never this arm's.
           AND NOT j2.assignment_routed
           AND j2.status = 'pending'
+          AND j2.deps_pending = 0
           AND j2.scheduled_at <= statement_timestamp()
           AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
         ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
@@ -1413,6 +1420,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
                 -- this arm's.
                 AND NOT j2.assignment_routed
                 AND j2.status = 'pending'
+                AND j2.deps_pending = 0
                 AND COALESCE(j2.fairness_key, '__null__') = k.fkey
                 AND j2.scheduled_at <= statement_timestamp()
                 AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1488,6 +1496,7 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
           WHERE j2.actor = rc.actor
             AND j2.assignment_routed
             AND j2.status = 'pending'
+            AND j2.deps_pending = 0
             AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
             AND j2.scheduled_at <= statement_timestamp()
             AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1544,6 +1553,7 @@ _REPENDED_ROUND_ROBIN_LATERAL = """\
             WHERE j2.actor = rc.actor
               AND j2.assignment_routed
               AND j2.status = 'pending'
+              AND j2.deps_pending = 0
               AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
               AND j2.scheduled_at <= statement_timestamp()
               AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -1689,6 +1699,7 @@ WHERE EXISTS (
           -- stale queue label as routable here.
           AND NOT j.assignment_routed
           AND j.status = 'pending'
+          AND j.deps_pending = 0
         LIMIT 1
     ) hit
 )
@@ -1704,6 +1715,7 @@ OR (
           -- whose partial predicate is the marker itself.
           AND j.assignment_routed
           AND j.status = 'pending'
+          AND j.deps_pending = 0
         LIMIT 1
     )
 )
