@@ -97,6 +97,11 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_backoff",
     "retry_jitter",
     "assignment_routed",
+    # LIB-2: the fan-out ledger. Trailing position, mirrored into
+    # jobs_archive by the explicit archive CSVs (_leader_shared.py builds
+    # both sides from this tuple). Plain column, no FK — see
+    # 01.00.23_01_pre_jobs_parent_id.sql.
+    "parent_id",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
@@ -208,6 +213,8 @@ class SqlTemplates:
     event_prune_watermark: str
     count_pending_jobs: str
     count_active_jobs: str
+    count_pending_jobs_by_queue: str
+    count_pending_children_by_queue: str
     list_actor_max_pending: str
     list_actor_queues: str
 
@@ -1758,8 +1765,8 @@ INSERT INTO "{s}".jobs
  schedule_to_close, start_to_close, heartbeat_timeout,
  scheduled_at,
  idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags,
- retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, COALESCE(clock_timestamp() + $11::interval, $22), $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, clock_timestamp() + $20::interval, $21::text[], $23, $24, $25, $26)
+ retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter, parent_id)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, COALESCE(clock_timestamp() + $11::interval, $22), $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, clock_timestamp() + $20::interval, $21::text[], $23, $24, $25, $26, $27)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
 DO NOTHING
 RETURNING *""",
@@ -1793,7 +1800,7 @@ INSERT INTO "{s}".jobs (
     schedule_to_close, start_to_close, heartbeat_timeout,
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
     result_expires_at, tags,
-    retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
+    retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter, parent_id
 )
 SELECT
     t.id,
@@ -1836,7 +1843,8 @@ SELECT
     t.retry_base,
     t.retry_cap,
     t.retry_backoff,
-    t.retry_jitter
+    t.retry_jitter,
+    t.parent_id
 FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[],
     $6::jsonb[], $7::int[],
@@ -1844,14 +1852,14 @@ FROM unnest(
     $11::interval[], $12::interval[], $13::interval[],
     $14::timestamptz[], $15::jsonb[], $16::text[], $17::text[], $18::text[], $19::text[],
     $20::interval[], $21::jsonb[], $22::timestamptz[],
-    $23::float[], $24::float[], $25::text[], $26::float[]
+    $23::float[], $24::float[], $25::text[], $26::float[], $27::uuid[]
 ) AS t(id, actor, queue, identity_key, fairness_key,
     payload, payload_schema_ver,
     priority, max_attempts, retry_kind,
     stc_interval, start_to_close, heartbeat_timeout,
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
     result_ttl, tags_jsonb, stc_raw,
-    retry_base, retry_cap, retry_backoff, retry_jitter)
+    retry_base, retry_cap, retry_backoff, retry_jitter, parent_id)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 RETURNING *""",
         enqueue_batch_fetch_existing=f"""\
@@ -2043,6 +2051,34 @@ SELECT pruned_through_id FROM "{s}".job_events_prune_state WHERE singleton = tru
             f'SELECT count(*)::int FROM "{s}".jobs '
             f"WHERE queue = ANY($1::text[]) "
             f"AND status IN ('pending', 'scheduled', 'running')"
+        ),
+        # ── LIB-2: the backpressure read ───────────────────────────
+        # The DEPTH half: grouped by queue over exactly the statuses the
+        # admission cap counts (enqueue_max_pending_count's
+        # pending+scheduled), so the snapshot's "over" compares the cap
+        # against the number that cap actually governs. One indexed
+        # aggregate per call (the queue index serves the ANY match), a
+        # missing queue reads 0 client-side.
+        count_pending_jobs_by_queue=(
+            f'SELECT queue, count(*)::int AS cnt FROM "{s}".jobs '
+            f"WHERE queue = ANY($1::text[]) "
+            f"AND status IN ('pending', 'scheduled') "
+            f"GROUP BY queue"
+        ),
+        # The FAN-OUT half: the parent's pending children, exact (the
+        # parent_id ledger, 01.00.23_01) — grouped by queue so the
+        # snapshot can attribute each queue's own children to its depth
+        # and only the OUTSIDE children to the fan-out inflow. Served by
+        # the partial index jobs_parent_pending_idx (the count's quals
+        # repeat its predicate verbatim); the walk grows with the child
+        # population only, never with the hot table. NO join to the
+        # parent row: a purged parent's pending children are a defined,
+        # harmless state (plain column, no FK).
+        count_pending_children_by_queue=(
+            f'SELECT queue, count(*)::int AS cnt FROM "{s}".jobs '
+            f"WHERE parent_id = $1 "
+            f"AND status IN ('pending', 'scheduled') "
+            f"GROUP BY queue"
         ),
         # One row per actor, the client-side capacity cache reads the
         # whole table at most once per TTL window per process.

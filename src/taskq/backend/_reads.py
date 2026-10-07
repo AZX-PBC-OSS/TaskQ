@@ -39,7 +39,9 @@ if TYPE_CHECKING:
 __all__ = [
     "_check_reclaim_visibility_risk",
     "_count_active_jobs",
+    "_count_pending_children_by_queue",
     "_count_pending_jobs",
+    "_count_pending_jobs_by_queue",
     "_get",
     "_get_actor_max_pending",
     "_get_actor_queues",
@@ -143,6 +145,46 @@ async def _count_active_jobs(
         return 0
     async with _bounded_checkout(pool, "count_active_jobs") as conn:
         return int(await conn.fetchval(sql.count_active_jobs, queues))
+
+
+async def _count_pending_jobs_by_queue(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    queues: list[str],
+) -> dict[str, int]:
+    """Grouped pending+scheduled counts per queue (the admission count the
+    max_pending cap governs), the LIB-2 backpressure read's DEPTH half.
+
+    One indexed aggregate per call (``jobs_queue_status``-served, the
+    count_active_jobs pattern); a queue with no pending/scheduled rows
+    is absent from the result and reads 0 client-side. An empty queues
+    list is zero round trips.
+    """
+    if not queues:
+        return {}
+    async with _bounded_checkout(pool, "count_pending_jobs_by_queue") as conn:
+        records = await conn.fetch(sql.count_pending_jobs_by_queue, queues)
+    return {str(rec["queue"]): int(rec["cnt"]) for rec in records}
+
+
+async def _count_pending_children_by_queue(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    parent_id: JobId,
+) -> dict[str, int]:
+    """The parent's pending children, exact and grouped by queue (the LIB-2
+    backpressure read's FAN-OUT half), served by the partial index
+    ``jobs_parent_pending_idx`` whose predicate the count's quals repeat
+    verbatim.
+
+    ``parent_id`` is a plain column, NO foreign key (see
+    01.00.23_01_pre_jobs_parent_id.sql): a purged or never-existed
+    parent is the same defined-empty result, the count never joins to
+    the parent row.
+    """
+    async with _bounded_checkout(pool, "count_pending_children_by_queue") as conn:
+        records = await conn.fetch(sql.count_pending_children_by_queue, parent_id)
+    return {str(rec["queue"]): int(rec["cnt"]) for rec in records}
 
 
 async def _get_actor_max_pending(

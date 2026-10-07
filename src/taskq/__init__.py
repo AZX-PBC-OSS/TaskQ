@@ -63,7 +63,16 @@ from taskq.batch import (
     wait_for_batch,
 )
 from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
-from taskq.client import BulkCancelResult, CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
+from taskq.client import (
+    BackpressureSnapshot,
+    BulkCancelResult,
+    CancelResult,
+    JobEvent,
+    JobHandle,
+    JobsClient,
+    QueueBackpressure,
+    TaskQ,
+)
 from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.clock import FakeClock
@@ -149,6 +158,7 @@ __all__ = [
     "ActorsClient",
     "Backend",
     "BackpressureError",
+    "BackpressureSnapshot",
     "BatchAbortedError",
     "BatchCompletionStatus",
     "BatchCounts",
@@ -207,6 +217,7 @@ __all__ = [
     "PoolFactory",
     "ProgressEvent",
     "ProgressTooLarge",
+    "QueueBackpressure",
     "QueueMode",
     "QueueName",
     "RateLimitBackend",

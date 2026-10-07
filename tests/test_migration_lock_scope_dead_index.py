@@ -291,6 +291,9 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # compare; see the migration's header for the per-page full-sort
         # it removes.
         "jobs_seam_idx",
+        # 01.00.23_01 (LIB-2): the fan-out ledger's partial index —
+        # pending/scheduled children only, parent_id IS NOT NULL.
+        "jobs_parent_pending_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(

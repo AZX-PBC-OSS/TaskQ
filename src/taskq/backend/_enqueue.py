@@ -1184,6 +1184,7 @@ async def _enqueue_on_conn(
                 args.retry_cap.total_seconds(),
                 args.retry_backoff,
                 args.retry_jitter,
+                args.parent_id,
             )
             if mark_wrote is not None:
                 # The INSERT is acknowledged: on the autocommit paths it is
@@ -1647,6 +1648,7 @@ async def _enqueue_batch(
     retry_caps: list[float] = []
     retry_backoffs: list[str] = []
     retry_jitters: list[float] = []
+    parent_ids: list[UUID | None] = []
 
     # Why annotate per item during the build: this loop serializes every
     # item BEFORE any SQL runs, so the first NUL-bearing item aborts the
@@ -1711,6 +1713,7 @@ async def _enqueue_batch(
         retry_caps.append(args.retry_cap.total_seconds())
         retry_backoffs.append(args.retry_backoff)
         retry_jitters.append(args.retry_jitter)
+        parent_ids.append(args.parent_id)
 
     async def _insert_on_conn(
         conn: ConnLike,
@@ -1809,6 +1812,9 @@ async def _enqueue_batch(
             retry_caps,
             retry_backoffs,
             retry_jitters,
+            # Trailing, matching enqueue_batch's $27::uuid[] (the LIB-2
+            # fan-out ledger stamp, one column per item).
+            parent_ids,
         ]
         if refusals:
             keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
@@ -2171,6 +2177,10 @@ async def _enqueue_batch_fast(
                 # label rather than by the actor's stored assignment (the
                 # routing contract in taskq/backend/_dispatch_sql.py).
                 False,
+                # LIB-2: the fan-out ledger, COPY_ENQUEUE_COLUMNS' trailing
+                # member (COPY_FROM_COLUMNS carries parent_id last and the
+                # enqueue omit-list does not drop it).
+                args.parent_id,
             )
         )
 
