@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased — TaskQflow phase 2]
+
+### Added
+
+* **Workflows (T06):** the failed-parent propagation — a parent's TERMINAL
+  failure resolves the joins counting it by the edge's declared
+  `failure_policy`: `fail_closed` (the default) blocks the join (the record
+  names the failed parent), peer-cancels the running siblings
+  (`CancelledByPeerFailure` + `metadata.peer_cancel`) and fails the flow;
+  `collect` fans the failure in as a typed `FailureInfo` item (the estate's
+  `ErrorInfo` envelope, the full attempt history) and fires the join with
+  the partial result. A skip fans in with zero ledger rows.
+* **Workflows (T07):** the declared maximum fan-in per join (1000) refused
+  at validate with the child-driven alternative named; the child-driven
+  escape (`JoinSpec(child_driven=True)`) counts terminal children from the
+  edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
+  curve pinned across the boundary (the refit + the 100k-edge plan assert).
+* **Workflows (T08):** the status + progress rollup — the §17.5 derivation
+  table (the absorbed-failure clause stated first), the rows-only
+  reconstruction (the two-source rule: the ledger for the attempted
+  terminals, the node row's error jsonb for the never-granted ones), the
+  G7 always-on reported==reconstructed assertion in every workflow
+  integration test, the `taskq.wf_progress_nodes_total{workflow, state}`
+  gauge (the declared-workflow dimension, the `_other_` collapse, sampled
+  by the maintenance leader on the admin surface), the
+  `TaskQWorkflowBlockedStuck` alert in both rule files, the runbook row,
+  the insights SQL recipes, the hypothesis totality property, the
+  (state, event) totality table (64 cells, zero undefined), one-run-one-
+  trace ×10 concurrent, the index-driven rollup cost gate
+  (`jobs_wf_flow_nodes_idx`, migration 01.00.25_01).
+
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 
 

@@ -604,6 +604,10 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQQueueUnserved": ({"queue": "ghost_queue"}, 7.0),
     "TaskQStrandedJobs": ({"actor": "probe_ghost_actor", "reason": "unserved_queue"}, 4.0),
     "TaskQRunningLeaseExpired": ({}, 3.0),
+    # T08: the blocked-stuck alert ships WITH the gauge (GAPS-ESTATE F4 —
+    # a metric nobody alerts on is a decoration). The pathology: a run's
+    # blocked-node count pinned above zero past the 30m bound.
+    "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf"}, 3.0),
 }
 
 
@@ -1100,6 +1104,37 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
                 ("taskq_jobs_running_lease_expired", {}, "0+0x30"),
             ],
             "8m",
+        )
+    )
+
+    # T08 — TaskQWorkflowBlockedStuck: the alert suggestion shipped WITH
+    # the gauge, evaluated through the honest harness: the pathology
+    # (blocked nodes pinned past the 30m bound) staged through promtool;
+    # the silent side is the healthy fleet (no blocked nodes).
+    cases.append(
+        _firing_case(
+            "TaskQWorkflowBlockedStuck",
+            [
+                (
+                    "taskq_wf_progress_nodes_total",
+                    {"workflow": "probe_wf", "state": "blocked"},
+                    "3+0x35",
+                ),
+            ],
+            "32m",
+        )
+    )
+    cases.append(
+        _silent_case(
+            "TaskQWorkflowBlockedStuck",
+            [
+                (
+                    "taskq_wf_progress_nodes_total",
+                    {"workflow": "probe_wf", "state": "blocked"},
+                    "0+0x35",
+                ),
+            ],
+            "32m",
         )
     )
 

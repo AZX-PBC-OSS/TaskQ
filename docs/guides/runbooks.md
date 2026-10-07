@@ -786,6 +786,35 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 
 ---
 
+## TaskQWorkflowBlockedStuck
+
+**What fired.** `taskq_wf_progress_nodes_total{state="blocked"} > 0` for 30 minutes: workflow node rows are sitting in a BLOCKED representation — join-wait (`pending` + `deps_pending > 0`), a blocked-with-reason stamp (`metadata.blocking_reason` set), or held (a future `scheduled_at` deadline + an unresolved signal row) — with no transition for half an hour. The gauge is sampled by the maintenance leader on the admin's surface, dimensioned by the DECLARED workflow (`_other_` carries the unregistered collapse; never per-node labels).
+
+**How to confirm.**
+
+- Metric: `taskq_wf_progress_nodes_total{state="blocked"}` per workflow. A healthy fleet reads 0 or a number that moves; a pinned count with the run's other states frozen is a wedged run.
+- SQL: the blocked nodes and their reasons (the run id from the workflow's run key / the admin's runs page):
+
+  ```sql
+  SELECT id, step_key, status, deps_pending,
+         metadata->>'blocking_reason' AS blocking_reason,
+         metadata->>'failed_parent'   AS failed_parent
+  FROM taskq.jobs
+  WHERE (metadata->>'flow_id')::uuid = $1
+  ORDER BY id;
+  ```
+
+- Read `metadata.blocking_reason`:
+  - `'join'` — the join is waiting on its parents: check the parents' states (the per-node rollup query, `docs/guides/insights.md`'s blocked-by recipe). A parent stuck mid-ladder is normal; a parent gone (pruned, never inserted) wedges the join — the sweep stamps it `'orphan_parent'`.
+  - `'orphan_parent'` — an edge points at a parent row that does not exist (a misnamed child): the join can never fire; fix the definition and re-run.
+  - `'failed_parent'` — the fail-closed cascade resolved this join because a parent TERMINALLY failed (the record names the parent). The workflow is failed; this is the record, not a wedge.
+  - `'body_unavailable'` — the join FIRED but its reducer body resolved NOWHERE: the delivery continued, the record is loud. **This is a deployment defect**: the workflow's definitions are not imported in every worker process — the fire arm resolves bodies from the REGISTERED definition (D1); make every worker carry the same definitions.
+- If a run's rows are blocked but its flow root is `running` with NO live nodes, the sweep's maintenance leg will resolve the root at its next tick; a root still `running` past a tick or two is the sweep's own health (see [TaskQPromotionStalled](#taskqpromotionstalled) — the same signature, different sweep).
+
+**What not to do.** Do not hand-flip `deps_pending` to 0: the counter is a CACHE of the edge ledger's truth, and a hand-zeroed join fires over a partial record. Resolve the parents (or cancel the run) and let the re-derivation do the write.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md): the metrics these alerts evaluate,

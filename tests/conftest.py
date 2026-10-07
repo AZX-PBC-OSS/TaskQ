@@ -135,6 +135,7 @@ from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
     ledger_redlog,  # pyright: ignore[reportUnusedImport]
     propagation_redlog,  # pyright: ignore[reportUnusedImport]
     wf_conn,  # pyright: ignore[reportUnusedImport]
+    wf_g7_status_truth,  # pyright: ignore[reportUnusedImport]
     wf_schema,  # pyright: ignore[reportUnusedImport]
     wf_sql,  # pyright: ignore[reportUnusedImport]
 )
@@ -1117,6 +1118,15 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             continue
         group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
+
+    # G7's ALWAYS-ON registration (T08): every test in the WORKFLOW pin
+    # files ends with the reported==reconstructed check (the fixture in
+    # tests/_wf_fixtures.py). The family is name-scoped (the wf pin files'
+    # own prefix) so the fixture never forces PG setup on a test that
+    # doesn't use it.
+    for item in items:
+        if item.path.name.startswith(("test_wf_", "test_workflows_")):
+            item.add_marker(pytest.mark.usefixtures("wf_g7_status_truth"))
 
 
 def interpreter_is_traced() -> bool:

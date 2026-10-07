@@ -331,6 +331,22 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
     "AND status IN ('pending', 'scheduled', 'running')"
 )
 
+#: The workflow progress rollup (T08): per (declared workflow, node state)
+#: node counts — ONE grouped read for the wf-progress gauge and the
+#: admin's status panel alike (the query-count pin). Index-driven: the
+#: node rows ride jobs_wf_flow_nodes_idx (01.00.25_01), each root a
+#: primary-key probe. The `_other_` collapse happens in the SAMPLER (it
+#: knows the registered names); the read groups by the run's own stamped
+#: name, unregistered or not.
+_QUERY_WF_PROGRESS_SQL_TEMPLATE = (
+    "SELECT COALESCE(r.metadata->>'workflow', '_other_') AS workflow, "
+    "n.status AS state, count(*) AS count "
+    'FROM "{schema}".jobs n '
+    "JOIN \"{schema}\".jobs r ON r.id = (n.metadata->>'flow_id')::uuid "
+    "WHERE n.step_key IS NOT NULL AND n.step_key <> '__flow__' "
+    "GROUP BY 1, 2"
+)
+
 #: The scheduled wave's horizon: MAX(scheduled_at) over the scheduled
 #: population minus now, in seconds. statement_timestamp() (STABLE) for
 #: the two-clock rule every sampler here follows; the measured

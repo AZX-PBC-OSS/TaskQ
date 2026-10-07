@@ -1,7 +1,7 @@
 [
   {
-    "pin": "t06-pin6-sweep-compose",
-    "mutation": "the sweep's failed_required arm dropped \u2014 the fail_closed join fires over the failed parent after the heal",
-    "red": "{\"blocked_required\": 1, \"fired\": 1}"
+    "pin": "t08-reconstruction-rows-only",
+    "mutation": "a status cache (the reconstruction consulting anything but rows \u2014 the pinned never-again variant)",
+    "red": "{\"reconstructed\": \"cancelled\"}"
   }
 ]

@@ -54,6 +54,7 @@ from taskq.obs import (
     update_scheduled_count_cache,
     update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
+    update_wf_progress_cache,
 )
 from taskq.ratelimit.decision import RateLimitState
 from taskq.ratelimit.registry import (
@@ -73,6 +74,7 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE,
+    _QUERY_WF_PROGRESS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
     _dbg,
@@ -1642,6 +1644,37 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         _sampler_read_failed(
                             ctx, "cancel_pending", "cancel-pending-sampling-failed", exc
                         )
+                    # THE WORKFLOW PROGRESS ROLLUP (T08): sampled at THIS
+                    # tick — the maintenance leader is the PG-rollup reader,
+                    # the admin's health/metrics surface the reading plane
+                    # (never a worker scrape, never the worker metrics
+                    # port). One grouped read (the same read class the
+                    # admin's status panel uses — one query per status
+                    # read), index-driven (jobs_wf_flow_nodes_idx,
+                    # 01.00.25_01). The DECLARED-WORKFLOW dimension: the
+                    # registered names keep their series; every other
+                    # workflow's runs collapse onto `_other_` (summed) —
+                    # never per-node labels (the cardinality doctrine).
+                    # The registry read is the arms' lazy-import pattern
+                    # (THE IMPORT LAW: nothing outside taskq.workflows
+                    # imports it at module scope).
+                    try:
+                        from taskq.workflows.definitions import get_registry
+
+                        wf_rows = await conn.fetch(
+                            _QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema)
+                        )
+                        registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the SAME registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
+                        collapsed: dict[tuple[str, str], int] = {}
+                        for row in wf_rows:
+                            name = str(row["workflow"])
+                            if name not in registered:
+                                name = "_other_"
+                            key = (name, str(row["state"]))
+                            collapsed[key] = collapsed.get(key, 0) + int(row["count"])
+                        update_wf_progress_cache(collapsed)
+                    except Exception as exc:
+                        _sampler_read_failed(ctx, "wf_progress", "wf-progress-sampling-failed", exc)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 live_workers = {str(row["queue"]): int(row["count"]) for row in worker_rows}
                 capacity = {str(row["queue"]): int(row["actor_capacity"]) for row in capacity_rows}

@@ -477,3 +477,73 @@ a plain PostgreSQL 18 container **and** a TimescaleDB container with the
 retention tables converted, and pins every statement's EXPLAIN plan on
 both modes (no Seq Scan on the hot paths). Every number quoted above is
 from those seeded runs.
+
+
+---
+
+## The workflow-debug SQL recipes (T08)
+
+Per-run reads, bounded by the run's own node count; every read is
+index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_01). The status panel
+and the `taskq.wf_progress_nodes_total` gauge share the grouped read (one
+query per status read — the query-count pin).
+
+**The grouped status rollup (the run's status panel — the §17.5
+derivation's input):**
+
+```sql
+SELECT status, count(*) AS count
+FROM taskq.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+GROUP BY status;
+```
+
+**The per-node read (the admin's run page):** the node's derived view
+fields ride the row — the join counter (join-wait), the blocked-with-
+reason stamp, the absorption record.
+
+```sql
+SELECT j.id, j.step_key, j.status, j.deps_pending,
+       j.metadata->>'blocking_reason' AS blocking_reason,
+       j.error_class, j.error_message
+FROM taskq.jobs j
+WHERE (j.metadata->>'flow_id')::uuid = $1
+  AND j.step_key <> '__flow__'
+ORDER BY j.id;
+```
+
+**Join latency** (which join waited how long before firing — the fire
+ledger's own record):
+
+```sql
+SELECT f.step_key, f.fired_at - j.created_at AS waited, f.fired_by
+FROM taskq.wf_join_fire f
+JOIN taskq.jobs j ON j.id = f.join_job_id
+WHERE f.flow_id = $1
+ORDER BY waited DESC;
+```
+
+**Blocked-by** (which parents a blocked join still waits on — the edge
+ledger's truth, never the cache):
+
+```sql
+SELECT p.id, p.step_key, p.status
+FROM taskq.wf_edge e
+JOIN taskq.jobs p ON p.id = e.parent_id
+WHERE e.child_id = $1          -- the blocked join's id
+  AND p.status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned');
+```
+
+**Per-map done/total** (the counter's complement, computed in the query —
+"417/1000 · 3 retrying · 580 blocked" from one read):
+
+```sql
+SELECT c.step_key,
+       count(*) AS total,
+       count(*) FILTER (WHERE c.status IN ('succeeded','failed','cancelled','crashed','abandoned')) AS done,
+       count(*) FILTER (WHERE c.status = 'running') AS running,
+       count(*) FILTER (WHERE c.status = 'pending' AND c.deps_pending > 0) AS blocked
+FROM taskq.jobs c
+WHERE c.parent_id = $1
+GROUP BY c.step_key;
+```

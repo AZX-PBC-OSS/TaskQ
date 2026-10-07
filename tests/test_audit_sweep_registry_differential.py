@@ -161,6 +161,12 @@ class ScriptConn:
         self.stream = stream if stream is not None else []
 
     async def execute(self, sql: str, *args: object) -> str:
+        # The workflow statements' calls carry the wf_ prefix (the
+        # composition pin strips them with the wf events; a legacy call
+        # never matches — the strip stays conservative).
+        if "wf_" in sql:
+            self.stream.append(("call", "wf_stmt"))
+            return "UPDATE 0"
         self.stream.append(("call", "stale_workers"))
         if self._execute is None:
             return "DELETE 0"

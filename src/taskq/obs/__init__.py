@@ -149,6 +149,7 @@ from taskq.obs._otel import (
     update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
     update_sweep_batch_size_cache,
+    update_wf_progress_cache,
 )
 from taskq.obs._redact_exc import (
     ExceptionText,
@@ -291,4 +292,5 @@ __all__ = [
     "update_scheduled_horizon_cache",
     "update_stranded_jobs_cache",
     "update_sweep_batch_size_cache",
+    "update_wf_progress_cache",
 ]
