@@ -607,8 +607,10 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQClaimLatencyDegraded": ({"queue": "probe_queue"}, 12.0),
     # T08: the blocked-stuck alert ships WITH the gauge (GAPS-ESTATE F4 —
     # a metric nobody alerts on is a decoration). The pathology: a run's
-    # blocked-node count pinned above zero past the 30m bound.
-    "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf"}, 3.0),
+    # blocked-node count pinned above zero past the 30m bound. The rule's
+    # expression is a bare selector (no aggregation), so the result
+    # vector carries the series' FULL label set — state included.
+    "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf", "state": "blocked"}, 3.0),
 }
 
 
@@ -1395,14 +1397,16 @@ def test_harness_series_are_bound_to_the_served_exposition(
     """A rule-test harness that hand-types series can drift from the
     emitted truth while every case still passes (a wrong-but-consistent
     name evaluates an empty vector and the SILENT guards still pass). The
-    binding pin: every input series name the cases feed must be a name
+    binding pin: every input series name the 35 cases feed must be a name
     a real scrape actually served - the worker probes for everything a
-    live worker carries, the emitter probe for the families whose
+    live worker carries, the emitter probe for the four families whose
     pathology cannot be staged live (the sweep-abort pair, the
-    skipped-slots counter no live run reaches, and the claim-health
-    degradation ratio whose 5-minute baseline warm-up a seconds-long
-    probe cannot warm) - and the case counts must be the honest 24
-    firing + 11 healthy guards covering every shipped rule."""
+    skipped-slots counter no live run reaches: the 1-hour default
+    catch-up window swallows the probes' staged backlog, and the
+    wf-progress gauge whose observable emission is the maintenance
+    leader's admin-surface sample, never a worker scrape) - and the case
+    counts must be the honest 24 firing + 11 healthy guards covering
+    every shipped rule."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
     firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
@@ -1417,12 +1421,13 @@ def test_harness_series_are_bound_to_the_served_exposition(
                 f"promtool input series {name!r} is not a series the real "
                 "scrapes served - the harness has drifted from the emitted truth"
             )
-    # The three emitter-bound families: the fed LABEL VALUES must match
+    # The four emitter-bound families: the fed LABEL VALUES must match
     # what the real emitters serve, not just the names.
     for family, bound_label in (
         ("taskq_maintenance_leader_sweep_timeouts_total", "sweep_name"),
         ("taskq_maintenance_leader_sweep_unexpected_errors_total", "sweep_name"),
         ("taskq_cron_skipped_slots_total", "actor"),
+        ("taskq_wf_progress_nodes_total", "workflow"),
     ):
         served_label_values = emitter.label_values(family, bound_label)
         for case in cases:
@@ -1488,13 +1493,17 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
             assert token in emitted, (
                 f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
             )
-        # The label names the rule matches on must be real too.
+        # The label names the rule matches on must be real too (the
+        # emitter-bound families' labels are real the same way — the
+        # wf-progress gauge's `state` lives only on the emitter's series).
         for label in set(re.findall(r"(\w+)\s*=\"", str(rule["expr"]))):
             assert (
                 any(
                     label in s.labels
                     for family in emitted
-                    for s in (live.series(family) or hostile_mid.series(family))
+                    for s in (
+                        live.series(family) or hostile_mid.series(family) or emitter.series(family)
+                    )
                 )
                 or label == "le"
             ), f"rule {rule['alert']} filters on label {label!r}, which no emitted series carries"

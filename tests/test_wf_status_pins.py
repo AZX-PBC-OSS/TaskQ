@@ -20,7 +20,6 @@ from typing import Any
 import asyncpg
 import pytest
 
-from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows import finalize_node
 from taskq.workflows._sql import WorkflowSql
@@ -513,7 +512,6 @@ async def test_t08_rollup_cost_gate_index_driven(
     n_vanilla = 60_000
     n_flows = 40
     n_nodes = 500
-    statuses = ("succeeded", "running", "pending", "failed")
 
     # THE VANILLA POPULATION: production's fleet table is mostly NOT
     # workflow rows — this is what makes the plan assert honest (a seq
@@ -529,7 +527,7 @@ async def test_t08_rollup_cost_gate_index_driven(
     )
 
     flow_ids: list[JobId] = []
-    for f in range(n_flows):
+    for _ in range(n_flows):
         flow_id = await seed_flow(wf_conn, wf_schema)
         flow_ids.append(flow_id)
         await wf_conn.execute(
