@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin17-empty-join",
-    "mutation": "child-row recount (count children WHERE non-terminal)",
-    "red": "{\"j2_child_rows\": 0, \"fires_early\": true}"
+    "pin": "pin13-attempt-fence",
+    "mutation": "finalize CAS with row status only (no attempt/epoch conjunct)",
+    "red": "{\"status\": \"succeeded\", \"zombie_attempt\": 1, \"row_attempt\": 2}"
   }
 ]
