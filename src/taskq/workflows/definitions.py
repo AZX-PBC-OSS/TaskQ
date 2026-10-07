@@ -19,6 +19,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from taskq.backend._protocol import JobId
+from taskq.workflows._types import ForkSpec
+
 __all__ = [
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
@@ -27,6 +30,8 @@ __all__ = [
     "WorkflowRegistry",
     "get_registry",
     "resolve_step_body",
+    "validate_fork",
+    "validate_join_spec",
 ]
 
 #: A step body: the coroutine the dispatch runs for one step.
@@ -115,3 +120,47 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
     """Resolve one step body from the DEFAULT registry (the dispatch path's
     entry — per-call body maps must not exist in the public API, D1)."""
     return _default_registry.body(name, step_key)
+
+
+# ── The build-time graph validators (the declarative API's refusals) ────
+# A malformed GRAPH is a coding error, refused at build time — never a
+# runtime dragon the sweep has to diagnose after the fact (the sweep's
+# orphan_parent stamp remains the runtime diagnosis for rows that reach
+# the DB anyway; the validators are the door the API layer composes).
+
+
+def validate_fork(fork: ForkSpec) -> None:
+    """Refuse a malformed fork at build time: an EMPTY fork (zero children)
+    owes a join that can never fire, and a join declared over them counts
+    edges that will never exist — both the 'record healthy, work wrong'
+    class, convicted before any row is written."""
+    if not fork.children:
+        raise ValueError(
+            "an empty fork (zero children) is refused at build time: a join "
+            "declared over zero children waits on edges that never exist — "
+            "the stranded invisible join"
+        )
+    if fork.join is not None and not fork.children:
+        raise ValueError(  # pragma: no cover - unreachable above, stated for the reader
+            "a join over zero children is refused at build time"
+        )
+
+
+def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: int) -> None:
+    """Refuse a JOIN NODE with zero incoming edges at build time (the
+    declarative API's door — ``wf.validate()``'s shape): a join that
+    declares deps_pending > 0 with no parents is a stranded invisible join
+    — it can never fire, and (before the sweep's LEFT-JOIN hardening) it
+    was not even diagnosable."""
+    if deps_pending > 0 and not parents:
+        raise ValueError(
+            f"join node {step_key!r} declares deps_pending={deps_pending} with "
+            "zero incoming edges: a join without parents can never fire — "
+            "declare the parents (the edge writer rides the same call)"
+        )
+    if deps_pending > 0 and len(parents) != deps_pending:
+        raise ValueError(
+            f"join node {step_key!r} declares deps_pending={deps_pending} but "
+            f"{len(parents)} parents — the counter's cache must equal the "
+            "declared edge count"
+        )

@@ -41,16 +41,25 @@ WITH locked AS (
     FOR UPDATE SKIP LOCKED
 ),
 counts AS (
-    SELECT e.child_id,
-           count(*) FILTER (WHERE p.id IS NULL) AS missing_parents,
+    SELECT l.id AS child_id,
+           count(*) FILTER (WHERE e.child_id IS NOT NULL) AS edge_count,
+           count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,
            count(*) FILTER (
-               WHERE p.id IS NOT NULL
+               WHERE e.child_id IS NOT NULL
+                 AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
            ) AS unterminal
-    FROM {schema}.wf_edge e
-    JOIN locked l ON l.id = e.child_id
+    FROM locked l
+    -- LEFT-JOIN, not INNER: a join-wait row with NO edge rows (a public
+    -- path that never wrote its edges) must be ENUMERATED — the inner
+    -- join made it invisible (never reconciled, never fired, never
+    -- stamped blocked-with-reason): silently stranded in join-wait
+    -- forever with a healthy-looking record. The edge-less row blocks
+    -- below (edge_count = 0 → orphan_parent), the 'record healthy, work
+    -- wrong' class convicted with a reason.
+    LEFT JOIN {schema}.wf_edge e ON e.child_id = l.id
     LEFT JOIN {schema}.jobs p ON p.id = e.parent_id
-    GROUP BY e.child_id
+    GROUP BY l.id
 ),
 blocked AS (
     UPDATE {schema}.jobs j
@@ -62,7 +71,7 @@ blocked AS (
         )
     FROM counts c
     WHERE j.id = c.child_id
-      AND c.missing_parents > 0
+      AND (c.missing_parents > 0 OR c.edge_count = 0)
       AND NOT j.metadata @> '{{"blocking_reason": "orphan_parent"}}'::jsonb
     RETURNING j.id
 ),
@@ -72,6 +81,7 @@ reconciled AS (
     FROM counts c
     WHERE j.id = c.child_id
       AND c.missing_parents = 0
+      AND c.edge_count > 0
       AND j.deps_pending <> c.unterminal::smallint
     RETURNING j.id
 ),
@@ -79,7 +89,8 @@ firable AS (
     SELECT l.id, l.flow_id, l.step_key
     FROM locked l
     JOIN counts c ON c.child_id = l.id
-    WHERE c.missing_parents = 0
+    WHERE c.edge_count > 0
+      AND c.missing_parents = 0
       AND c.unterminal = 0
 )
 SELECT
@@ -124,16 +135,21 @@ WITH locked AS (
     FOR UPDATE SKIP LOCKED
 ),
 counts AS (
-    SELECT e.child_id,
-           count(*) FILTER (WHERE p.id IS NULL) AS missing_parents,
+    SELECT l.id AS child_id,
+           count(*) FILTER (WHERE e.child_id IS NOT NULL) AS edge_count,
+           count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,
            count(*) FILTER (
-               WHERE p.id IS NOT NULL
+               WHERE e.child_id IS NOT NULL
+                 AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
            ) AS unterminal
-    FROM {schema}.wf_edge e
-    JOIN locked l ON l.id = e.child_id
+    FROM locked l
+    -- LEFT-JOIN, not INNER (the rederive arm's hardened shape): an
+    -- edge-less join-wait row is enumerated and EXCLUDED from firable
+    -- (edge_count = 0) — the rederive stamps it orphan_parent.
+    LEFT JOIN {schema}.wf_edge e ON e.child_id = l.id
     LEFT JOIN {schema}.jobs p ON p.id = e.parent_id
-    GROUP BY e.child_id
+    GROUP BY l.id
 ),
 firable AS (
     SELECT f.id, f.flow_id, f.step_key,
@@ -142,7 +158,8 @@ firable AS (
         SELECT l.id, l.flow_id, l.step_key
         FROM locked l
         JOIN counts c ON c.child_id = l.id
-        WHERE c.missing_parents = 0
+        WHERE c.edge_count > 0
+          AND c.missing_parents = 0
           AND c.unterminal = 0
     ) f
 ),

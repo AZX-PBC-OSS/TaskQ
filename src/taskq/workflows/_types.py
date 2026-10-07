@@ -88,7 +88,14 @@ class ForkSpec:
 
 @dataclass(frozen=True, slots=True)
 class NodeSpec:
-    """One workflow node's enqueue (the workflow-row INSERT's spec)."""
+    """One workflow node's enqueue (the workflow-row INSERT's spec).
+
+    A JOINED node (``deps_pending > 0``) declares its incoming edges in
+    ``parents`` — the edge ledger is the join counter's ONLY truth, and the
+    public path writes them through the bundle's exported edge writer in
+    the SAME call (a join whose edges never land is a stranded invisible
+    join: the sweep diagnoses it ``orphan_parent``, and the declarative
+    API's validators refuse it at build time)."""
 
     flow_id: JobId
     step_key: str
@@ -96,6 +103,7 @@ class NodeSpec:
     queue: str
     payload: dict[str, object] | None = None
     parent_id: JobId | None = None
+    parents: tuple[JobId, ...] = ()
     map_index: int | None = None
     deps_pending: int = 0
     consumers: tuple[ConsumerBinding, ...] = ()

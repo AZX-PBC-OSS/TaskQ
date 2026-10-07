@@ -46,6 +46,8 @@ from taskq.workflows.definitions import (
     WorkflowRegistry,
     get_registry,
     resolve_step_body,
+    validate_fork,
+    validate_join_spec,
 )
 from taskq.workflows.engine import (
     DISPATCH_EXCLUSION_CLAUSE,
@@ -99,4 +101,6 @@ __all__ = [
     "step_idempotency_key",
     "step_idempotency_scope",
     "sweep_join_rederive",
+    "validate_fork",
+    "validate_join_spec",
 ]
