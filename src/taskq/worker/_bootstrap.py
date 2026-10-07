@@ -38,7 +38,7 @@ from taskq._dsn import dsn_host as _dsn_host
 from taskq._forkguard import guarded_connection_class, install_fork_guard
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
-from taskq.actor_config_ops import list_actor_configs
+from taskq.actor_config_ops import ActorConfigRow, list_actor_configs
 from taskq.auth import (
     PgCredentialProvider,
     ReloadSchedule,
@@ -65,7 +65,7 @@ from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
 )
-from taskq.exceptions import DIError, MissingProvider
+from taskq.exceptions import DIError, MissingProvider, UnknownQueueError
 from taskq.obs import (
     ErrorReporter,
     get_meter,
@@ -870,6 +870,119 @@ def _emit_unconsumed_queue_startup_warnings(
             "routed queue appears. Intended when another worker in the "
             "fleet consumes the queue; if none does, those jobs never run "
             ", add the queue to some worker's TASKQ_QUEUES / --queues."
+        ),
+    )
+
+
+def _fail_fast_on_unrouted_configured_queues(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    stored_rows: Mapping[str, ActorConfigRow],
+) -> None:
+    """Strict mode's worker-side boot gate: a configured queue nothing
+    routes to refuses the boot.
+
+    THE split-deployment rule, and why this check lives HERE and only
+    here: actors register ONLY in the worker process, so any startup
+    check shaped like "configured queue with no registered actor" can
+    run in the worker alone — the client process (web/admin submits,
+    worker consumes) gets the submit-time gate
+    (``ActorCapacityCache.maybe_warn_unserved_queue``'s strict branch)
+    and NO boot check, advisory or otherwise; a client-side boot check
+    of this shape would brick every split deployment.
+
+    Runs AFTER ``sync_actor_config`` and the fleet-wide read-back, so
+    the coverage set is the STORED assignments (every ``actor_config``
+    row in the table, this worker's registry seeded them and sibling
+    workers' rows persist) — the operator-owned routing truth that
+    cron fires and re-pended rows follow. A rolling deploy where the
+    sibling image registered the actor therefore boots this worker even
+    when its own registry never imported that actor: the stored row is
+    the coverage. The corner that still refuses: a first-ever boot
+    where the actor's image has not registered anywhere yet — the exact
+    deploy/code drift strict exists to catch.
+
+    Raises :class:`~taskq.exceptions.UnknownQueueError` (``source=
+    "worker_boot"``) naming every unrouted queue, the configured set,
+    and the escapes. Only fires when ``settings.queues_strict`` is True
+    (the knob is opt-in; the existing aggregated WARNING above keeps
+    owning the non-strict signal). No wildcard: there is no ``*``
+    queue — the escape at boot is fixing the configured set or
+    registering the actor.
+    """
+    if not getattr(settings, "queues_strict", False):
+        return
+    configured = list(settings.queues)
+    if not configured:
+        # A worker consuming nothing is its own failure (the
+        # worker-consumes-no-queues warning above owns it); nothing
+        # routed-vs-configured is decidable, do not double-signal.
+        return
+    # Coverage: the stored assignments (fleet-wide, post-sync) plus the
+    # registry literals (defensive: an actor whose sync was refused
+    # cannot have a stored row, but its literal is still this process's
+    # declared route).
+    routed = {row.queue for row in stored_rows.values()} | {
+        ref.queue for ref in actor_registry.values()
+    }
+    unrouted = [q for q in configured if q not in routed]
+    if not unrouted:
+        return
+    raise UnknownQueueError(unrouted, configured, source="worker_boot")
+
+
+def _emit_retired_queue_assignments_advisory(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    stored_rows: Mapping[str, ActorConfigRow],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """THE RETIREMENT HALF, the boot gate's inverse visibility: stored
+    assignments for actors this worker neither serves nor consumes —
+    retired-actor drift, a queue the fleet's stored config still routes
+    after the actor left the code — surface as ONE aggregated ADVISORY,
+    never a refusal.
+
+    The asymmetry this respects: the configured-but-unrouted gate above
+    refuses (the strict knob's one hard edge), because a configured
+    queue nothing routes to provably dispatches nothing; a stored row
+    for an absent actor proves nothing on its own — a sibling worker may
+    still serve or consume it, and refusing here would strand its live
+    jobs. So: advisory only, aggregated once per boot, the sibling
+    caveat in the note, the remedy (delete the stored row via
+    ``taskq actor-config``) named. Nothing lingers silently.
+
+    Runs in the same post-sync block as the gate (the same fleet-wide
+    read), for strict and non-strict boots alike — an advisory has no
+    knob; it is the note's sibling on the worker side.
+    """
+    if not stored_rows:
+        return
+    consumed = set(settings.queues)
+    served = {ref.queue for ref in actor_registry.values()}
+    # Rows for actors NOT in this registry: the full-registry fleet
+    # (every worker imports the whole registry) makes these exactly the
+    # retired-from-code actors the DB still routes; split-registry
+    # fleets read the sibling caveat.
+    unclaimed = sorted(
+        (row.actor, row.queue)
+        for row in stored_rows.values()
+        if row.actor not in actor_registry and row.queue not in consumed and row.queue not in served
+    )
+    if not unclaimed:
+        return
+    log.warning(
+        "retired-queue-assignments",
+        actors=[actor for actor, _queue in unclaimed],
+        queues=sorted({queue for _actor, queue in unclaimed}),
+        note=(
+            "stored actor_config assignments route these queues, but no "
+            "actor registered here serves them and this worker does not "
+            "consume them: a sibling worker may legitimately serve or "
+            "consume each one, but if the actor was retired from the code "
+            "the stored row is drift — delete it (taskq actor-config) so "
+            "this queue stops being routed. Advisory only; nothing was "
+            "refused."
         ),
     )
 
@@ -1845,6 +1958,14 @@ async def _main(
             loop_scope_resolved=loop_scope.resolved_cache(),
             worker_pool=deps.worker_pool,
             backend=backend,
+            # Strict queue-name validation rides the enqueuer's capacity
+            # cache into every fan-out arm (and the per-job enqueuer the
+            # dispatch path builds shares THIS cache, so it inherits the
+            # knobs rather than re-deriving them). env_queues is the
+            # two-source rule's second source: this worker's own declared
+            # set.
+            queues_strict=settings.queues_strict,
+            env_queues=settings.queues,
         )
 
         if actor_registry is not None:
@@ -2001,6 +2122,19 @@ async def _main(
                         error=repr(exc),
                     )
                 else:
+                    # Strict's boot gate runs HERE, on the fleet-wide
+                    # post-sync read: stored_rows is the coverage set (see
+                    # the gate's docstring), and a read failure above
+                    # means the gate silently skips — fail-open on an
+                    # unavailable read, the check never runs on data it
+                    # cannot trust (that boot already carries the
+                    # resolved-capacity-read-failed warning). The
+                    # retirement advisory rides the same read (its
+                    # inverse: routed-but-unclaimed, advisory only).
+                    _fail_fast_on_unrouted_configured_queues(settings, actor_registry, stored_rows)
+                    _emit_retired_queue_assignments_advisory(
+                        settings, actor_registry, stored_rows, _startup_log
+                    )
                     _emit_resolved_capacity_startup_lines(
                         settings,
                         actor_registry,

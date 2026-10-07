@@ -108,6 +108,7 @@ from taskq.exceptions import (
     SubEnqueueError,
     TaskQError,
     UniqueForLockTimeoutError,
+    UnknownQueueError,
     WorkerOwnershipMismatch,
 )
 from taskq.obs import ErrorReporter, NullErrorReporter
@@ -239,6 +240,7 @@ __all__ = [
     "TaskQError",
     "TaskQSettings",
     "UniqueForLockTimeoutError",
+    "UnknownQueueError",
     "WorkerConnections",
     "WorkerOwnershipMismatch",
     "WorkerSettings",

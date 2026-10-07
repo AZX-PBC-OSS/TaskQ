@@ -1141,6 +1141,13 @@ async def consume_one_job(
                 loop_scope_resolved=None,
                 worker_pool=None,
                 backend=backend,
+                # Same getattr-with-default convention as notify_enabled
+                # above: the consumer's unit tests drive SimpleNamespace
+                # stand-ins for WorkerSettings; strict defaults False
+                # there. env_queues is the two-source rule's second
+                # source.
+                queues_strict=bool(getattr(_effective_settings, "queues_strict", False)),
+                env_queues=getattr(_effective_settings, "queues", None),
             )
         )
 
