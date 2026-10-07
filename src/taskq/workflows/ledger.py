@@ -1,0 +1,227 @@
+"""The step ledger + the run-key arbiter + the idempotency contract (T05).
+
+Idempotency keys are assigned as ``scope = workflow run``,
+``key = (step_key [, map_index])`` against the EXISTING composite
+``(idempotency_scope, idempotency_key)`` arbiter
+(``jobs_idempotency_scope_key_uniq``, ``backend/_enqueue.py``'s speculative
+lock budgets and typed conflict path) — NOT the dropped single-column index
+(``jobs_idempotency_key_uniq``, dropped by
+``01.00.03_01_post_idempotency_scope_drop_old_index.sql``). Idempotency keys
+stay TEXT — they are business keys ``(workflow, step_key[, map_index])``,
+not surrogate ids; the ledger's surrogate ids ride the seam
+(``taskq._ids.new_uuid()``, uuid7 — never ``gen_random_uuid()``/uuid4).
+
+Per-step opt-out (``idempotent=False``) for steps whose redelivery is
+harmless or whose payloads are too large to key. Default ON — silent
+double-runs are the failure class this layer exists to prevent.
+
+Map-child retries claim the same row: the retried child's step key is
+``(workflow, map node, map_index)`` → the ON CONFLICT path returns the
+recorded result rather than re-executing (the memoized lookup consults any
+prior TERMINAL ledger row for the step; ``attempt`` is NOT in that key — a
+retried child claims a NEW attempt row, but the replay returns the recorded
+result).
+
+RUN-LEVEL IDEMPOTENCY (G2): ``workflows.run(flow, input, key=…)`` claims
+against the SAME composite arbiter with ``scope = 'workflow-run'``: a
+conflict RETURNS THE EXISTING RUN (its id + status), never a second silent
+run. The pin's origin is the founding incident (a stale fixed key silently
+returned a PRIOR run's id with a 202 and launched nothing — "the dedup
+lives in whoever remembers the key"): the run key makes the ARBITER the
+rememberer.
+
+CRON x WORKFLOW COMPOSITION (G3 — the rule's ONE home): a cron entry fires
+``wf.run`` with the CRON-SLOT KEY as the run key (G2's arbiter —
+``scope='workflow-run', key='<flow>:<slot-timestamp>'``), so the two dedup
+regimes COMPOSE instead of racing: same slot twice → ONE run.
+
+THE HONEST BOUNDARY (the contract the docs state as semantics): exactly-once
+for DB-LOCAL effects (steps share the enqueue connection pattern; the ledger
+PK physically blocks double-recording); AT-LEAST-ONCE for external effects,
+with the ledger dedup. Join/reducer BODIES are covered by the same boundary:
+a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Final
+
+from taskq._ids import new_uuid
+from taskq.backend._protocol import ConnLike, JobId
+from taskq.workflows._sql import WorkflowSql
+
+__all__ = [
+    "LedgerClaim",
+    "RunClaim",
+    "claim_step_ledger",
+    "insert_flow_run",
+    "memoized_step_result",
+    "run_idempotency_scope",
+    "step_idempotency_key",
+    "step_idempotency_scope",
+]
+
+#: The run-level idempotency scope (G2). The step-level scope is
+#: ``workflow:{flow_id}`` (one flow run namespaces its own step keys).
+RUN_IDEMPOTENCY_SCOPE: Final[str] = "workflow-run"
+
+
+def run_idempotency_scope() -> str:
+    """The run-key arbiter's scope."""
+    return RUN_IDEMPOTENCY_SCOPE
+
+
+def step_idempotency_scope(flow_id: JobId) -> str:
+    """The step-claim arbiter's scope: one flow run."""
+    return f"workflow:{flow_id}"
+
+
+def step_idempotency_key(step_key: str, map_index: int | None = None) -> str:
+    """The step-claim arbiter's key: ``(step_key[, map_index])``."""
+    return f"wf:{step_key}" if map_index is None else f"wf:{step_key}:{map_index}"
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerClaim:
+    """The claim's outcome (the ON CONFLICT path's one-round-trip RETURNING).
+
+    ``fresh`` rows were inserted by THIS claim (the only grant of work — the
+    attempt increments at claim); a conflicting claim returns the EXISTING
+    row, whose terminal ``result`` is the memoized answer.
+    """
+
+    flow_id: JobId
+    job_id: JobId
+    step_key: str
+    map_index: int | None
+    attempt: int
+    status: str
+    result: Any | None
+    error_class: str | None
+    error_message: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RunClaim:
+    """The run-key arbiter's outcome: ``created`` rows are THIS caller's new
+    run; a conflicting caller gets the EXISTING run's id + status — never a
+    second silent run."""
+
+    flow_id: JobId
+    created: bool
+    status: str
+
+
+async def claim_step_ledger(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_key: str,
+    map_index: int | None,
+    attempt: int,
+) -> LedgerClaim:
+    """The step-ledger claim: ONE round trip (P1 FINAL's idempotent-claim
+    shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
+    check-then-insert; verified 30 reps x 10 concurrent).
+
+    THE LEDGER-CLAIM-ATOMIC RULE (hardening H6): the claim and the attempt's
+    ``running`` ledger row are ONE statement — a two-transaction variant
+    leaves a cancel in the window fencing NOTHING (the attempt isn't on the
+    record yet), the row appears POST-CANCEL as a phantom ``running``.
+    """
+    row_id = new_uuid()
+    rec = await conn.fetchrow(
+        wsql.ledger_claim,
+        row_id,
+        flow_id,
+        job_id,
+        step_key,
+        map_index,
+        attempt,
+    )
+    assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
+    return LedgerClaim(
+        flow_id=JobId(rec["flow_id"]),
+        job_id=JobId(rec["job_id"]),
+        step_key=rec["step_key"],
+        map_index=rec["map_index"],
+        attempt=rec["attempt"],
+        status=rec["status"],
+        result=rec["result"],
+        error_class=rec["error_class"],
+        error_message=rec["error_message"],
+    )
+
+
+async def memoized_step_result(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    step_key: str,
+    map_index: int | None,
+) -> LedgerClaim | None:
+    """The latest TERMINAL ledger row for ``(flow, step[, map_index])`` —
+    the map-child retry's ``ON CONFLICT`` path: the recorded result returns
+    rather than re-executing. ``None`` when no terminal row exists."""
+    rec = await conn.fetchrow(wsql.ledger_memoized, flow_id, step_key, map_index)
+    if rec is None:
+        return None
+    return LedgerClaim(
+        flow_id=flow_id,
+        job_id=JobId(rec["job_id"]),
+        step_key=step_key,
+        map_index=map_index,
+        attempt=rec["attempt"],
+        status=rec["status"],
+        result=rec["result"],
+        error_class=rec["error_class"],
+        error_message=rec["error_message"],
+    )
+
+
+async def insert_flow_run(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    entry: Any,
+    run_key: str,
+) -> RunClaim:
+    """The RUN-KEY claim (G2): the flow's root row inserted under the
+    ``workflow-run`` scope with the caller's key — the composite arbiter is
+    the rememberer. A conflict returns the EXISTING run's id + status.
+
+    *entry* is the flow definition's registered shape (T09's API; the core
+    needs ``actor``/``queue``/``max_attempts``/``retry_kind``/``payload``/
+    ``trace_id`` attributes only).
+    """
+    flow_id = new_uuid()
+    inserted = await conn.fetchrow(
+        wsql.flow_run_insert,
+        flow_id,
+        entry.actor,
+        entry.queue,
+        entry.payload,
+        entry.max_attempts,
+        entry.retry_kind,
+        entry.trace_id,
+        {"flow_id": str(flow_id)},
+        run_idempotency_scope(),
+        run_key,
+    )
+    if inserted is not None:
+        return RunClaim(flow_id=JobId(inserted["id"]), created=True, status=inserted["status"])
+
+    # The arbiter's conflict path: the EXISTING run's id + status, never a
+    # second silent run (the founding-incident shape — "202 + a new run" —
+    # is the convicted variant, kept RED forever by the pin).
+    existing = await conn.fetchrow(wsql.flow_run_read, run_idempotency_scope(), run_key)
+    assert existing is not None  # the arbiter conflict implies the row exists
+    return RunClaim(
+        flow_id=JobId(existing["id"]),
+        created=False,
+        status=existing["status"],
+    )
