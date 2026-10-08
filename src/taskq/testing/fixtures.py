@@ -867,15 +867,21 @@ RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var NAME, no
 
 def run_isolation_token() -> str:
     """The token mixed into every hashed per-module/per-test database and schema
-    name: the xdist worker id under xdist, the conftest-published per-invocation
-    token in serial runs, ``master`` as a last-resort fallback (direct library
-    use outside this repo's conftest).
+    name: the conftest-published per-invocation token (the invocation-unique
+    basetemp PATH - the numbered invocation dir plus the xdist worker's own
+    subdirectory, so it is invocation-unique AND worker-distinct AND distinct
+    from any subprocess pytest's own fresh numbered dir), ``master`` as a
+    last-resort fallback (direct library use outside this repo's conftest).
 
     The token's essential job is WITHIN one invocation: the shared pair
     serves every xdist worker of it, and two workers hashing the same module
     or node id must not land the same database or schema on that one pair ,
     each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
-    would kill the other's live pools mid-test.
+    would kill the other's live pools mid-test. AND ACROSS sessions sharing
+    one cluster: a parent session and its own subprocess pytest (the scratch
+    drills) both publish a token, and the basetemp path keeps the child's
+    names off the parent's (the mutual-drop class's root cure - see
+    tests/conftest.py::_publish_run_isolation_token).
 
     Invocation-uniqueness of the token (the conftest publishes the
     invocation-unique basetemp dir name, e.g. ``pytest-41``) and the

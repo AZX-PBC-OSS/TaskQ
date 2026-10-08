@@ -866,14 +866,22 @@ def test_session_publishes_run_isolation_token(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """The session conftest publishes the token before any naming helper
-    runs: the xdist worker id under xdist, else the invocation-unique
-    basetemp dir name (e.g. ``pytest-41``) - the value two overlapping
-    serial runs can never share."""
+    runs: the invocation-unique basetemp PATH (the numbered invocation dir
+    PLUS the xdist worker's own subdirectory - invocation-unique AND
+    worker-distinct in one string, and distinct from any subprocess
+    pytest's own fresh numbered dir - the mutual-drop class's root cure).
+
+    The OLD token (the bare worker id, or the basetemp NAME alone) failed
+    one of the two uniqueness legs: ``gw7`` is identical in every ``-n 8``
+    invocation on the box, so a parent session and its own subprocess
+    pytest (the scratch drills) hashed the same (token, module) pairs to
+    the same database names on one cluster, and each side's
+    ``DROP DATABASE ... WITH (FORCE)`` killed the other's live connections
+    mid-test. The full path is unique per invocation, per worker, and per
+    subprocess, by construction."""
     token = os.environ.get(RUN_TOKEN_ENV_VAR)
     assert token is not None, "session fixture did not publish the run token"
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
-    expected = worker if worker is not None else tmp_path_factory.getbasetemp().name
-    assert token == expected
+    assert token == str(tmp_path_factory.getbasetemp())
 
 
 # ── Asyncio task-leak guard ────────────────────────────────────────

@@ -723,12 +723,24 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
     invocations' names can never land in one cluster - if that isolation ever
     regressed, distinct tokens would keep the runs' names from colliding on
-    whatever they ended up sharing. Under xdist the worker id IS the token;
-    serial runs use the invocation-unique basetemp dir name (``pytest-N``) -
-    pytest allocates a fresh numbered dir per invocation, so two overlapping
-    runs can never hold the same one.
+    whatever they ended up sharing.
+
+    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root cure,
+    2026-10-08): the invocation-unique numbered dir (``pytest-N``) PLUS the
+    xdist worker's own subdirectory (``popen-gwK``) - invocation-unique AND
+    worker-distinct in one string, which neither candidate alone is. The
+    plain worker id is NOT invocation-unique: ``gw7`` is identical in every
+    ``-n 8`` invocation on the box, so two overlapping invocations (or a
+    parent session and its own subprocess pytest - the scratch drills) hashing
+    (worker, module) landed the SAME database name on one cluster, and each
+    side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
+    connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
+    fuzz pins, every victim green solo. A subprocess pytest also mints its
+    own fresh ``pytest-M`` root (the lowest free number), so its basetemp
+    path is distinct from its parent's by construction - the scratch child
+    can never re-hash the parent's names, whatever it inherits.
     """
-    token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
+    token = str(tmp_path_factory.getbasetemp())
     # A raw ``MonkeyPatch`` instance, not the function-scoped fixture (this is
     # session-scoped): the sanctioned env seam with correct undo semantics -
     # ``os.environ[...] =`` here would be the suite's one direct env write,
