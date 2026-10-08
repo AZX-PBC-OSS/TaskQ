@@ -94,3 +94,34 @@ emit-tx band 7–14 ms/page: held with headroom. Evidence:
    `test_wf_loop_pins.py`, and the `.measurements/**` captured probe
    scripts). Unchanged here — the captured corpora are append-only and
    the hitl/loop pins are the phase-3 fixer's lane.
+
+---
+
+## THE CURE (appended) — unspecification #1 is CLOSED
+
+**`ef5fcbcc` — the emit backpressure (DH9), built.** The un-pinned
+decision is pinned:
+
+1. **THE DECLARED HOME**: the max-in-flight bound is the RUN's admission
+   control; it is declared on the per-workflow POLICY surface —
+   `@app.workflow(name, max_in_flight=…)`. The default is the shipped
+   fence-ON (`EMIT_MAX_IN_FLIGHT_DEFAULT` = 1000); `None` is the
+   explicit unbounded. One home; the compile carries it; the runner
+   hands it to every `ctx.emit_batch`.
+2. **THE PIN** (`tests/test_wf_t20_backpressure_pins.py`): the pager
+   BLOCKS at the bound — the whole page is admitted (the outstanding
+   non-terminal count + the page's width ≤ the bound) or the body waits
+   (the generator's laziness; the second gate INSIDE the tx under the
+   flow's admission lock — DH4's serialization pattern, a guard never a
+   timing argument). **The captured red**: the bound removed → the
+   count blows it (8 outstanding against the 6 the bounded pins never
+   exceed) — `.measurements/t20-backpressure-*.txt` + the redlog. The
+   stall's loud refusal (`EmitBackpressureTimeout`) rides the certified
+   ladder; the e2e pin proves the resume-from-cursor under the bound
+   (8 records exactly once, the run succeeds).
+3. **THE BANDS RE-MEASURED WITH THE BOUND LIVE**: the emit tx p50
+   2.89 / max 10.84 ms per 40-record page — the 7–14 ms band holds (the
+   admission read + the in-tx gate cost sub-ms/page);
+   `.measurements/t20-streaming-bands-fenced-*.json` (and the
+   timestamped capture beside it). The full battery with the new
+   family: **178 passed**; the new family 3 consecutive clean rounds.
