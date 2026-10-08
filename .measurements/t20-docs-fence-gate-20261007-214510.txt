@@ -1,0 +1,2 @@
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+1 skipped in 0.13s
