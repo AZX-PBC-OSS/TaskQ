@@ -1,0 +1,21 @@
+## the RedLog scope (the builder's finding #9 — confirmed + scoped)
+
+--- the flush(): write_text (REWRITE, not append) ---
+57:        (MEASUREMENTS / self._filename).write_text(json.dumps(self.entries, indent=2))
+
+--- the tracked evidence files the fixtures rewrite (5 sinks) ---
+63:    log = RedLog("pin-reds.json")
+71:    log = RedLog("ledger-pin-reds.json")
+79:    log = RedLog("t10-pin-reds.json")
+87:    log = RedLog("t19-pin-reds.json")
+95:    log = RedLog("t06-propagation-reds.json")
+
+--- git's view AFTER the attack's runs (the churn is live) ---
+ M .measurements/t10-hold-resume-band.json
+ M .measurements/t10-pin-reds.json
+ M .measurements/t19-pin-reds.json
+?? .measurements/attack3/
+?? .measurements/final-verify.txt
+
+--- the shipped knock-shape pin never listens (the vacuous pin) ---
+394:    _ = HOLD_CHANNEL  # the channel constant (the knock's address)
