@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin17-empty-join",
-    "mutation": "child-row recount (count children WHERE non-terminal)",
-    "red": "{\"j2_child_rows\": 0, \"fires_early\": true}"
+    "pin": "pin16-body-from-definition",
+    "mutation": "per-call body map (the D1 hazard: the CAS loser runs the wrong body)",
+    "red": "{\"loser_body\": \"MUTATED\", \"shipped\": \"the registered definition's body\"}"
   }
 ]

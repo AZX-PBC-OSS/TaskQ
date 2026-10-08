@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin5-ledger-claim-atomic",
-    "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
-    "red": "{\"ledger\": \"running\", \"flow\": \"cancelled\"}"
+    "pin": "pin6-ledger-terminal-atomic",
+    "mutation": "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
+    "red": "{\"node\": \"succeeded\", \"ledger\": \"running\"}"
   }
 ]

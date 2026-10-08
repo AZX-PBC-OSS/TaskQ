@@ -1,7 +1,7 @@
 [
   {
-    "pin": "t18-pin1-expiry-eats-children",
-    "mutation": "the guard stripped from the expiry arm \u2014 the children's results expire BEFORE the join fires, the reduce reads holes (the silent partial)",
-    "red": "{\"expired\": 0, \"survivors\": 1000}"
+    "pin": "join-failure-policy-timeout-required",
+    "mutation": "the timeout arm wedged: the deadline-failed child leaves the join in join-wait (a join with no timer of its own, waiting on a child that can never terminalize)",
+    "red": "{\"swept\": 1, \"blocked_required\": 1, \"fires\": 0}"
   }
 ]
