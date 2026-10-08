@@ -1,0 +1,15 @@
+THE GATE-FIX RED-FIRST PROOF 2 — an EXTRA error planted OUTSIDE the
+markers (a clean line redded: `_planted: int = "not an int"` inserted
+after the gather in wf_generic_step_negative_types.py). The old gate
+printed such errors as INFORMATIONAL notes and passed — the clean-site
+regression's escape hatch. The fixed gate reds on BOTH checkers, naming
+each checker's own rule vocabulary:
+
+THE TYPE GATE REDS — a typed door leaks, a rule-id lies, or a clean line redded:
+  wf_generic_step_negative_types.py:125: pyright 1.1.414 emits an error OUTSIDE the MUST_ERROR markers (reportAssignmentType) — the corpus's clean lines must stay clean (a green-surface regression), and every asserted red must wear its marker
+  wf_generic_step_negative_types.py:125: ty 0.0.85 emits an error OUTSIDE the MUST_ERROR markers (invalid-assignment) — the corpus's clean lines must stay clean (a green-surface regression), and every asserted red must wear its marker
+GATE-EXIT=1
+
+(The mutation reverted; the gate re-run holds: "the type gate holds: every
+MUST_ERROR marker (13) reds on pyright 1.1.414 AND ty 0.0.85 with its
+DECLARED rule-ids, and no error falls outside the markers".)

@@ -1,0 +1,16 @@
+THE GATE-FIX RED-FIRST PROOF 1 — a marker's declared rule-id MUTATED (the
+residual probe's marker in wf_generic_step_negative_types.py rewritten to
+assert reportReturnType/invalid-return-type while the checkers emit
+reportArgumentType/invalid-argument-type). The gate must red with the
+RULE-ID MISMATCH — "a stray unrelated error must not satisfy the probe"
+(a missing-import noise error can never masquerade as a payload probe's
+red):
+
+THE TYPE GATE REDS — a typed door leaks, a rule-id lies, or a clean line redded:
+  wf_generic_step_negative_types.py:89: pyright 1.1.414 flagged the marker with the WRONG rule — got reportArgumentType, the marker asserts invalid-return-type, reportReturnType (a stray unrelated error must not satisfy the probe)
+  wf_generic_step_negative_types.py:89: ty 0.0.85 flagged the marker with the WRONG rule — got invalid-argument-type, the marker asserts invalid-return-type, reportReturnType (a stray unrelated error must not satisfy the probe)
+GATE-EXIT=1
+
+(The mutation reverted; the gate re-run holds. Proven on the FINAL gate —
+the formatter-robust span parser — in BOTH the wrapped and unwrapped
+layouts.)
