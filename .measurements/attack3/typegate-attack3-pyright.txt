@@ -1,0 +1,7 @@
+MUST_ERROR line 45 -> reportArgumentType
+MUST_ERROR line 58 -> reportArgumentType
+MUST_ERROR line 68 -> reportArgumentType
+MUST_ERROR line 79 -> reportUnknownVariableType
+MUST_ERROR line 79 -> reportCallIssue
+MUST_ERROR line 79 -> reportArgumentType
+summary: {'filesAnalyzed': 1, 'errorCount': 12, 'warningCount': 0, 'informationCount': 0, 'timeInSec': 0.604}

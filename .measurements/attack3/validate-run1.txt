@@ -1,0 +1,6 @@
+=========================== short test summary info ============================
+FAILED tests/attack3-validate.py::test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge
+FAILED tests/attack3-validate.py::test_a3_actor_on_a_nonexistent_queue_is_not_refused_at_build
+FAILED tests/attack3-validate.py::test_a3_e3_rule_is_dead_code - AssertionErr...
+FAILED tests/attack3-validate.py::test_a3_e5_blind_to_untyped_and_duck_shapes
+4 failed, 1 passed in 0.28s
