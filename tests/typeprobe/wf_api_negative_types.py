@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import Exit, WorkflowApp, build, map_source, step
+from taskq.workflows import Exit, WorkflowApp, build, gather, map_source, step
 
 
 class Ingest(BaseModel):
@@ -146,6 +146,58 @@ async def probe_map_promise_where_data_is_wanted() -> None:
 
 async def _map_body(ctx: Any, item: Report) -> Report:
     return item
+
+
+def probe_on_failure_wrong_literal() -> None:
+    """THE EDGE POLICY'S TYPED DOOR (the §7b MAYBE-TYPED cure): the
+    wiring verbs' ``on_failure=`` is ``EdgeFailurePolicy`` — the FULL
+    runtime vocabulary the build-time validator owns
+    (``definitions.FAILURE_POLICIES``: fail_closed | collect | maybe).
+    A literal OUTSIDE the vocabulary is the checker error at the call
+    site — never a surprise at build."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_edge_policy_step")
+    async def probe_edge_policy_step() -> object:
+        return build(
+            step(_body, Ingest(doc_id="d"), key="a", on_failure="maybe_not")
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): not an edge policy
+
+    _ = app
+
+
+def probe_on_failure_wrong_literal_gather() -> None:
+    """The same typed door on the JOIN edge (the gather's on_failure=):
+    a vocabulary-less literal reds the same way."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_edge_policy_gather")
+    async def probe_edge_policy_gather() -> object:
+        a = step(_body, Ingest(doc_id="d"), key="a")
+        b = step(_body, Ingest(doc_id="d"), key="b")
+        return build(
+            gather([a, b], on_failure="absorb")
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): not an edge policy
+
+    _ = app
+
+
+def probe_on_failure_the_vocabulary_stays_open() -> None:
+    """THE POSITIVE CONTROL (no marker — the unmarked-error rule keeps
+    it green): every RUNTIME-vocabulary literal is legal at the call
+    site. ``maybe`` — the absorbing edge T07's demo uses — must NOT red
+    (the typed door is the runtime vocabulary's honest spelling, never
+    a narrower subset that refuses valid graphs)."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_edge_policy_legal")
+    async def probe_edge_policy_legal() -> object:
+        a = step(_body, Ingest(doc_id="d"), key="a", on_failure="maybe")
+        b = step(_body, Ingest(doc_id="d"), key="b", on_failure="collect")
+        joined = gather([a, b], on_failure="fail_closed")
+        return build(joined)
+
+    _ = app
 
 
 def _exit_body_none():

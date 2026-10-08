@@ -84,6 +84,31 @@ def test_docs_workflow_bodies_declare_the_typed_ctx(doc: str) -> None:
     )
 
 
+_OK_FAILED_ENVELOPE = re.compile(r"`\b(Ok|Failed)\b`|\b\d+\s*`?(Ok|Failed)\b`?")
+
+
+@pytest.mark.parametrize("doc", _DOCS)
+def test_no_phantom_ok_failed_envelope_prose(doc: str) -> None:
+    """THE DOCS-TRUTH GUARD (the §7b MAYBE-TYPED round's disposition):
+    the workflows docs must not name ``Ok``/``Failed`` envelope types —
+    no such classes exist (the real envelope is ``FailureInfo`` + the
+    ``AbsorbingPolicy`` marker; a p4-tree example page's "997 `Ok` + 3
+    `Failed` fan in" was the convicted prose). If a merge lands the
+    phantom vocabulary, this pin reds until the prose names the REAL
+    types (the alternative — shipping the aliases — would re-add the
+    parallel vocabulary the public-surface cut just removed)."""
+    path = REPO_ROOT / doc
+    offenders = [
+        f"{doc}:{i + 1}: {line.strip()}"
+        for i, line in enumerate(path.read_text().splitlines())
+        if _OK_FAILED_ENVELOPE.search(line)
+    ]
+    assert not offenders, (
+        "the phantom Ok/Failed envelope prose (the types do not exist; "
+        "name FailureInfo / the absorbing policy instead):\n" + "\n".join(offenders)
+    )
+
+
 @pytest.mark.parametrize("doc", _DOCS)
 def test_no_ctx_any_in_the_workflow_docs(doc: str) -> None:
     """``ctx: Any`` appears nowhere in the workflows docs — the Any is
