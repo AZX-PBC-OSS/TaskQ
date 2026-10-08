@@ -567,3 +567,33 @@ async def test_hold_to_resume_latency_band(
     with (MEASUREMENTS / "t10-hold-resume-band.json").open("a") as sink:
         sink.write(record + "\n")
     assert elapsed_ms < 500, f"the hold→resume band blew out: {elapsed_ms:.1f} ms"
+
+
+async def test_the_signal_name_is_the_model_s_own_name_stability_law(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
+) -> None:
+    """THE STABILITY LAW PIN (the ergonomic tail's disposition): the
+    hold's ``signal_name`` is the declared model's ``__name__`` — the
+    class name IS the signal's public identity (the deliver door, the
+    expiry sweep, the resume all key on it). The law is PINNED, not
+    parameterized: an explicit ``signal_name=`` argument would invite
+    the worse orphan (two wait sites declaring different names for one
+    model). A model rename is a HOLD-MIGRATION concern — this pin is the
+    contract that says so."""
+    from taskq.workflows.api._hitl import register_signal_models, resolve_signal_models
+
+    class RenewalApproved(BaseModel):
+        verdict: str
+
+    signal_name = RenewalApproved.__name__  # THE DERIVATION (the law's subject)
+    register_signal_models("stab-flow", "stab-node", signal_name, (RenewalApproved,), None)
+    # the catalog's key IS the model's own name — the law's face
+    resolved = resolve_signal_models("stab-flow", "stab-node", "RenewalApproved")
+    assert resolved is not None, (
+        "the catalog's signal key is NOT the model's __name__ — the "
+        "stability law's derivation drifted"
+    )
+    assert RenewalApproved in resolved[0]
+    # the counterfactual: a RENAMED model's hold coordinates do not
+    # resolve (the orphan is EXACT — the migration concern named)
+    assert resolve_signal_models("stab-flow", "stab-node", "RenewalApprovedNewName") is None

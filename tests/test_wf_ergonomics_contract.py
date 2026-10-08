@@ -250,3 +250,21 @@ def test_promise_type_story() -> None:
         return build(fetched)
 
     app.get("promise_types")
+
+
+def test_the_glossary_law_ctx_has_substep_never_step() -> None:
+    """THE GLOSSARY PIN (the ergonomic tail's item f): the two 'step'
+    nouns — the wiring verb ``step()`` (a graph NODE's declaration,
+    _graph.py) vs the context's memoized sub-step (a node's INNER
+    ledgered effect, _ctx.py) — one name, one meaning (the glossary
+    law). The LESSER noun renamed: ``ctx.substep()`` (the step-ledger's
+    own vocabulary — ``wf_step_ledger`` rows are what make it
+    exactly-once). RED-FIRST: on the pre-rename tree this pin reds (the
+    old ``step`` attr existed beside the wiring verb)."""
+    from taskq.workflows.api._ctx import StepContext
+
+    assert not hasattr(StepContext, "step"), (
+        "the lesser 'step' noun survived on StepContext — the glossary "
+        "law's collision is live (the wiring verb step() owns the name)"
+    )
+    assert hasattr(StepContext, "substep"), "the renamed substep surface is missing"

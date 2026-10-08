@@ -56,7 +56,7 @@ async def _echo(value: dict[str, object]) -> dict[str, object]:
 
 
 async def _prepare(ctx: StepContext, params: Ingest) -> Report:
-    report = await ctx.step("prepare.inner", _echo, {"ref": params.doc_id})
+    report = await ctx.substep("prepare.inner", _echo, {"ref": params.doc_id})
     return Report(ref=report["ref"])
 
 

@@ -1,15 +1,19 @@
-"""``ctx.step`` — the workflow job context's memoized step runner (T05).
+"""``ctx.substep`` — the workflow job context's memoized sub-step runner (T05).
 
-``ctx.step("name", fn)`` in the workflow job context: the step-ledger
+``ctx.substep("name", fn)`` in the workflow job context: the step-ledger
 claim's user-facing shape. Default idempotent (ON) — silent double-runs are
 the failure class this layer exists to prevent; ``idempotent=False`` opts a
-step out (harmless redelivery, or a payload too large to key).
+substep out (harmless redelivery, or a payload too large to key).
 
 The replay contract: the retried step's key is
 ``(workflow, step_key[, map_index])`` → the claim path returns the
 recorded result rather than re-executing. The node's own finalize records
 the ledger terminal (riding tx1 — the ledger-terminal-atomic rule);
-``ctx.step``'s claim is the attempt's grant of work.
+``ctx.substep``'s claim is the attempt's grant of work.
+
+THE GLOSSARY LAW (the ergonomic tail's cure): the method was ``ctx.step``
+— the wiring verb ``step()`` owns that name (a graph NODE's declaration);
+the node's INNER ledgered effect is the SUBSTEP.
 """
 
 from __future__ import annotations

@@ -209,7 +209,7 @@ The step ledger's claim is ONE round trip
 (`INSERT … ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1),
 attempt) DO UPDATE … RETURNING`) — the ledger row IS the claim, the
 arbiter physically blocks double-recording, and map children of one step
-key are DIFFERENT claims. `ctx.step("name", fn)` is the user-facing
+key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
 Run-level idempotency (`workflows.run(flow, input, key=…)`) claims against
@@ -346,7 +346,7 @@ unseen) · **E6** the fan-in bound · **E7** the cross-graph promise (a
 promise wired from ANOTHER app's recorder — recorded by the verbs,
 convicted here; the colliding-key smuggle builds a silently wrong edge) ·
 **E8** the loop CARRIER-TYPE (a body refining an unrelated model against
-the declared `carry=` — the recorded declaration is enforced) · **W1**
+the declared `carry_type=` (or the model instance passed as `initial=`) — the recorded declaration is enforced) · **W1**
 the eternal wait (the warning class) · **W2** the unknown queue (a queue
 no actor declares and TASKQ_QUEUES does not name — the warning class;
 the worker-boot fail-fast stays the runtime door).
