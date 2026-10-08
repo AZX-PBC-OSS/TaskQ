@@ -74,6 +74,22 @@ def ledger_redlog() -> Iterator[RedLog]:
 
 
 @pytest.fixture
+def hitl_redlog() -> Iterator[RedLog]:
+    """The red sink for the T10 HITL pins (the convicted variants)."""
+    log = RedLog("t10-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
+def loop_redlog() -> Iterator[RedLog]:
+    """The red sink for the T19 loop pins (the mutation drills' reds)."""
+    log = RedLog("t19-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
 def propagation_redlog() -> Iterator[RedLog]:
     """The red sink for the T06 propagation pins (the phase-2 family)."""
     log = RedLog("t06-propagation-reds.json")

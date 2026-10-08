@@ -34,6 +34,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
@@ -67,6 +68,26 @@ class WorkflowRunError(RuntimeError):
     row is missing (a caller bug, refused loudly)."""
 
 
+class _NodeHeld(Exception):
+    """The wait site's control-flow unwinding (INTERNAL): the body
+    raised it after registering the hold — the runner catches it, leaves
+    the node in the held representation (pending + the deadline + the
+    signal row as truth; NO terminal, NO ledger failure — the resume
+    consumes no attempt), and the worker releases the slot. The body
+    re-executes FROM THE TOP on resume (the re-execution doctrine)."""
+
+    def __init__(self, hold_id: str, signal_names: tuple[str, ...]) -> None:
+        super().__init__(f"node held on {signal_names} (hold {hold_id})")
+        self.hold_id = hold_id
+        self.signal_names = signal_names
+
+
+class SignalUnavailableError(RuntimeError):
+    """``ctx.signal(name)`` read a signal that has no delivered payload
+    (the read-before-delivery mistake — the typed refusal, never a
+    silent None)."""
+
+
 @dataclass(frozen=True, slots=True)
 class StepContext:
     """The body's runtime context: the run's identity + the input (cut
@@ -81,6 +102,8 @@ class StepContext:
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
     _map_index: int | None = None
+    _is_loop: bool = False
+    _ledger_id: JobId | None = None
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
@@ -96,6 +119,183 @@ class StepContext:
                 attempt=self.attempt,
             )
             return await steps.step(name, fn, *args, idempotent=idempotent)
+
+    async def wait_signal(
+        self,
+        signals: Any,
+        *,
+        timeout_s: float | None = None,
+        reason: str | None = None,
+        tool: str | None = None,
+        args: dict[str, object] | None = None,
+    ) -> Any:
+        """THE TYPED WAIT (T10): the TUPLE FORM is the typed wait —
+        ``await ctx.wait_signal((Approval, Escalate))`` (PEP 604 unions
+        in value position are ``UnionType`` and carry no static payload
+        information — Package B, finding 2); the single-payload form is
+        the one-member overload. THE RESUME CONTRACT (documented ON the
+        method — cut #18's disposition): **the body re-executes FROM
+        THE TOP on resume** — make it idempotent; pre-wait side effects
+        are ``ctx.step``-ledgered and replay cheap.
+
+        No unresolved signal row → the node HOLDS (the held
+        representation: pending + the deadline + the signal row as
+        truth; the worker releases — no slot held; a LOOP node's budget
+        PAUSES). A DELIVERED row (the resume) returns the payload.
+        ``timeout=None`` must be EXPLICIT — the bare form is the W1
+        validate warning ("a workflow that waits forever on a human is
+        a support ticket")."""
+        models: tuple[type[BaseModel], ...] = cast(
+            tuple[type[BaseModel], ...],
+            signals if isinstance(signals, tuple) else (signals,),
+        )
+        names = tuple(m.__name__ for m in models)
+        from taskq.workflows.api._hitl import mark_awaited, register_hold
+
+        # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row
+        # records 'awaited' (never 'failed' — the ladder counts failed
+        # only).
+        if self._ledger_id is not None:
+            async with self._pool.acquire() as conn:
+                await mark_awaited(conn, self._wsql.schema, self._ledger_id)
+
+        # THE STALE-PAYLOAD DRAGON'S KILL SITES (two, both structural):
+        # (1) THE ANSWER QUEUE — the delivered holds are the node's
+        # durable answers, consumed IN EPOCH ORDER by each attempt's wait
+        # sequence (the per-attempt CURSOR): a RETRY replays the answers
+        # (they are the attempt's inputs — the operator never
+        # re-answers, the retry is deterministic); a wait past the
+        # queue's end registers a NEW hold (a NEW epoch — multi-hold).
+        # (2) the CONSUMED hold can never answer twice.
+        async with self._pool.acquire() as conn:
+            cursor_meta = await conn.fetchval(
+                _stmt(
+                    "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
+                    self._wsql.schema,
+                ),
+                self.job_id,
+                f"hold_cursor_{self.attempt}",
+            )
+            cursor = int(cursor_meta or 0)
+            queue = await conn.fetch(
+                _stmt(
+                    "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'delivered' ORDER BY hold_epoch",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if cursor < len(queue):
+                # THE REPLAY/CONSUME: this attempt's wait takes the
+                # queue's next answer (the cursor advances — the same
+                # hold can never answer the same attempt twice).
+                answer = queue[cursor]
+                payload = (
+                    _json_loads(answer["payload"])
+                    if isinstance(answer["payload"], str)
+                    else answer["payload"]
+                )
+                await conn.execute(
+                    _stmt(
+                        "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
+                        self._wsql.schema,
+                    ),
+                    self.job_id,
+                    dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                )
+                return self._coerce_signal(models, payload)
+            # PAST THE QUEUE: the node's PENDING hold (if any) is THIS
+            # wait's wait — the held row stands (idempotent re-hold,
+            # never a second registration of one wait).
+            held_row = await conn.fetchrow(
+                _stmt(
+                    "SELECT id FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if held_row is not None:
+                raise _NodeHeld(hold_id=str(held_row["id"]), signal_names=names)
+            # A NEW HOLD: a NEW epoch (the count of this name's holds —
+            # the identity's mint).
+            epoch = await conn.fetchval(
+                _stmt(
+                    "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+            )
+            schema_ref: dict[str, object] = {
+                m.__name__: m.model_json_schema()
+                for m in models  # pyright: ignore[reportAttributeAccessIssue]
+            }
+            hold_id = await register_hold(
+                conn,
+                schema=self._wsql.schema,
+                workflow_id=self.flow_id,
+                node_id=self.job_id,
+                node_key=self.node_key,
+                signal_name=names[0] if len(names) == 1 else "|".join(names),
+                hold_epoch=int(epoch),  # pyright: ignore[reportAny, reportArgumentType]
+                call_id=f"call:{new_uuid()}",
+                payload_schema=schema_ref,
+                timeout_s=timeout_s,
+                is_loop_node=self._is_loop,
+            )
+            if reason or tool or args:
+                await conn.execute(
+                    _stmt(
+                        "UPDATE {schema}.wf_signals SET payload = $2::jsonb WHERE id = $1",
+                        self._wsql.schema,
+                    ),
+                    hold_id,
+                    dumps_jsonb_str({"reason": reason, "tool": tool, "args": args}),
+                )
+        raise _NodeHeld(hold_id=str(hold_id), signal_names=names)
+
+    @staticmethod
+    def _coerce_signal(models: Any, payload: Any) -> Any:
+        """The delivered payload re-validates into the declared model
+        (the typed wait's return — narrows with ``isinstance``)."""
+        if not isinstance(payload, dict):
+            return payload
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk — the delivered payload is the row's jsonb; the isinstance guard above is the runtime shape check.
+        for m in models:
+            if isinstance(m, type) and issubclass(m, BaseModel):
+                return cast(Any, m.model_validate(payload_doc))
+        return cast(Any, payload)
+
+    async def signal(self, name: str) -> Any:
+        """Read a DELIVERED signal's payload on resume (cut #3's cure —
+        the payload rides the ROW; the author never hand-rolls a side
+        table)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                _stmt(
+                    "SELECT payload, status FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                name,
+            )
+        if row is None or row["status"] != "delivered":
+            raise SignalUnavailableError(
+                f"signal {name!r} has no delivered payload on "
+                f"{self.node_key!r} (status: {row['status'] if row else 'none'})"
+            )
+        return _json_loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
 
 
 # ── the runner's own statements (named constants — never inline SQL) ────
@@ -156,6 +356,7 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND (scheduled_at IS NULL OR scheduled_at <= now())
   AND deps_pending = 0
   AND step_key <> '__flow__'
+  AND NOT metadata ? 'hold'
 ORDER BY id
 """
 
@@ -182,10 +383,37 @@ _ROOT_START_SQL_TEMPLATE = """
 UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 """
 
+_CANCEL_ROOT_SQL_TEMPLATE = """
+UPDATE {schema}.jobs SET status = 'cancelled',
+    error_class = 'WorkflowCancelled',
+    error_message = $2,
+    finished_at = clock_timestamp()
+WHERE id = $1
+  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+RETURNING id
+"""
+
+_CANCEL_NODES_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
+    finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
+    error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
+    metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+"""
+
 _TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT result FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
+
+
+async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: object) -> Any:
+    """One rendered statement's single value (the runner's ad-hoc read
+    seam — the schema rendered via the estate's validator)."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(_stmt(query, schema), *args)
 
 
 def _stmt(template: str, schema: str) -> str:
@@ -371,6 +599,7 @@ class FlowRunner:
         # fence's token), and the LEDGER claim inserts the attempt's
         # running row (T05's contract — the terminal write keys the
         # claim's own row; a skipped ledger claim strands the terminal).
+        ledger_id: JobId | None = None
         async with self.pool.acquire() as conn:
             claimed = await conn.fetchval(
                 _stmt(_NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
@@ -378,7 +607,7 @@ class FlowRunner:
             if claimed is not None:
                 from taskq.workflows.ledger import claim_step_ledger
 
-                await claim_step_ledger(
+                claim = await claim_step_ledger(
                     conn,
                     self.wsql,
                     flow_id=flow_id,
@@ -387,6 +616,7 @@ class FlowRunner:
                     map_index=row["map_index"],
                     attempt=int(claimed),
                 )
+                ledger_id = claim.ledger_id
         if claimed is None:
             return  # someone else claimed it (or the flow died) — no error
         attempt = int(claimed)
@@ -405,7 +635,7 @@ class FlowRunner:
         # (the iterations, the walls) — the caller's body path never
         # runs for it.
         if node is not None and node.loop_spec is not None:
-            await self._run_loop_node(flow_id, row, attempt, node)
+            await self._run_loop_node(flow_id, row, attempt, node, ledger_id)
             return
 
         parents_ordered, parents_by_key = await self._parent_results(row["id"])
@@ -424,6 +654,7 @@ class FlowRunner:
             _pool=self.pool,
             _wsql=self.wsql,
             _map_index=row["map_index"],
+            _ledger_id=ledger_id,
         )
         try:
             if body is None:
@@ -436,6 +667,19 @@ class FlowRunner:
             else:
                 outcome_value = await body(ctx, *args)
                 result = _encode_result(outcome_value)
+        except _NodeHeld as held:
+            # THE HOLD (T10): the node rests in the held representation
+            # (pending + the deadline + the signal row as truth) — NO
+            # terminal, NO ledger failure; the resume re-executes the
+            # body from the top. The runner's tick reports it ran.
+            logger.info(
+                "node.held",
+                run_id=str(flow_id),
+                node=node_key,
+                hold_id=held.hold_id,
+                signals=list(held.signal_names),
+            )
+            return
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             await self._ladder_or_fail(flow_id, row, attempt, node, exc)
             return
@@ -538,6 +782,48 @@ class FlowRunner:
             return param.model_validate(raw_doc)
         return cast(object, raw)  # the narrowing's laundering
 
+    async def cancel_workflow(
+        self,
+        flow_id: JobId,
+        *,
+        reason: str | None = None,
+        principal: Any = None,
+    ) -> int:
+        """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
+        the linearization point; every non-terminal node + held signal
+        resolves in the same snapshot; running children take the
+        existing two-phase cooperative cancel; terminal rows untouched;
+        IDEMPOTENT (cancel twice = one cancel — a terminal root updates
+        nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
+        log line."""
+        from taskq.workflows.api._hitl import cancel_run_signals
+
+        async with self.pool.acquire() as conn, conn.transaction():
+            flipped = await conn.fetchval(
+                _stmt(_CANCEL_ROOT_SQL_TEMPLATE, self.schema),
+                flow_id,
+                (reason or "cancel_workflow")[:500],
+            )
+            if flipped is None:
+                return 0  # already terminal — idempotent
+            await conn.execute(_stmt(_CANCEL_NODES_SQL_TEMPLATE, self.schema), flow_id)
+            held = await cancel_run_signals(self.pool, schema=self.schema, workflow_id=flow_id)
+            # THE AUDIT ROW (the caller owns the tx — the same-tx
+            # guarantee; the lazy import keeps the layering).
+            from taskq.web.admin._audit import record_admin_action
+
+            await record_admin_action(
+                conn,
+                schema=self.schema,
+                principal=principal,
+                action="workflow.cancel",
+                target_type="workflow_run",
+                target_id=str(flow_id),
+                reason=reason,
+                detail={"held_signals_cancelled": held},
+            )
+        return held + 1
+
     async def _finalize_success(
         self,
         flow_id: JobId,
@@ -617,6 +903,7 @@ class FlowRunner:
         row: dict[str, Any],
         attempt: int,
         node: Any,
+        ledger_id: JobId | None = None,
     ) -> None:
         """THE LOOP DRIVER (T19): fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -735,6 +1022,8 @@ class FlowRunner:
                     input=await self._flow_input(flow_id),
                     _pool=self.pool,
                     _wsql=self.wsql,
+                    _is_loop=True,
+                    _ledger_id=ledger_id,
                 )
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)
@@ -897,6 +1186,24 @@ class FlowRunner:
         kinds fail immediately (cut #12's classifier knob)."""
         max_attempts = node.max_attempts if node is not None else 3
         retry_kind = node.retry_kind if node is not None else "transient"
+        # RESUME-NOT-RETRY (cut #5): the LADDER counts the ledger's
+        # 'failed' rows — the claim's attempt ordinal increments on EVERY
+        # claim (holds' resumes included), so a hold-heavy node keeps its
+        # full retry curve (the shared-counter variant — 2 holds +
+        # max_attempts=3 = terminal failure with ZERO retries — is pin
+        # 7's RED forever).
+        failed_count = int(
+            await wf_conn_fetchval(
+                self.pool,
+                self.schema,
+                "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
+                "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
+                "AND status = 'failed'",
+                flow_id,
+                row["step_key"],
+                row["map_index"],
+            )
+        )
         # The attempt's OWN ledger row terminalizes 'failed' (the claim
         # inserted it — the arbiter's key is the attempt's identity): an
         # INSERT here would collide with the claim (the UniqueViolation
@@ -915,11 +1222,11 @@ class FlowRunner:
                 None,
                 row["map_index"],
             )
-            if retry_kind != "permanent" and attempt < max_attempts:
+            if retry_kind != "permanent" and failed_count + 1 < max_attempts:
                 await conn.execute(
                     _stmt(_NODE_REPEND_SQL_TEMPLATE, self.schema),
                     row["id"],
-                    0.05 * (2 ** (attempt - 1)),
+                    0.05 * (2 ** (failed_count)),
                 )
                 return
         await finalize_node(

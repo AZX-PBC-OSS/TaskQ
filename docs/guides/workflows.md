@@ -469,3 +469,68 @@ never write.
 
 The driver (`drive(flow_id, until="held" | "terminal")`, cut #10's
 cure) is bounded — `max_ticks` fences the hang.
+
+## §4 — HITL: humans are rows (T10)
+
+`ctx.wait_signal((Approval, Escalate), timeout_s=…, tool=…, args=…,
+reason=…)` — THE TYPED WAIT. The tuple form is the typed wait (PEP 604
+unions in value position carry no static payload information — the
+return type is the union and narrows with `isinstance`); the
+single-payload form is the one-member overload.
+
+**THE RESUME CONTRACT, stated as a feature** (cut #18's disposition):
+the body re-executes **FROM THE TOP** on resume — there is NO
+determinism requirement on the body; pre-wait side effects are
+`ctx.step`-ledgered and replay cheap. The delivered holds are the
+node's ANSWER QUEUE: each attempt's wait sequence consumes them in
+epoch order (the per-attempt cursor) — a RETRY replays the answers (the
+operator never re-answers); a wait past the queue's end registers a NEW
+hold (a NEW epoch — the multi-hold: the same signal name can hold
+again, the chained gate works because the waits are sequential).
+
+**THE PAYLOAD RIDES THE ROW** (cut #3's cure): the human's answer IS
+the row's payload; `ctx.signal(name)` reads it on resume (the read
+before delivery is the typed `SignalUnavailableError` — never a silent
+None).
+
+**THE REPLY HANDLE**: every hold's `id` (uuid7, time-ordered) is THE
+reference — `HitlClient.resolve(id, decision)` addresses ONE hold; the
+`(node, signal, epoch)` identity disambiguates MULTIPLE holds. The
+resolve is IDEMPOTENT (an already-resolved hold is the DEFINED no-op)
+and AUDITED (G4: "who resolved this" is a ROW, not a log line).
+
+**THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
+schema (what a UI renders from), the author-supplied
+reason/tool/args, the provenance (run id, node key, gate name, epoch,
+created_at, the deadline). **THE REDACT LAW EXTENDS**: the context
+passes the chain-then-hook redact pipeline BEFORE it reaches any
+enumeration surface — a canary in tool args reaches NEITHER the client
+list NOR the knock.
+
+**THE KNOB, NEVER THE TRUTH** (round-8): a hold's appearance is
+NOTIFIABLE (`pg_notify` on the `taskq_wf_holds` channel — the estate's
+notify discipline); the notification carries THE POINTER (hold id + run
+id + event) — a lost knock costs latency, never correctness: the
+consumer converges by polling `HitlClient.list(run=…)`.
+
+**THE TIMERS**: the deadline is DB-CLOCK compared (the signal sweep's
+expiry arm is the ONLY live timer on a held row); the expired hold →
+the DEFINED `abandoned` state (the typed `SignalTimeoutError` /
+`SignalAbandonedError` — the glossary shape, never a silent orphan);
+`timeout=None` must be EXPLICIT (the W1 validate warning).
+
+**THE CANCEL CASCADE** (P3 rule 4): `FlowRunner.cancel_workflow(run_id,
+reason=…)` — ONE transaction (the flip is the linearization point), the
+held signals → `cancelled` in the same snapshot, a LATE operator
+deliver returns the typed `refused` (no zombie wake, no resume event),
+terminal rows untouched, IDEMPOTENT (cancel twice = one cancel), the
+audit row rides the same tx.
+
+**RESUME-NOT-RETRY** (cut #5's cure): a hold's resume consumes NO
+ladder attempts — the ledger distinguishes `awaited` from `failed`;
+the ladder counts `failed` only. The shared-counter variant (2 holds +
+max_attempts=3 = terminal failure with zero retries) is red forever.
+
+The hold→resume latency band (G11c) is measured and pinned in
+`perf-evidence-workflows.md` (the band from
+`.measurements/t10-hold-resume-band.json`).
