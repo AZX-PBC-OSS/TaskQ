@@ -23,11 +23,15 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from taskq.backend._protocol import ConnLike
-from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._status import NodeView, derive_workflow_status
+
+if TYPE_CHECKING:
+    # THE §16.1 IMPORT LAW's typing-only carve-out: the name exists for
+    # the annotations alone — it is NEVER a runtime module-scope import
+    # (the fresh-interpreter probes prove the package stays unloaded).
+    from taskq.workflows._status import NodeView
 
 __all__ = [
     "NOT_INSTALLED",
@@ -120,6 +124,12 @@ class RunNode:
     def view(self) -> NodeView:
         """The §17.5 derivation's input (the one conversion — the same
         law the CLI's analysis module states)."""
+        # THE §16.1 IMPORT LAW: the workflows import stays LAZY (the
+        # module-scope import coupled every admin-page load to the
+        # package — this module is the one surface the law's pin had
+        # caught importing at module scope).
+        from taskq.workflows._status import NodeView
+
         return NodeView(
             status=self.status,
             deps_pending=self.deps_pending,
@@ -156,6 +166,8 @@ class RunView:
         """THE derivation's output, cached onto the view (the report's
         status line and the G7 check read the same value)."""
         if not self.derived:
+            from taskq.workflows._status import derive_workflow_status
+
             self.derived = derive_workflow_status(tuple(n.view() for n in self.nodes))
         return self.derived
 
@@ -184,6 +196,8 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
     # vocabulary + the doubled braces — a raw .replace("{schema}", …)
     # left the terminal token in the SQL and the statement died on the
     # stray brace).
+    from taskq.workflows._sql import WorkflowSql
+
     wsql = WorkflowSql.build(schema)
     root = await conn.fetchrow(_RUN_ROOT_SQL.format(schema=schema), run_id)
     if root is None:
