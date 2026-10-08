@@ -473,7 +473,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     # terminalizable by nothing) — the shipped statement's conviction
     # reproduces and the root NEVER finalizes.
     mutated = wf_sql.workflow_root_maintain.replace(
-        "(pf.has_failed AND NOT COALESCE(pf.has_active, false))",
+        "(pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))",
         "false",
     )
     assert mutated != wf_sql.workflow_root_maintain, "the mutation drill did not arm"
