@@ -157,11 +157,10 @@ class LoopOps(_LoopHost):
         meta_doc = cast(dict[str, object], meta)  # the walk's boundary
         # THE INIT (first claim): the budget wall starts HERE (PG's
         # clock); the iteration counter + the initial carry are set.
-        initial_carry: object
-        if isinstance(spec.carry_type, dict | list | str | int | float | bool):
-            initial_carry = jsonable(cast(object, spec.carry_type))
-        else:
-            initial_carry = None
+        # THE CARRY'S TYPED SPLIT: the initial VALUE rides the spec's
+        # own field (the declared split — no isinstance re-derivation
+        # here; the type check is the validator's subject).
+        initial_carry = jsonable(spec.initial_carry) if spec.initial_carry is not None else None
         if "iteration" not in meta_doc:
             init_meta: dict[str, object] = {
                 **meta_doc,

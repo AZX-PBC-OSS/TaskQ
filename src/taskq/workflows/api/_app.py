@@ -284,7 +284,6 @@ class WorkflowApp:
         *,
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
-        channel: SignalChannel | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], object]], Callable[[], object]]:
         """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
@@ -307,7 +306,14 @@ class WorkflowApp:
         its workers BLOCKS at the bound (the generator's laziness is the
         pause; the stall rides the certified ladder). The default is the
         shipped fence-ON (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is
-        the EXPLICIT unbounded (the author takes the dragon)."""
+        the EXPLICIT unbounded (the author takes the dragon).
+
+        THE SIGNAL CHANNEL is NOT a declaration param (the ergonomic
+        tail's cure): the old ``channel=`` was accepted and silently
+        DROPPED — a declaration that does nothing is a lie wearing the
+        signature. The signal channel is the app's own method:
+        :meth:`channel` (the declared gates' registry) — ONE name, one
+        surface (the glossary law)."""
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 

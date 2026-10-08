@@ -29,7 +29,7 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_sche
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> int:
-        inner = await ctx.step("side-effect", _count, idempotent=False)
+        inner = await ctx.substep("side-effect", _count, idempotent=False)
         return inner
 
     async def _count() -> int:
@@ -65,7 +65,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> int:
-        return await ctx.step("doomed-step", _explode)
+        return await ctx.substep("doomed-step", _explode)
 
     async def _explode() -> int:
         calls["n"] += 1
@@ -96,7 +96,7 @@ async def test_ctx_step_the_memoized_replay_returns_the_record(
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> dict[str, int]:
-        value = await ctx.step("once", _count)
+        value = await ctx.substep("once", _count)
         if calls["once_seen"] == 0:
             calls["once_seen"] = 1
             raise RuntimeError("the transient between the step and the node's terminal")
@@ -307,7 +307,7 @@ async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
     @app.workflow("ctx_runtime_fields")
     def ctx_runtime_fields() -> object:
         first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
-        the_loop = loop("the_loop", loop_body, carry=0, budget_s=1800.0)
+        the_loop = loop("the_loop", loop_body, initial=0, budget_s=1800.0)
         return build(the_loop, first)
 
     runner = FlowRunner(app.get("ctx_runtime_fields"), wf_pool, wf_schema)
@@ -333,3 +333,49 @@ def test_cli_the_gate_models_the_empty_gates_path() -> None:
         return build(step(body, Ingest(doc_id="d"), key="solo"))
 
     assert gate_models_for(app, "gate_empty", "solo") == ()
+
+
+@pytest.mark.integration
+async def test_the_gathers_packed_list_arrives_typed_never_raw(
+    wf_pool: Any, wf_schema: str
+) -> None:
+    """THE DECODE-ONCE DISCIPLINE at the boundary (the ergonomic tail's
+    cure, red-first): a gather of model producers → the bodyless join →
+    a consumer whose param declares ``list[Shipment]`` — the packed list
+    must arrive as VALIDATED MODELS (the codec's TypeAdapter walk on the
+    IMPLICIT path). The pre-cure tree returned the parents' values RAW
+    (``not node.args`` skipped the codec hook): the body received dicts
+    and this pin REDS (the isinstance fails). The compile face's pin
+    lives in test_wf_validate_pins (the E5 bodyless-join edge)."""
+    from taskq.workflows import gather
+
+    class Shipment(BaseModel):
+        doc_id: str
+
+    received: list[object] = []
+
+    async def produce(ctx: Any, params: Shipment) -> Shipment:
+        return Shipment(doc_id=params.doc_id)
+
+    async def collect(ctx: Any, packs: list[Shipment]) -> int:
+        received.extend(packs)
+        assert all(isinstance(p, Shipment) for p in packs), (
+            f"the packed list arrived RAW (the codec never ran): {type(packs[0])}"
+        )
+        return len(packs)
+
+    app = WorkflowApp()
+
+    @app.workflow("gather_typed_collect")
+    def gather_typed_collect() -> object:
+        srcs = [step(produce, Shipment(doc_id=f"d{i}"), key=f"p{i}") for i in range(3)]
+        joined = gather([build(s) for s in srcs])
+        return build(step(collect, joined, key="collect"))
+
+    runner = FlowRunner(app.get("gather_typed_collect"), wf_pool, wf_schema)
+    flow_id = await runner.create_flow()
+    assert await runner.drive(flow_id) == "terminal"
+    assert len(received) == 3
+    assert all(isinstance(p, Shipment) for p in received), (
+        f"the collect's items arrived untyped: {[type(p) for p in received]}"
+    )

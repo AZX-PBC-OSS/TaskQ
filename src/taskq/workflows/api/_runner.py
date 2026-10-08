@@ -686,7 +686,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 return tuple(cast(list[object], wf_args_raw))
             return tuple(parent_results.values())
         if not node.args:
-            return tuple(parent_results.values())
+            # THE DECODE-ONCE DISCIPLINE (the ergonomic tail's cure): the
+            # IMPLICIT path's parents walk the SAME param-annotation
+            # coercion the explicit path runs — the envelope's unpack
+            # (the join's packed list, the single parent's model) never
+            # reaches a body raw (the probed hole: a ``list[Report]``
+            # param received the gather's packed list UNVALIDATED — E5
+            # skips the bodyless join and this path skipped the codec).
+            values = tuple(parent_results.values())
+            return tuple(
+                self._coerce(value, node, body, position) for position, value in enumerate(values)
+            )
         wf_args_raw: object = payload.get(WF_ARGS_KEY, [])
         wf_args = cast(list[object], wf_args_raw)  # the seed wrote the list
         data_iter = iter(wf_args)

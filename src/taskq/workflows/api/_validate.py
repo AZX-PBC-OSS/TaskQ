@@ -33,7 +33,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   (attack-3 M3's smuggle): under a colliding key it builds a silently
   WRONG edge to this app's own same-named node; the verbs record the
   smuggle, this rule convicts it.
-* E8 carrier-type — the loop's declared ``carry=`` model vs the body's
+* E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
   on a guess.
@@ -50,7 +50,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -219,6 +219,28 @@ def _rule_annotations(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     return diagnostics
 
 
+def _join_produced_shape(compiled: CompiledWorkflow, join_node: object) -> type[BaseModel] | None:
+    """The BODYLESS join's produced ELEMENT shape (the gather's
+    ``Promise[list[R]]``): the model EVERY one of its sources declares
+    as its return — ``None`` when the sources disagree, produce
+    non-models, or the join stands alone (no shape to enforce; the skip
+    is honest). The union-of-models case returns ``None`` too: the
+    element contract is ONE model or nothing (the runtime codec owns
+    unions)."""
+    shapes: set[type[BaseModel]] = set()
+    parents: list[str] = getattr(join_node, "parents", []) or []
+    for source_key in parents:
+        source = compiled.nodes.get(source_key)
+        if source is None:
+            continue
+        produced = body_hints(source.body).get("return") if source.body is not None else None
+        if isinstance(produced, type) and issubclass(produced, BaseModel):
+            shapes.add(produced)
+    if len(shapes) == 1:
+        return shapes.pop()
+    return None
+
+
 def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E5: a producer's declared data type and a consumer's param type —
     both pydantic models, unrelated — refuse at compile (the checker-
@@ -232,12 +254,62 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
         params = [v for k, v in hints.items() if k not in ("return", "ctx")]
         for parent_key in node.parents:
             parent = compiled.nodes.get(parent_key)
-            if parent is None or parent.body is None:
+            if parent is None:
                 continue
-            produced = body_hints(parent.body).get("return")
+            # THE BODYLESS JOIN'S EDGE (the ergonomic tail's cure): the
+            # join/collect node has NO body — its produced shape is the
+            # ELEMENT model its own sources declare (the gather's
+            # ``Promise[list[R]]`` shape). E5 skipping the bodyless
+            # parent both directions was the probed hole: a consumer's
+            # ``list[Other]`` param under a join of ``Report`` sources
+            # crossed unvalidated. The shape is DERIVED here; no sources
+            # → no shape → the skip is honest.
+            if parent.body is None:
+                produced = _join_produced_shape(compiled, parent)
+            else:
+                produced = body_hints(parent.body).get("return")
             if not (isinstance(produced, type) and issubclass(produced, BaseModel)):
                 continue
             for param in params:
+                # THE LIST-PARAM ARM (the bodyless-join edge's other
+                # half): a ``list[Model]`` param under a bodyless join is
+                # the GATHER's own shape — the ELEMENT model is the
+                # comparison (the join's derived shape vs the param's
+                # element). Under a MODEL-PRODUCING body parent it is a
+                # real mismatch (one model cannot feed a list param —
+                # the runtime codec's TypeAdapter reds it there; the
+                # compile names it here).
+                if get_origin(param) is list:
+                    (elem,) = get_args(param)
+                    if not (isinstance(elem, type) and issubclass(elem, BaseModel)):
+                        continue  # list[non-model] — the codec's TypeAdapter owns it
+                    if parent.body is not None:
+                        diagnostics.append(
+                            WorkflowValidationError(
+                                "E5-incompatible-consumer",
+                                "error",
+                                f"{node.key!r} consumes {parent_key!r}'s "
+                                f"{produced.__name__} as {param!r} — a "
+                                "single-model producer cannot feed a list "
+                                "param (the gather's shape is the join's: "
+                                "wire the consumer under the bodyless "
+                                "collect, or take the model bare)",
+                            )
+                        )
+                        continue
+                    if produced is not elem and not issubclass(produced, elem):
+                        diagnostics.append(
+                            WorkflowValidationError(
+                                "E5-incompatible-consumer",
+                                "error",
+                                f"{node.key!r} consumes {parent_key!r}'s "
+                                f"list[{produced.__name__}] as {param!r} — "
+                                "unrelated payload models: the join's "
+                                "element and the consumer's element are "
+                                "different models",
+                            )
+                        )
+                    continue
                 if not (isinstance(param, type) and issubclass(param, BaseModel)):
                     # THE DUCK-SHAPED HOLE (attack-3 M4's cure): the
                     # producer declares a MODEL; the consumer's param
@@ -357,11 +429,13 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E8: the loop's CARRIER-TYPE declaration, ENFORCED (T19's pin 5 —
     the attack-audit's "recorded, never enforced" finding): the declared
-    ``carry=`` value's type and the body's ``Refine[...]`` feedback type
-    are both pydantic models and unrelated — the loop threads a carry
-    the body cannot receive. Unenforceable when undeclarable (no
-    ``carry=`` value, or an unresolvable body hint): the zero-false-
-    positive doctrine — a guess is never convicted."""
+    ``carry_type=`` (or the model instance passed as ``initial=``, whose
+    own type IS the declaration) vs the body's ``Refine[...]`` feedback
+    type — both pydantic models and unrelated means the loop threads a
+    carry the body cannot receive. Unenforceable when undeclarable (no
+    model declared — a scalar/dict initial, or an unresolvable body
+    hint): the zero-false-positive doctrine — a guess is never
+    convicted."""
     from types import UnionType
     from typing import get_args, get_origin
 
@@ -372,15 +446,15 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         spec = node.loop_spec
         if spec is None or node.loop_body is None:
             continue
-        carry = cast("object", spec.carry_type)  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]  # Why: the LoopSpec's declared carry rides the object-typed loop_spec attachment on NodeDecl — the loop module's own declaration is the type's source.
-        # The carry is DECLARED AS A VALUE (the initial carry — an
-        # instance or a JSON-scalar default); the model it names is the
-        # instance's type when the value is a model.
-        if isinstance(carry, BaseModel):
-            carry_model = type(carry)
-        elif isinstance(carry, type) and issubclass(carry, BaseModel):
-            carry_model = carry
-        else:
+        # THE CARRY'S TYPED SPLIT (the ergonomic tail's cure): the
+        # CARRIER-TYPE is its own declared field — the model the body's
+        # Refine[Feedback] must match. It is DERIVED from the initial
+        # carry when the author passed a model instance (the instance
+        # carries its own type); a dict/list/scalar carry declares NO
+        # model — the check is skipped, never guessed (the old silent
+        # no-check was the conflation's gap).
+        carry_model = spec.carry_type  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]  # Why: the LoopSpec's declared carry_type rides the object-typed loop_spec attachment on NodeDecl — the loop module's own declaration is the type's source (the E8 rule's subject).
+        if carry_model is None:
             continue  # no declared model — nothing to enforce against
         hints = body_hints(node.loop_body)
         returned = hints.get("return")

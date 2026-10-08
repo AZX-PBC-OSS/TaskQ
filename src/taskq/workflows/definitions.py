@@ -102,6 +102,22 @@ class WorkflowRegistry:
                 and existing.aggregates == definition.aggregates
             ):
                 return existing
+            # THE HOT-RELOAD GUARD (the ergonomic tail's cure): a module
+            # re-import (the dev loop's reload, the notebook's re-run)
+            # mints NEW function objects with IDENTICAL content — the
+            # identity comparison above cannot see that and the reload
+            # DIED on the duplicate error (the validator's probed red).
+            # Absorption is decided by the bodies' CONTENT fingerprint
+            # (module + qualname + bytecode): same content = the
+            # re-import's twin, absorbed. Differing content = the shadow
+            # conviction STANDS (a genuine edit under one name is the
+            # coding error the duplicate error exists for). The known
+            # edge, stated: a callable OBJECT body (no ``__code__``)
+            # fingerprints by module+qualname alone — a content edit
+            # behind one of those absorbs; the function-body case (every
+            # shipped definition) is exact.
+            if self._same_content(existing, definition):
+                return existing
             raise DuplicateWorkflowError(
                 f"workflow {definition.name!r} is already registered; a second "
                 "registration is a coding error, never a shadow"
@@ -135,6 +151,40 @@ class WorkflowRegistry:
                 f"workflow {name!r} has no body for step {step_key!r} — the "
                 "definition is the only body source"
             ) from None
+
+    @staticmethod
+    def _fingerprint(fn: object) -> tuple[str, str, bytes, str]:
+        """The body's CONTENT fingerprint (the hot-reload guard's
+        comparator): module + qualname + bytecode + the constants —
+        identity-independent, content-exact for functions (every shipped
+        definition's shape). The constants ride the fingerprint because
+        3.11+'s bytecode indexes ``co_consts`` instead of embedding
+        literals — a content edit that changes ONLY a constant must
+        still read as the shadow it is."""
+        module = getattr(fn, "__module__", "")
+        qualname = getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn)))
+        code = getattr(fn, "__code__", None)
+        if code is None:
+            return (module, qualname, b"", "")
+        return (module, qualname, code.co_code, repr(code.co_consts))
+
+    @classmethod
+    def _same_content(cls, existing: WorkflowDef, definition: WorkflowDef) -> bool:
+        """Do two differing-identity definitions carry the SAME content?
+        Every body and aggregate fingerprint pairs equal, and the KEY
+        SETS match (a body added or removed under one name is a shadow,
+        never a reload)."""
+        if set(existing.bodies) != set(definition.bodies):
+            return False
+        if set(existing.aggregates) != set(definition.aggregates):
+            return False
+        return all(
+            cls._fingerprint(existing.bodies[k]) == cls._fingerprint(definition.bodies[k])
+            for k in existing.bodies
+        ) and all(
+            cls._fingerprint(existing.aggregates[k]) == cls._fingerprint(definition.aggregates[k])
+            for k in existing.aggregates
+        )
 
     def __contains__(self, name: str) -> bool:
         return name in self._workflows

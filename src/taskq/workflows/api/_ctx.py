@@ -242,10 +242,17 @@ class StepContext(CtxWaitOps):
             return  # unwired (direct testing): the deliberate no-op
         emitter.submit(pct_v, message_v, data_v)
 
-    async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
+    async def substep(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
         result (the re-execution doctrine's cheap side: pre-wait side
-        effects are ctx.step-ledgered and replay cheap)."""
+        effects are substep-ledgered and replay cheap).
+
+        THE GLOSSARY LAW (the ergonomic tail's cure): this was
+        ``ctx.step`` — the wiring verb ``step()`` already owns that name
+        with DIFFERENT semantics (a graph NODE's declaration vs a node's
+        INNER ledgered effect). The lesser noun renamed: the substep is
+        the step-ledger's own vocabulary (``wf_step_ledger`` rows are
+        what make it exactly-once)."""
         async with self._pool.acquire() as conn:
             steps = WorkflowSteps(
                 conn,

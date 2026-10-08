@@ -10,6 +10,8 @@ back from the captured run (BUILD-PROTOCOL §2/§3).
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 from pydantic import BaseModel
 
@@ -31,6 +33,18 @@ from taskq.workflows.api._validate import WorkflowValidationError
 
 class Ingest(BaseModel):
     doc_id: str
+
+
+class Shipment(BaseModel):
+    """The gather-edge pin's element model (the RIGHT shape)."""
+
+    doc_id: str
+
+
+class MisfitShipment(BaseModel):
+    """The gather-edge pin's WRONG element (an unrelated model)."""
+
+    other: str
 
 
 class Report(BaseModel):
@@ -269,3 +283,119 @@ def test_differing_redefinition_refused() -> None:
     with pytest.raises(DuplicateWorkflowError):
         get_registry().register(WorkflowDef(name="shadow", bodies={"produce": _annotated_body}))
     _ = (Promise, step, gather, build, sink, WorkflowBuildError)
+
+
+def test_the_hot_reload_guard_twin_absorbed_shadow_reds() -> None:
+    """THE HOT-RELOAD GUARD (the ergonomic tail's cure, red-first): a
+    module RE-IMPORT mints NEW function objects with IDENTICAL content —
+    on the pre-guard tree this registration REDS (DuplicateWorkflowError:
+    the bodies' identity comparison cannot see the twin); the guard
+    absorbs it by the CONTENT fingerprint (module + qualname + bytecode).
+    A GENUINE shadow (content differing under one name) still reds — the
+    duplicate error's conviction stands."""
+    from taskq.workflows.definitions import DuplicateWorkflowError, WorkflowDef, get_registry
+
+    source = textwrap.dedent(
+        """
+        async def the_body(ctx):
+            return "the same content"
+        """
+    )
+    twin_a_ns: dict[str, object] = {}
+    twin_b_ns: dict[str, object] = {}
+    exec(source, twin_a_ns)  # noqa: S102  # Why: the re-import's own shape — exec IS the fresh module objects.
+    exec(source, twin_b_ns)  # noqa: S102
+    body_a = twin_a_ns["the_body"]
+    body_b = twin_b_ns["the_body"]
+    assert body_a is not body_b, "the drill needs two distinct objects (the re-import's twin)"
+
+    registry = get_registry()
+    registry.register(WorkflowDef(name="hot-reload-twin", bodies={"produce": body_a}))
+    # THE GUARD: the twin (new objects, same content) is ABSORBED — no raise
+    registry.register(WorkflowDef(name="hot-reload-twin", bodies={"produce": body_b}))
+
+    # THE SHADOW STANDS: differing content under one name is the error
+    shadow_source = textwrap.dedent(
+        """
+        async def the_body(ctx):
+            return "THE EDITED CONTENT"
+        """
+    )
+    shadow_ns: dict[str, object] = {}
+    exec(shadow_source, shadow_ns)  # noqa: S102  # Why: the shadow drill's own shape — exec IS the third re-import.
+    with pytest.raises(DuplicateWorkflowError):
+        registry.register(
+            WorkflowDef(name="hot-reload-twin", bodies={"produce": shadow_ns["the_body"]})
+        )
+
+
+async def _join_edge_producer(ctx: StepContext, params: Ingest) -> Shipment:
+    return Shipment(doc_id="d")
+
+
+async def _join_edge_collect_right(ctx: StepContext, packs: list[Shipment]) -> str:
+    return f"{len(packs)}"
+
+
+async def _join_edge_collect_wrong(ctx: StepContext, packs: list[MisfitShipment]) -> str:
+    return f"{len(packs)}"
+
+
+async def _join_edge_collect_single(ctx: StepContext, packs: list[Shipment]) -> str:
+    return f"{len(packs)}"
+
+
+def test_e5_the_bodyless_joins_list_param_typed_edge() -> None:
+    """THE BODYLESS-JOIN EDGE (the ergonomic tail's cure, red-first): a
+    gather of model producers → the bodyless join → a consumer with a
+    ``list[Model]`` param is the GATHER's own shape — E5 skipped the
+    bodyless parent on the pre-cure tree (the probed hole: 0 diagnostics
+    at BOTH faces, the envelope unpack reached the list param
+    unvalidated). The cured E5: the RIGHT element validates CLEAN; a
+    WRONG element (an unrelated model) REDS; a single-model producer
+    wired straight into a list param REDS. (The bodies/models live at
+    MODULE level — the corpus's own pattern: the hints walk resolves
+    annotations from the module's globals, never a local's.)"""
+    from taskq.workflows.api._validate import validate_compiled
+
+    # THE RIGHT SHAPE validates clean
+    app = WorkflowApp()
+
+    @app.workflow("e5_join_edge")
+    def e5_join_edge() -> object:
+        srcs = [step(_join_edge_producer, Ingest(doc_id="d"), key=f"p{i}") for i in range(2)]
+        joined = gather([build(s) for s in srcs])
+        return build(step(_join_edge_collect_right, joined, key="c_right"))
+
+    assert validate_compiled(app.get("e5_join_edge")) == (), (
+        f"the RIGHT gather shape must validate clean: {validate_compiled(app.get('e5_join_edge'))}"
+    )
+
+    # THE WRONG ELEMENT reds (the join's element vs the param's element)
+    app2 = WorkflowApp()
+
+    @app2.workflow("e5_join_edge_wrong")
+    def e5_join_edge_wrong() -> object:
+        srcs = [step(_join_edge_producer, Ingest(doc_id="d"), key=f"p{i}") for i in range(2)]
+        joined = gather([build(s) for s in srcs])
+        return build(step(_join_edge_collect_wrong, joined, key="c_wrong"))
+
+    with pytest.raises(WorkflowValidationError) as wrong:
+        validate_compiled(app2.get("e5_join_edge_wrong"))
+    assert "E5-incompatible-consumer" in str(wrong.value), (
+        f"the WRONG element must red E5: {wrong.value}"
+    )
+
+    # A SINGLE-MODEL producer wired STRAIGHT into a list param reds
+    app3 = WorkflowApp()
+
+    @app3.workflow("e5_single_into_list")
+    def e5_single_into_list() -> object:
+        produced = step(_join_edge_producer, Ingest(doc_id="d"), key="p0")
+        return build(step(_join_edge_collect_single, produced, key="c_list"))
+
+    with pytest.raises(WorkflowValidationError) as single:
+        validate_compiled(app3.get("e5_single_into_list"))
+    assert "E5-incompatible-consumer" in str(single.value), (
+        f"the single-model-into-list mismatch must red E5: {single.value}"
+    )

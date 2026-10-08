@@ -129,7 +129,20 @@ class CtxWaitOps(_WaitHost):
         payload fits MORE than one declared model, the gate's explicit
         picker resolves the union — its pick must be one of the fitting
         candidates. Without one, an ambiguous payload is the typed
-        refusal at the deliver boundary."""
+        refusal at the deliver boundary.
+
+        THE SIGNAL NAME IS THE MODEL'S OWN NAME (the stability law — the
+        ergonomic tail's disposition): the hold's ``signal_name`` is the
+        declared model's ``__name__`` — the class name IS the signal's
+        public identity (the admin's deliver door, the expiry sweep, and
+        the resume all key on it). RENAMING a payload model therefore
+        ORPHANS its live holds — a model rename is a HOLD-MIGRATION
+        concern (the same class as a DB column rename), never a casual
+        refactor. This is PINNED, not parameterized: an explicit
+        ``signal_name=`` argument would invite the worse orphan (two
+        wait sites declaring different names for one model — the deliver
+        can never find the gate). One model, one name, derived from the
+        one place the name lives."""
         models: tuple[type[BaseModel], ...] = cast(
             tuple[type[BaseModel], ...],
             signals if isinstance(signals, tuple) else (signals,),
