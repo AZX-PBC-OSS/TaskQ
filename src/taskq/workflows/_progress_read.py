@@ -244,9 +244,9 @@ async def read_map_aggregate(
     item_keys = {r["step_key"] for r in rows if r["step_key"].endswith(".item")}
     parents = {k[: -len(".item")] for k in item_keys}
     rows = [
-        r for r in rows if r["step_key"].endswith(".item") or r["step_key"] not in {
-            p + ".join" for p in parents
-        }
+        r
+        for r in rows
+        if r["step_key"].endswith(".item") or r["step_key"] not in {p + ".join" for p in parents}
     ]
     read_ms = time.perf_counter() * 1000
     results: list[Any] = []
