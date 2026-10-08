@@ -417,6 +417,7 @@ ignore = [
 # perf-bands/ledger). S311: timing jitter in the race pins.
 "tests/_wf_fixtures.py" = ["S608"]
 "tests/test_wf_schema_migration.py" = ["S608"]
+"tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_finalize_pins.py" = ["S608", "S311"]
 "tests/test_wf_sweep_pins.py" = ["S608"]
 "tests/test_wf_fork_pins.py" = ["S608", "S311"]
