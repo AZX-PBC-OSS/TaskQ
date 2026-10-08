@@ -82,6 +82,10 @@ class CtxWaitOps(_WaitHost):
 
     __slots__ = ()
 
+    # The runtime-info dict's DECLARATION (the mixin's typed face — the
+    # field lives on StepContext; the mixin's wait path records into it).
+    _runtime: dict[str, int]
+
     async def wait_signal(
         self,
         signals: Any,
@@ -200,6 +204,10 @@ class CtxWaitOps(_WaitHost):
                     self.job_id,
                     dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
                 )
+                # THE CONTEXT CONTRACT: the resumed body's answer
+                # identity — the epoch of the hold THIS wait consumed
+                # (the body asserting on ctx sees which answer it got).
+                self._runtime["hold_epoch"] = int(answer["hold_epoch"])
                 return self._coerce_signal(models, payload, discriminator=discriminator)
             # PAST THE QUEUE: the node's PENDING hold (if any) is THIS
             # wait's wait — the held row stands (idempotent re-hold,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import asyncpg
 import pytest
 from pydantic import BaseModel
 
@@ -132,8 +131,6 @@ async def test_capture_policies_none_and_errors_only(
     """The declared capture policy decides the failing node's capture
     jsonb: none → NO capture; errors-only → the error text, never the
     input."""
-    from pydantic import BaseModel as _BM
-
     for policy, want_capture in (("none", False), ("errors-only", True)):
         app = WorkflowApp()
 

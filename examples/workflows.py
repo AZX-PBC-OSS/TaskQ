@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -202,7 +201,7 @@ async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = Non
 async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
     """One drive pass over the pending runs (the demo's in-process
     driver; a worker process would drive the same rows)."""
-    rows = await pool.fetch(
+    rows = await pool.fetch(  # noqa: S608  # Why: the schema is the app's settings-validated identifier; every value is a bound parameter.
         f"SELECT id FROM \"{schema}\".jobs WHERE step_key = '__flow__' "
         "AND status = 'running' LIMIT 5"
     )
