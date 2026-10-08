@@ -1,0 +1,4 @@
+FAILED tests/test_wf_t20_router_pins.py::test_t20_router_not_total_through_the_runner
+FAILED tests/test_wf_t20_router_pins.py::test_t20_chain_end_to_end_through_the_runner
+FAILED tests/test_wf_t20_router_pins.py::test_t20_chain_routes_through_the_certified_fork
+3 failed, 3 passed in 3.54s

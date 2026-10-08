@@ -143,6 +143,9 @@ class CompiledWorkflow:
     terminal: str | None
     channel: SignalChannel
     input_type: object = None
+    #: The workflow's declared chains (T20) — the chain SOURCE node owns
+    #: its Chain; the runner resolves chain-step routes from here.
+    chains: tuple[object, ...] = ()
     #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
     #: cure): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
     #: it.
@@ -320,6 +323,7 @@ class WorkflowApp:
             channel=channel,
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
+            chains=tuple(graph.chains),
         )
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         return compiled
@@ -400,6 +404,16 @@ def _register_bodies(
                 escalation_body = candidate
     if escalation_body is not None:
         bodies[ESCALATION_STEP_KEY] = escalation_body
+    # THE CHAIN STEP BODIES (T20): registered under their own step keys
+    # (D1 — the emitted + fork-spawned chain rows resolve their bodies
+    # from the registry; the chain's steps have no compiled NodeDecl).
+    from taskq.workflows.chain import Chain
+
+    for chain_decl in compiled.chains:
+        chain = cast("Chain", chain_decl)
+        for step_key, chain_step in chain.steps.items():
+            if chain_step.body is not None:
+                bodies.setdefault(step_key, chain_step.body)
     if bodies or loop_policies:
         get_registry().register(
             WorkflowDef(
