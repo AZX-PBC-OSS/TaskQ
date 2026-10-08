@@ -25,6 +25,7 @@ from taskq.workflows._types import ForkSpec
 __all__ = [
     "FAILURE_POLICIES",
     "MAX_FAN_IN_PER_JOIN",
+    "AggregateFn",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
     "StepBody",
@@ -38,6 +39,12 @@ __all__ = [
 
 #: A step body: the coroutine the dispatch runs for one step.
 StepBody = Callable[[Any], Awaitable[Any]]
+
+#: The map's DECLARED read-side aggregate fn (T21 decision c): a PURE fn
+#: over the children's decoded result rows, evaluated AT READ TIME by the
+#: aggregation surfaces — never a blocking fan-in (DH8's fence: the join
+#: is for DATAFLOW, progress aggregation is OBSERVABILITY).
+AggregateFn = Callable[[list[Any]], object]
 
 
 class DuplicateWorkflowError(TypeError):
@@ -67,6 +74,12 @@ class WorkflowDef:
     #: no policy face, and the node row's metadata is the counter's
     #: cache, never the declaration's source.
     loop_policies: dict[str, str] = field(default_factory=dict[str, str])
+    #: The maps' DECLARED read-side aggregates (T21 decision c), keyed by
+    #: the SOURCE step key (the children's parent — the read surfaces
+    #: resolve by the parent row's own step key), resolved DURABLY at
+    #: read time (the flow root's stamped workflow name → THIS
+    #: registry), the same doctrine the fired join's body uses.
+    aggregates: dict[str, AggregateFn] = field(default_factory=lambda: dict[str, AggregateFn]())
 
 
 class WorkflowRegistry:
@@ -84,7 +97,10 @@ class WorkflowRegistry:
             # SAME definition is not a second registration — the registry
             # is keyed by name and the compile is deterministic. Only a
             # DIFFERING re-definition (a shadow) is the coding error.
-            if existing.bodies == definition.bodies:
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
                 return existing
             raise DuplicateWorkflowError(
                 f"workflow {definition.name!r} is already registered; a second "
