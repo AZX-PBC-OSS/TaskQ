@@ -292,6 +292,11 @@ was folded when T05 landed — its pins live in
 `tests/test_wf_schema_migration.py` (the schema/lock-class/import families)
 and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 
+| `tests/test_wf_t20_maintain_liveness.py` | T20's core fix: the failed arm gates on live UNRESOLVED work (the 149-siblings scenario red-first; the H1 wedge-cure-stands regression) |
+| `tests/test_wf_t20_emit_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
+| `tests/test_wf_t20_fence_probe.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation drill's teeth, the source-terminal subject |
+| `tests/test_wf_t20_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
+
 ## The ergonomic contract (T17 — the authoring session's paper cuts)
 
 The API's bar is **"first-try correct, no boilerplate, IDE
@@ -535,6 +540,158 @@ never write.
 
 The driver (`drive(flow_id, until="held" | "terminal")`, cut #10's
 cure) is bounded — `max_ticks` fences the hang.
+
+## §10 — The streaming source & the chain (T20)
+
+A "source sync" — a paged upstream whose run executes a body that is a
+**paged generator**: fetch page → `ctx.emit_batch(children, cursor=…)`
+→ checkpoint the page cursor → fetch the next page. Pages stream: each
+page's records are **chain-start rows** that claim and terminalize WHILE
+the source is still mid-stream (the spike measured 236 chain claims +
+165 chain terminals before the last page's emit) — nothing waits for
+the pager to exhaust.
+
+### The emit tx — the one new primitive
+
+`ctx.emit_batch(children, cursor=…)` is ONE transaction:
+
+1. the **children INSERT** — the certified fork-children shape
+   (parallel-array, app-side uuid7 ids), parent = the source row;
+2. the **edge rows** — child → source, `fail_closed` (a mid-stream
+   source death is the honest fail-closed parent; the edges reconcile
+   emit debt exactly as the fork's reconcile fork debt);
+3. the **cursor checkpoint** — the source row's OWN metadata (the
+   `emit_cursor` key; no new table, no new column), guarded by the FULL
+   dispatch fence (`status='running' AND locked_by_worker AND attempt
+   AND claim_epoch`).
+
+**Why one tx** (the fork-atomicity law at page granularity): a kill at
+ANY statement window — including *after* the cursor write but *before*
+the commit — rolls the whole batch back; the REAL reclaim
+(`sweep_expired_locks`) + the promotion sweep re-pend the source (it
+never finalized), and the re-claim re-emits exactly the lost page. The
+cursor is never advanced outside the emit tx. The pins kill the emit at
+every window with a real `pg_terminate_backend` and count: zero
+re-emitted children, zero lost children, the cursor == the last
+committed page.
+
+**The fence needs nothing new**: with no fan-in there is no join to
+fire early — the successor hazard is the PREMATURE TERMINAL (the run
+finalizing while work is live), and the fence for it is the shipped
+rows-only derivation itself: the root finalizes only when every row is
+terminal (or resolved-blocked). A derivation cannot fire early because
+it is not a fire at all. The 30-sweep probe (a mid-stream death, then
+30 hard sweep passes with NO worker) holds: nothing terminalizes,
+`firable=0`, zero join-wait rows — the join machinery is inert in this
+design.
+
+### THE REFUTED-CLAIM DISCIPLINE: `map_index` is load-bearing
+
+The per-record identity rides **`map_index`, stamped at emit** (with the
+record's `trace_id`). The certified fork's idempotency key
+(`wf:{flow}:emit:{map_index}:{step}`) and the step-ledger's claim
+arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt)`) BOTH
+discriminate siblings by it — the spike's first run emitted 200
+applications without it and observed **198 UniqueViolations**: every
+record's `enrich` child collided onto one row. `EmitChild` therefore
+REQUIRES both stamps (a child without them is refused before any row
+exists), and `chain_start` carries them forward. Every row of one
+record's chain shares its `trace_id` — the operator's drill-down is one
+query.
+
+### The router: conditional edges, total or refused
+
+```python
+CHAIN = Chain(
+    name="application-enrichment",
+    start="screen",
+    steps={
+        "screen": Step(body=screen_app, outcomes=ScreenOutcome,
+                       route=Route({ScreenOutcome.CLEAN: "enrich",
+                                    ScreenOutcome.FLAGGED: "manual_review"})),
+        "enrich": Step(body=enrich_app, outcomes=EnrichOutcome,
+                       route=Route({EnrichOutcome.OK: "score",
+                                    EnrichOutcome.SPARSE: DONE})),
+        "score": Step(body=score_app, outcomes=ScoreOutcome,
+                      route=Route({ScoreOutcome.OK: DONE})),
+        "manual_review": Step(body=manual_review, outcomes=ReviewOutcome,
+                              route=Route({ReviewOutcome.APPROVE: DONE,
+                                           ReviewOutcome.REJECT: DONE})),
+    },
+)
+
+# the SOURCE is the paged generator — each yield = ONE emit tx:
+@app.workflow("application_sync")
+def application_sync() -> object:
+    return build(chain_source(CHAIN, source_body, key="source"))
+```
+
+The bodies are ordinary typed-outcome coroutines
+(`async def screen_app(ctx, item) -> ScreenOutcome`); the router's
+decision is the body's return. Totality is the fence, at two doors:
+
+1. **Declaration time** — `Chain` refuses a route that is not total
+   over its step's outcome enum: `chain step 'screen': route is not
+   total over ScreenOutcome — missing ['flagged'] … the outcome it
+   drops would silently strand a record's chain.` A route to a
+   non-step key, and a non-step start, are the same door's refusals.
+2. **Run time** — `RouterNotTotal`: an outcome with no arm fails the
+   step LOUDLY with `error_class='RouterNotTotal'` — the record names
+   the defect; the record's chain visibly dies, never silently drops,
+   and the run's derivation cannot claim success over it.
+
+The chain is declared ONCE and instantiates per record through the
+certified fork-at-finalize machinery: each chain step's finalize forks
+AT MOST ONE child (the route's arm — no fan-in, no join), the record's
+payload, `map_index` and trace riding forward.
+
+### The partial-success run (the envelope must not lie)
+
+With no fan-in there is no absorbing edge, so the honest run vocabulary
+stays the shipped one: the run **`failed`** when any chain failed
+(`UnabsorbedNodeFailure` on the root — the alert hook), **`succeeded`**
+when none did. The run's REPORT is the read-side rollup over the rows
+(per-trace `bool_or(status='failed')` — `{failed_chains: 7, total: 200}`
+is one query), never a new engine state. A "partial" derived status
+would be a new primitive (a new terminal class, a new render rule across
+the explorer/admin/API surface) rejected: the report reads the same
+truth from the rows without it. Partial success as an AUTHORED ROUTE is
+the ergonomic answer: route the degraded outcome to a fallback step and
+the run succeeds with the degraded records visibly on their own route.
+
+### THE MIGRATION PATH: from the actor's ad-hoc children to the chain
+
+The TaskQ-native pattern this replaces — an actor body dispatching its
+own child jobs ad hoc (the hand-rolled "spawn a follow-up job per
+record, then a counter row to know when they're done") — maps onto the
+chain surface:
+
+| the ad-hoc actor pattern | the flow's shape | what it buys |
+| --- | --- | --- |
+| `ctx`/client child dispatch mid-body | the source's `ctx.emit_batch` per page (the children + edges + cursor, ONE tx) | the fork-atomicity law at page granularity: a crash rolls the page back WHOLE and the resume re-emits exactly the lost page — the ad-hoc pattern's window (children enqueued, cursor lost, or the inverse) is structurally gone |
+| the hand-rolled "done counter" row / the polling parent | nothing — the run root derives from the ROWS (the maintenance leg) | no counter to corrupt, no polling job, no wedged "waiting on children" state: the root's terminal IS the derivation |
+| ad-hoc retry/backoff per child | the certified retry ladder (the row's own curve) | the ledger carries the full per-attempt history; the reclaim owns crashes |
+| the follow-up job's invisible dependency | the chain's declared route (the fork's edge row) | the lineage is QUERYABLE: `trace_id` per record, `map_index` per record, `parent_id` per row — the ad-hoc pattern's children have no lineage and no completion semantics |
+| the payload re-marshalled into each child | the record rides the row's payload verbatim (the fork carries it) | the drill-down reads one record's whole chain by its trace |
+
+**THE LINEAGE LAW**: every row a source/chain writes carries
+`flow_id` (the run), `trace_id` (the record), `map_index` (the record's
+index — the discriminator) and `parent_id` (the emitting row). The
+migration BUYS the lineage and the completion semantics and PAYS the
+declared-edges discipline: the children are the fork's (an edge row
+each, the ledger's truth), the completions are the derivation's — there
+is no ad-hoc escape hatch, and a child dispatched outside the fork is a
+foreign row no derivation counts. The honest boundary: an actor's
+ad-hoc children that must remain in the NATIVE queue (no flow) keep
+their no-lineage semantics — the migration is opt-in per workload, not
+a fleet conversion.
+
+The bands (measured on the built code, the spike's §7 protocol): the
+emit tx stays single-digit-to-low-teens ms per page (a 40-record page:
+children + edges + cursor in ONE tx), and the chain-shaped dispatch
+backlog costs the same ms-class as plain jobs at 200 chains — the
+streaming source adds ONE bounded tx per page, not per record. See
+`perf-evidence-workflows-streaming.md`.
 
 ## §4 — HITL: humans are rows (T10)
 
