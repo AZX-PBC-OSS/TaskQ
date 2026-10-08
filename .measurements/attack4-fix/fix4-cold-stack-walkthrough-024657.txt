@@ -1,0 +1,7 @@
+== fix4 cold-stack walkthrough ==
+trigger1: {"run_id":"01a11ae7-317a-7713-9bab-cf2a91b7b9b2","url":"/taskq/workflows/01a11ae7-317a-7713-9bab-cf2a91b7b9b2"}
+resolve-on-app-run-page: {"status":"delivered","reason":null}
+root1: succeeded
+trigger2: RUN2=01a11ae8-8bd7-7720-b205-56523696334a
+resolve-on-sidecar-admin-page: {"status":"delivered","reason":null}
+root2: succeeded
