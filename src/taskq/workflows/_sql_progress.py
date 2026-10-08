@@ -176,7 +176,7 @@ WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
 # exists for this (DH8's fence: the join is for DATAFLOW, progress
 # aggregation is OBSERVABILITY).
 PROGRESS_CHILD_RESULTS_SQL = """\
-SELECT id, status::text AS status, result
+SELECT id, step_key, status::text AS status, result
 FROM {schema}.jobs
 WHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL
 """
