@@ -1,0 +1,70 @@
+.F..F                                                                    [100%]
+=================================== FAILURES ===================================
+___________________ test_the_abstraction_contract_grep_gate ____________________
+
+    def test_the_abstraction_contract_grep_gate() -> None:
+        """THE GREP GATE: zero case-study strings in the shipped tree. The
+        same check the CI runs repo-wide (cited identically by 13/14/16/17);
+        a hit reds."""
+        hits: list[str] = []
+        # The scan EXCLUDES the gate's own definition sites (the forbidden
+        # list must live in the test tree; these two files are that
+        # somewhere — the shipped surfaces proper are the scan's subject).
+        excluded = str(REPO_ROOT / "tests" / "test_doc_ingest_example.py")
+        ergonomics = str(REPO_ROOT / "tests" / "test_wf_ergonomics_contract.py")
+        for root in ("docs", "examples", "src/taskq/workflows", "tests"):
+            proc = subprocess.run(
+                [
+                    "grep", "-riE",
+                    "|".join(_FORBIDDEN),
+                    str(REPO_ROOT / root),
+                    f"--exclude={Path(excluded).name}",
+                    f"--exclude={Path(ergonomics).name}",
+                    # The PRE-EXISTING estate vocabulary (NOT case-study
+                    # content — a DI graph's provider is named portfolio, a
+                    # cap-exactness test class spells CapEx; both predate the
+                    # workflow series). The exclusions are NAMED, not a
+                    # growing list; the shipped workflow surfaces themselves
+                    # are held to ZERO.
+                    "--exclude=test_di_solver.py",
+                    "--exclude=test_postgres_enqueue_max_pending_lock.py",
+                    "--exclude=test_pinned_invariants.py",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            # grep exits 1 on NO matches — that is the GREEN outcome.
+            if proc.returncode == 0:
+                hits.extend(proc.stdout.splitlines())
+>       assert not hits, (
+            "the abstraction contract is BROKEN — case-study strings in the "
+            f"shipped tree: {hits[:10]}"
+        )
+E       AssertionError: the abstraction contract is BROKEN — case-study strings in the shipped tree: ['/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:class _PortfolioClient:', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:    registry.register_class(_PortfolioClient, Scope.LOOP)', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:    entry = registry.get(_PortfolioClient)', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:    assert entry.impl is _PortfolioClient', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:    assert (_PortfolioClient, _Settings, None) in registry._dep_edges', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:    assert (_PortfolioClient, _AsyncGraphClient, None) in registry._dep_edges', '/tmp/opencode/wt-taskqflow-p4/tests/compat/test_stub_broker_migration.py:    portfolio_id: str', '/tmp/opencode/wt-taskqflow-p4/tests/compat/test_stub_broker_migration.py:        ThirdPartyUpdatePayload(portfolio_id="p1", property_id="prop42"),']
+E       assert not ['/tmp/opencode/wt-taskqflow-p4/tests/test_di_registry.py:class _PortfolioClient:', '/tmp/opencode/wt-taskqflow-p4/tes...qflow-p4/tests/test_di_registry.py:    assert (_PortfolioClient, _AsyncGraphClient, None) in registry._dep_edges', ...]
+
+tests/test_doc_ingest_example.py:101: AssertionError
+_______________ test_fast_tier_the_mermaid_golden_is_byte_stable _______________
+
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    def test_fast_tier_the_mermaid_golden_is_byte_stable(
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE GOLDEN: the example's compiled Mermaid is byte-stable — a
+        wiring change that alters the graph reds until the golden is
+        updated (the docs-truth discipline; the golden IS the reviewable
+        diff of the graph's shape)."""
+        rendered = example_ns["app"].get("doc_ingest").mermaid()
+        golden_path = Path(__file__).parent / "goldens" / "doc_ingest.mermaid"
+        if not golden_path.exists():
+            golden_path.parent.mkdir(parents=True, exist_ok=True)
+            golden_path.write_text(rendered)
+>           pytest.fail(f"the golden did not exist and was WRITTEN — re-run to green: {golden_path}")
+E           Failed: the golden did not exist and was WRITTEN — re-run to green: /tmp/opencode/wt-taskqflow-p4/tests/goldens/doc_ingest.mermaid
+
+tests/test_doc_ingest_example.py:139: Failed
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_the_abstraction_contract_grep_gate
+FAILED tests/test_doc_ingest_example.py::test_fast_tier_the_mermaid_golden_is_byte_stable
+2 failed, 3 passed in 3.14s
