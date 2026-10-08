@@ -47,6 +47,7 @@ def build_step_context(
     worker_id: JobId | None = None,
     progress: ProgressEmitter | None = None,
     claim_epoch: int = 0,
+    max_in_flight: int | None = None,
 ) -> StepContext:
     """The ONE context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -67,6 +68,7 @@ def build_step_context(
         _worker_id=worker_id,
         _progress=progress,
         _claim_epoch=claim_epoch,
+        _max_in_flight=max_in_flight,
     )
 
 
@@ -101,6 +103,10 @@ class StepContext(CtxWaitOps):
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
+    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the workflow's DECLARED
+    #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
+    #: the explicit unbounded).
+    _max_in_flight: int | None = None
     #: The claim view's FENCE EPOCH: the in-process driver's own claim
     #: stamps 0 (NODE_CLAIM_SQL_TEMPLATE); a fleet-claimed row carries
     #: its dispatch claim's epoch — the emit's cursor checkpoint fences
@@ -140,6 +146,7 @@ class StepContext(CtxWaitOps):
         children: Sequence[EmitChild],
         *,
         cursor: dict[str, object],
+        backpressure_timeout_s: float = 30.0,
     ) -> tuple[JobId, ...]:
         """THE STREAMING SOURCE'S EMIT (T20): this page's chain starts +
         the edges + THIS node's cursor checkpoint, ONE transaction, while
@@ -165,6 +172,8 @@ class StepContext(CtxWaitOps):
             claim_epoch=self._claim_epoch,  # the claim view's fence epoch
             children=children,
             cursor=cursor,
+            max_in_flight=self._max_in_flight,
+            backpressure_timeout_s=backpressure_timeout_s,
         )
 
     async def progress(

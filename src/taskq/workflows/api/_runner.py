@@ -502,6 +502,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
+            max_in_flight=getattr(self.compiled, "max_in_flight", None),
         )
         try:
             if body is None:

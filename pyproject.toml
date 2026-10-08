@@ -355,6 +355,7 @@ ignore = [
 # reads 'RouterNotTotal' off the failed chain row — the spike's pinned
 # name; renaming the exception would fork the record's vocabulary).
 "src/taskq/workflows/chain.py" = ["N818"]
+"src/taskq/workflows/_emit.py" = ["N818"]
 # The runner's internal control-flow unwinding (the wait site's hold
 # signal to the driver) predates the naming rule and reads as a noun on
 # purpose: it is not an error the caller handles, it is the held
@@ -437,6 +438,7 @@ ignore = [
 # above.
 "tests/test_wf_t20_maintain_liveness.py" = ["S608"]
 "tests/test_wf_t20_emit_pins.py" = ["S608"]
+"tests/test_wf_t20_backpressure_pins.py" = ["S608"]
 "tests/test_wf_t20_fence_probe.py" = ["S608"]
 "tests/test_wf_t20_router_pins.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
