@@ -422,18 +422,97 @@ The wiring's typing story has TWO faces, and both are load-bearing:
    table in the API reference). A graph that typechecks AND validates
    is pinned clean by BOTH; a mutation of either face reds its own pin.
 
+### THE TWO FACES — what each one owns (the honest boundary)
+
+The mechanism shipped in the verbs is probe-proven (the type-mechanism
+corpus, `wf_generic_step_negative_types.py`, on both pinned checkers):
+`Promise` is COVARIANT; `step[R]` infers `R` from the body's declared
+return (`step(fetch, params)` wires a `Promise[Report]` when `fetch`
+returns `Report`); `gather[R]` preserves the element type
+(`Promise[list[R]]`, never an erase to `Promise[Any]`); `build`'s
+residual slot is `Promise[Never]` — covariant, so every REAL data
+handle in the slot reds. **But the two faces own different questions,
+and neither covers the other's:**
+
+| the edge's question | WHO catches it | WHERE |
+| --- | --- | --- |
+| the handle flow: an unconsumed data handle passed to `build` as a residual (`Promise[Report]` in the `Promise[Never]` slot) | **THE CHECKER, at typing** | `build(...)` call — red in the IDE, red in CI (`reportArgumentType` / `invalid-argument-type`) |
+| the handle flow: a consumer that DECLARES the handle type (`Promise[Config]`) handed the wrong handle (`Promise[Report]`) — the contravariant-consumer rejection | **THE CHECKER, at typing** (live because `Promise` is covariant) | the handle-passing call site |
+| the handle flow: `gather`'s element type threaded to a typed join consumer (`Promise[list[Report]]` where `Promise[list[Config]]` is declared) | **THE CHECKER, at typing** | the join-consumer call site |
+| the promise-as-data mistake (a promise passed where the DECODED model / list is wanted — the direct unit-call form) | **THE CHECKER, at typing** (the corpus's `wf_api_negative_types.py`) | the unit-call site |
+| the DECODED-payload compat: a producer's body returns `Report`, a consumer's body declares `Config` | **`validate()`, at build** — `E5-incompatible-consumer` | `compiled.validate()` / worker boot |
+| the DECODED-payload hole: the consumer's param carries NO model annotation (`Any` / a plain dict — the duck-shaped hole) | **`validate()`, at build** — `E5-incompatible-consumer` | `compiled.validate()` / worker boot |
+| a promise nobody consumes, nobody sunk, nobody named terminal (not passed to `build` at all) | **`validate()`, at build** — `E2-produced-never-consumed` | `compiled.validate()` / worker boot |
+
+The boundary has a REASON, not just a history: the bodies take DECODED
+payloads, not handles (cut #14's decode-once — the fan-in's args are the
+parents' decoded results). The wiring verbs' `*args` are therefore
+ERASED (`object`) — statically they are either promise handles (the
+handle flow, the checker's face) or plain data, and the checker cannot
+see a decoded model inside an erased argument list. That is why the
+canonical wrong graph "producer `Report` → consumer wanting `Config`"
+red at the WIRING SITE (`step(consume, produced_promise)`) is NOT a
+checker error — the wiring call is erased — and IS a validate() refusal
+(`E5`) the moment the graph compiles. The corpus asserts this boundary
+as its own probe (`probe_wiring_site_decoded_payload_is_the_validators_face`):
+the line must stay CLEAN under both checkers, and the gate's
+unmarked-error rule reds the corpus if it ever reddens. What the IDE
+catches at typing is the HANDLE flow; what `validate()` catches at build
+is the DECODED-payload compat. Read the gate's red as the handle-flow
+law; read validate()'s refusal as the payload law; neither report
+subsumes the other.
+
 ## §3 — Fan-out & reduce: the one-flow shape
 
 The common pipeline — fan-out N independent steps, reduce into a join,
 cascade downstream — is spelled (never glued):
 
 ```python
+from pydantic import BaseModel
+
+from taskq.workflows import WorkflowApp, build, step
+
+app = WorkflowApp()
+
+
+class Ingest(BaseModel):
+    doc_id: str
+
+
+class Stats(BaseModel):
+    n: int
+
+
+@app.actor(queue="cpu")
+async def stage_a(ctx, params: Ingest) -> Stats:
+    return Stats(n=1)
+
+
+@app.actor(queue="cpu")
+async def stage_b(ctx, params: Ingest) -> Stats:
+    return Stats(n=2)
+
+
+@app.actor(queue="cpu")
+async def reduce(ctx, a: Stats, b: Stats) -> Stats:  # the join's user body — the DECODED parents
+    return Stats(n=a.n + b.n)
+
+
+@app.actor(queue="cpu")
+async def tail(ctx, total: Stats) -> Stats:
+    return total
+
+
 @app.workflow("doc_ingest")
 def doc_ingest() -> object:
     a = step(stage_a, Ingest(doc_id="d1"), key="a")
     b = step(stage_b, Ingest(doc_id="d1"), key="b")
     reducer = step(reduce, a, b, key="reducer")  # the fan-in: TWO parents
     return build(step(tail, reducer, key="tail"))  # the cascade: a NORMAL step
+
+
+compiled = app.get("doc_ingest")
+compiled.validate()  # the zero-false-positive bar: this graph is clean
 ```
 
 The fan-in's failure policy is declared ON the join
