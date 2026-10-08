@@ -1,4 +1,4 @@
-# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
+# Why: the schema is a fixture-derived test identifier; every value is $-bound.
 """THE COVERAGE-CLOSING PINS, part 2 (the estate floor): the capture
 module's pure functions (the truncation loop, the redact chain, the
 policy refusal), the reducer resolution's definition fallback, the
@@ -80,9 +80,9 @@ def test_build_capture_no_fields_is_none() -> None:
 async def test_insert_node_the_deps_guard(wf_conn: Any, wf_schema: str) -> None:
     """The joined node's counter guard: the deps_pending is the declared
     parent count's twin — a mismatching spec is the named refusal."""
-    from taskq.workflows import insert_node
     from taskq.workflows._sql import WorkflowSql
     from taskq.workflows._types import NodeSpec
+    from taskq.workflows.engine import insert_node
 
     wsql = WorkflowSql.build(wf_schema)
     with pytest.raises(ValueError, match="deps_pending must be >= 0"):
