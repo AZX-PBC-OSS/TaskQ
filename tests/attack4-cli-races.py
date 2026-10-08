@@ -432,6 +432,60 @@ async def test_the_exit_code_contract_the_empty_error_and_missing_states(
     assert "Traceback" not in proc.stderr
 
 
+async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
+    module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+) -> None:
+    """F-P4-CLI-KEYERROR-TRACEBACK's PIN (the attack-4 report's MEDIUM;
+    the red was the attacker's race repro — attack4-cli-races-run1): a
+    run whose workflow is NOT declared on the --app module (the
+    stale-deploy world) meets 'flows resolve' — the typed door must
+    refuse with the NAMED error + exit 1, never a rich traceback. The
+    pre-cure shape: gate_models_for → app.get(workflow) → the uncaught
+    KeyError → the traceback (the admin's twin catches it; the CLI did
+    not)."""
+
+    # The run's workflow is declared on a DIFFERENT app than the one the
+    # CLI's --app names — the app moved since the run started.
+    other = WorkflowApp()
+
+    async def _hold(ctx: Any, params: Ingest) -> str:
+        await ctx.wait_signal((Approval,), reason="the other app", timeout_s=120.0)
+        return "done"
+
+    gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    other.workflow("attack4b_GHOST_flow")(  # a name the demo module never declares
+        lambda: build(step(_hold, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    )
+    runner = FlowRunner(
+        other.get("attack4b_GHOST_flow"), module_pg_pool, module_pg_schema.schema_name
+    )
+    run_id = await runner.create_flow()
+    await runner.drive(
+        run_id, until="held"
+    )  # the REAL hold row (the gate's lookup must reach the KeyError)
+    from taskq.workflows.api._hitl import HitlClient
+
+    hc = HitlClient(module_pg_pool, schema=module_pg_schema.schema_name)
+    (hold,) = await hc.list(str(run_id))
+
+    proc = _cli(
+        module_pg_schema,
+        "resolve",
+        hold.hold_id,
+        '{"verdict": "approve"}',
+        "--app",
+        f"{MODULE_NAME}:app",  # declares hold_flow/stuck_flow — NOT the ghost
+        demo_env=demo_env,
+    )
+    assert proc.returncode == 1, f"the stale-app resolve exited {proc.returncode}: {proc.stdout}"
+    assert "Traceback" not in proc.stderr, (
+        f"the output contract is broken — the operator saw a traceback: {proc.stderr!r}"
+    )
+    assert "not declared on this app" in proc.stderr, (
+        f"the refusal does not NAME the miss: {proc.stderr!r}"
+    )
+
+
 async def test_the_cancel_of_an_already_terminal_run_is_the_named_noop(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
