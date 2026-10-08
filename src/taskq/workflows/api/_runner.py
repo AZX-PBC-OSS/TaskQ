@@ -1027,6 +1027,15 @@ class FlowRunner:
                 )
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)
+                except _NodeHeld:
+                    # THE HOLD INSIDE THE ITERATION (T10 × T19's
+                    # composition): the loop node rests in the held
+                    # representation (the budget PAUSED — register_hold's
+                    # loop case); the resume re-runs the iteration (the
+                    # ledger's 'awaited' row — the ladder unburned). The
+                    # driver's walls stay blind while paused (the arm's
+                    # heart) — holds are free.
+                    return
                 except Exception as exc:
                     # THE LADDER-ROUTES-BY-FAILURE-CLASS decision: an INFRA
                     # fault (reclaim-eligible) records 'crashed' and re-pends

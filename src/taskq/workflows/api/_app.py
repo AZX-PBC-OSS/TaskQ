@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, overload
 
 from pydantic import BaseModel
 
@@ -179,6 +179,34 @@ class WorkflowApp:
         self._actor = actor
         self._workflows: dict[str, Callable[..., object]] = {}
 
+    @overload
+    def actor(
+        self,
+        fn: Callable[..., Awaitable[object]],
+        /,
+        *,
+        name: str | None = None,
+        queue: str = "default",
+        max_attempts: int = 3,
+        retry_kind: str = "transient",
+        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+    ) -> WorkflowActor: ...
+
+    @overload
+    def actor(
+        self,
+        fn: None = None,
+        /,
+        *,
+        name: str | None = None,
+        queue: str = "default",
+        max_attempts: int = 3,
+        retry_kind: str = "transient",
+        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+    ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
+
     def actor(
         self,
         fn: Callable[..., Awaitable[object]] | None = None,
@@ -190,7 +218,7 @@ class WorkflowApp:
         retry_kind: str = "transient",
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
-    ) -> object:
+    ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
         F3 carrier. The redact hook POST-COMPOSES on the capture chain
