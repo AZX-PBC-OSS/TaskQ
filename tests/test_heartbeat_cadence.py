@@ -57,12 +57,9 @@ import asyncio
 import contextlib
 import time
 
-import asyncpg
 from pydantic import BaseModel
 
-from taskq._ids import new_base62
 from taskq.actor import actor
-from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
 from taskq.worker import heartbeat as hb_mod
 from taskq.worker._bootstrap import _main
@@ -79,7 +76,7 @@ _INJECTED_BLOCK_SECS = 1.0
 
 
 async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
-    pg_container,
+    pg_dsn: str, module_pg_schema
 ) -> None:
     """THE CADENCE BOUND + THE NO-DRIFT LAW, measured on the real loop.
 
@@ -95,15 +92,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
        WRONG instant, or a catch-up burst) would show a run of shifted
        deltas — exactly the alternating signature — and reds here.
     """
-    pg_dsn = pg_container.get_connection_url()
-    schema = f"hbc_{new_base62().lower()}"
-
-    conn = await asyncpg.connect(pg_dsn)
-    try:
-        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await apply_pending(conn, schema=schema)
-    finally:
-        await conn.close()
+    schema = module_pg_schema.schema_name
 
     hb_beat_times: list[float] = []
     real_record = hb_mod.record_lock_expires_in_seconds
