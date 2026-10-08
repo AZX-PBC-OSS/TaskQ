@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, overload
+from typing import Literal, cast, overload
 
 from pydantic import BaseModel
 
@@ -143,6 +143,15 @@ class CompiledWorkflow:
     terminal: str | None
     channel: SignalChannel
     input_type: object = None
+    #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
+    #: cure): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
+    #: it.
+    smuggled: tuple[tuple[str, str], ...] = ()
+    #: The app's declared queue universe (``"default"`` + every workflow
+    #: actor's queue + TASKQ_QUEUES' names — attack-3 M5's cure):
+    #: validate's W2 reads it; ``None`` = no universe declared, nothing
+    #: to convict.
+    known_queues: frozenset[str] | None = None
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -178,6 +187,10 @@ class WorkflowApp:
     def __init__(self, *, actor: str = "wf") -> None:
         self._actor = actor
         self._workflows: dict[str, Callable[..., object]] = {}
+        #: The app's declared queue universe (the workflow actors'
+        #: queues — validate's W2 rule reads the compiled projection;
+        #: attack-3 M5's cure).
+        self._actor_queues: set[str] = set()
 
     @overload
     def actor(
@@ -235,6 +248,7 @@ class WorkflowApp:
                 capture_policy=capture_policy,
                 redact=redact,
             )
+            self._actor_queues.add(queue)
             return handle
 
         if fn is not None:
@@ -304,20 +318,59 @@ class WorkflowApp:
             sunk=graph.sunk,
             terminal=graph.terminal,
             channel=channel,
+            smuggled=graph.smuggles,
+            known_queues=self._known_queues(),
         )
-        _register_bodies(compiled)
+        _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         return compiled
 
+    def _known_queues(self) -> frozenset[str]:
+        """The app's declared queue universe: ``default`` + the workflow
+        actors' queues + TASKQ_QUEUES' names (the strict boot's own list
+        — the same universe the worker's fail-fast reads; attack-3 M5's
+        build-side face)."""
+        import os
 
-def _register_bodies(compiled: CompiledWorkflow) -> None:
+        queues = {"default", *self._actor_queues}
+        declared = os.environ.get("TASKQ_QUEUES", "")
+        queues.update(q.strip() for q in declared.split(",") if q.strip())
+        return frozenset(queues)
+
+
+def _register_bodies(
+    compiled: CompiledWorkflow,
+    *,
+    redact: object | None = None,
+) -> None:
     """D1: the compiled nodes' bodies go into the DEFINITION REGISTRY —
     the dispatch resolves them from there, never from a per-call map.
     The map's CHILDREN resolve under their OWN step keys
     (``<map>.item`` — the fork's per-item identity): the alias is the
-    same body, registered under the key the child rows carry."""
-    from taskq.workflows.definitions import StepBody, WorkflowDef, get_registry
+    same body, registered under the key the child rows carry.
+
+    THE ESCALATION STEP (attack-3 H1's cure): a loop declaring
+    ``on_exhausted="escalate"`` registers ITS escalation body under the
+    ``loop.escalation`` step key — the author's ``escalates_to=`` body,
+    or the framework default. The outbox's consumer job resolves its
+    body from HERE (D1) at claim: the escalation is never the
+    ``loop_escalation``-actor ghost (a hardcoded binding whose body
+    never resolves). ONE escalation step per workflow: two loops
+    declaring DIFFERENT escalation bodies is the refused shadow."""
+    from taskq.workflows.api._loop import (
+        ESCALATION_STEP_KEY,
+        LoopSpec,
+        default_escalation_body,
+    )
+    from taskq.workflows.definitions import (
+        DuplicateStepBodyError,
+        StepBody,
+        WorkflowDef,
+        get_registry,
+    )
 
     bodies: dict[str, StepBody] = {}
+    loop_policies: dict[str, str] = {}
+    escalation_body: StepBody | None = None
     for node in compiled.nodes.values():
         if node.body is not None:
             bodies[node.key] = node.body
@@ -327,11 +380,33 @@ def _register_bodies(compiled: CompiledWorkflow) -> None:
         # carry.
         if node.map_item is not None:
             bodies[f"{node.key}.item"] = node.map_item
-    if bodies:
+        if node.loop_spec is not None:
+            # The loop attachment's declared type (the compile-visible
+            # LoopSpec — the NodeDecl field is the object-typed carrier).
+            spec = cast("LoopSpec", node.loop_spec)  # pyright: ignore[reportUnknownVariableType]  # Why: the NodeDecl's loop attachment is the object-typed carrier; the driver's own declaration is the LoopSpec.
+            loop_policies[node.key] = spec.on_exhausted
+            if spec.on_exhausted == "escalate":
+                candidate: StepBody = cast(
+                    "StepBody", spec.escalation_body or default_escalation_body
+                )  # Why: the escalation body's declared shape is the StepBody contract.
+                if escalation_body is not None and escalation_body is not candidate:
+                    raise DuplicateStepBodyError(
+                        f"workflow {compiled.name!r} declares TWO loop "
+                        f"escalation bodies ({node.key!r}'s differs from the "
+                        f"first) — one escalation step per workflow "
+                        f"({ESCALATION_STEP_KEY!r}); declare the same body or "
+                        "fold them"
+                    )
+                escalation_body = candidate
+    if escalation_body is not None:
+        bodies[ESCALATION_STEP_KEY] = escalation_body
+    if bodies or loop_policies:
         get_registry().register(
             WorkflowDef(
                 name=compiled.name,
                 bodies=bodies,
                 capture_policy="errors-only",
+                redact=redact,  # type: ignore[arg-type]  # Why: the app's redact declaration rides the registered definition — the hold-context chain's hook (the same callable the capture path composes).
+                loop_policies=loop_policies,
             )
         )

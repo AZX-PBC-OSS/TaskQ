@@ -16,7 +16,7 @@ no-second-registry rule, F3).
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from taskq.backend._protocol import JobId
@@ -61,6 +61,12 @@ class WorkflowDef:
     retry_kind: str = "transient"
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
+    #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop
+    #: key (attack-3 H1's cure): the SWEEP's arm reads the policy from
+    #: the REGISTERED DEFINITION (D1) — a hand-crafted loop row carries
+    #: no policy face, and the node row's metadata is the counter's
+    #: cache, never the declaration's source.
+    loop_policies: dict[str, str] = field(default_factory=dict[str, str])
 
 
 class WorkflowRegistry:

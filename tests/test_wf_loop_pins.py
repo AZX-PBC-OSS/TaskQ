@@ -257,66 +257,94 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     )
 
 
-# ── pin #6: LADDER-ROUTES-BY-FAILURE-CLASS ──────────────────────────────
+# ── pin #6: LADDER-ROUTES-BY-FAILURE-CLASS (the ESCAPE-POINT contract) ──
 
 
 async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SEMANTICS DECISION, stated once: infra fault ≠ body failure.
-    Three storm kills (ConnectionDoesNotExistError) on one loop: ZERO
-    ladder attempts burned (the ledger says 'crashed', the node
-    re-claims); a BODY exception burns its typed failure (the named
-    class)."""
-    kills = {"n": 0}
-
-    async def storm_body(ctx: Any, carry: object) -> Done[dict[str, int]]:
-        kills["n"] += 1
-        if kills["n"] <= 3:
-            raise asyncpg.exceptions.ConnectionDoesNotExistError("storm kill")
-        return Done({"ok": True})
-
-    app, name = _loop_app(storm_body, max_iterations=5)
-    runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
-    # drive returns after the third kill re-pends (the reclaim owns it);
-    # the loop node goes back to pending — the NEXT drive re-claims.
-    await runner.drive(flow_id, max_ticks=5)
-    crashed = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 AND status = 'crashed'",
-        flow_id,
-    )
-    assert crashed >= 1
-    failed_ladder = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 AND status = 'failed'",
-        flow_id,
-    )
-    assert failed_ladder == 0, (
-        "the infra fault burned the ladder — the semantics decision "
-        "(infra fault ≠ body failure) is violated"
-    )
-    # The BODY failure arm: the same loop, a body ValueError → the typed
-    # LoopBodyFailure + the flow terminal (STRANDED-FLOW).
+    """THE SEMANTICS DECISION, stated once — attack-3 H5's cure sharpened
+    it: the classifier reads WHERE the error ESCAPED, never merely its
+    type. A fault raised by the BODY is a BODY failure even when it
+    wears a ConnectionError's face (the body cannot forge an infra
+    fault — the poison-body wedge, 20 crashed rows + a ``running`` flow
+    forever, is the convicted variant the attack probe keeps red); a
+    fault raised by the DRIVER'S OWN machinery is the reclaim (the
+    ladder untouched, the lease machinery re-claims)."""
     kills2: dict[str, int] = {"n": 0}
 
     async def body_failure(ctx: Any, carry: object) -> Done[dict[str, int]]:
         kills2["n"] += 1
-        raise ValueError("the body's own failure")
+        raise ConnectionError("the body's own network flake — deterministically")
 
     app2, name2 = _loop_app(body_failure, max_iterations=5)
     runner2 = await _runner_of(app2, name2, wf_pool, wf_schema)
     flow_id2 = await runner2.create_flow()
-    await runner2.drive(flow_id2, max_ticks=3)
+    await runner2.drive(flow_id2, max_ticks=30)
     node_row = await wf_conn.fetchrow(
         f'SELECT status, error_class FROM "{wf_schema}".jobs '
         "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
         flow_id2,
     )
     assert node_row is not None
-    assert node_row["error_class"] == "LoopBodyFailure"
+    assert node_row["error_class"] == "LoopBodyFailure", (
+        "a body-raised ConnectionError was classified as an infra fault — "
+        "the body can forge the reclaim (the wedged-running dragon)"
+    )
     assert node_row["status"] == "failed"
+    # STRANDED-FLOW's body-failure sibling: the flow terminalized.
+    root2 = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id2)
+    assert root2 == "failed", root2
+
+    # THE MACHINERY arm: an infra kill raised by the DRIVER'S OWN
+    # statement (the memo read — machinery, never the body) records
+    # 'crashed' and re-pends; the ladder untouched; no exhaustion; the
+    # loop completes on the re-claim (the lease machinery's own heal).
+    from unittest.mock import patch
+
+    from taskq.workflows import ledger as ledger_module
+
+    real = ledger_module.memoized_step_result
+    kills3 = {"n": 0}
+
+    async def killing_memo(*a: Any, **kw: Any) -> Any:
+        kills3["n"] += 1
+        if kills3["n"] == 1:
+            raise asyncpg.exceptions.ConnectionDoesNotExistError("the machinery's storm kill")
+        return await real(*a, **kw)
+
+    async def done_at_two(ctx: Any, carry: object) -> Done[Counter] | Refine[Counter]:
+        acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
+        return Done(Counter(acc=acc)) if acc >= 2 else Refine(Counter(acc=acc))
+
+    with patch.object(ledger_module, "memoized_step_result", killing_memo):
+        app3, name3 = _loop_app(done_at_two, max_iterations=5)
+        runner3 = await _runner_of(app3, name3, wf_pool, wf_schema)
+        flow_id3 = await runner3.create_flow()
+        await runner3.drive(flow_id3, max_ticks=10)
+        crashed3 = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND status = 'crashed'",
+            flow_id3,
+        )
+        failed_ladder3 = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND status = 'failed'",
+            flow_id3,
+        )
+        root3 = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id3
+        )
+    assert crashed3 >= 1, "the machinery's infra kill did not record 'crashed'"
+    assert failed_ladder3 == 0, (
+        "the MACHINERY's infra fault burned the ladder — the escape-point "
+        "contract: a fault from the driver's own statements reclaims, never "
+        "the ladder"
+    )
+    assert root3 == "succeeded", (
+        f"the machinery kill wedged or failed the flow ({root3!r}) — the "
+        "reclaim owns it and the loop completes on the re-claim"
+    )
 
 
 # ── pin #9: BUDGET-DB-CLOCK (the skew fixture) ──────────────────────────
@@ -477,7 +505,7 @@ async def test_consume_budget_dragon_red_forever(
 async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Spike1's subject at the composition (T19 × T10): a loop iteration
+    """Spike1's subject at the composition (T19 x T10): a loop iteration
     that HOLDS — the loop node's budget PAUSES (the wall is blind), the
     operator's approval RESUMES (the pause lifts, the remaining is the
     on-wake read), the loop COMPLETES — zero budget_exhausted events,

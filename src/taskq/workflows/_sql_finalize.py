@@ -163,6 +163,26 @@ WHERE id = $1
 """
 
 
+#: THE FORK'S CONSUMER EDGES (the map-join consumption cure — the
+#: ecosystem mapper's defect): the join's DOWNSTREAM consumers are wired
+#: like any node — the consumer's dep was RESERVED at create (the runner's
+#: static insert counts the fork-spawned join's edge before the join's id
+#: exists), so THIS edge row is the ledger's truth that releases it: the
+#: consumer dispatches strictly after the JOIN'S OWN TERMINAL (the join
+#: row's claim + default packer writes the collected result), and the
+#: consumer's arg resolution reads the join's result through the SAME
+#: typed door as any node result (the parent-results query on the edge
+#: ledger). The outbox's consumer insert stays as the belt (the arbiter's
+#: idempotency key conflicts with the static row — no double dispatch).
+FORK_CONSUMER_EDGES_SQL = """\
+INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id, failure_policy)
+SELECT c.id, $1, $2, p.policy
+FROM unnest($3::text[], $4::text[]) AS p(key, policy)
+JOIN {schema}.jobs c ON c.step_key = p.key
+  AND (c.metadata->>'flow_id')::uuid = $2
+"""
+
+
 # The PUBLIC edge writer (the fork's FORK_EDGES_SQL is the fork-internal
 # one; this is the single-edge insert the public join path uses): a joined
 # node's incoming edges ARE the join counter's truth — a join declared

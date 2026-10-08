@@ -48,19 +48,31 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
-from taskq.workflows.api._graph import BodyFn, Promise, active_graph
+from taskq.workflows.api._graph import BodyFn, Promise, WorkflowBuildError, active_graph
 
 __all__ = [
     "Done",
     "Refine",
     "UntilPredicate",
+    "default_escalation_body",
+    "escalation_bindings",
     "loop",
+    "registered_loop_policy",
 ]
 
 #: The on-exhausted vocabulary (the named states, never a silent stop).
 ExhaustionPolicy = Literal["escalate", "fail"]
+
+#: The ESCALATION STEP KEY (attack-3 H1's cure): the workflow's registered
+#: escalation step — the outbox's ``consumer_step_key`` for EVERY
+#: ``on_exhausted="escalate"`` loop. The step's BODY resolves from the
+#: REGISTERED DEFINITION (D1 — ``_register_bodies`` puts it there at
+#: compile; the runner's ``_resolve_body`` reads it back at claim), so the
+#: drained consumer job is never the dead-letter ghost the hardcoded
+#: ``loop_escalation`` actor was.
+ESCALATION_STEP_KEY: Final[str] = "loop.escalation"
 
 
 class Done[T]:
@@ -101,6 +113,96 @@ class LoopSpec:
     budget_s: float | None
     on_exhausted: ExhaustionPolicy
     carry_type: object  # the declared carry type (the CARRIER-TYPE check's subject)
+    #: The REGISTERED ESCALATION STEP's body (attack-3 H1's cure): the
+    #: author's ``escalates_to=`` when declared; the framework default
+    #: otherwise. Registered under :data:`ESCALATION_STEP_KEY` at compile
+    #: (D1 — the registry is the only body source), so the outbox's
+    #: consumer job ALWAYS resolves a body — the escalation is never a
+    #: dead letter.
+    escalation_body: BodyFn | None = None
+
+
+async def default_escalation_body(ctx: Any, escalation: dict[str, object]) -> dict[str, object]:
+    """The DEFAULT escalation step's body (the operator-facing arm of
+    ``on_exhausted="escalate"``): the loop's exhaustion context lands as
+    the consumer job's OWN result — the job terminal-succeeds with the
+    escalation record on it (the observable consequence: the outbox row
+    drains, the consumer job runs, the record is readable from rows
+    alone — no dead letter), and the structured WARNING names it for the
+    live log. An author replaces it with ``loop(..., escalates_to=fn)``
+    (page a human, open a ticket); the default makes the POLICY real
+    without one."""
+    from taskq.obs import get_logger
+
+    get_logger(__name__).warning(
+        "loop.escalation",
+        loop=escalation.get("loop"),
+        flow_id=escalation.get("flow_id"),
+        error_class=escalation.get("error_class"),
+        message=escalation.get("message"),
+    )
+    return escalation
+
+
+def registered_loop_policy(workflow_name: str | None, loop_key: str) -> str:
+    """The REGISTERED DEFINITION's ``on_exhausted`` policy for one loop
+    (D1 — the sweep's arm reads the policy from HERE, never from the
+    node row's metadata: a hand-crafted row has no policy face). A loop
+    key the definition cannot resolve defaults to ``escalate`` only when
+    the workflow registers an escalation body — the refusal of the
+    dead-letter ghost is structural: no registered body, no enqueue."""
+    if not workflow_name:
+        return "fail"
+    from taskq.workflows.definitions import get_registry
+
+    try:
+        definition = get_registry().get(workflow_name)
+    except KeyError:
+        return "fail"
+    declared = definition.loop_policies.get(loop_key)
+    if declared is not None:
+        return declared
+    return "escalate" if ESCALATION_STEP_KEY in definition.bodies else "fail"
+
+
+def escalation_bindings(
+    workflow_name: str | None,
+    loop_key: str,
+    *,
+    flow_id: object,
+    error_class: str | None,
+    message: str | None,
+) -> dict[str, object] | None:
+    """The ESCALATION OUTBOX ROW's bindings (the driver's and the sweep's
+    one enqueue shape): the consumer step key is
+    :data:`ESCALATION_STEP_KEY`, the actor/queue resolve from the
+    REGISTERED DEFINITION (D1 — the definition is the placement's
+    source), and the payload carries the exhaustion context as the
+    consumer body's data args. ``None`` = the workflow registers no
+    escalation body — the enqueue is SKIPPED (the named state is still
+    the record; a ghost row whose body never resolves is the convicted
+    dead letter, never written)."""
+    if not workflow_name:
+        return None
+    from taskq.workflows.definitions import get_registry
+
+    try:
+        definition = get_registry().get(workflow_name)
+    except KeyError:
+        return None
+    if ESCALATION_STEP_KEY not in definition.bodies:
+        return None
+    info: dict[str, object] = {
+        "loop": loop_key,
+        "flow_id": str(flow_id),
+        "error_class": error_class,
+        "message": message,
+    }
+    return {
+        "actor": definition.actor,
+        "queue": definition.queue,
+        "payload": {"wf_args": [info]},
+    }
 
 
 def loop(
@@ -112,6 +214,7 @@ def loop(
     max_iterations: int | None = None,
     budget_s: float | None = None,
     on_exhausted: ExhaustionPolicy = "escalate",
+    escalates_to: BodyFn | None = None,
 ) -> Promise[Any]:
     """Wire a LOOP node: fresh jobs per iteration, the carry advanced
     exactly once per iteration (in the atomic advance+cap statement),
@@ -126,9 +229,29 @@ def loop(
     — a sync closure returning a coroutine object is the convicted
     dragon). ``max_iterations`` and ``budget_s`` are TWO DIFFERENT walls;
     unset ``until`` with both unset is the "waits forever" class — the
-    validate warning."""
+    validate warning.
+
+    ``on_exhausted="escalate"`` (the default) ENQUEUES the escalation
+    through the SAME outbox the fired joins use, addressed to THIS
+    WORKFLOW'S REGISTERED ESCALATION STEP (attack-3 H1's cure): the
+    step's body is *escalates_to* when declared, the framework's
+    :func:`default_escalation_body` otherwise — registered under
+    ``loop.escalation`` at compile (D1), so the drained consumer job
+    always resolves a body (never the ``loop_escalation``-actor ghost).
+    ``on_exhausted="fail"`` terminal-fails the flow and enqueues
+    NOTHING — the policy is READ by the driver AND the sweep, both arms
+    pinned end-to-end."""
     from taskq.workflows.api._graph import NodeDecl
 
+    # THE NAMING RULE (cut #6's API-compile face — the same refusal
+    # step() runs): the loop's derived keys (``<key>.iter<i>``) own the
+    # dot.
+    if "." in name:
+        raise WorkflowBuildError(
+            f"loop key {name!r} carries a dot — the dot is the engine's "
+            "derived namespace (the loop's <key>.iter<i>); a wiring key "
+            "may not collide with it"
+        )
     graph = active_graph()
     spec = LoopSpec(
         loop_key=name,
@@ -136,6 +259,7 @@ def loop(
         budget_s=budget_s,
         on_exhausted=on_exhausted,
         carry_type=carry,
+        escalation_body=escalates_to,
     )
     node = NodeDecl(
         key=name,

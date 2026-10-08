@@ -1434,3 +1434,26 @@ class SignalAbandonedError(TaskQError):
     :class:`SignalTimeoutError` — a named ledger record, never a silent
     orphan. The distinction is the DOOR (the timeout sweep vs the
     operator's action), not the state."""
+
+
+class SignalPayloadError(TaskQError):
+    """A delivered payload validated against NONE of the wait's declared
+    models (the typed door's runtime boundary — attack-3 B2/H2's cure):
+    the refusal happens BEFORE the deliver CAS consumes the hold, so the
+    hold SURVIVES and the operator sees WHY. Never a silent drop into the
+    body's re-validation (the convicted shape: the payload consumed, then
+    the body's laddering ``ValidationError`` kills the flow).
+
+    See also :class:`SignalPayloadAmbiguousError` — the same refusal when
+    the payload fits MORE than one declared model and the gate declared
+    no discriminator."""
+
+
+class SignalPayloadAmbiguousError(SignalPayloadError):
+    """A delivered payload fit MORE than one of the wait's declared
+    models and the gate declared no discriminator: which member the body
+    receives would be decided by DECLARATION ORDER (the convicted
+    first-fit mis-narrowing — attack-3 B2), so the delivery is refused
+    instead. The gate's escape is the explicit ``discriminator=`` on the
+    wait site; the operator's escape is a payload whose shape names one
+    model unambiguously."""

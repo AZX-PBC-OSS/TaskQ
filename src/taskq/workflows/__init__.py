@@ -43,6 +43,7 @@ from taskq.workflows._types import (
 )
 from taskq.workflows.api import (
     CompiledWorkflow,
+    Exit,
     Promise,
     WorkflowApp,
     WorkflowBuildError,
@@ -100,6 +101,7 @@ __all__ = [
     "Done",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
+    "Exit",
     "FailureInfo",
     "FailurePolicy",
     "FinalizeResult",

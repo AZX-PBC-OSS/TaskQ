@@ -26,6 +26,7 @@ semantics.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -41,6 +42,7 @@ from taskq.obs import get_logger
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
 from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
+from taskq.workflows.api._graph import Exit
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
@@ -104,6 +106,12 @@ class StepContext:
     _map_index: int | None = None
     _is_loop: bool = False
     _ledger_id: JobId | None = None
+    #: The REGISTERED workflow's name (D1 — the signal-model catalog's
+    #: key; the hold-context redact hook's resolution).
+    _workflow_name: str = ""
+    #: The workflow's redact hook (chain → hook — the hold context's
+    #: persist-time redact; attack-3 H3's cure).
+    _redact: Callable[[str], str] | None = None
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
@@ -128,6 +136,7 @@ class StepContext:
         reason: str | None = None,
         tool: str | None = None,
         args: dict[str, object] | None = None,
+        discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
     ) -> Any:
         """THE TYPED WAIT (T10): the TUPLE FORM is the typed wait —
         ``await ctx.wait_signal((Approval, Escalate))`` (PEP 604 unions
@@ -144,13 +153,44 @@ class StepContext:
         PAUSES). A DELIVERED row (the resume) returns the payload.
         ``timeout=None`` must be EXPLICIT — the bare form is the W1
         validate warning ("a workflow that waits forever on a human is
-        a support ticket")."""
+        a support ticket").
+
+        THE TIMEOUT FACE (attack-3 B1's cure): an ABANDONED hold (the
+        expiry sweep fired on this wait site, no held row stands) RAISES
+        :class:`taskq.exceptions.SignalTimeoutError` — the glossary
+        exception, raised at the wait site; the body's ladder/except
+        owns it from there (a step ladders + terminal-fails; a loop's
+        failure-class rules route it as the BODY failure it is). The
+        re-execution NEVER automatically mints a new epoch — hold →
+        expire → re-hold → ∞ is the convicted dragon. A DELIBERATE
+        re-wait (the body CAUGHT the timeout face and waits again within
+        the same attempt) is a NEW body decision: it registers a NEW
+        hold with a NEW epoch.
+
+        ``discriminator=`` (attack-3 B2's small honest API): when the
+        payload fits MORE than one declared model, the gate's explicit
+        picker resolves the union — its pick must be one of the fitting
+        candidates. Without one, an ambiguous payload is the typed
+        refusal at the deliver boundary."""
         models: tuple[type[BaseModel], ...] = cast(
             tuple[type[BaseModel], ...],
             signals if isinstance(signals, tuple) else (signals,),
         )
         names = tuple(m.__name__ for m in models)
-        from taskq.workflows.api._hitl import mark_awaited, register_hold
+        signal_name = names[0] if len(names) == 1 else "|".join(names)
+        from taskq.exceptions import SignalTimeoutError
+        from taskq.workflows.api._hitl import (
+            mark_awaited,
+            register_hold,
+            register_signal_models,
+        )
+
+        # THE CATALOG (the typed door's runtime registry): this process
+        # ran the wait site — the deliver boundary validates against
+        # THESE models (D1's discipline, the deliver path's face).
+        register_signal_models(
+            self._workflow_name, self.node_key, signal_name, models, discriminator
+        )
 
         # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row
         # records 'awaited' (never 'failed' — the ladder counts failed
@@ -206,7 +246,7 @@ class StepContext:
                     self.job_id,
                     dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
                 )
-                return self._coerce_signal(models, payload)
+                return self._coerce_signal(models, payload, discriminator=discriminator)
             # PAST THE QUEUE: the node's PENDING hold (if any) is THIS
             # wait's wait — the held row stands (idempotent re-hold,
             # never a second registration of one wait).
@@ -223,6 +263,54 @@ class StepContext:
             )
             if held_row is not None:
                 raise _NodeHeld(hold_id=str(held_row["id"]), signal_names=names)
+            # THE TIMEOUT FACE (attack-3 B1's cure): the sweep marked
+            # THIS wait site's hold 'abandoned' and no held row stands —
+            # the wait site RAISES the glossary exception; the body's
+            # ladder/except owns it from there. NO automatic new epoch:
+            # a re-execution after abandonment never re-holds (the
+            # hold→expire→re-hold→∞ dragon's kill site). The DELIBERATE
+            # re-wait — the body caught the face and waits again within
+            # THIS attempt — is a NEW body decision: the face marker
+            # (per-attempt, beside the answer cursor) lets it register a
+            # NEW hold with a NEW epoch.
+            abandoned_row = await conn.fetchrow(
+                _stmt(
+                    "SELECT id, hold_epoch FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if abandoned_row is not None:
+                face_key = f"timeout_face_{self.attempt}"
+                face_seen = await conn.fetchval(
+                    _stmt(
+                        "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
+                        self._wsql.schema,
+                    ),
+                    self.job_id,
+                    face_key,
+                )
+                if face_seen != int(abandoned_row["hold_epoch"]):
+                    await conn.execute(
+                        _stmt(
+                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb "
+                            "WHERE id = $1",
+                            self._wsql.schema,
+                        ),
+                        self.job_id,
+                        dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
+                    )
+                    raise SignalTimeoutError(
+                        f"the hold on signal {signal_name!r} (node "
+                        f"{self.node_key!r}, epoch {abandoned_row['hold_epoch']}) "
+                        "timed out — the expiry sweep abandoned it and the wait "
+                        "site does not re-hold: the body's ladder/except owns "
+                        "the typed face from here"
+                    )
             # A NEW HOLD: a NEW epoch (the count of this name's holds —
             # the identity's mint).
             epoch = await conn.fetchval(
@@ -244,35 +332,40 @@ class StepContext:
                 workflow_id=self.flow_id,
                 node_id=self.job_id,
                 node_key=self.node_key,
-                signal_name=names[0] if len(names) == 1 else "|".join(names),
+                signal_name=signal_name,
                 hold_epoch=int(epoch),  # pyright: ignore[reportAny, reportArgumentType]
                 call_id=f"call:{new_uuid()}",
                 payload_schema=schema_ref,
                 timeout_s=timeout_s,
                 is_loop_node=self._is_loop,
+                context={"reason": reason, "tool": tool, "args": args},
+                redact=self._redact,
             )
-            if reason or tool or args:
-                await conn.execute(
-                    _stmt(
-                        "UPDATE {schema}.wf_signals SET payload = $2::jsonb WHERE id = $1",
-                        self._wsql.schema,
-                    ),
-                    hold_id,
-                    dumps_jsonb_str({"reason": reason, "tool": tool, "args": args}),
-                )
         raise _NodeHeld(hold_id=str(hold_id), signal_names=names)
 
     @staticmethod
-    def _coerce_signal(models: Any, payload: Any) -> Any:
+    def _coerce_signal(
+        models: Any,
+        payload: Any,
+        *,
+        discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
+    ) -> Any:
         """The delivered payload re-validates into the declared model
-        (the typed wait's return — narrows with ``isinstance``)."""
+        (the typed wait's return — narrows with ``isinstance``). BY
+        SHAPE, never by declaration order (attack-3 B2's cure): every
+        declared model is tried STRICTLY; exactly one must fit (it is
+        returned); zero or more than one is the typed refusal —
+        :class:`taskq.exceptions.SignalPayloadError` /
+        :class:`taskq.exceptions.SignalPayloadAmbiguousError` (on the
+        deliver path this refusal happens BEFORE the hold is consumed;
+        here at the replay it is the body's typed failure)."""
+        from taskq.workflows.api._hitl import resolve_payload_fit
+
         if not isinstance(payload, dict):
             return payload
-        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk — the delivered payload is the row's jsonb; the isinstance guard above is the runtime shape check.
-        for m in models:
-            if isinstance(m, type) and issubclass(m, BaseModel):
-                return cast(Any, m.model_validate(payload_doc))
-        return cast(Any, payload)
+        payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the answer-queue's jsonb decode — the Any-contract walk's boundary (the isinstance guard above is the runtime shape check).
+        fitted = resolve_payload_fit(models, payload_doc, discriminator)
+        return cast(Any, fitted.model_validate(payload_doc))
 
     async def signal(self, name: str) -> Any:
         """Read a DELIVERED signal's payload on resume (cut #3's cure —
@@ -376,7 +469,7 @@ WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'
 _HELD_COUNT_SQL_TEMPLATE = """
 SELECT count(*) FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'pending'
-  AND scheduled_at > now()
+  AND metadata ? 'hold'
 """
 
 _ROOT_START_SQL_TEMPLATE = """
@@ -406,6 +499,58 @@ WHERE (metadata->>'flow_id')::uuid = $1
 _TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT result FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
+"""
+
+#: THE EXIT'S DOWNSTREAM MARK (§17.1): the compiled descendants the exit
+#: resolved — skipped WITH the record (the envelope never lies about the
+#: nodes that didn't get to run), zero ledger rows. Terminal rows and
+#: unspawned rows are untouched.
+_EXIT_SKIP_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = 'succeeded',
+    result = $2::jsonb,
+    finished_at = clock_timestamp()
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+  AND step_key = ANY($3)
+"""
+
+#: THE MANUAL RESUME'S NODE CAS (§17.2): terminal-FAILED → pending — ONE
+#: statement, the only grant; the attempt ordinal untouched (CONTINUES —
+#: the ladder's own count is the budget).
+_RETRY_NODE_CAS_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = 'pending',
+    error_class = NULL,
+    error_message = NULL,
+    scheduled_at = now(),
+    locked_by_worker = NULL,
+    lock_expires_at = NULL
+WHERE step_key = $2
+  AND (metadata->>'flow_id')::uuid = $1
+  AND status = 'failed'
+RETURNING id
+"""
+
+#: THE CLOSURE RE-OPENS: the cascade's blocked rows return to join-wait —
+#: the sweep's re-derive re-derives them from the edge ledger (a stamp is
+#: the cache, never the truth).
+_RETRY_REOPEN_CLOSURE_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET metadata = jsonb_set(metadata, '{blocking_reason}', '"join"'::jsonb, true)
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND step_key = ANY($2)
+  AND metadata @> '{"blocking_reason": "failed_parent"}'::jsonb
+  AND status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+"""
+
+#: THE FLOW RE-OPENS: a terminal-FAILED root returns to running (the
+#: manual resume's own linearization; a CANCELLED root stays closed).
+_RETRY_FLOW_REOPEN_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = 'running', finished_at = NULL
+WHERE id = $1
+  AND status = 'failed'
 """
 
 
@@ -475,16 +620,15 @@ class FlowRunner:
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
                 continue  # spawned by the source's fork
-            if any(
-                self.compiled.nodes[p].kind == "map_join"
-                for p in node.parents
-                if p in self.compiled.nodes
-            ):
-                # A downstream of a MAP JOIN spawns from the fork's
-                # outbox (the join row exists only after the source's
-                # finalize) — inserted upfront it would dispatch BEFORE
-                # its parent exists (the stranded-edge lie).
-                continue
+            # THE MAP-JOIN'S DOWNSTREAM IS A STATIC ROW (the ecosystem
+            # mapper's consumption defect's structural half): every
+            # non-join node is inserted upfront — a node whose parent is
+            # a fork-spawned map join carries the RESERVED dep (below),
+            # so it can never dispatch before the join's terminal. (The
+            # convicted shape: the descendant was NOT inserted and rode
+            # only the outbox's side-channel — no edge row, an arg
+            # resolution with no result to read, and a transitive
+            # downstream that the side-channel never creates at all.)
             data_args = [v for kind, v in node.args if kind == "d"]
             payload: dict[str, object] = {_INPUT_KEY: input} if not node.parents else {}
             if data_args:
@@ -521,30 +665,37 @@ class FlowRunner:
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
                 continue
-            if any(
-                self.compiled.nodes[p].kind == "map_join"
-                for p in node.parents
-                if p in self.compiled.nodes
-            ):
-                continue  # the fork's outbox writes these edges at fire
             for parent_key in node.parents:
+                parent_node = self.compiled.nodes.get(parent_key)
                 parent_row = await conn.fetchval(
                     _stmt(_NODE_BY_STEP_KEY_SQL_TEMPLATE, self.schema), parent_key, flow_id
                 )
                 child_row = await conn.fetchval(
                     _stmt(_NODE_BY_STEP_KEY_SQL_TEMPLATE, self.schema), key, flow_id
                 )
+                if child_row is None:
+                    continue  # the fork's outbox writes these edges at fire
                 if parent_row is None:
+                    if parent_node is not None and parent_node.kind == "map_join":
+                        # THE MAP JOIN'S EDGE — the fork writes the edge
+                        # row at the source's finalize (the join's id is
+                        # minted there). The COUNTER IS RESERVED NOW: the
+                        # consumer can never dispatch before the join's
+                        # terminal (the consumption defect's dispatch-
+                        # ordering half — the arg resolution must never
+                        # run before the edge's terminal has a result).
+                        await conn.execute(
+                            _stmt(_INCREMENT_DEPS_SQL_TEMPLATE, self.schema), child_row
+                        )
                     continue  # the map join's edge — the fork writes it
-                if child_row is not None:
-                    await conn.execute(_stmt(_INCREMENT_DEPS_SQL_TEMPLATE, self.schema), child_row)
-                    await conn.execute(
-                        _stmt(_EDGE_INSERT_SQL_TEMPLATE, self.schema),
-                        child_row,
-                        parent_row,
-                        flow_id,
-                        node.on_failure,
-                    )
+                await conn.execute(_stmt(_INCREMENT_DEPS_SQL_TEMPLATE, self.schema), child_row)
+                await conn.execute(
+                    _stmt(_EDGE_INSERT_SQL_TEMPLATE, self.schema),
+                    child_row,
+                    parent_row,
+                    flow_id,
+                    node.on_failure,
+                )
 
     # ── drive ────────────────────────────────────────────────────────
 
@@ -655,6 +806,8 @@ class FlowRunner:
             _wsql=self.wsql,
             _map_index=row["map_index"],
             _ledger_id=ledger_id,
+            _workflow_name=self.compiled.name,
+            _redact=self._redact_hook(),
         )
         try:
             if body is None:
@@ -666,6 +819,13 @@ class FlowRunner:
                 result: dict[str, object] | None = {"value": [r for _key, r in parents_ordered]}
             else:
                 outcome_value = await body(ctx, *args)
+                if isinstance(outcome_value, Exit):
+                    # THE TYPED EARLY-EXIT (§17.1): the sentinel ends the
+                    # node NOW — terminal-succeed with the typed payload,
+                    # the downstream graph marked skipped-with-the-record.
+                    exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard IS the runtime shape check; the sentinel's payload is the walk's boundary.
+                    await self._finalize_exit(flow_id, row, attempt, node, exit_value)
+                    return
                 result = _encode_result(outcome_value)
         except _NodeHeld as held:
             # THE HOLD (T10): the node rests in the held representation
@@ -684,6 +844,18 @@ class FlowRunner:
             await self._ladder_or_fail(flow_id, row, attempt, node, exc)
             return
         await self._finalize_success(flow_id, row, attempt, node, result)
+
+    def _redact_hook(self) -> Callable[[str], str] | None:
+        """The workflow's OWN redact hook from the REGISTERED DEFINITION
+        (attack-3 H3's cure — nothing wired the workflow's hook into the
+        hold surface): the hold context's chain-then-hook composition
+        reads it from here (the registry is the source, D1)."""
+        from taskq.workflows.definitions import get_registry
+
+        try:
+            return get_registry().get(self.compiled.name).redact
+        except KeyError:
+            return None
 
     def _resolve_body(self, node_key: str, node: Any) -> Any:
         """D1: the body resolves from the REGISTERED DEFINITION — never
@@ -744,7 +916,18 @@ class FlowRunner:
         if _ITEM_KEY in payload:
             item_raw: object = payload[_ITEM_KEY]  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk — the fork wrote the shape.
             return (self._coerce(item_raw, node, body, 0),)
-        if node is None or not node.args:
+        if node is None:
+            # THE OUTBOX CONSUMER with no compiled NodeDecl (the
+            # escalation step — attack-3 H1's cure): its declared
+            # payload rides the row as data args (the bindings'
+            # ``wf_args``), the body's OWN contract with the enqueue's
+            # context. No parents exist for such a consumer — the
+            # parent-results walk has nothing to say.
+            wf_args_raw: object = payload.get(_WF_ARGS_KEY, [])
+            if wf_args_raw:
+                return tuple(cast(list[object], wf_args_raw))
+            return tuple(parent_results.values())
+        if not node.args:
             return tuple(parent_results.values())
         wf_args_raw: object = payload.get(_WF_ARGS_KEY, [])
         wf_args = cast(list[object], wf_args_raw)  # the seed wrote the list
@@ -872,6 +1055,11 @@ class FlowRunner:
                 actor=self.compiled.nodes[downstream].actor,
                 queue=self.compiled.nodes[downstream].queue,
                 payload={},
+                # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
+                # cure): the fork writes the join→consumer edge with it —
+                # T06's propagation reads the policy off the ledger when
+                # the JOIN terminal-fails.
+                failure_policy=self.compiled.nodes[downstream].on_failure,
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -914,9 +1102,47 @@ class FlowRunner:
         ``Refine`` threads); ``until=`` AWAITED per iteration. The
         budget deadline initializes FROM PG'S CLOCK at the first claim
         (the DB-clock doctrine); ``budget_remaining_ms`` is the on-wake
-        read of the wall (holds are free)."""
+        read of the wall (holds are free).
+
+        THE ESCAPE-POINT CONTRACT (attack-3 H5's cure): the driver's
+        drive runs under the machinery boundary — an INFRA fault raised
+        by the driver's own statements reclaims (the ledger says
+        'crashed', the ladder untouched); anything else re-raises. The
+        BODY's exceptions never reach this wrapper — the body boundary
+        routes them first (a body cannot forge an infra fault by raising
+        ConnectionError)."""
+        from taskq.workflows.api._loop import LoopSpec
+
+        spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
+
+        try:
+            return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id)
+        except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
+            if _is_infra_fault(exc):
+                return await self._reclaim_loop(flow_id, row, attempt, exc)
+            raise
+
+    async def _drive_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+        spec: Any,
+        ledger_id: JobId | None,
+    ) -> None:
+        """The loop driver's own drive (the machinery side of the
+        escape-point contract — attack-3 H5's cure): every exception
+        raised by THIS method's own statements (the state reads, the
+        ledger claims, the advance, the exhaust) is a TRANSPORT/INFRA
+        fault of the machinery — the caller's reclaim owns it, the
+        ladder untouched. The BODY's exceptions never reach here: the
+        body boundary routes them (the failure-class rules) before
+        returning — a body CANNOT forge an infra fault by raising
+        ConnectionError (its exceptions exhaust the loop as the body
+        failure they are)."""
         from taskq._json import loads as _loads
-        from taskq.workflows.api._loop import Done, LoopSpec, Refine
+        from taskq.workflows.api._loop import Done, Refine
         from taskq.workflows.api._sql_loop import (
             LOOP_ADVANCE_SQL,
             LOOP_ERROR_BODY,
@@ -926,8 +1152,6 @@ class FlowRunner:
             render_loop_sql,
         )
         from taskq.workflows.ledger import claim_step_ledger, memoized_step_result
-
-        spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
 
         async with self.pool.acquire() as conn:
             state = await conn.fetchrow(
@@ -945,7 +1169,7 @@ class FlowRunner:
             initial_carry = _jsonable(cast(object, spec.carry_type))
         else:
             initial_carry = None
-        if "iteration" not in meta:
+        if "iteration" not in meta_doc:
             init_meta: dict[str, object] = {
                 **meta_doc,
                 "kind": "loop",
@@ -978,6 +1202,18 @@ class FlowRunner:
             # coroutine object is the convicted dragon).
             if node.loop_until is not None and await node.loop_until():
                 await self._finalize_success(flow_id, row, attempt, node, _encode_result(carry))
+                return
+
+            # THE CAP CHECK (the driver's top-of-loop face — the advance
+            # guard now lets the FINAL iteration run and the counter
+            # REACH the cap, so the live path exhausts HERE, at the top
+            # of the next pass; the crash window — a worker death after
+            # the final advance — leaves exactly this state on the row
+            # for the SWEEP's arm to own: the sweep's cap predicate is
+            # REACHABLE in production, never vacuous). The named state +
+            # the flow terminalized in the same tx: STRANDED-FLOW.
+            if spec.max_iterations is not None and iteration >= spec.max_iterations:
+                await self._exhaust_loop(flow_id, row, None, None)
                 return
 
             iter_key = f"{row['step_key']}.iter{iteration}"
@@ -1024,11 +1260,13 @@ class FlowRunner:
                     _wsql=self.wsql,
                     _is_loop=True,
                     _ledger_id=ledger_id,
+                    _workflow_name=self.compiled.name,
+                    _redact=self._redact_hook(),
                 )
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)
                 except _NodeHeld:
-                    # THE HOLD INSIDE THE ITERATION (T10 × T19's
+                    # THE HOLD INSIDE THE ITERATION (T10 x T19's
                     # composition): the loop node rests in the held
                     # representation (the budget PAUSED — register_hold's
                     # loop case); the resume re-runs the iteration (the
@@ -1037,33 +1275,16 @@ class FlowRunner:
                     # heart) — holds are free.
                     return
                 except Exception as exc:
-                    # THE LADDER-ROUTES-BY-FAILURE-CLASS decision: an INFRA
-                    # fault (reclaim-eligible) records 'crashed' and re-pends
-                    # WITHOUT burning the ladder (the vanilla lease machinery
-                    # re-claims from the ledger); a BODY failure is the
+                    # THE BODY BOUNDARY (attack-3 H5's cure): EVERY
+                    # exception crossing it is a BODY failure — the
                     # loop's typed failure (the named class, the flow
-                    # terminalized in the same tx — STRANDED-FLOW's
-                    # body-failure sibling).
-                    if _is_infra_fault(exc):
-                        async with self.pool.acquire() as conn:
-                            await conn.execute(
-                                self.wsql.ledger_terminal,
-                                flow_id,
-                                iter_key,
-                                attempt,
-                                "crashed",
-                                None,
-                                type(exc).__name__,
-                                str(exc)[:500],
-                                None,
-                                None,
-                            )
-                            await conn.execute(
-                                _stmt(_NODE_REPEND_SQL_TEMPLATE, self.schema),
-                                row["id"],
-                                0.05,
-                            )
-                        return  # the reclaim owns it — never a ladder burn
+                    # terminalized in the same tx). The escape-point
+                    # contract: the classifier never reads the TYPE of
+                    # an exception the body raised, so a body cannot
+                    # forge an infra fault by raising ConnectionError —
+                    # the STRANDED-FLOW shape is unconstructible from
+                    # body code. (SignalTimeoutError — the timed-out
+                    # hold — is a body exception exactly like this.)
                     await self._exhaust_loop(
                         flow_id,
                         row,
@@ -1088,7 +1309,9 @@ class FlowRunner:
                 carry = cast(object, outcome.feedback)  # the walk's boundary
 
             # THE ADVANCE STATEMENT — the carry + THE CAP GUARD, one
-            # atomic write (a refused advance IS the exhaustion).
+            # atomic write (the guard lets the advance reach EXACTLY the
+            # cap so the final iteration runs; a refused advance — a
+            # concurrent terminal — stays the backstop exhaustion).
             async with self.pool.acquire() as conn:
                 advanced = await conn.fetchval(
                     render_loop_sql(LOOP_ADVANCE_SQL, self.schema),
@@ -1146,6 +1369,36 @@ class FlowRunner:
                 None,
             )
 
+    async def _reclaim_loop(
+        self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
+    ) -> None:
+        """The MACHINERY reclaim (attack-3 H5's other half): an infra
+        fault raised by the DRIVER'S OWN statements — never by the body
+        — records 'crashed' and re-pends WITHOUT burning the ladder
+        (the vanilla lease machinery re-claims from the ledger). The
+        escape-point contract's beneficiary: the body cannot reach this
+        arm (its exceptions exhaust the loop as the body failure they
+        are), so reclaim stays UNBOUNDED-BY-THE-BODY — a poison body
+        cannot wedge the flow through the classifier."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                self.wsql.ledger_terminal,
+                flow_id,
+                row["step_key"],
+                attempt,
+                "crashed",
+                None,
+                type(exc).__name__,
+                str(exc)[:500],
+                None,
+                None,
+            )
+            await conn.execute(
+                _stmt(_NODE_REPEND_SQL_TEMPLATE, self.schema),
+                row["id"],
+                0.05,
+            )
+
     async def _exhaust_loop(
         self,
         flow_id: JobId,
@@ -1153,14 +1406,25 @@ class FlowRunner:
         error_class: str | None,
         message: str | None,
     ) -> None:
-        """The NAMED exhaustion (the driver's own arms — the cap guard's
-        refusal and the body failure; the SWEEP's arm runs the same
-        statement): the named state + the FLOW TERMINALIZED in the SAME
-        tx (STRANDED-FLOW)."""
+        """The NAMED exhaustion (the driver's own arms — the cap check
+        and the body failure; the SWEEP's arm runs the same statement):
+        the named state + the FLOW TERMINALIZED in the SAME tx
+        (STRANDED-FLOW) — and, when the REGISTERED policy says
+        ``escalate`` (attack-3 H1's cure: the policy is READ by the
+        driver AND the sweep), the ESCALATION ENQUEUES through the same
+        outbox in the SAME tx, addressed to the workflow's REGISTERED
+        escalation step (the body resolves from the definition registry
+        at claim — never a dead letter). ``fail`` enqueues NOTHING: the
+        flow terminal-fails and the record is the named state."""
+        from taskq.workflows.api._loop import (
+            ESCALATION_STEP_KEY,
+            escalation_bindings,
+        )
         from taskq.workflows.api._sql_loop import (
             ITERATION_STATE_CAP_EXHAUSTED,
             LOOP_ERROR_BODY,
             LOOP_ERROR_CAP,
+            LOOP_ESCALATION_OUTBOX_SQL,
             LOOP_EXHAUST_SQL,
             render_loop_sql,
         )
@@ -1169,17 +1433,48 @@ class FlowRunner:
         state_name = (
             ITERATION_STATE_CAP_EXHAUSTED if error_class != LOOP_ERROR_BODY else "loop_body_failed"
         )
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                render_loop_sql(LOOP_EXHAUST_SQL, self.schema).replace(
-                    "{terminal}", "('{succeeded}','failed','cancelled','crashed','abandoned')"
-                ),
+        policy = "escalate"
+        if node_spec := self.compiled.nodes.get(row["step_key"]):
+            loop_spec = getattr(node_spec, "loop_spec", None)
+            if loop_spec is not None:
+                policy = loop_spec.on_exhausted
+        async with self.pool.acquire() as conn, conn.transaction():
+            result = await conn.fetchrow(
+                render_loop_sql(LOOP_EXHAUST_SQL, self.schema),
                 row["id"],
                 error_class,
                 f'{{"iteration_state": "{state_name}", "kind": "loop"}}',
                 message or f"the loop's wall fired (the named state: {state_name})",
             )
-        del flow_id
+            if result is None or not result["loop_exhausted"]:
+                return  # another writer got there first — the CAS held
+            if policy != "escalate":
+                return  # the fail policy: the named state is the record, no enqueue
+            bindings = escalation_bindings(
+                self.compiled.name,
+                row["step_key"],
+                flow_id=flow_id,
+                error_class=error_class,
+                message=message,
+            )
+            if bindings is None:
+                logger.warning(
+                    "loop.escalation_unregistered",
+                    loop=row["step_key"],
+                    run_id=str(flow_id),
+                    why="the escalation policy declared but the workflow's "
+                    "escalation step is not registered in this process (D1) — "
+                    "the named state stands, no outbox row is written",
+                )
+                return
+            await conn.execute(
+                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, self.schema),
+                new_uuid(),
+                row["id"],
+                flow_id,
+                ESCALATION_STEP_KEY,
+                _json_dumps(bindings),
+            )
 
     async def _ladder_or_fail(
         self,
@@ -1252,6 +1547,143 @@ class FlowRunner:
             error_message=str(exc)[:500],
             map_index=row["map_index"],
         )
+
+    # ── the typed early-exit + the manual retry ──────────────────────
+
+    async def _finalize_exit(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+        exit_value: Exit[object],
+    ) -> None:
+        """THE TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
+        body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
+        with the typed payload (the envelope records the exit — it never
+        lies about what ran), and every non-terminal DOWNSTREAM node is
+        marked SKIPPED-WITH-THE-RECORD (``{"skipped": true,
+        "exit_from": <node>}`` — zero ledger rows, a skip is not an
+        attempt; the join-firing machinery never runs for rows the exit
+        resolved). All rows terminal → the derivation reports the
+        workflow COMPLETE. The LEDGER records the exit on the exited
+        node's own terminal row (the result carries the marker)."""
+        step_key: str = row["step_key"]
+        await finalize_node(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            step_key=step_key,
+            worker_id=self._worker_id,
+            attempt=attempt,
+            claim_epoch=0,
+            outcome="succeeded",
+            result={"value": _jsonable(exit_value.payload), "exit": True},
+            map_index=row["map_index"],
+        )
+        # THE DOWNSTREAM MARK: the compiled graph's descendants (the
+        # wiring's own edges — never a runtime guess), skipped with the
+        # record. Bounded by the graph's size; a downstream row that is
+        # already terminal (or does not exist — an unspawned map join)
+        # is untouched.
+        descendants = self._descendants_of(step_key)
+        if descendants:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    _stmt(_EXIT_SKIP_SQL_TEMPLATE, self.schema),
+                    flow_id,
+                    _jsonb({"skipped": True, "exit_from": step_key}),
+                    sorted(descendants),
+                )
+
+    def _descendants_of(self, node_key: str) -> set[str]:
+        """The compiled graph's transitive downstream of one node (the
+        wiring's children adjacency — the exit's marked set)."""
+        children: dict[str, list[str]] = {}
+        for key, node in self.compiled.nodes.items():
+            for parent in node.parents:
+                children.setdefault(parent, []).append(key)
+        seen: set[str] = set()
+        frontier = [node_key]
+        while frontier:
+            current = frontier.pop()
+            for child in children.get(current, ()):
+                if child not in seen:
+                    seen.add(child)
+                    frontier.append(child)
+        return seen
+
+    async def retry_node(
+        self,
+        flow_id: JobId,
+        node_key: str,
+        *,
+        principal: Any = None,
+        reason: str | None = None,
+    ) -> bool:
+        """THE MANUAL RESUME (§17.2, the §22.6 redispatch row 3 — "the
+        ladder then manual"; attack-audit's Missing #1): the operator's
+        audited, CAS-guarded re-arm of a TERMINAL-FAILED node's ladder.
+
+        * THE ATTEMPT ORDINAL CONTINUES — never resets: the claim's
+          counter is untouched, the ladder's 'failed' ledger rows are the
+          count, so each manual retry buys EXACTLY ONE more attempt (a
+          failure re-fails the node; the operator retries again — the
+          manual arm is the ladder's continuation, not a fresh budget).
+        * SAFE BY THE STEP LEDGER (T05): the re-run's ``ctx.step`` calls
+          return the recorded results — the replay is the ledger's own
+          contract.
+        * THE BLOCKED CLOSURE RE-OPENS: the failed node's downstream
+          rows the cascade BLOCKED (``blocking_reason='failed_parent'``)
+          return to join-wait (``'join'``) — the sweep's re-derive
+          re-derives them from the edge ledger on the next pass (the
+          counter-as-cache law; a stamp is the cache, never the truth).
+        * THE FLOW RE-OPENS: a terminal-FAILED flow root returns to
+          ``running`` (the manual resume's own linearization — a
+          cancelled flow stays closed: the operator's cancel is
+          deliberate, the resume does not second-guess it).
+        * THE AUDIT (G4): "who retried this" is a ROW.
+
+        Returns ``True`` when the CAS granted the re-arm. Surfaced as
+        the ``taskq flows retry`` verb (T12's ticket)."""
+        from taskq.web.admin._audit import record_admin_action
+
+        descendants = sorted(self._descendants_of(node_key))
+        async with self.pool.acquire() as conn, conn.transaction():
+            # THE NODE'S CAS (one grant): terminal-FAILED → pending; the
+            # attempt ordinal untouched (CONTINUES — the ladder's own
+            # count is the budget).
+            node_id = await conn.fetchval(
+                _stmt(_RETRY_NODE_CAS_SQL_TEMPLATE, self.schema),
+                flow_id,
+                node_key,
+            )
+            if node_id is None:
+                return False
+            # THE CLOSURE RE-OPENS: the blocked downstream rows return
+            # to join-wait (the re-derive re-derives them — a stamp is
+            # the cache).
+            if descendants:
+                await conn.execute(
+                    _stmt(_RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, self.schema),
+                    flow_id,
+                    descendants,
+                )
+            # THE FLOW RE-OPENS: a terminal-FAILED root → running (the
+            # maintenance leg owns the verdict from the rows again).
+            await conn.execute(_stmt(_RETRY_FLOW_REOPEN_SQL_TEMPLATE, self.schema), flow_id)
+            await record_admin_action(
+                conn,
+                schema=self.schema,
+                principal=principal,
+                action="workflow.retry_node",
+                target_type="workflow_node",
+                target_id=f"{flow_id}:{node_key}",
+                reason=reason,
+                detail={"node_key": node_key, "closure_reopened": len(descendants)},
+            )
+        return True
 
     async def _finalize_skipped(self, flow_id: JobId, row: dict[str, Any], node: Any) -> None:
         """The v1 SKIP semantics: the node succeeds WITH the skip record
@@ -1385,12 +1817,23 @@ def _jsonable(value: object) -> object:
 
 def _is_infra_fault(exc: BaseException) -> bool:
     """THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (T19's semantics
-    decision, stated once): a RECLAIM-ELIGIBLE fault (connection loss,
-    admin shutdown, interface failure — the storm's ConnectionDoesNotExist
-    class) routes to RECLAIM and NEVER burns the retry ladder; a body
-    failure is the body's own. The vanilla lease machinery re-claims from
-    the ledger — the ledger row says 'crashed', the ladder counts
-    'failed'."""
+    decision, stated once) — attack-3 H5's cure sharpened it to the
+    ESCAPE-POINT contract: the classifier reads WHERE the error escaped,
+    never merely its type. It is consulted ONLY at the MACHINERY
+    boundary (a driver/sweep/client statement failed — the loop's own
+    state reads, the ledger claims, the advance, the exhaust): a
+    RECLAIM-ELIGIBLE transport fault (connection loss, admin shutdown,
+    interface failure — the storm's ConnectionDoesNotExist class) routes
+    to RECLAIM and NEVER burns the retry ladder; the vanilla lease
+    machinery re-claims from the ledger — the ledger row says 'crashed',
+    the ladder counts 'failed'.
+
+    The BODY boundary NEVER consults this function: an exception the
+    BODY raised is a body failure by WHERE it escaped — a body-raised
+    ``ConnectionError`` exhausts the loop as the body failure it is (the
+    body cannot forge an infra fault; the STRANDED-FLOW wedge — 20
+    crashed rows, a ``running`` flow forever — is the convicted variant,
+    kept red by the attack probe)."""
     import asyncpg as _asyncpg
 
     infra: tuple[type[BaseException], ...] = (

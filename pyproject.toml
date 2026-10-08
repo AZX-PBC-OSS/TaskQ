@@ -332,6 +332,16 @@ ignore = [
 # $N-bound.
 "tests/test_wf_runner_pins.py" = ["S608"]
 "tests/test_wf_loop_pins.py" = ["S608"]
+# The T10 hitl pins + the phase-3 cure pins + the attack-3 probes: the
+# SAME shape — the f-strings' ONLY interpolation is the module fixture's
+# schema identifier (wf_schema / module_pg_schema), values all $N-bound.
+# The attack probes' dash-named modules (attack3-*) are the red team's
+# run-directly probes (pytest node ids, not import surfaces).
+"tests/test_wf_hitl_pins.py" = ["S608"]
+"tests/test_wf_phase3_cure_pins.py" = ["S608"]
+"tests/attack3-hitl.py" = ["S608", "N999"]
+"tests/attack3-loop.py" = ["S608", "N999"]
+"tests/attack3-validate.py" = ["N999"]
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated (a test-generated, fixture-owned name), and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the
@@ -341,6 +351,11 @@ ignore = [
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
 "src/taskq/exceptions.py" = ["N818"]
+# The runner's internal control-flow unwinding (the wait site's hold
+# signal to the driver) predates the naming rule and reads as a noun on
+# purpose: it is not an error the caller handles, it is the held
+# representation's own shape.
+"src/taskq/workflows/api/_runner.py" = ["N818"]
 # ASYNC109: _consume_transactional and _consume_autonomous accept a
 # pre-computed start_to_close timeout from the job row; this is not a
 # user-facing async-with-timeout API — the timeout is consumed

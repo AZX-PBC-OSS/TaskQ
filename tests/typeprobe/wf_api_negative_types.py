@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import WorkflowApp, step
+from taskq.workflows import Exit, WorkflowApp, build, map_source, step
 
 
 class Ingest(BaseModel):
@@ -48,7 +48,7 @@ async def probe_awaiting_a_promise() -> None:
     @app.workflow("probe_await")
     def probe_await() -> object:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
-        return asyncio.ensure_future(fetched)  # MUST_ERROR: a Promise is not a future/coroutine — the wrong-nesting call must red
+        return asyncio.ensure_future(fetched)  # MUST_ERROR: not a future
 
     _ = app
 
@@ -61,8 +61,81 @@ async def probe_promise_where_data_is_wanted() -> None:
     @app.workflow("probe_direct")
     def probe_direct() -> object:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
-        # MUST_ERROR: the wiring handle is not the declared Ingest data —
-        # the direct-call form's promise-vs-data confusion must red.
-        return await _body(None, fetched)  # pyright: ignore[reportUnusedCoroutine]
+        return await _body(None, fetched)  # MUST_ERROR: promise, not the data
 
     _ = app
+
+
+def probe_exit_bare_return() -> None:
+    """THE EXIT SENTINEL'S RETURN POSITION (the §17.1 sentinel's type
+    surface): a body whose annotation promises ``Exit[Report]`` that
+    returns a BARE value is the checker error (the sentinel is the
+    annotation's only valid return; a plain ``T`` return is the DATA
+    result under a ``T`` annotation — sentinels appear only in control
+    unions)."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_exit_bare")
+    def probe_exit_bare() -> object:
+        exit_body = _exit_body()
+        return build(step(exit_body, Ingest(doc_id="d"), key="exit_bare"))
+
+    _ = app
+
+
+def _exit_body():
+    async def exit_body(ctx: Any, params: Ingest) -> Exit[Report]:
+        return Report(ref=params.doc_id)  # MUST_ERROR: a bare Report is not the Exit payload
+
+    return exit_body
+
+
+def probe_exit_bare_return_none() -> None:
+    """A BARE ``return`` under an ``Exit[Report]`` annotation — the
+    None-end is not the sentinel's payload; the checker must red it
+    (the asserted marker is on the return line below)."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_exit_bare_none")
+    def probe_exit_bare_none() -> object:
+        exit_body = _exit_body_none()
+        return build(step(exit_body, Ingest(doc_id="d"), key="exit_bare_none"))
+
+    _ = app
+
+
+def _map_tail_exit_body():
+    """THE MAP-JOIN'S PROMISE-VS-DATA DOOR (the consumption contract's
+    type surface): the join's promise is WIRING — the direct unit-call
+    form wants the COLLECTED DATA (the list), never the promise object."""
+
+    async def map_tail_exit(ctx: Any, items: list[Report]) -> Exit[Report]:
+        return Exit(Report(n=sum(i.n for i in items)))
+
+    return map_tail_exit
+
+
+def probe_map_promise_where_data_is_wanted() -> None:
+    """The DIRECT (unit-call) form on a map's join promise: passing the
+    wiring handle where the collected data is expected must red (the
+    map-join consumption contract's type surface)."""
+    app = WorkflowApp()
+
+    @app.workflow("probe_map_direct")
+    def probe_map_direct() -> object:
+        src = step(_body, Ingest(doc_id="d"), key="src")
+        mapped = map_source(src, _map_body, key="m")
+        return await _map_tail_exit_body()(None, mapped)  # MUST_ERROR: not the list
+
+    _ = app
+
+
+def _map_body(ctx: Any, item: Report) -> Report:
+    return item
+
+
+def _exit_body_none():
+    async def exit_body_none(ctx: Any, params: Ingest) -> Exit[Report]:
+        return  # MUST_ERROR: a bare return carries no Exit payload — the sentinel's return position
+
+    return exit_body_none

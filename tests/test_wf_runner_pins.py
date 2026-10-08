@@ -111,7 +111,8 @@ async def test_create_flow_carries_input_and_drives(
     flow_id = await runner.create_flow(input={"doc_id": "d1"})
     # THE INPUT IS ON THE ROW (cut #7: never a closure).
     raw = await wf_conn.fetchval(
-        f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1', flow_id  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
+        f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1',
+        flow_id,  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
     )
     assert raw is not None and "wf_input" in raw
     assert await runner.drive(flow_id) == "terminal"
@@ -192,8 +193,10 @@ async def test_skip_predicate_decided_at_dispatch(
                 pick,
                 key="guarded",
                 # THE DISPATCH-TIME PREDICATE: reads the sibling's result.
-                skip=lambda state: (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
-                == "skip_me",
+                skip=lambda state: (
+                    (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
+                    == "skip_me"
+                ),
             )
         )
 
@@ -276,9 +279,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
     # THREE attempts, all 'failed' ledger rows (the ladder's shape:
     # attempt failures ≠ node failure — no terminal until exhaustion).
     assert [r["status"] for r in statuses] == ["failed", "failed", "failed"]
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed"  # T06's cascade took the flow with it
 
 
@@ -400,9 +401,7 @@ async def test_mermaid_golden_byte_stable(
     # The diagram-lies property: every node/edge of the compiled graph is
     # IN the emission.
     for key in compiled.node_keys():
-        assert (
-            f"{key}[" in golden or f"{key}{{" in golden or f"{key}([(" in golden
-        )
+        assert f"{key}[" in golden or f"{key}{{" in golden or f"{key}([(" in golden
     for key in compiled.node_keys():
         for parent in compiled.parents_of(key):
             assert f"{parent} -->" in golden

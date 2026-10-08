@@ -36,6 +36,7 @@ measured house shape).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any, Final
 
@@ -154,3 +155,67 @@ def build_capture(
             if total <= max_bytes:
                 break
     return capture
+
+
+#: THE HOLD CONTEXT'S TOKEN-HEAD PASS (attack-3 H3's cure — the default
+#: redact the hold row gets): bearer/key-shaped VALUES the vetted chain's
+#: credential-family patterns deliberately do not model (the chain's own
+#: doctrine: broader NAME lists would redact non-credential parameters —
+#: but the hold context is the operator-facing surface where a canary
+#: key rode a field named ``account``). The pass keeps the same
+#: necessary-condition discipline: a token HEAD (``sk-``/``sk_``/
+#: ``pk-``/``pk_``/``rk-``/``rk_`` + the shape's length floor) is the
+#: anchor, so ordinary context values (``approve``, ``d1``, ``100``)
+#: cannot match. Over-redaction is the safe failure for THIS surface:
+#: the body's step ledger replays the true args; the operator reads the
+#: masked one.
+_HOLD_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9])(?:sk|pk|rk)[-_.][A-Za-z0-9._-]{7,}"
+)
+
+
+def _mask_hold_token(text: str) -> str:
+    """One string through the token-head pass (the chain's own mask
+    literal — ``***``)."""
+    if not any(head in text for head in ("sk-", "sk_", "pk-", "pk_", "rk-", "rk_")):
+        return text  # the prefilter: a string with no token head pays nothing
+    return _HOLD_TOKEN_RE.sub("***", text)
+
+
+def redact_hold_context(
+    context: dict[str, Any],
+    *,
+    redact: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
+    """THE HOLD CONTEXT through the redact pipeline (chain → the
+    token-head pass → the workflow's hook), BEFORE persistence
+    (REDACT-BEFORE-PERSIST extended to the hold row — attack-3 H3's
+    cure): reason/tool/args never reach the ``wf_signals`` payload raw,
+    so the default ``HitlClient`` surface cannot leak what the row never
+    carried. The composition is the capture pipeline's own verdict
+    (TORS-REV-0.16 §G1): the vetted chain runs FIRST and ALWAYS; the
+    token-head pass narrows it for the hold surface; the author's hook
+    receives already-masked text and can only redact more."""
+    masked: dict[str, Any] = {}
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            scrubbed = _mask_hold_token(mask_credentials(value))
+            return scrubbed if redact is None else redact(scrubbed)
+        if isinstance(value, dict):
+            walked_map: dict[object, object] = {}  # the Any-contract walk's boundary
+            items: list[tuple[object, object]] = list(value.items())  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]  # Why: the Any-contract walk — the context's jsonb-decoded dict; the walk's recursion is the type resolution.
+            for k, v in items:
+                walked_map[k] = _walk(v)
+            return walked_map
+        if isinstance(value, list):
+            walked_list: list[object] = [
+                _walk(v)
+                for v in value  # pyright: ignore[reportUnknownVariableType]  # Why: the same walk.
+            ]
+            return walked_list
+        return value
+
+    for key, value in context.items():
+        masked[key] = _walk(value)
+    return masked

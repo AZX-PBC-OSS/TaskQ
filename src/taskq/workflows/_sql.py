@@ -41,6 +41,7 @@ from taskq.workflows._sql_finalize import (
     FIRE_SQL,
     FLOW_STATUS_SQL,
     FORK_CHILDREN_SQL,
+    FORK_CONSUMER_EDGES_SQL,
     FORK_EDGES_SQL,
     FORK_JOIN_CONSUMERS_SQL,
     FORK_JOIN_NODE_SQL,
@@ -130,6 +131,7 @@ class WorkflowSql:
     fork_edges: str
     fork_join_node: str
     fork_join_consumers: str
+    fork_consumer_edges: str
     rederive_sweep: str
     sweep_fire: str
     join_body_unavailable: str
@@ -191,6 +193,7 @@ class WorkflowSql:
             fork_edges=render(FORK_EDGES_SQL),
             fork_join_node=render(FORK_JOIN_NODE_SQL),
             fork_join_consumers=render(FORK_JOIN_CONSUMERS_SQL),
+            fork_consumer_edges=render(FORK_CONSUMER_EDGES_SQL),
             rederive_sweep=render(REDERIVE_SWEEP_SQL),
             sweep_fire=render(SWEEP_FIRE_SQL),
             join_body_unavailable=render(JOIN_BODY_UNAVAILABLE_SQL),
