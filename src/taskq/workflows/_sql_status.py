@@ -156,10 +156,22 @@ per_flow AS (
     + _absorbed_exists("n")
     + """
            ) AS has_failed,
-           -- The derivation's ROW 1 (the reclaim's input): a
-           -- crashed/abandoned node is live work, and a running node
-           -- outranks even a non-absorbed failure — the run is live.
-           bool_or(n.status IN ('running', 'crashed', 'abandoned')) AS has_active,
+           -- THE FAILED ARM'S LIVENESS (T20, the spike's live finding):
+           -- live UNRESOLVED work holds a failing run: a
+           -- running/crashed/abandoned row (the reclaim's input) AND a
+           -- pending/scheduled row that is NOT a resolved-blocked stamp.
+           -- THE 149-STRANDED-CHAINS WEDGE this cures: a no-fan-in
+           -- streaming batch's FIRST chain failure must not finalize the
+           -- root while the other chains are pending — the dispatch
+           -- fence (workflow children of a terminal flow are
+           -- unclaimable) would strand them forever. THE EXCLUSION IS
+           -- LOAD-BEARING: a blocked-with-reason row (the H1 wedge's
+           -- stamped join) is RESOLVED — it must not hold the run, or
+           -- the original wedge returns.
+           bool_or(n.status IN ('running', 'crashed', 'abandoned')
+                   OR (n.status IN ('pending', 'scheduled')
+                       AND NOT (n.metadata ? 'blocking_reason')))
+               AS has_unresolved,
            bool_or(n.status = 'cancelled') AS has_cancelled,
            -- EVERY non-terminal row is a live run: pending rows (join-wait,
            -- held, blocked-with-reason — the blocked representations
@@ -190,10 +202,11 @@ maintained AS (
     WHERE f.id = pf.flow_id
       AND (
           -- THE FAILED ROOT (precedence row 2): the non-absorbed failure
-          -- finalizes the root through the blocked rows — the wedge's
-          -- cure. Row 1 outranks it: a running/crashed/abandoned node
-          -- keeps the run live.
-          (pf.has_failed AND NOT COALESCE(pf.has_active, false))
+          -- finalizes the root only when NO live UNRESOLVED work rests
+          -- on the run (T20: pending/scheduled chain rows hold it;
+          -- resolved-blocked stamps do not — the H1 wedge's cure).
+          -- Row 1 outranks it: live unresolved work keeps the run live.
+          (pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))
           -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).
           OR NOT COALESCE(pf.has_live, true)
       )
