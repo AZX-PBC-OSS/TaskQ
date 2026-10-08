@@ -170,20 +170,31 @@ def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> N
     from taskq.workflows.definitions import validate_fork, validate_join_spec
 
     empty = ForkSpec(children=())
-    with pytest.raises(ValueError, match="empty fork"):
+    empty_refusal = None
+    edgeless_refusal = None
+    with pytest.raises(ValueError, match="empty fork") as refused:
         validate_fork(empty)
-    with pytest.raises(ValueError, match="zero incoming edges"):
+    empty_refusal = str(refused.value)
+    with pytest.raises(ValueError, match="zero incoming edges") as refused:
         validate_join_spec("orphan", (), 1)
-    with pytest.raises(ValueError, match="2 parents"):
+    edgeless_refusal = str(refused.value)
+    with pytest.raises(ValueError, match="2 parents") as refused:
         validate_join_spec("join", (new_uuid(), new_uuid()), 3)
+    parents_refusal = str(refused.value)
     # A well-formed fork validates.
     from taskq.workflows._types import ChildSpec
 
-    validate_fork(ForkSpec(children=(ChildSpec(step_key="c", actor="wf", queue="default"),)))
+    well_formed = ForkSpec(
+        children=(ChildSpec(step_key="c", actor="wf", queue="default"),)
+    )
+    validate_fork(well_formed)
     engine_redlog.red(
         "pin22-build-time-refusals",
         "the unvalidated builders (empty fork / edge-less join) reached the DB",
-        {"edgeless_join": "stranded invisible in join-wait (pre-hardening: not even diagnosable)"},
+        {
+            "refused": [empty_refusal, edgeless_refusal, parents_refusal],
+            "well_formed_fork_accepted": well_formed is not None,
+        },
     )
 
 
@@ -271,18 +282,22 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
         claim_epoch=epoch,
         outcome="succeeded",
     )
+    state = await node_state(wf_conn, wf_schema, join_id)
+    fired_count = await fire_count(wf_conn, wf_schema, join_id)
     engine_redlog.red(
         "pin24-flow-status-leg",
         "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)",
-        {"deps_pending_fingerprint": 0, "fired_on_cancelled_flow": True},
+        {
+            "deps_pending_fingerprint": state["deps_pending"],
+            "fired_count": fired_count,
+        },
     )
     assert result.applied, "tx1's attempt fence admits the node's own terminal"
-    state = await node_state(wf_conn, wf_schema, join_id)
     assert state["deps_pending"] == 1, (
         f"the dead flow's join DECREMENTED (deps_pending={state['deps_pending']}): "
         "the flow-status leg is load-bearing in tx2"
     )
-    assert not result.fired and await fire_count(wf_conn, wf_schema, join_id) == 0, (
+    assert not result.fired and fired_count == 0, (
         "the dead flow's join never fires"
     )
 
