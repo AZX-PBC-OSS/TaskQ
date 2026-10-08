@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from taskq.workflows._types import EdgeFailurePolicy
 from taskq.workflows.chain import Chain
 
 if TYPE_CHECKING:
@@ -321,7 +322,7 @@ def step[R](
     key: str | None = None,
     actor: str = "wf",
     queue: str = "default",
-    on_failure: str = "fail_closed",
+    on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     retry_kind: str | None = None,
     skip: SkipPredicate | None = None,
@@ -412,7 +413,7 @@ def map_source[S, R](
     *,
     key: str | None = None,
     queue: str = "default",
-    on_failure: str = "fail_closed",
+    on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
 ) -> Promise[list[R]]:
@@ -467,7 +468,9 @@ def map_source[S, R](
     )  # Why: the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's DECLARATION read back by validate(). The constructor does not bind R — the cast is the seam.
 
 
-def gather[R](promises: list[Promise[R]], *, on_failure: str = "fail_closed") -> Promise[list[R]]:
+def gather[R](
+    promises: list[Promise[R]], *, on_failure: EdgeFailurePolicy = "fail_closed"
+) -> Promise[list[R]]:
     """The ALL-upstream join: ``gather([pa, pb]) → Promise[list[R]]`` —
     the flat shape, the ELEMENT TYPE PRESERVED (a homogeneous gather over
     ``Promise[Report]``s is a ``Promise[list[Report]]`` — the generic's
