@@ -1,0 +1,5 @@
+# the integration battery: pyright (head bd58bdfb)
+/tmp/opencode/wt-taskqflow/tests/t21_numbers_run.py
+  /tmp/opencode/wt-taskqflow/tests/t21_numbers_run.py:116:24 - error: Object of type "None" is not subscriptable (reportOptionalSubscript)
+  /tmp/opencode/wt-taskqflow/tests/t21_numbers_run.py:122:35 - error: Object of type "None" is not subscriptable (reportOptionalSubscript)
+2 errors, 0 warnings, 0 informations
