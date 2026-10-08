@@ -608,9 +608,35 @@ _NET_TESTS = (
 
 
 def _run_nets_in_scratch(
-    repo: Path, scratch: Path, tests: tuple[str, ...]
+    repo: Path, scratch: Path, tests: tuple[str, ...], *, token_suffix: str
 ) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "PYTHONPATH": str(scratch / "src")}
+    """Run the standing nets in a scratch-copy subprocess pytest.
+
+    THE SCRATCH-TOKEN LAW (the mutual-DROP class, named and cured
+    2026-10-08): the scratch run inherits ``os.environ`` — including
+    ``TASKQ_TEST_PG_DSN`` (it needs the cluster) AND the parent session's
+    run-isolation token (the publisher's ``TASKQ_TEST_RUN_TOKEN`` rides
+    ``os.environ`` through monkeypatch into every child). The scratch
+    session's own ``pg_dsn`` fixtures then hash the SAME (token, module)
+    pairs as the parent's live modules and answer with
+    ``DROP DATABASE ... WITH (FORCE)`` — killing the parent's live
+    connections mid-test; the parent's next test dies on
+    ``InvalidCatalogNameError: database "tq_db_..." does not exist`` and
+    the failure rotates with which worker ran the drill
+    (round-1/recon evidence: the misfold drill on gw7 dropped the parent
+    module's db at 22:17). The cure: every scratch run mints its OWN
+    token (drill-unique, derived from the parent's worker id so parallel
+    drills on different workers can never collide with each other
+    either), so the scratch names live beside — never on top of — the
+    parent's.
+    """
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(scratch / "src"),
+        "TASKQ_TEST_RUN_TOKEN": (
+            f"scratch_{os.environ.get('PYTEST_XDIST_WORKER', 'main')}_{token_suffix}"
+        ),
+    }
     return subprocess.run(
         [sys.executable, "-m", "pytest", *tests, "-q", "-p", "no:cacheprovider", "--no-header"],
         cwd=scratch,
@@ -649,7 +675,7 @@ def test_atk_fence_misfold_is_caught_by_the_standing_nets(misfold: str, tmp_path
     assert old in text, f"misfold {misfold}: the honest fragment text is not in the module"
     fragments.write_text(text.replace(old, new))
 
-    proc = _run_nets_in_scratch(repo, scratch, _NET_TESTS)
+    proc = _run_nets_in_scratch(repo, scratch, _NET_TESTS, token_suffix=misfold)
     assert proc.returncode != 0, (
         f"misfold {misfold!r} sailed through every standing net "
         f"({', '.join(_NET_TESTS)}): a guard that cannot fire\n"
@@ -663,5 +689,5 @@ def test_atk_fence_drill_control_unmutated_copy_passes(tmp_path: Path) -> None:
     attributable to the misfold alone."""
     repo = Path(__file__).resolve().parent.parent
     scratch = _copy_scratch(repo, tmp_path)
-    proc = _run_nets_in_scratch(repo, scratch, _NET_TESTS)
+    proc = _run_nets_in_scratch(repo, scratch, _NET_TESTS, token_suffix="control")
     assert proc.returncode == 0, proc.stdout[-2000:]
