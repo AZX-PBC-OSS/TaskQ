@@ -12,6 +12,8 @@ the unfenced variants kept in this file forever as the convicted shapes.
 
 from __future__ import annotations
 
+import asyncio
+
 import asyncpg
 import pytest
 
@@ -347,6 +349,112 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
     assert state["deps_pending"] == 0, state
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, "exactly one fire"
     assert (await node_state(wf_conn, wf_schema, join_id))["status"] == "pending"
+
+
+# ── Pin 25: THE FIRE'S EXACTLY-ONCE BELT (the concurrent fire window) ───
+
+
+@pytest.mark.integration
+async def test_pin_25_concurrent_fire_window_one_row(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    engine_redlog: RedLog,
+) -> None:
+    """F-R4's drill: TWO fire paths race ONE join in one window — the
+    engine's tx2 fire (``fired_by='finalize'``, the decrement just hit 0)
+    and the sweep's healing fire (``fired_by='sweep'``, the rederive arm
+    re-deriving firable from the LEDGER while the counter already says 0).
+    Both guards pass; the belt decides: the UNIQUE(join_job_id) +
+    ``ON CONFLICT DO NOTHING`` make the loser a CLEAN empty (no second
+    fire row, no crash) — exactly one fire row, exactly one winning
+    return. THE REAL WINDOW the reviewer named: both paths pass their
+    WHERE (the join row stays pending with the join marker; neither fire
+    flips it), so the belt is the ONLY thing between the race and the
+    double fire — this drill stages it, and the belt's removal REDS (the
+    in-suite twin below; the source-level capture:
+    ``.measurements/attack/R4-red-fire-belt.txt``)."""
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    # tx1's commit shape: the parent terminalizes; then the REAL guarded
+    # decrement (the engine's tx2 leg) lands — deps_pending 0. Both fire
+    # paths are now live on the same join: the engine's own fire, and any
+    # sweep pass that re-derives from the ledger.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+        "WHERE id = $1 AND status = 'running' AND attempt = 1 AND claim_epoch = 0",
+        parent,
+    )
+    dec = await wf_conn.fetch(wf_sql.decrement, parent, flow_id)
+    assert len(dec) == 1 and dec[0]["deps_pending"] == 0, dec
+
+    async def engine_fire() -> list[asyncpg.Record]:
+        async with module_pg_pool.acquire() as conn, conn.transaction():
+            return await conn.fetch(wf_sql.fire, join_id, flow_id, new_uuid(), "finalize")
+
+    async def sweep_fire() -> list[asyncpg.Record]:
+        async with module_pg_pool.acquire() as conn, conn.transaction():
+            return await conn.fetch(wf_sql.sweep_fire, [new_uuid()], 50)
+
+    engine_rows, sweep_rows = await asyncio.gather(engine_fire(), sweep_fire())
+
+    # THE BELT'S VERDICT: exactly one fire row; exactly one path's
+    # RETURNING carried it (the loser is a clean EMPTY — the DO NOTHING —
+    # never an error); the join row itself stays pending (the fire record
+    # is the exactly-once marker, the join's own dispatch is the drain's).
+    assert await fire_count(wf_conn, wf_schema, join_id) == 1, "exactly one fire"
+    assert len(engine_rows) + len(sweep_rows) == 1, (
+        f"the concurrent window double-fired or double-refused: "
+        f"engine={len(engine_rows)} sweep={len(sweep_rows)}"
+    )
+    assert (await node_state(wf_conn, wf_schema, join_id))["status"] == "pending"
+    engine_redlog.red(
+        "pin25-concurrent-fire-window",
+        "two fire paths racing one join (finalize tx2 x sweep rederive) — "
+        "the belt's outcome record",
+        {
+            "winner": "finalize" if engine_rows else "sweep",
+            "fire_rows": await fire_count(wf_conn, wf_schema, join_id),
+        },
+    )
+
+    # THE CONVICTED TWIN (kept forever, the file's doctrine): the belt
+    # DROPPED from the rendered statement — the second fire path RAISES
+    # the UniqueViolation the belt absorbs (a sweep tick that errors into
+    # its tolerance arm every pass, a finalize that 500s), and the double
+    # insert is one constraint away from two continuation sets. The
+    # constraint still holds the line (one row) — the belt is what makes
+    # the loss GRACEFUL, which is why its removal greens the rowcount-only
+    # pins and needed its own drill.
+    twin_flow = await seed_flow(wf_conn, wf_schema)
+    twin_join = await seed_join(wf_conn, wf_schema, twin_flow, deps=1)
+    twin_parent = await seed_running_node(wf_conn, wf_schema, twin_flow, step_key="t")
+    await seed_edge(wf_conn, wf_schema, twin_join, twin_parent, twin_flow)
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+        "WHERE id = $1 AND status = 'running' AND attempt = 1 AND claim_epoch = 0",
+        twin_parent,
+    )
+    await wf_conn.fetch(wf_sql.decrement, twin_parent, twin_flow)
+    beltless = wf_sql.fire.replace("    ON CONFLICT (join_job_id) DO NOTHING\n", "")
+    assert beltless != wf_sql.fire, "the belt-mutation drill did not arm"
+    first = await wf_conn.fetchrow(beltless, twin_join, twin_flow, new_uuid(), "finalize")
+    assert first is not None, "the twin's first (beltless) fire did not win"
+    with pytest.raises(asyncpg.exceptions.UniqueViolationError):
+        await wf_conn.fetch(beltless, twin_join, twin_flow, new_uuid(), "sweep")
+    assert await fire_count(wf_conn, wf_schema, twin_join) == 1, (
+        "the constraint held the line even without the belt — the belt's "
+        "conviction is the graceful loss, not the row count"
+    )
+    engine_redlog.red(
+        "pin25-beltless-fire-raises",
+        "ON CONFLICT (join_job_id) DO NOTHING dropped — the second fire "
+        "path raises UniqueViolation (the belt is the graceful loss)",
+        {"fire_rows_after_both": await fire_count(wf_conn, wf_schema, twin_join)},
+    )
 
 
 # ── Pin 13: THE ATTEMPT-FENCE (the zombie's finalize loses) ─────────────
