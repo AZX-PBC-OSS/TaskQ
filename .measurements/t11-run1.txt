@@ -1,0 +1,12 @@
+
+==================================== ERRORS ====================================
+___________ ERROR collecting tests/web_admin/test_workflows_page.py ____________
+tests/web_admin/test_workflows_page.py:54: in <module>
+    class Approval(BaseModel):
+                   ^^^^^^^^^
+E   NameError: name 'BaseModel' is not defined
+=========================== short test summary info ============================
+ERROR tests/web_admin/test_workflows_page.py - NameError: name 'BaseModel' is...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.23s

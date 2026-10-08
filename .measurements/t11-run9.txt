@@ -1,0 +1,188 @@
+........F.F..                                                            [100%]
+=================================== FAILURES ===================================
+___________ test_resolve_through_the_typed_door_delivers_and_audits ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f6a17ff4b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_6d8bbb3f6e', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_6d8bbb3f6e1d')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f6a161814f0>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_resolve_through_the_typed_door_delivers_and_audits(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        clean_pg_conn: asyncpg.Connection,
+        demo_app_module: Any,
+    ) -> None:
+        """THE AUDIT PIN (G4): a Resolve with the mounted definitions
+        delivers + writes the audit row; a WRONG payload is the named
+        pydantic refusal and moves nothing."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        from taskq.workflows.api._hitl import HitlClient
+    
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    
+        # THE WRONG PAYLOAD: the named refusal, the hold SURVIVES.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")  # the CSRF cookie's set
+            bad = await http.post(
+                f"/api/runs/{run_id}/resolve",
+                data={
+                    "hold_id": hold.hold_id,
+                    "decision": json.dumps({"verdict": 42}),
+                    "csrf_token": _csrf_of(http),
+                },
+            )
+        assert bad.status_code == 422
+>       assert "pydantic refused the payload" in bad.json()["detail"]
+E       assert 'pydantic refused the payload' in "node 'review' declares no bound gate in the mounted definitions — the delivery refuses (no untyped door ships)"
+
+tests/web_admin/test_workflows_page.py:400: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:46:45 [info     ] node.held                      hold_id=01a11967-f5ba-7fe0-80e0-7998966b2b40 node=review run_id=01a11967-f5a3-7051-9808-68973afc57d5 signals=['Approval']
+2026-10-07 19:46:45 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:46:45 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+_______________ test_sse_unknown_run_streams_the_empty_snapshot ________________
+
+fut = <async_generator_asend object at 0x7f6a183801c0>, timeout = 10.0
+
+    async def wait_for(fut, timeout):
+        """Wait for the single Future or coroutine to complete, with timeout.
+    
+        Coroutine will be wrapped in Task.
+    
+        Returns result of the Future or coroutine.  When a timeout occurs,
+        it cancels the task and raises TimeoutError.  To avoid the task
+        cancellation, wrap it in shield().
+    
+        If the wait is cancelled, the task is also cancelled.
+    
+        If the task suppresses the cancellation and returns a value instead,
+        that value is returned.
+    
+        This function is a coroutine.
+        """
+        # The special case for timeout <= 0 is for the following case:
+        #
+        # async def test_waitfor():
+        #     func_started = False
+        #
+        #     async def func():
+        #         nonlocal func_started
+        #         func_started = True
+        #
+        #     try:
+        #         await asyncio.wait_for(func(), 0)
+        #     except asyncio.TimeoutError:
+        #         assert not func_started
+        #     else:
+        #         assert False
+        #
+        # asyncio.run(test_waitfor())
+    
+    
+        if timeout is not None and timeout <= 0:
+            fut = ensure_future(fut)
+    
+            if fut.done():
+                return fut.result()
+    
+            await _cancel_and_wait(fut)
+            try:
+                return fut.result()
+            except exceptions.CancelledError as exc:
+                raise TimeoutError from exc
+    
+        async with timeouts.timeout(timeout):
+>           return await fut
+                   ^^^^^^^^^
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:507: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/web/admin/_wf_actions.py:215: in _stream_generator
+    await asyncio.sleep(_STREAM_POLL_S)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+delay = 1.0, result = None
+
+    async def sleep(delay, result=None):
+        """Coroutine that completes after a given time (in seconds)."""
+        if delay <= 0:
+            await __sleep0()
+            return result
+    
+        if math.isnan(delay):
+            raise ValueError("Invalid delay: NaN (not a number)")
+    
+        loop = events.get_running_loop()
+        future = loop.create_future()
+        h = loop.call_later(delay,
+                            futures._set_result_unless_cancelled,
+                            future, result)
+        try:
+>           return await future
+                   ^^^^^^^^^^^^
+E           asyncio.exceptions.CancelledError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:720: CancelledError
+
+The above exception was the direct cause of the following exception:
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f6a17ff4b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_6d8bbb3f6e', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_6d8bbb3f6e1d')
+
+    async def test_sse_unknown_run_streams_the_empty_snapshot(
+        module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """THE STATES MATRIX (3): a stream for an unknown/not-yet-inserted
+        run emits the snapshot with ZERO nodes — a defined state, not a
+        hang, not a blank."""
+>       frames = await _stream_frames(
+            module_pg_schema, "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
+        )
+
+tests/web_admin/test_workflows_page.py:337: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:259: in _stream_frames
+    raw = await asyncio.wait_for(gen.__anext__(), timeout=10.0)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:506: in wait_for
+    async with timeouts.timeout(timeout):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Timeout [expired]>
+exc_type = <class 'asyncio.exceptions.CancelledError'>
+exc_val = CancelledError(), exc_tb = <traceback object at 0x7f6a15743380>
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
+        assert self._state in (_State.ENTERED, _State.EXPIRING)
+    
+        if self._timeout_handler is not None:
+            self._timeout_handler.cancel()
+            self._timeout_handler = None
+    
+        if self._state is _State.EXPIRING:
+            self._state = _State.EXPIRED
+    
+            if self._task.uncancel() <= self._cancelling and exc_type is not None:
+                # Since there are no new cancel requests, we're
+                # handling this.
+                if issubclass(exc_type, exceptions.CancelledError):
+>                   raise TimeoutError from exc_val
+E                   TimeoutError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/timeouts.py:117: TimeoutError
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_through_the_typed_door_delivers_and_audits
+FAILED tests/web_admin/test_workflows_page.py::test_sse_unknown_run_streams_the_empty_snapshot
+2 failed, 11 passed in 12.88s

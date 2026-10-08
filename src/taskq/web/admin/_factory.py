@@ -319,6 +319,16 @@ def get_schema(request: Request) -> str:
     return s
 
 
+def get_workflow_app(request: Request) -> Any | None:
+    """Dependency: the host's WorkflowApp (T11's typed door), or None.
+
+    ``getattr`` fallback: a host assembled before the workflow surface
+    existed (or one that deliberately mounts without definitions) keeps
+    working — the doors answer their honest 501 residual.
+    """
+    return getattr(request.app.state, "workflow_app", None)
+
+
 def get_redis_client(request: Request) -> Any | None:
     """Dependency: yields the redis client from ``app.state``."""
     client: Any | None = request.app.state.redis_client
@@ -589,9 +599,15 @@ class AdminBundle:
     rate_limit_registry: RateLimitRegistry | None = None
     # The actor fire policies (cron_loop.ActorFirePolicy, structurally
     # typed) the run-now fire path consults for the singleton / max_pending
-    # registry flags the stored actor_config row cannot carry. ``None``
-    # keeps the documented residual: no policies, no stamping.
+    # flags. None keeps the residual: a standalone admin process cannot
+    # know, and the fire stamps nothing (disclosed in ops.py, not silent).
     actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None
+    # The host's WorkflowApp (T09's authoring surface), when the host
+    # process HAS the workflow definitions (the demo app, the worker).
+    # The typed deliver/resolve doors validate through its bound gates;
+    # None is the honest residual: the doors answer 501 (no untyped
+    # deliver surface ships), never a silent untyped write.
+    workflow_app: Any = None
     # The SSE session re-check (#316), derived from auth_dependency when the
     # factory was not given one explicitly; setup_admin_state copies it onto
     # app.state where the /sse/{topic} endpoint resolves it per request.
@@ -626,6 +642,7 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     )
     app.state.actor_fire_policies = bundle.actor_fire_policies
     app.state.taskq_session_verifier = bundle.session_verifier
+    app.state.workflow_app = bundle.workflow_app
     _install_admin_error_handlers(app, bundle)
 
 
@@ -821,6 +838,7 @@ def create_router(
     rate_limit_registry: RateLimitRegistry | None = None,
     actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None,
     session_verifier: Callable[[Request], Awaitable[bool]] | None = None,
+    workflow_app: Any = None,
 ) -> AdminBundle:
     """Create the admin UI FastAPI router.
 
@@ -1046,6 +1064,7 @@ def create_router(
         rate_limit_registry=rate_limit_registry,
         actor_fire_policies=actor_fire_policies,
         session_verifier=session_verifier,
+        workflow_app=workflow_app,
     )
 
 
