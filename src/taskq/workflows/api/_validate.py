@@ -409,6 +409,7 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
                         "cannot receive",
                     )
                 )
+    return diagnostics
 
 
 def _rule_join_for_progress(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:

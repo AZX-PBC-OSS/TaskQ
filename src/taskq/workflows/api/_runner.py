@@ -1405,7 +1405,9 @@ class FlowRunner:
         spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
 
         try:
-            return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id)
+            return await self._drive_loop(
+                flow_id, row, attempt, node, spec, ledger_id, emitter
+            )
         except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
             if _is_infra_fault(exc):
                 return await self._reclaim_loop(flow_id, row, attempt, exc)
@@ -1419,6 +1421,7 @@ class FlowRunner:
         node: Any,
         spec: Any,
         ledger_id: JobId | None,
+        emitter: ProgressEmitter | None = None,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — attack-3 H5's cure): every exception
