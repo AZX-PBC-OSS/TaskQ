@@ -1,0 +1,110 @@
+.............F                                                           [100%]
+=================================== FAILURES ===================================
+____________________ test_pin_20_outbox_drain_exactly_once _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f73864e75c0>
+wf_schema = 'tq_f0c3ca1d2e'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f73867fb280>
+wf_sql = WorkflowSql(schema='tq_f0c3ca1d2e', terminal_mark='UPDATE tq_f0c3ca1d2e.jobs\nSET status = $2::"tq_f0c3ca1d2e".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7f7388b6a850>
+
+    @pytest.mark.integration
+    async def test_pin_20_outbox_drain_exactly_once(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        engine_redlog: RedLog,
+    ) -> None:
+        """A crash between fire-commit and consumer-insert → the drain
+        completes the dispatch EXACTLY ONCE (the consumer insert idempotent
+        ``ON CONFLICT`` on the consumer step key via the composite arbiter,
+        the undelivered flag flipped in the insert's tx). The stranded-join
+        state (fired join, no consumer) and the double-insert variant each
+        red."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+    
+        # The finalize forks one child + a join declaring ONE consumer; the
+        # join fires in the same finalize's tx2 (deps 1 → 0) and the
+        # consumer's outbox row rides tx2. THE CRASH WINDOW: the worker dies
+        # before the drain — the outbox row sits undelivered.
+        fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        fork = ForkSpec(
+            children=(ChildSpec(step_key="c", actor="wf", queue="default"),),
+            join=JoinSpec(
+                step_key="join",
+                actor="wf",
+                queue="default",
+                consumers=(ConsumerBinding(step_key="consumer", actor="wf", queue="default"),),
+            ),
+        )
+        # The fork parent's terminal + fork land atomically (the engine's own
+        # tx1); the join waits on its one child c.
+        child_ids, _join_id = await _fork_with_edges(
+            wf_conn, wf_schema, wf_sql, flow_id, fork_parent, fork
+        )
+    
+        # The child c is claimed (running) and finalizes → the join hits 0 and
+        # fires in its tx2; the consumer's outbox row rides the same tx2. The
+        # worker then DIES before the drain — the outbox row sits undelivered
+        # (the stranded-join state the drain exists to cure).
+        child_c = child_ids[0]
+        c_worker = new_uuid()
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'running', attempt = 1, "
+            "locked_by_worker = $2, claim_epoch = 0, lock_expires_at = "
+            "now() + interval '90 seconds' WHERE id = $1",
+            child_c,
+            c_worker,
+        )
+        result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=child_c,
+            step_key="c",
+            worker_id=c_worker,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+        )
+        assert result.applied
+        assert result.fired, "the join fired in tx2"
+        outbox_rows = await wf_conn.fetch(
+            f'SELECT id, join_job_id, flow_id, consumer_step_key FROM "{wf_schema}".wf_outbox '
+            "WHERE NOT delivered"
+        )
+        assert len(outbox_rows) == 1, outbox_rows  # the consumer's outbox row
+    
+        # THE STRANDED-JOIN RED (the crash window): before the drain, the
+        # fired join's consumers never dispatched — the state the drain exists
+        # to prevent.
+        stranded = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1',
+            result.fired[0].join_job_id,
+        )
+        engine_redlog.red(
+            "pin20-outbox-flush-stranded",
+            "crash between fire-commit and consumer-insert (no drain yet)",
+            {"fired": True, "consumers_dispatched": int(stranded)},
+        )
+        assert int(stranded) == 0
+    
+        # THE SHIPPED DRAIN: the consumer dispatches exactly once...
+        delivered = await drain_outbox(module_pg_pool, wf_sql)
+        assert delivered == 1, delivered
+        consumers = await wf_conn.fetch(
+            f'SELECT id, idempotency_scope, idempotency_key FROM "{wf_schema}".jobs WHERE parent_id = $1',
+            result.fired[0].join_job_id,
+        )
+        assert len(consumers) == 1, len(consumers)
+>       assert consumers[0]["idempotency_key"] == f"wf:{flow_id}:consumer"
+E       AssertionError: assert 'wf:consumer' == 'wf:01a1198a-...e525:consumer'
+E         
+E         - wf:01a1198a-ccf8-7952-8269-c71ed8bae525:consumer
+E         + wf:consumer
+
+tests/test_wf_fork_pins.py:353: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_fork_pins.py::test_pin_20_outbox_drain_exactly_once - As...
+1 failed, 13 passed in 5.27s

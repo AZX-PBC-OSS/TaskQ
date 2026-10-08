@@ -1,0 +1,70 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_b84c088dc1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_b84c088dc198')
+wf_pool = <asyncpg.pool.Pool object at 0x7f30d0246740>
+wf_conn = <asyncpg.connection.Connection object at 0x7f30d0187b60>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+            held = await runner.drive(run_id, until="held")
+            assert held == "held", f"round {round_no}: the run never held (the review gate)"
+            client = HitlClient(wf_pool, schema=schema)
+            (hold,) = await client.list(run_id)
+            result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+            assert result.status == "delivered"
+            outcome = await runner.drive(run_id)
+            # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
+            # corrupted-terminal probe's lesson: a failed run is terminal
+            # too; asserting "terminal" alone was the vacuous assertion the
+            # cursored fence's first green hid behind).
+            assert outcome == "terminal"
+            root = await wf_conn.fetchval(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+            )
+>           assert root == "succeeded", (
+                f"round {round_no}: the run terminalized as {root!r} — the "
+                "corrupted-terminal class (the work was wrong; the record "
+                "must not look healthy)"
+            )
+E           AssertionError: round 0: the run terminalized as 'failed' — the corrupted-terminal class (the work was wrong; the record must not look healthy)
+E           assert 'failed' == 'succeeded'
+E             
+E             - succeeded
+E             + failed
+
+tests/test_doc_ingest_example.py:199: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:27:56 [info     ] signal.delivered               hold_id=01a1198d-a798-7182-905d-3d0a607e3070 run_id=01a1198d-a718-7f30-95d4-4bbb09610595 signal=ReviewDecision
+2026-10-07 20:27:56 [debug    ] loop.wake                      loop=review remaining_ms=3599949
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+1 failed in 1.63s
