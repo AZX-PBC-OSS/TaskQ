@@ -84,18 +84,18 @@ async def test_fan_out_tx_band_1000_children(
     outbox = await wf_conn.fetchval(f'SELECT count(*) FROM "{wf_schema}".wf_outbox')
     assert int(outbox) == 0  # the join has deps 1000: nothing fired yet
     MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "fanout-1000-tx-band.json").write_text(
-        json.dumps(
-            {
-                "pin": "fanout-1000-tx-band",
-                "elapsed_ms": elapsed_ms,
-                "children": 1000,
-                "band_ms": 500,
-                "method": "wall clock of finalize_node tx1+tx2, 1000-child fork, "
-                "chunked parallel-array inserts (500/chunk), one tx",
-            },
-            indent=2,
-        )
+    from tests._wf_fixtures import write_band_artifact
+
+    write_band_artifact(
+        "fanout-1000-tx-band.json",
+        {
+            "pin": "fanout-1000-tx-band",
+            "elapsed_ms": elapsed_ms,
+            "children": 1000,
+            "band_ms": 500,
+            "method": "wall clock of finalize_node tx1+tx2, 1000-child fork, "
+            "chunked parallel-array inserts (500/chunk), one tx",
+        },
     )
     assert elapsed_ms < 500, f"the 1000-child fan-out tx took {elapsed_ms:.1f} ms"
 
@@ -131,12 +131,11 @@ async def test_join_fire_latency_band(
     assert result.applied
     state = await node_state(wf_conn, wf_schema, join_id)
     assert state["deps_pending"] == 0 and await fire_count(wf_conn, wf_schema, join_id) == 1
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "join-fire-latency.json").write_text(
-        json.dumps(
-            {"pin": "join-fire-latency", "elapsed_ms": elapsed_ms, "band_ms": 50},
-            indent=2,
-        )
+    from tests._wf_fixtures import write_band_artifact
+
+    write_band_artifact(
+        "join-fire-latency.json",
+        {"pin": "join-fire-latency", "elapsed_ms": elapsed_ms, "band_ms": 50},
     )
     assert elapsed_ms < 50, f"join-fire latency {elapsed_ms:.1f} ms exceeds the band"
 
@@ -153,8 +152,11 @@ def _percentile(data: list[int], pct: float) -> int:
 
 
 def _write_measurement(name: str, payload: object) -> None:
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / name).write_text(json.dumps(payload, indent=2, default=str))
+    """THE APPEND-ONLY CONVERSION: the band artifact is RUN-SCOPED (the
+    in-place rewrite is the torn-write race; the newest CITED wins)."""
+    from tests._wf_fixtures import write_band_artifact
+
+    write_band_artifact(name, payload)
 
 
 @pytest.mark.slow

@@ -670,7 +670,12 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
         f"\n[attack4] 200-child map: panel p95 {p95_panel:.1f} ms "
         f"(band 50 ms), run-page median {med_page:.1f} ms"
     )
-    with open(".measurements/attack4/attack4-panel-latency-200map.json", "w") as f:
+    # THE APPEND-ONLY CONVERSION: run-scoped (the in-place rewrite is the
+    # torn-write race; the newest CITED = the newest stamp).
+    attack4_dir = Path(".measurements/attack4")
+    attack4_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    with open(attack4_dir / f"attack4-panel-latency-200map-{stamp}.json", "w") as f:
         json.dump(
             {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms}, f, indent=2
         )

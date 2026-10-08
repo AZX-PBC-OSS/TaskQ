@@ -214,8 +214,11 @@ async def main() -> dict[str, Any]:
 if __name__ == "__main__":
     result = asyncio.run(main())
     result["captured_at"] = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    # THE APPEND-ONLY CONVERSION: run-scoped (the in-place rewrite is the
+    # torn-write race; the newest CITED = the newest stamp).
     measurements = Path(__file__).parent.parent / ".measurements"
     measurements.mkdir(exist_ok=True)
-    path = measurements / "t21-numbers.json"
+    path = measurements / f"runs/t21-numbers-{time.strftime('%Y%m%dT%H%M%S')}.json"
+    path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(result, indent=2, default=str))
     print(json.dumps(result, indent=2, default=str))
