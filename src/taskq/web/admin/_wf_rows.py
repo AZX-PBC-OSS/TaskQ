@@ -27,10 +27,8 @@ from datetime import datetime
 from typing import Any, Final
 
 from taskq.backend._protocol import ConnLike
-from taskq.workflows._sql_status import (
-    WORKFLOW_MAP_PROGRESS_SQL,
-    WORKFLOW_NODES_SQL,
-)
+from taskq.workflows._sql import WorkflowSql
+from taskq.workflows._sql_status import WORKFLOW_NODES_SQL
 from taskq.workflows._status import NodeView, derive_workflow_status
 
 __all__ = [
@@ -155,10 +153,15 @@ async def fetch_run_view(
 ) -> RunView | None:
     """The run's rows in one connection — the grouped read the page, the
     boot JSON, and every SSE frame share (one read, all renderers)."""
+    # THE RENDERED BUNDLE (the render seam: the schema + the {terminal}
+    # vocabulary + the doubled braces — a raw .replace("{schema}", …)
+    # left the terminal token in the SQL and the statement died on the
+    # stray brace).
+    wsql = WorkflowSql.build(schema)
     root = await conn.fetchrow(_RUN_ROOT_SQL.format(schema=schema), run_id)
     if root is None:
         return None
-    node_rows = await conn.fetch(WORKFLOW_NODES_SQL.replace("{schema}", schema), run_id)
+    node_rows = await conn.fetch(wsql.workflow_nodes, run_id)
     node_ids = [r["id"] for r in node_rows]
     edge_rows = (
         await conn.fetch(_RUN_EDGES_SQL.format(schema=schema), node_ids) if node_ids else []
@@ -166,9 +169,7 @@ async def fetch_run_view(
     hold_rows = await conn.fetch(_RUN_HOLDS_SQL.format(schema=schema), run_id)
     progress = {
         r["step_key"]: (int(r["done"]), int(r["total"]))
-        for r in await conn.fetch(
-            WORKFLOW_MAP_PROGRESS_SQL.replace("{schema}", schema), root["id"]
-        )
+        for r in await conn.fetch(wsql.workflow_map_progress, root["id"])
     }
     return _run_view_from_rows(
         dict(root), [dict(r) for r in node_rows], [dict(r) for r in edge_rows],

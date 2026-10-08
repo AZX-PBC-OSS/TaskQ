@@ -1093,6 +1093,8 @@ The body's `ctx` is the observability primitive: every field the contract names 
 | `ctx.budget_remaining_ms` | the loop's budget wall's remaining read (loop runs; None off a loop) |
 | `ctx.hold_epoch` | the last consumed hold's epoch (a resumed body's answer identity) |
 
+**The two doors' contracts differ (stated, not hidden):** the STEP door coerces — a body handing a pydantic model to `step(...)` has it re-validated at the boundary (the dict round-trips as the model). The EMIT door refuses — `ctx.progress(...)`'s payloads are dicts/bytes (the wire's own vocabulary); a pydantic model handed to emit is the LOUD `ProgressRefusedError` (an authoring error is the body's problem). Pass `model.model_dump()` at emit. (The ergonomics cure — the emit door accepting models — is owed to the T20 lane; until then the refusal is the contract.)
+
 ## Visualizing workflows: the admin's run explorer
 
 The admin UI's **Workflows** tab is the run explorer: the runs list (the inventory question — newest first, capped at 200), and the run page (`/taskq/workflows/{run_id}`):

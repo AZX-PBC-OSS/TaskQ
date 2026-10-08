@@ -316,23 +316,15 @@ FOR UPDATE OF o SKIP LOCKED
 # (jobs_idempotency_scope_key_uniq, 01.00.03) is the dedup authority. A crash
 # between fire-commit and consumer-insert re-drains; the arbiter makes the
 # retry a no-op (pin 20: the drain completes the dispatch EXACTLY ONCE).
-# THE SPAWN IS JOIN-WAIT (attack4's race cure): the drain-spawned
-# consumer is born deps_pending=1 + blocking_reason='join' with its edge
-# row (the drain writes both) — the JOIN'S OWN FINALIZE decrements it,
-# so the consumer's claim strictly follows the join's RESULT write. The
-# deps-0 birth raced the sweep's early fire (the outbox can drain before
-# the join's packer terminalized) and the consumer claimed a result that
-# was not there yet (the dispatch-bug assert; the probe:
-# tests/attack4_wf_map_grandchild.py).
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
-     parent_id, map_index, step_key, deps_pending, trace_id, metadata,
+     parent_id, map_index, step_key, trace_id, metadata,
      idempotency_scope, idempotency_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
-    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::smallint[],
-    $11::text[], $12::jsonb[], $13::text[], $14::text[]
+    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $11::jsonb[], $12::text[], $13::text[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL

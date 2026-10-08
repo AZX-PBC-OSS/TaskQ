@@ -371,7 +371,6 @@ async def _fire_and_deliver(
                             "queue": c.queue,
                             "payload": c.payload,
                             "trace_id": trace_id,
-                            "on_failure": c.on_failure,
                         }
                     ),
                 )
