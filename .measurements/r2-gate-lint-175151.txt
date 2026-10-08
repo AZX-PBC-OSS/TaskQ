@@ -1,0 +1,5 @@
+140 |
+    |
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.

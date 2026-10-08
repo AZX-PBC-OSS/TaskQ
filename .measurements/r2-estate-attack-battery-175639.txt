@@ -1,0 +1,2 @@
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+701 passed, 1 skipped, 21 warnings in 428.37s (0:07:08)
