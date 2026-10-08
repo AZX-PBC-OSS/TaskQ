@@ -1,8 +1,8 @@
 {
   "chatty": {
     "emissions": 10000,
-    "wall_s": 0.44,
-    "emissions_per_s": 22771,
+    "wall_s": 0.11,
+    "emissions_per_s": 87917,
     "occurrences": 10000,
     "state_rows": 2,
     "ring_rows": 3,
@@ -13,11 +13,11 @@
     "verdict_ring_bound": true
   },
   "quiet": {
-    "wall_s": 0.24
+    "wall_s": 0.033
   },
   "map": {
     "children": 200,
-    "drive_s": 61.37,
+    "drive_s": 14.96,
     "line_rows": 2,
     "line": [
       {
@@ -28,7 +28,7 @@
         "blocked": 0,
         "failed": 0,
         "avg_pct": 50,
-        "freshest": "2026-10-08 04:08:18.660391+00:00"
+        "freshest": "2026-10-08 04:37:06.705185+00:00"
       },
       {
         "step_key": "fetch.join",
@@ -50,9 +50,9 @@
   "red_counterfactual": {
     "emissions": 2000,
     "rows": 2000,
-    "write_s": 13.192,
-    "writes_per_s": 151,
+    "write_s": 4.917,
+    "writes_per_s": 406,
     "verdict": "the every-emission-a-row shape grows with emissions \u2014 kept red"
   },
-  "captured_at": "20261008T040832Z"
+  "captured_at": "20261008T043711Z"
 }

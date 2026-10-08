@@ -1,0 +1,16 @@
+=== THE T21 GATE — round 2 — 20261008T043255Z ===
+--- ruff check (src tests) ---
+All checks passed!
+--- ruff format --check (the touched files) ---
+1 file would be reformatted, 35 files already formatted
+--- pyright (the touched surface) ---
+0 errors, 0 warnings, 0 informations
+--- pytest MAIN lane (not slow and not load_sensitive) ---
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+257 passed, 1 deselected, 1 warning in 87.13s (0:01:27)
+--- pytest SLOW lane (slow, not load_sensitive) ---
+
+15 deselected in 0.19s
+--- pytest LOAD_SENSITIVE lane (serial; load-fragile by declaration) ---
+...                                                                      [100%]
+3 passed, 2 deselected in 21.33s
