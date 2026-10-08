@@ -45,6 +45,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
     _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the wrapper composes the PRODUCTION capability CTE verbatim (the lateral's fence references it) — the plan the pin explains is the plan the dispatch runs.
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -218,7 +219,12 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             "WITH params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
             "$3::uuid AS worker_id, $4::interval AS lock_lease, "
             "$5::int AS oversample), "
-            "queue_cap_headroom AS (SELECT NULL::text AS actor, "
+            # The execution fence's capability CTE: the lateral's fence
+            # references it, so the wrapper composes the PRODUCTION
+            # constant verbatim (the plan the pin explains is the plan
+            # the dispatch runs).
+            + _WF_EXEC_CAPABLE_CTE.format(schema=dispatch_schema)
+            + "queue_cap_headroom AS (SELECT NULL::text AS actor, "
             "NULL::text AS queue, NULL::bigint AS headroom WHERE false) "
             "SELECT * FROM (SELECT 'dispatch_probe'::text AS actor, 10::int AS residual) pac "
             "CROSS JOIN LATERAL (VALUES ('default'::text)) AS sq(queue_name) "

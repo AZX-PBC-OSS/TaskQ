@@ -1,0 +1,78 @@
+========================================================================
+PHASE A — the vanilla worker alone vs. a gpu-queue flow (NO drive)
+========================================================================
+== flow created: 01a11a03-86f0-7ad2-b850-277b014d8684
+== the rows at create (pre-worker)
+    {'id': UUID('01a11a03-86f0-7ad2-b850-277b014d8684'), 'step_key': '__flow__', 'actor': 'wf', 'queue': 'default', 'status': 'running', 'attempt': 0, 'map_index': None, 'flow': '01a11a03-86f0-7ad2-b850-277b014d8684', 'released': None, 'started_at': None, 'finished_at': None}
+    {'id': UUID('01a11a03-86f3-7412-9877-2bcd6a1e897f'), 'step_key': 'doc_source', 'actor': 'wf', 'queue': 'default', 'status': 'pending', 'attempt': 0, 'map_index': None, 'flow': '01a11a03-86f0-7ad2-b850-277b014d8684', 'released': None, 'started_at': None, 'finished_at': None}
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+== vanilla worker launched (queues=gpu,default, NO workflows import) — watching 30s
+   [22:36:41] __flow__ (map=None) q=default -> status=running attempt=0 released=None
+   [22:36:41] doc_source (map=None) q=default -> status=pending attempt=0 released=None
+== the worker's log (last 40 lines):
+   | {"pool":"worker","ownership":"dsn","host":"localhost","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.499217Z","event":"pool-opened"}
+   | {"label":"notify","keepidle":30,"keepintvl":5,"keepcnt":3,"level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.501843Z","event":"keepalive-applied"}
+   | {"label":"notify","host":"localhost","keepalive":true,"level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.501960Z","event":"dedicated-connection-opened"}
+   | {"channel":"taskq_wake_80bcc92d39","owns_notify":true,"level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.502205Z","event":"notify-listen-issued"}
+   | {"label":"leader","keepidle":30,"keepintvl":5,"keepcnt":3,"level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.504569Z","event":"keepalive-applied"}
+   | {"label":"leader","host":"localhost","keepalive":true,"level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.504658Z","event":"dedicated-connection-opened"}
+   | {"remedy":"Set TASKQ_REDIS_URL or pass a Redis client via WorkerConnections (redis_client or redis_client_factory); without one, progress events reach consumers only through the durable Postgres flush, so live streams fall back to 500 ms polling","level":"warning","logger":"taskq.worker.run.startup","timestamp":"2026-10-08T05:36:41.509902Z","event":"progress-fanout-unconfigured"}
+   | {"provider_count":4,"actor_count":1,"level":"info","logger":"taskq._di.registry","timestamp":"2026-10-08T05:36:41.510250Z","event":"registry-validated"}
+   | {"provider_count":2,"level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:36:41.510357Z","event":"process-scope-opened"}
+   | {"provider_count":0,"level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:36:41.510395Z","event":"thread-scope-opened"}
+   | {"provider_count":2,"level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:36:41.510428Z","event":"loop-scope-opened"}
+   | {"actors":["gpu_control"],"note":"no LOOP-scope asyncpg.Connection provider is registered; ctx.jobs.enqueue will use autonomous commit via worker_pool. Register an asyncpg.Connection at Scope.LOOP to activate transactional consume, registering an asyncpg.Pool instead does NOT activate it: the transactional path keys on a Connection, so a Pool-only registration silently keeps this autonomous fallback in force (transactional consume disabled without a failure anywhere).","level":"warning","logger":"taskq.worker.run.startup","timestamp":"2026-10-08T05:36:41.510722Z","event":"sub_enqueue_autonomous_fallback"}
+   | {"count":1,"force":false,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.startup","timestamp":"2026-10-08T05:36:41.512232Z","event":"actor-config-sync-start"}
+   | {"total_count":1,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.startup","timestamp":"2026-10-08T05:36:41.516205Z","event":"actor-config-synced"}
+   | {"actor":"gpu_control","queue":"gpu","resolved":8,"binding":"process","actor_cap":"uncapped","queue_cap":"uncapped","process_cap":8,"reservations":[],"singleton":false,"drain_mode":false,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.run.startup","timestamp":"2026-10-08T05:36:41.516874Z","event":"actor-resolved-capacity"}
+   | {"socket_path":"/tmp/taskq_health_617037.sock","worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.health","timestamp":"2026-10-08T05:36:41.517626Z","event":"health-server-started"}
+   | {"queues":["gpu","default"],"poll_interval":5.0,"notify_enabled":true,"max_concurrency":8,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.run.producer","timestamp":"2026-10-08T05:36:41.518666Z","event":"producer-loop-start"}
+   | {"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.run.producer","timestamp":"2026-10-08T05:36:41.518743Z","event":"producer-subscribed-wake"}
+   | {"label":"leader","keepidle":30,"keepintvl":5,"keepcnt":3,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.523512Z","event":"keepalive-applied"}
+   | {"label":"leader","host":"localhost","keepalive":true,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.523658Z","event":"dedicated-connection-opened"}
+   | {"label":"leader_monitor_conn","keepidle":30,"keepintvl":5,"keepcnt":3,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.523700Z","event":"keepalive-applied"}
+   | {"label":"leader","keepidle":30,"keepintvl":5,"keepcnt":3,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.527082Z","event":"keepalive-applied"}
+   | {"label":"leader","host":"localhost","keepalive":true,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.527210Z","event":"dedicated-connection-opened"}
+   | {"label":"cron_conn","keepidle":30,"keepintvl":5,"keepcnt":3,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.deps","timestamp":"2026-10-08T05:36:41.527251Z","event":"keepalive-applied"}
+   | {"kind":"leader_elected","worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","elected_at":"2026-10-08 05:36:41.520505+00:00","leader_lease":40.0,"level":"info","logger":"taskq.worker.leader","timestamp":"2026-10-08T05:36:41.527338Z","event":"leader-elected"}
+   | {"kind":"shutdown_phase","phase":"DRAINING","active_jobs_count":0,"elapsed_seconds":0.0,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.238879Z","event":"shutdown-phase"}
+   | {"kind":"shutdown_watchdog_armed","deadline_secs":85.0,"dump_after_secs":42.5,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker._watchdog","timestamp":"2026-10-08T05:37:11.239326Z","event":"shutdown-watchdog-armed"}
+   | {"reason":"producer_stop_event","worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.run.producer","timestamp":"2026-10-08T05:37:11.239707Z","event":"producer-loop-exit"}
+   | {"kind":"leader_resigned","worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.leader","timestamp":"2026-10-08T05:37:11.240201Z","event":"leader-resigned"}
+   | {"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","rows_re_pended":0,"active_jobs_excluded":0,"level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.240295Z","event":"drain-local-queue-completed"}
+   | {"kind":"shutdown_phase","phase":"CANCELLING","active_jobs_count":0,"cancel_origin_counts":{"operator":0,"shutdown":0},"elapsed_seconds":0.0017400190699845552,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.240526Z","event":"shutdown-phase"}
+   | {"kind":"shutdown_phase","phase":"FORCING","active_jobs_count":0,"elapsed_seconds":0.001785282976925373,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.240568Z","event":"shutdown-phase"}
+   | {"kind":"shutdown_phase","phase":"RELEASING","active_jobs_count":0,"elapsed_seconds":0.0018235750030726194,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.240605Z","event":"shutdown-phase"}
+   | {"kind":"shutdown_phase","phase":"RELEASING","released":0,"held_seconds":92.998183,"noop":0,"cancelled":0,"elapsed_seconds":0.001845957012847066,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.240630Z","event":"shutdown-phase"}
+   | {"kind":"shutdown_phase","phase":"EXITED","active_jobs_count":0,"elapsed_seconds":0.0039273949805647135,"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.shutdown","timestamp":"2026-10-08T05:37:11.242716Z","event":"shutdown-phase"}
+   | {"kind":"notify_listener_stop","channels":["taskq_wake_80bcc92d39","taskq_events_80bcc92d39","taskq_worker_80bcc92d39_01a11a03-8826-7202-8d2c-f171e6e1b184","taskq_leader_wake_80bcc92d39"],"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.notify","timestamp":"2026-10-08T05:37:11.524864Z","event":"notify-listener-stop"}
+   | {"socket_path":"/tmp/taskq_health_617037.sock","worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq.worker.health","timestamp":"2026-10-08T05:37:11.583006Z","event":"health-server-stopped"}
+   | {"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:37:11.583173Z","event":"loop-scope-closed"}
+   | {"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:37:11.583213Z","event":"thread-scope-closed"}
+   | {"worker_id":"01a11a03-8826-7202-8d2c-f171e6e1b184","level":"info","logger":"taskq._di.scopes","timestamp":"2026-10-08T05:37:11.583237Z","event":"process-scope-closed"}
+== BODY EXECUTIONS OBSERVED (any process): 0
+== the rows at the end of phase A
+    {'id': UUID('01a11a03-86f0-7ad2-b850-277b014d8684'), 'step_key': '__flow__', 'actor': 'wf', 'queue': 'default', 'status': 'running', 'attempt': 0, 'map_index': None, 'flow': '01a11a03-86f0-7ad2-b850-277b014d8684', 'released': None, 'started_at': None, 'finished_at': None}
+    {'id': UUID('01a11a03-86f3-7412-9877-2bcd6a1e897f'), 'step_key': 'doc_source', 'actor': 'wf', 'queue': 'default', 'status': 'pending', 'attempt': 0, 'map_index': None, 'flow': '01a11a03-86f0-7ad2-b850-277b014d8684', 'released': None, 'started_at': None, 'finished_at': None}
+== flow root status: running
+== PHASE A VERDICT: NO BODY EVER EXECUTED — the queue routed the rows to a pool that cannot resolve them
+========================================================================
+PHASE B — FlowRunner.drive WHILE a vanilla worker (default pool) runs
+========================================================================
+== flow created: 01a11a03-fe64-77a1-a1b2-83f5b4b26f7f
+== vanilla worker launched (queues=default) — driving the flow
+== drive verdict: 'terminal'
+== BODY EXECUTIONS OBSERVED: 3
+    {"kind": "body-ran", "body": "source", "job_id": "01a11a03-fe67-7b23-a7cb-165ccf05f503"}
+    {"kind": "body-ran", "body": "screen", "job_id": "01a11a03-fe72-7ba0-aace-fe77d966359f"}
+    {"kind": "body-ran", "body": "screen", "job_id": "01a11a03-fe72-7ba0-aace-fe8e3270106b"}
+== the worker's actor-not-found/workflow log lines: 0
+== the rows at the end of phase B
+    {'id': UUID('01a11a03-fe64-77a1-a1b2-83f5b4b26f7f'), 'step_key': '__flow__', 'actor': 'wf', 'queue': 'default', 'status': 'succeeded', 'attempt': 0, 'map_index': None, 'flow': '01a11a03-fe64-77a1-a1b2-83f5b4b26f7f', 'released': None, 'started_at': None, 'finished_at': datetime.datetime(2026, 10, 8, 5, 37, 11, 810852, tzinfo=datetime.timezone.utc)}
+    {'id': UUID('01a11a03-fe67-7b23-a7cb-165ccf05f503'), 'step_key': 'doc_source', 'actor': 'wf', 'queue': 'default', 'status': 'succeeded', 'attempt': 1, 'map_index': None, 'flow': '01a11a03-fe64-77a1-a1b2-83f5b4b26f7f', 'released': None, 'started_at': None, 'finished_at': datetime.datetime(2026, 10, 8, 5, 37, 11, 798697, tzinfo=datetime.timezone.utc)}
+    {'id': UUID('01a11a03-fe72-7ba0-aace-fe77d966359f'), 'step_key': 'screen', 'actor': 'wf', 'queue': 'gpu', 'status': 'succeeded', 'attempt': 1, 'map_index': 1, 'flow': '01a11a03-fe64-77a1-a1b2-83f5b4b26f7f', 'released': None, 'started_at': None, 'finished_at': datetime.datetime(2026, 10, 8, 5, 37, 11, 805112, tzinfo=datetime.timezone.utc)}
+    {'id': UUID('01a11a03-fe72-7ba0-aace-fe8e3270106b'), 'step_key': 'screen', 'actor': 'wf', 'queue': 'gpu', 'status': 'succeeded', 'attempt': 1, 'map_index': 2, 'flow': '01a11a03-fe64-77a1-a1b2-83f5b4b26f7f', 'released': None, 'started_at': None, 'finished_at': datetime.datetime(2026, 10, 8, 5, 37, 11, 807319, tzinfo=datetime.timezone.utc)}
+== flow root status: succeeded
+========================================================================
+PROBE COMPLETE

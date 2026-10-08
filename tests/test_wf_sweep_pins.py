@@ -198,6 +198,18 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     )
 
     worker_id = new_uuid()
+    # THE CAPABILITY STAMP (the execution fence's data leg): the claim's
+    # execution leg reads the WORKERS ROW's ``workflow_execution``
+    # metadata — a flow row is claimable only by a worker whose boot ran
+    # the F3 projection (the definitions imported, the cohorts synced).
+    # The pin's claiming worker is a registered, capable worker, the
+    # deployment shape the projection's boot stamps.
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
+        "VALUES ($1, 'wf-pin', 1, '{default}', $2::jsonb)",
+        worker_id,
+        json.dumps({"workflow_execution": True}),
+    )
     dispatched = await dispatch_batch(
         wf_conn,
         sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
@@ -214,7 +226,8 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child)
     assert status == "pending", "the refusal leaves the row untouched (the sweep re-derives)"
 
-    # A LIVE flow's child still claims (the fence must not over-reject).
+    # A LIVE flow's child still claims for the CAPABLE worker (the fence
+    # must not over-reject).
     live_flow = await seed_flow(wf_conn, wf_schema, status="running")
     live_child = new_uuid()
     await wf_conn.execute(
@@ -237,6 +250,69 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     assert str(live_child) in claimed, (
         f"the fence over-rejected: a LIVE flow's pending child {live_child} "
         f"was not claimed (claimed={sorted(claimed)})"
+    )
+
+    # THE EXECUTION LEG (the execution verdict's fence): the SAME live
+    # child is UNCLAIMABLE by a worker that cannot execute it — an
+    # unregistered worker id (the COALESCE-safe default) and a registered
+    # NON-capable worker both refuse. The vanilla rows of the fleet are
+    # untouched (the leg short-circuits on the step_key probe).
+    other_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live2', "
+        "$2::jsonb, now() - interval '1 hour')",
+        new_uuid(),
+        json.dumps({"flow_id": str(live_flow)}),
+    )
+    unregistered_worker = new_uuid()
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=unregistered_worker,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(live_child) not in claimed and str(child) not in claimed, (
+        f"the execution fence's capability leg is absent: an unregistered "
+        f"worker claimed flow rows (claimed={sorted(claimed)})"
+    )
+    plain = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, scheduled_at) VALUES ($1, 'plain', 'default', '{}', 3, "
+        "'transient', 'pending', now() - interval '1 hour')",
+        plain,
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
+        "VALUES ('plain', 'default') ON CONFLICT (actor) DO NOTHING"
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
+        "VALUES ($1, 'wf-pin-plain', 2, '{default}', '{}')",
+        other_id,
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=other_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(plain) in claimed, (
+        f"the execution leg taxes the vanilla path: a NON-capable worker's "
+        f"plain row {plain} was not claimed (claimed={sorted(claimed)})"
+    )
+    flow_rows = {str(r["id"]) for r in dispatched if r["step_key"] is not None}
+    assert not flow_rows, (
+        f"the execution fence's capability leg is absent: a NON-capable "
+        f"worker claimed flow rows (claimed flow rows={sorted(flow_rows)})"
     )
 
     # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides

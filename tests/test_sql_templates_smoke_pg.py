@@ -296,15 +296,25 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         (
             "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
             "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
-            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
         ),
-        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04)",
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker",
         "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
         "substituted by _wf_dispatch_fence per alias, never .format), never "
         "a standalone statement; its rendered text rides the two dispatch "
-        "variants' laterals/lock steps and the claimable probe — B2's own "
-        "fence, so the guard must see it (a guard that doesn't see the "
-        "fence is a window with no bars)",
+        "variants' laterals/lock steps — B2's own fence + the execution "
+        "fence's capability leg, so the guard must see it (a guard that "
+        "doesn't see the fence is a window with no bars)",
+    ),
+    "taskq.backend._dispatch_sql:_WF_PROBE_FENCE_TEMPLATE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
+        ),
+        "-- THE DISPATCH FENCE, P3 leg only",
+        "the claimable probe's P3-only fence (the probe statement carries "
+        "no worker identity, so the execution leg has nothing to read), a "
+        "token template substituted by _wf_probe_fence per alias, never a "
+        "standalone statement; its rendered text rides the probe's two "
+        "EXISTS arms",
     ),
     "taskq.backend._sweeps:_SWEEP_1_BODY": (
         ("taskq.backend._sweeps:_SWEEP_1_SQL",),
@@ -354,6 +364,19 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "verbatim into the five multi-arm terminal arbiters, so their rendered "
         "bundle fields (resolved through the prepared inventory, the arbiters "
         "are built inside render()) carry and validate its text",
+    ),
+    "taskq.backend._dispatch_sql:_WF_EXEC_CAPABLE_CTE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
+        ),
+        None,
+        "the execution fence's capability CTE (a WITH-list fragment keyed on "
+        "params.worker_id), never a standalone statement; composed verbatim "
+        "into both dispatch variants after params (the token "
+        "__WF_EXEC_CAPABLE_CTE__ in _render_dispatch_sql) and into the EXPLAIN "
+        "pins' wrappers verbatim (test_sweepaudit_dispatch_bound), so the "
+        "rendered products validate its text",
     ),
     "taskq.backend._sql_fragments:PROGRESS_MERGE_SQL": (
         (

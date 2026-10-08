@@ -1,0 +1,43 @@
+========================================================================
+PHASE A — the mixed fleet: capable worker + vanilla co-tenant
+========================================================================
+== flow created: 01a11a39-dfd3-72c2-a8c1-253b69625038
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+== capable worker (default+gpu) + vanilla co-tenant launched — waiting 40 s
+== flow root status: succeeded
+    __flow__ (map=None) q=default: succeeded
+    doc_source (map=None) q=default: succeeded
+    screen (map=1) q=gpu: succeeded
+    screen (map=2) q=gpu: succeeded
+== bodies in the CAPABLE worker's process: 3
+== bodies in the VANILLA co-tenant's process: 0
+== bodies in ANY OTHER process (the probe's own pid et al): 0
+== bodies that ran MORE THAN ONCE (the snooze-loop red): none
+== the vanilla co-tenant's flow-row claim/snooze lines: 1
+== PHASE A VERDICT: RED
+========================================================================
+PHASE B — drive() while the capable worker runs: who executes?
+========================================================================
+== flow created: 01a11a3a-a58a-7160-84c8-5c8216422ad5
+== capable worker launched — driving
+== drive verdict: 'terminal'
+== bodies in the WORKER process: 0
+== bodies in the DRIVING process: 3
+== flow root status: succeeded
+== PHASE B VERDICT: RED
+========================================================================
+PHASE S — the split placement, both pools live: each node on ITS pool
+========================================================================
+== flow created: 01a11a3a-a5ff-78e3-935b-ad2cfb3bd7a8
+== capable workers: default-only + gpu-only — waiting for the flow
+    __flow__ (map=None) q=default: succeeded
+    doc_source (map=None) q=default: succeeded
+    screen (map=1) q=gpu: succeeded
+    screen (map=2) q=gpu: succeeded
+== source bodies: 1 — pids: [1283017]
+== screen bodies: 2 — pids: [1283018, 1283018]
+== flow root status: succeeded
+== PHASE S VERDICT: GREEN — the source executed on the default pool, the chain on the gpu pool: each node on ITS pool
+========================================================================
+CURE PROBE COMPLETE
