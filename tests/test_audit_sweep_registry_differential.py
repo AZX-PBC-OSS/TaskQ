@@ -633,7 +633,13 @@ async def test_audit_hasattr_gate_keeps_sweeps_off_in_memory_backend(
 # unchanged); with it, the arms are pure APPENDS after the legacy block —
 # never a reorder, a rename, or a legacy-event mutation.
 
-_WF_ARMS = ("wf_join_rederive", "wf_outbox_drain", "wf_phantom_reap")
+_WF_ARMS = (
+    "wf_join_rederive",
+    "wf_outbox_drain",
+    "wf_signal_sweep",
+    "wf_loop_budget",
+    "wf_phantom_reap",
+)
 
 
 def _is_wf_event(entry: Any) -> bool:

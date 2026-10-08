@@ -34,18 +34,21 @@ tool args must no more reach the client list than the capture row.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import asyncpg
 import structlog
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
+from taskq.workflows._capture import redact_hold_context
 
 __all__ = [
     "HOLD_CHANNEL",
@@ -53,6 +56,9 @@ __all__ = [
     "HitlClient",
     "delivery_refused",
     "register_hold",
+    "register_signal_models",
+    "resolve_payload_fit",
+    "resolve_signal_models",
     "sweep_expired_signals",
 ]
 
@@ -65,6 +71,166 @@ HOLD_CHANNEL = "taskq_wf_holds"
 #: The hold row's status vocabulary (the statemachine's totality for the
 #: signal rows).
 SignalStatus = Literal["held", "delivered", "cancelled", "abandoned"]
+
+
+# ── THE SIGNAL MODEL CATALOG (the typed door's runtime registry) ────────
+# The deliver path's boundary validates the payload against the WAIT
+# SITE's declared models (attack-3 B2/H2's cure) — but the wait site is
+# body code: the classes exist only where the body ran. The catalog is
+# the same D1 discipline the reducer memo uses: the process that ran the
+# wait site registers the models (every process in the fleet carries the
+# same definitions, so a resolve in THIS process validates); a cold
+# process falls back to the hold row's own ``payload_schema`` (the
+# models' JSON schemas — durable, read by :func:`_fits_by_schema`).
+
+_SignalModels = tuple[
+    tuple[type[BaseModel], ...], Callable[[dict[str, object]], type[BaseModel]] | None
+]
+
+_signal_models: dict[tuple[str, str, str], _SignalModels] = {}
+
+
+def register_signal_models(
+    workflow_name: str,
+    node_key: str,
+    signal_name: str,
+    models: tuple[type[BaseModel], ...],
+    discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
+) -> None:
+    """The wait site's declared models enter the catalog (keyed by the
+    workflow + node + signal identity — the hold row's own coordinates).
+    Idempotent: a re-run of the same wait site re-registers the SAME
+    models (the re-execution doctrine)."""
+    _signal_models[(workflow_name, node_key, signal_name)] = (models, discriminator)
+
+
+def resolve_signal_models(
+    workflow_name: str | None,
+    node_key: str,
+    signal_name: str,
+) -> _SignalModels | None:
+    """The declared models for one hold's coordinates — ``None`` when
+    this process never ran the wait site (the caller falls back to the
+    row's ``payload_schema``)."""
+    if not workflow_name:
+        return None
+    return _signal_models.get((workflow_name, node_key, signal_name))
+
+
+def _model_fits(model: type[BaseModel], payload: dict[str, object]) -> bool:
+    """Does *payload* fit ONE declared model, STRICTLY (by SHAPE, never
+    by declaration order — attack-3 B2's rule): no unknown-field
+    coercion (a key the model does not declare fails the fit — the
+    all-optional ``Lenient`` door cannot swallow a strict member's
+    delivery), every required field present and validatable."""
+    allowed: set[str] = set()
+    for name, field_info in model.model_fields.items():
+        allowed.add(name)
+        if field_info.alias is not None:
+            allowed.add(field_info.alias)
+    if not set(payload) <= allowed:
+        return False
+    try:
+        model.model_validate(payload)
+    except Exception:
+        return False
+    return True
+
+
+def _fits_by_schema(payload: object, schema: object) -> bool:
+    """The COLD-PROCESS fallback fit: the payload against ONE model's
+    JSON schema (the durable ``payload_schema``). A conservative
+    structural check — required fields present, unknown fields refused,
+    primitive types checked; a schema the check cannot read (nested
+    ``$defs``, ``anyOf``) FITS (never a false refusal — the class-loaded
+    path validates fully)."""
+    if not isinstance(schema, dict) or not isinstance(payload, dict):
+        return True  # cannot judge — refuse nothing on a guess
+    if "$defs" in schema or "anyOf" in schema or "allOf" in schema:
+        return True
+    properties = schema.get("properties")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # Why: the jsonb walk's boundary — the schema is the row's decoded jsonb; the isinstance guard below is the runtime shape check.
+    if not isinstance(properties, dict):
+        return True
+    # The Any-contract walk (the estate's house shape): every branch
+    # asserts the runtime shape it consumes; each USE of an Unknown
+    # member carries the targeted ignore with the Why.
+    properties_doc = cast("dict[str, object]", properties)
+    payload_doc = cast("dict[str, object]", payload)
+    if any(key not in properties_doc for key in payload_doc):
+        return False  # STRICT: no unknown-field coercion
+    required = schema.get("required", [])  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # Why: the same jsonb walk.
+    if isinstance(required, list):
+        required_doc = cast("list[object]", required)
+        if any(key not in payload_doc for key in required_doc):
+            return False
+    for key, value in payload_doc.items():
+        spec = properties_doc.get(key)
+        if not isinstance(spec, dict):
+            continue
+        declared = spec.get("type")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # Why: the same jsonb walk.
+        if declared == "string" and not isinstance(value, str):
+            return False
+        if declared == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            return False
+        if declared == "number" and (isinstance(value, bool) or not isinstance(value, int | float)):
+            return False
+        if declared == "boolean" and not isinstance(value, bool):
+            return False
+        if declared == "array" and not isinstance(value, list):
+            return False
+        if declared == "object" and not isinstance(value, dict):
+            return False
+    return True
+
+
+def resolve_payload_fit(
+    models: tuple[type[BaseModel], ...],
+    payload: object,
+    discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
+) -> type[BaseModel]:
+    """THE BY-SHAPE RESOLUTION (attack-3 B2's cure): the payload is
+    validated against EACH declared model (strict —
+    :func:`_model_fits`); the models that fit are the candidates.
+    EXACTLY ONE must fit — it is returned. ZERO fits → the typed
+    :class:`taskq.exceptions.SignalPayloadError`; MORE than one → the
+    typed :class:`taskq.exceptions.SignalPayloadAmbiguousError` UNLESS
+    the gate declared an explicit *discriminator* (its pick must be one
+    of the fitting candidates — a discriminator naming a non-fitting
+    model is the same refusal). Declaration ORDER decides nothing."""
+    from taskq.exceptions import SignalPayloadAmbiguousError, SignalPayloadError
+
+    if not isinstance(payload, dict):
+        raise SignalPayloadError(
+            f"the delivered payload is {type(payload).__name__!r}, not an "
+            "object — the declared models "
+            f"({[m.__name__ for m in models]}) validate objects"
+        )
+    payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the delivered payload is the row's jsonb — the isinstance guard above is the runtime shape check (the Any-contract walk's boundary).
+    fitting = [m for m in models if _model_fits(m, payload_doc)]
+    if len(fitting) == 1:
+        return fitting[0]
+    names = [m.__name__ for m in models]
+    if not fitting:
+        raise SignalPayloadError(
+            f"the delivered payload validates against NONE of the wait's "
+            f"declared models ({names}) — the delivery is refused, the "
+            "hold SURVIVES (the typed door's runtime boundary)"
+        )
+    if discriminator is not None:
+        chosen = discriminator(payload_doc)
+        if chosen in fitting:
+            return chosen
+        raise SignalPayloadAmbiguousError(
+            f"the payload fits {len(fitting)} declared models ({names}) "
+            f"and the gate's discriminator picked {chosen.__name__!r}, "
+            "which is not one of them — the delivery is refused"
+        )
+    raise SignalPayloadAmbiguousError(
+        f"the delivered payload fits {len(fitting)} declared models "
+        f"({names}) and the gate declared no discriminator — narrowing by "
+        "declaration order is the convicted mis-narrowing; declare a "
+        "discriminator on the wait site or deliver an unambiguous shape"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +351,12 @@ def _render(template: str, schema: str) -> str:
     return template.replace("{schema}", schema)
 
 
+def _as_hold_id(hold_id: JobId | str) -> JobId:
+    """The id's canonical form (the uuid column → JobId; a str handle
+    round-trips through the UUID parse)."""
+    return hold_id if isinstance(hold_id, UUID) else JobId(UUID(str(hold_id)))
+
+
 # ── the hold registration (the wait site's door) ────────────────────────
 
 
@@ -210,15 +382,42 @@ async def register_hold(
     payload_schema: dict[str, object] | None,
     timeout_s: float | None,
     is_loop_node: bool,
+    context: dict[str, object] | None = None,
+    redact: Callable[[str], str] | None = None,
 ) -> JobId:
     """Register ONE hold: a NEW epoch mints a NEW row (multi-hold — the
     same signal name can hold again; the stale-payload dragon dies
     here); the node takes the HELD REPRESENTATION (T03: ``pending`` +
     ``scheduled_at`` = deadline + the signal row as truth — the worker
     releases, no slot held); a LOOP node's budget PAUSES (the wall is
-    blind while the loop waits on a human)."""
+    blind while the loop waits on a human).
+
+    THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (attack-3 H3's cure
+    — the crash-window's closure): reason/tool/args pass the redact
+    pipeline (chain → the token-head pass → the workflow's hook,
+    :func:`redact_hold_context`) and land in the SAME tx as the hold's
+    insert — no second statement after the commit, no context-less hold,
+    and the row never carries a canary (REDACT-BEFORE-PERSIST extended
+    to the hold row)."""
     hold_id = JobId(new_uuid())
     deadline = await _deadline_expr(conn, timeout_s)
+    # THE CONTEXT, REDACTED BEFORE PERSIST: the masked dict is the
+    # insert's payload (a mask that broke the JSON shape degrades to the
+    # masked TEXT record — the operator still reads a scrubbed row).
+    payload_doc: dict[str, object] = {}
+    if context is not None and any(value is not None for value in context.values()):
+        masked = redact_hold_context(
+            {k: v for k, v in context.items() if v is not None}, redact=redact
+        )
+        try:
+            parsed = _json_loads(dumps_jsonb_str(masked))
+        except Exception:  # pragma: no cover - dumps just produced the text
+            parsed = None
+        payload_doc: dict[str, object] = (
+            cast("dict[str, object]", parsed)  # pyright: ignore[reportUnknownVariableType]  # Why: the masked context's own jsonb round-trip — the walk's boundary.
+            if isinstance(parsed, dict)
+            else {"context": dumps_jsonb_str(masked)}
+        )
     async with conn.transaction():
         await conn.execute(
             _render(_HOLD_INSERT_SQL, schema),
@@ -228,7 +427,9 @@ async def register_hold(
             signal_name,
             hold_epoch,
             call_id,
-            dumps_jsonb_str({}),  # the payload arrives at DELIVER (deliver-no-drop)
+            dumps_jsonb_str(
+                payload_doc
+            ),  # the payload arrives at DELIVER (deliver-no-drop); the CONTEXT is redacted here
             dumps_jsonb_str(payload_schema) if payload_schema else None,
             deadline,
         )
@@ -255,6 +456,84 @@ async def _deadline_expr(conn: ConnLike, timeout_s: float | None) -> Any:
 
 # ── the deliver CAS (the reply door) ────────────────────────────────────
 
+_RESOLVE_CAS_SQL = """\
+UPDATE {schema}.wf_signals
+SET status = 'delivered',
+    payload = $2::jsonb,
+    resolved_at = clock_timestamp()
+WHERE id = $1
+  AND status = 'held'
+RETURNING workflow_id, node_key, signal_name, call_id
+"""
+
+_HOLD_FOR_BOUNDARY_SQL = """\
+SELECT workflow_id, node_key, signal_name, payload_schema, status
+FROM {schema}.wf_signals
+WHERE id = $1
+"""
+
+_WORKFLOW_NAME_SQL = """\
+SELECT metadata->>'workflow' FROM {schema}.jobs WHERE id = $1
+"""
+
+
+async def _boundary_refusal(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    hold_id: JobId,
+    payload: object,
+) -> str | None:
+    """THE RUNTIME PAYLOAD BOUNDARY (attack-3 B2/H2's cure): the hold's
+    DECLARED models validate the payload — BY SHAPE, never by
+    declaration order — BEFORE anything consumes the hold. Returns the
+    refusal's REASON (a typed-face string naming WHY) when the payload
+    must be refused, ``None`` when it may pass. The models resolve from
+    the signal-model catalog (this process ran the wait site — D1's
+    discipline); a cold process falls back to the row's own
+    ``payload_schema`` (the durable JSON schemas). A hold that is not
+    ``'held'`` validates NOTHING here — the CAS owns that refusal (the
+    stale arm)."""
+    from taskq.exceptions import SignalPayloadAmbiguousError, SignalPayloadError
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(_render(_HOLD_FOR_BOUNDARY_SQL, schema), hold_id)
+        if row is None or row["status"] != "held":
+            return None  # the CAS owns the stale/cancelled arm's refusal
+        workflow_name = await conn.fetchval(_render(_WORKFLOW_NAME_SQL, schema), row["workflow_id"])
+    resolved = resolve_signal_models(workflow_name, row["node_key"], row["signal_name"])
+    if resolved is not None:
+        models, discriminator = resolved
+        try:
+            resolve_payload_fit(models, payload, discriminator)
+        except (SignalPayloadError, SignalPayloadAmbiguousError) as exc:
+            return str(exc)
+        return None
+    # THE COLD-PROCESS FALLBACK: the durable payload_schema's structural
+    # fit (per declared model, by shape; exactly one must fit).
+    schema_ref = row["payload_schema"]
+    schema_doc = _json_loads(schema_ref) if isinstance(schema_ref, str) else schema_ref
+    if not isinstance(schema_doc, dict) or not schema_doc:
+        return None  # no declared models on the row — the legacy hold's shape
+    schema_map = cast("dict[str, object]", schema_doc)  # pyright: ignore[reportUnknownVariableType]  # Why: the jsonb walk's boundary — the isinstance guard above is the runtime shape check.
+    fitting = [
+        name
+        for name, js in schema_map.items()  # pyright: ignore[reportUnknownVariableType]  # Why: the same walk.
+        if _fits_by_schema(payload, js)
+    ]
+    if len(fitting) == 1:
+        return None
+    if not fitting:
+        return (
+            f"the delivered payload validates against NONE of the hold's "
+            f"declared models ({sorted(schema_map)}) — the delivery is "
+            "refused, the hold SURVIVES (the typed door's runtime boundary)"
+        )
+    return (
+        f"the delivered payload fits {len(fitting)} of the hold's declared "
+        f"models ({sorted(schema_map)}) — ambiguous; the delivery is refused"
+    )
+
 
 async def deliver_payload(
     pool: asyncpg.Pool,
@@ -265,11 +544,17 @@ async def deliver_payload(
     payload: dict[str, object],
     payload_json: str,
 ) -> DeliveryResult:
-    """THE DELIVER CAS: validate (the caller's typed door did) → the
-    row's ``'held' → 'delivered'`` CAS → the node's resume. Exactly-once:
+    """THE DELIVER CAS: validate (the typed door's RUNTIME boundary —
+    the payload validates against the hold's declared models BY SHAPE
+    before anything consumes the hold; a bad payload is the TYPED
+    ``refused`` and the hold SURVIVES) → the row's
+    ``'held' → 'delivered'`` CAS → the node's resume. Exactly-once:
     two concurrent delivers → ONE ``delivered``, one resume. A deliver
     that cannot resume = the TYPED ``refused`` (the hold SURVIVES on the
     stale arm) — never a silent drop."""
+    refusal = await _boundary_refusal(pool, schema=schema, hold_id=hold_id, payload=payload)
+    if refusal is not None:
+        return delivery_refused(refusal)
     async with pool.acquire() as conn, conn.transaction():
         cas = await conn.fetchrow(
             _render(_DELIVER_CAS_SQL, schema), workflow_id, hold_id, payload_json
@@ -422,41 +707,55 @@ class HitlClient:
         principal: Any = None,
     ) -> DeliveryResult:
         """THE REPLY (by id — one hold addressed): the decision payload
-        validates through the bound gate's door at the CALLER's type
-        level; the CAS makes the double-resolve the DEFINED no-op (an
-        already-resolved hold = one transition, never two — the
-        idempotence pin). THE AUDIT (G4): the resolve is the
-        audit-sensitive action par excellence — "who resolved this" is a
-        ROW, not a log line (the admin's `_audit` module, lazily
-        imported — the layering law)."""
+        validates through the hold's DECLARED models at the RUNTIME
+        boundary — BY SHAPE, before the CAS (attack-3 H2's cure): a bad
+        payload is the TYPED ``refused``, the hold SURVIVES, nothing is
+        consumed, and the refusal is AUDITED (the operator sees WHY).
+        The transition + THE AUDIT + THE KNOCK share ONE transaction
+        whose linearization point is the DELIVER CAS ITSELF (attack-3
+        H4's cure): the loser matches no rows and writes NOTHING — 0
+        audit rows, 0 knocks for a lost race (the guard-tx shape wrote
+        both BEFORE the CAS and doubled under concurrency). An
+        already-resolved hold is the DEFINED no-op (the idempotence
+        pin)."""
+        from taskq.web.admin._audit import record_admin_action
+
+        # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
+        boundary = await _boundary_refusal(
+            self._pool, schema=self._schema, hold_id=_as_hold_id(hold_id), payload=decision
+        )
+        if boundary is not None:
+            async with self._pool.acquire() as conn, conn.transaction():
+                await record_admin_action(
+                    conn,
+                    schema=self._schema,
+                    principal=principal,
+                    action="hitl.resolve",
+                    target_type="hold",
+                    target_id=str(hold_id),
+                    reason=reason,
+                    detail={"refused": boundary},
+                )
+            return delivery_refused(boundary)
+        # THE RESOLVE TX: the CAS is the transition's only grant; the
+        # audit + the knock ride the WINNING tx (exactly-once).
         async with self._pool.acquire() as conn, conn.transaction():
-            # THE GUARD (read-hold — never a pre-set transition): the
-            # DELIVER CAS owns the 'held' → 'delivered' move (a pre-set
-            # here would make the deliver's own CAS lose to it — the
-            # double-transition bug, convicted); the guard + the audit +
-            # the knock share THIS tx, the deliver's CAS is the
-            # linearization point.
-            guarded = await conn.fetchrow(
-                _render(
-                    "SELECT workflow_id, node_key, signal_name FROM {schema}.wf_signals "
-                    "WHERE id = $1 AND status = 'held' FOR UPDATE",
-                    self._schema,
-                ),
-                hold_id,
+            cas = await conn.fetchrow(
+                _render(_RESOLVE_CAS_SQL, self._schema),
+                _as_hold_id(hold_id),
+                dumps_jsonb_str(decision),
             )
-            if guarded is None:
+            if cas is None:
                 already = await conn.fetchval(
                     _render("SELECT status FROM {schema}.wf_signals WHERE id = $1", self._schema),
-                    hold_id,
+                    _as_hold_id(hold_id),
                 )
                 return DeliveryResult(
                     status="no-op" if already == "delivered" else "refused",
                     reason=f"hold {hold_id} is {already!r}",
                 )
             # THE AUDIT ROW (the caller owns the tx — the same-tx
-            # guarantee).
-            from taskq.web.admin._audit import record_admin_action
-
+            # guarantee, now exactly-once with the transition).
             await record_admin_action(
                 conn,
                 schema=self._schema,
@@ -465,7 +764,7 @@ class HitlClient:
                 target_type="hold",
                 target_id=str(hold_id),
                 reason=reason,
-                detail={"run_id": str(guarded["workflow_id"]), "signal": guarded["signal_name"]},
+                detail={"run_id": str(cas["workflow_id"]), "signal": cas["signal_name"]},
             )
             # THE KNOB (the same tx — the pointer, never the truth).
             await conn.execute(
@@ -474,35 +773,63 @@ class HitlClient:
                 dumps_jsonb_str(
                     {
                         "hold_id": str(hold_id),
-                        "run_id": str(guarded["workflow_id"]),
+                        "run_id": str(cas["workflow_id"]),
                         "event": "resolved",
                     }
                 ),
             )
-        workflow_id = JobId(
-            UUID(str(guarded["workflow_id"]))
-        )  # the uuid column → JobId (the Record's member walks through the str form's round-trip)
-        return await deliver_payload(
-            self._pool,
-            schema=self._schema,
-            workflow_id=workflow_id,
-            hold_id=JobId(hold_id if isinstance(hold_id, UUID) else UUID(str(hold_id))),
-            payload=decision,
-            payload_json=dumps_jsonb_str(decision),
-        )
+            resumed = None
+            if cas["node_key"]:
+                node_id = await conn.fetchval(
+                    _render(
+                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                        "AND (metadata->>'flow_id')::uuid = $2 "
+                        "AND metadata ? 'hold'",
+                        self._schema,
+                    ),
+                    cas["node_key"],
+                    cas["workflow_id"],
+                )
+                if node_id is not None:
+                    resumed = await conn.fetchval(
+                        _render(_DELIVER_RESUME_SQL, self._schema), node_id
+                    )
+            if resumed is None:
+                # The CAS won but the node is gone (a cancelled flow
+                # killed the held representation): the ROW is the truth
+                # — the delivered row stands, the resume is refused.
+                return delivery_refused("the held node is not resumable (the flow died)")
+            logger.info(
+                "signal.resolved",
+                run_id=str(cas["workflow_id"]),
+                hold_id=str(hold_id),
+                signal=cas["signal_name"],
+            )
+            return DeliveryResult(status="delivered")
 
     def _context(self, row: Any) -> HoldContext:
         """The row → the context (decoded ONCE — cut #14's law; the
         REDACT LAW: the payload passes the chain before anything
-        leaves)."""
+        leaves). THE DEFAULT IS THE CHAIN (attack-3 H3's belt): a
+        client constructed with no hook still runs the vetted chain +
+        the hold-context token pass over the payload — a canary never
+        reaches the enumeration surface verbatim even on a row written
+        before the persist-time redact existed; a HOOKED client
+        composes chain → hook (the hook receives the chain's masked
+        payload — it can only redact more)."""
         payload = _json_loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
         schema_ref = (
             _json_loads(row["payload_schema"])
             if isinstance(row["payload_schema"], str)
             else row["payload_schema"]
         )
-        if self._redact is not None and payload is not None:
-            payload = self._redact(payload)
+        if payload is not None and isinstance(payload, dict):
+            # THE CHAIN RUNS ALWAYS (the vetted masks + the hold
+            # surface's token pass); the client's hook POST-COMPOSES on
+            # the chain's output — it can only redact more.
+            payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the row's jsonb — the isinstance guard above is the runtime shape check.
+            chained = redact_hold_context(payload_doc)
+            payload = chained if self._redact is None else self._redact(chained)
         return HoldContext(
             hold_id=str(row["id"]),
             run_id=str(row["workflow_id"]),

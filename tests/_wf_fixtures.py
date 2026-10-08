@@ -18,9 +18,14 @@ engine's own statements read back.
 from __future__ import annotations
 
 import json
+import os
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
+from uuid import (
+    uuid4,  # noqa: TID251  # Why: the redlog RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
+)
 
 import asyncpg
 import pytest
@@ -41,10 +46,23 @@ TERMINAL_SQL = "('succeeded','failed','cancelled','crashed','abandoned')"
 class RedLog:
     """The red-output sink: a file that gets READ (BUILD-PROTOCOL §2).
     Every pin's convicted variant appends its observed dragon here; the
-    fixture flushes on teardown."""
+    fixture flushes on teardown.
+
+    THE PRESERVATION LAW (attack-3's hygiene finding, the fixer's own
+    lane): the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
+    appends ONE JSONL record (``{"run": …, "entries": [...]}``) and
+    never rewrites the file. The convicted defect: ``write_text``
+    rewrote the WHOLE sink per run, so a PARTIAL run (one pin file
+    re-run in isolation) replaced the corpus with ONLY that subset's
+    entries — a full run's evidence silently deleted, the recorded band
+    numbers falsified by whichever subset ran last. Append-only: a
+    partial run adds its own run-scoped record; history is never
+    truncated. The run id (pid + a token + the timestamp) makes each
+    record attributable."""
 
     def __init__(self, filename: str) -> None:
         self._filename = filename
+        self._run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}-{uuid4().hex[:8]}"
         self.entries: list[dict[str, str]] = []
 
     def red(self, pin: str, mutation: str, observed: Any) -> None:
@@ -54,7 +72,13 @@ class RedLog:
 
     def flush(self) -> None:
         MEASUREMENTS.mkdir(exist_ok=True)
-        (MEASUREMENTS / self._filename).write_text(json.dumps(self.entries, indent=2))
+        record = {
+            "run": self._run_id,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "entries": self.entries,
+        }
+        with (MEASUREMENTS / self._filename).open("a") as sink:
+            sink.write(json.dumps(record) + "\n")
 
 
 @pytest.fixture

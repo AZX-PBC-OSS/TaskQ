@@ -252,6 +252,21 @@ arm enumerates edge-less join-wait rows (a LEFT JOIN on the edge ledger)
 and stamps them `metadata.blocking_reason='orphan_parent'` — the record
 never looks healthy while the work is wrong.
 
+`wf.validate()`'s own rule matrix (T09, checker-independent; attack-3's
+M2-M5 cures included): **E1** acyclicity · **E2** produced-never-consumed ·
+**E3** the edge-less join (the compiled graph is public data — the rule
+owns the shape injected into it, not just the verb's door) · **E4** the
+unannotated step · **E5** the incompatible consumer — including the
+DUCK-TYPED hole (an unannotated/`Any` param consumes a model producer
+unseen) · **E6** the fan-in bound · **E7** the cross-graph promise (a
+promise wired from ANOTHER app's recorder — recorded by the verbs,
+convicted here; the colliding-key smuggle builds a silently wrong edge) ·
+**E8** the loop CARRIER-TYPE (a body refining an unrelated model against
+the declared `carry=` — the recorded declaration is enforced) · **W1**
+the eternal wait (the warning class) · **W2** the unknown queue (a queue
+no actor declares and TASKQ_QUEUES does not name — the warning class;
+the worker-boot fail-fast stays the runtime door).
+
 ## The pin inventory
 
 Every invariant above is pinned by a test that can fail, red-first: each
@@ -353,6 +368,31 @@ the DECLARED model; a body sees the type it declared, never a raw
 dict. `wf.validate()` refuses an unannotated body (E4 — the annotation
 IS the wiring).
 
+**THE TYPED EARLY-EXIT — `Exit[DoneT]`** (§17.1, the None-end's
+sanctioned escape): a body returns `Exit(payload)` to TERMINAL-SUCCEED
+the node with a typed result NOW — the runner unwraps the sentinel, the
+node's ledger terminal records the exit, and every non-terminal
+DOWNSTREAM node is marked SKIPPED-WITH-THE-RECORD
+(`{"skipped": true, "exit_from": …}` — the record never lies about the
+nodes that didn't get to run; zero ledger rows, a skip is not an
+attempt). All rows terminal → the derivation reports the workflow
+COMPLETE. A plain `T` return is the DATA result — sentinels appear only
+where the body's control flow says so; a body annotated `-> Exit[Report]`
+returning a bare value (or a bare `return`) is the checkers' MUST_ERROR.
+
+**THE MANUAL RESUME — `FlowRunner.retry_node(run_id, node_key)`** (§17.2,
+the §22.6 redispatch row 3 — "the ladder then manual"): the operator's
+audited, CAS-guarded re-arm of a TERMINAL-FAILED node. The attempt
+ordinal CONTINUES (never resets — the ladder's own 'failed' count is
+the budget, so each manual retry buys exactly ONE more attempt); the
+re-run is safe by the step ledger (`ctx.step` returns recorded
+results); the cascade's blocked closure re-opens (the stamps return to
+join-wait — the sweep's re-derive re-derives them, a stamp is the
+cache); a terminal-FAILED flow root returns to `running` (a CANCELLED
+root stays closed — the cancel was deliberate). "Who retried this" is a
+ROW (`workflow.retry_node`). Surfaced as the `taskq flows retry` verb
+(T12).
+
 The retry knob (cut #12's cure): `step(..., retry_kind=..., max_attempts=...)`
 — `retry_kind="permanent"` takes NO ladder; a transient failure's
 attempts re-pend with backoff and emit NO terminal until exhaustion
@@ -435,22 +475,48 @@ stated.
   the budget instead of pausing) killed a held loop mid-hold and
   refused the operator's later approval: work silently lost. It is kept
   RED forever by the mutation drill (`.measurements/t19-pin-reds.json`).
+  (The operator's OWN latency between two holds, though — that time the
+  budget DOES consume once the pause lifts: the wall measures the loop's
+  working time including the gaps, never the holds themselves.)
 
 **EXHAUSTION IS NAMED, NEVER SILENT**: the cap or the budget wall
 terminates the loop into the `iteration_cap_exhausted` /
 `budget_exhausted` state — and THE FLOW TERMINALIZES IN THE SAME
 TRANSACTION (STRANDED-FLOW: the spike's `_loop_advance` left the flow
 `running` forever — the worker ticks forever, the admin shows a live
-run; the pin convicts it). `on_exhausted="escalate"` writes the
-escalation enqueue through the SAME outbox the fired joins use.
+run; the pin convicts it).
 
-**THE SEMANTICS DECISION, STATED ONCE: infra fault ≠ body failure.** A
-connection-loss/reclaim-eligible fault routes to RECLAIM (the ledger
-says `crashed`; the ladder does NOT burn — the lease machinery
-re-claims from the ledger); the ladder burns for BODY failures only.
-The test: three storm kills on one iteration → zero ladder attempts
-consumed, the loop completes; a body exception burns its typed failure
-(`LoopBodyFailure`, the flow terminalized).
+**THE EXHAUSTION POLICY IS READ — BY THE DRIVER AND THE SWEEP** (the
+attack-3 H1 cure): `on_exhausted="escalate"` enqueues the escalation
+through the SAME outbox the fired joins use — addressed to the
+workflow's REGISTERED escalation step (`loop.escalation`; the body is
+your `escalates_to=fn`, or the framework default, registered at compile
+by the definition registry — D1), and the escalation consumer job RUNS:
+the drained job resolves the registered body and terminal-succeeds
+carrying the exhaustion record — no dead letter, on EITHER path (the
+live driver's cap check AND the sweep's orphaned-loop arm). DECLARATION
+ORDER DECIDES NOTHING in the payload door — by shape.
+`on_exhausted="fail"` terminal-fails the flow and enqueues NOTHING.
+
+**THE CAP LETS THE FINAL ITERATION RUN** (the attack-3 vacuous-pin
+cure): the advance guard admits the advance TO the cap, so the
+metadata's counter REACHES `max_iterations` — the live driver exhausts
+at its top-of-loop cap check, and the crash window (a worker death
+after the final advance) leaves exactly that state on the running row
+for the SWEEP's cap arm to own. The sweep's
+`iteration >= max_iterations` predicate is REACHABLE in production —
+never a hand-crafted state.
+
+**THE SEMANTICS DECISION, STATED ONCE — BY ESCAPE POINT**: infra fault
+≠ body failure, and the classifier reads WHERE the error escaped, never
+merely its type. An exception the BODY raised is a BODY failure even
+when it wears a `ConnectionError` face — the loop's typed failure
+(`LoopBodyFailure`, the flow terminalized); a body cannot forge an
+infra fault (the poison-body wedge — 20 crashed rows, a `running` flow
+forever — is the convicted variant, kept red by the attack probe). An
+infra fault raised by the DRIVER'S OWN machinery reclaims: the ledger
+says `crashed`, the ladder does NOT burn, the lease machinery re-claims
+from the ledger, the loop completes on the re-claim.
 
 **`until=` is AWAITED** (`Callable[[], Awaitable[bool]]`): a bare sync
 closure returning a coroutine object is TRUTHY — the spike's cancel
@@ -502,10 +568,14 @@ and AUDITED (G4: "who resolved this" is a ROW, not a log line).
 **THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
 schema (what a UI renders from), the author-supplied
 reason/tool/args, the provenance (run id, node key, gate name, epoch,
-created_at, the deadline). **THE REDACT LAW EXTENDS**: the context
-passes the chain-then-hook redact pipeline BEFORE it reaches any
-enumeration surface — a canary in tool args reaches NEITHER the client
-list NOR the knock.
+created_at, the deadline). **THE REDACT LAW EXTENDS — BEFORE PERSIST**
+(the attack-3 H3 cure): the context passes the chain-then-hook redact
+pipeline (the vetted masks + the hold surface's token-head pass + the
+workflow's own `redact=` hook, wired from the registered definition) IN
+THE SAME TRANSACTION as the hold's insert — the row never carries a
+canary, so the default `HitlClient` (no hook handed, none wired) cannot
+leak it at list/get; the read-side chain pass is the belt over the
+persist-time law.
 
 **THE KNOB, NEVER THE TRUTH** (round-8): a hold's appearance is
 NOTIFIABLE (`pg_notify` on the `taskq_wf_holds` channel — the estate's
@@ -518,6 +588,36 @@ expiry arm is the ONLY live timer on a held row); the expired hold →
 the DEFINED `abandoned` state (the typed `SignalTimeoutError` /
 `SignalAbandonedError` — the glossary shape, never a silent orphan);
 `timeout=None` must be EXPLICIT (the W1 validate warning).
+
+**THE TIMEOUT FACE IS THE RAISE** (the attack-3 B1 cure): after the
+sweep marks the hold `abandoned`, the resume's wait site RAISES
+`SignalTimeoutError` — the glossary exception — and NEVER mints an
+automatic new epoch (hold → expire → re-hold → ∞ is the convicted
+dragon, kept red by the attack probe). The body's own ladder/except
+owns the raise from there: a step ladders and terminal-fails (the
+`fail` policy's shape); a loop's failure-class rules route it as the
+BODY failure it is. A DELIBERATE re-wait — the body CAUGHT the timeout
+and waits again within the same attempt — is a NEW body decision: it
+registers a NEW hold with a NEW epoch. The other timer policies
+(`resume_with_default` / the escalation arm on the TIMER) are recorded
+LATER for v1 (the don't-pay law): the body-level escape — catch
+`SignalTimeoutError`, return the default / enqueue the escalation
+yourself — is the sanctioned composition until then, and it is exactly
+what the raise-based face enables.
+
+**THE DELIVER BOUNDARY IS REAL** (the attack-3 B2/H2 cure): a resolve
+validates the payload against the hold's DECLARED models — BY SHAPE,
+never by declaration order — BEFORE the CAS: a payload that fits NO
+model, or fits MORE than one without the gate's `discriminator=`, is
+the typed `refused` (the hold SURVIVES, nothing is consumed, the
+refusal is AUDITED and the operator sees WHY). The union wait narrows
+to the model the payload's shape fits — a lenient first member cannot
+swallow a strict second member's delivery.
+
+**THE AUDIT IS EXACTLY-ONCE** (the attack-3 H4 cure): the resolve's
+audit row + the knock ride the CAS-WINNING transaction — two concurrent
+resolves → exactly ONE `hitl.resolve` audit row, ONE knock, ONE
+resolution; the loser writes nothing.
 
 **THE CANCEL CASCADE** (P3 rule 4): `FlowRunner.cancel_workflow(run_id,
 reason=…)` — ONE transaction (the flip is the linearization point), the

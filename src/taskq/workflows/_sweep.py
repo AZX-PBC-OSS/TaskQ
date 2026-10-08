@@ -276,7 +276,14 @@ async def drain_outbox(
             [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
             [f"workflow:{r['flow_id']}" for r in rows],
             [
-                f"wf:{r['flow_id']}:{r['consumer_step_key']}"
+                # THE ARBITER'S KEY — the STATIC ROW's own convention
+                # (``step_idempotency_key``): the map-join's downstream is
+                # a static row since create (the consumption cure), so the
+                # drain's consumer insert for it is the arbiter's CONFLICT
+                # (the belt, never a second dispatch). The fired-join
+                # consumer rows that DO insert fresh (a fork's own
+                # item-shape consumer) keep the map-index leg.
+                f"wf:{r['consumer_step_key']}"
                 + (f":{r['map_index']}" if r["map_index"] is not None else "")
                 for r in rows
             ],
@@ -340,6 +347,7 @@ async def sweep_loop_budget(
         LOOP_EXHAUST_SQL,
         LOOP_KIND_MARKER,
         LOOP_NODE_WALL_SQL,
+        LOOP_WORKFLOW_NAME_SQL,
         render_loop_sql,
     )
 
@@ -348,6 +356,9 @@ async def sweep_loop_budget(
         loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
         for loop_row in loops:
             loop_id = loop_row["id"]
+            # WHICH wall (the named state's truth): the metadata's
+            # iteration counter vs max_iterations — the cap names
+            # ``iteration_cap_exhausted``, the budget its own state.
             # WHICH wall (the named state's truth): the metadata's
             # iteration counter vs max_iterations — the cap names
             # ``iteration_cap_exhausted``, the budget its own state.
@@ -373,16 +384,41 @@ async def sweep_loop_budget(
             )
             if result is None or not result["loop_exhausted"]:
                 continue  # another writer got there first — the CAS held
-            # THE ESCALATION OUTBOX ROW (the same tx): the operator-facing
-            # arm of on_exhausted="escalate" — the named state is the
-            # record, the escalation actor's enqueue the action.
+            # THE POLICY (attack-3 H1's cure — the sweep READS the
+            # registered declaration, D1): ``fail`` = the named state is
+            # the record, NO enqueue; ``escalate`` = the escalation
+            # enqueues through the SAME outbox IN THE SAME TX, addressed
+            # to the workflow's REGISTERED escalation step (the body
+            # resolves from the definition registry at claim — never the
+            # ``loop_escalation``-actor ghost).
+            from taskq.workflows.api._loop import (
+                ESCALATION_STEP_KEY,
+                escalation_bindings,
+                registered_loop_policy,
+            )
+
+            workflow_name = await conn.fetchval(
+                render_loop_sql(LOOP_WORKFLOW_NAME_SQL, wsql.schema),
+                loop_row["flow_id"],
+            )
+            if registered_loop_policy(workflow_name, loop_row["step_key"]) != "escalate":
+                continue
+            bindings = escalation_bindings(
+                workflow_name,
+                loop_row["step_key"],
+                flow_id=loop_row["flow_id"],
+                error_class=error_class,
+                message=None,
+            )
+            if bindings is None:
+                continue  # no registered escalation body — never a ghost row
             await conn.execute(
                 render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema),
                 new_uuid(),
                 loop_id,
                 loop_row["flow_id"],
-                "loop.escalation",
-                '{"actor": "loop_escalation", "queue": "default"}',
+                ESCALATION_STEP_KEY,
+                _jsonb(bindings),
             )
             exhausted += 1
     return exhausted

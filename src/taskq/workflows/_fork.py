@@ -121,4 +121,25 @@ async def insert_fork(
                 [flow_id] * len(chunk_ids),
                 [fork.join.failure_policy] * len(chunk_ids),
             )
+        # THE FORK'S CONSUMER EDGES (the map-join consumption cure — the
+        # ecosystem mapper's defect): the join's DOWNSTREAM consumers are
+        # wired like any node — the consumer's dep was RESERVED at create
+        # (the runner's static insert counts the fork-spawned join's edge
+        # before the join's id exists), so THIS edge row is the ledger's
+        # truth that releases it: the consumer dispatches strictly after
+        # the JOIN'S OWN TERMINAL (the join row's claim + default packer
+        # writes the collected result), and the consumer's arg resolution
+        # reads the join's result through the SAME typed door as any node
+        # result (the parent-results query on the edge ledger). The
+        # outbox's consumer insert stays as the belt (the arbiter's
+        # idempotency key conflicts with the static row — no double
+        # dispatch).
+        if fork.join.consumers:
+            await conn.execute(
+                wsql.fork_consumer_edges,
+                join_id,
+                flow_id,
+                [c.step_key for c in fork.join.consumers],
+                [c.failure_policy for c in fork.join.consumers],
+            )
     return child_ids, join_id
