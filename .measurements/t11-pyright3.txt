@@ -1,0 +1,46 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:55:5 - error: Type of "fetch_run_view" is partially unknown
+    Type of "fetch_run_view" is "(conn: Unknown, schema: str, run_id: UUID) -> CoroutineType[Any, Any, RunView | None]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:322:59 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:375:62 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:93:5 - error: Type of "parents" is partially unknown
+    Type of "parents" is "list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:153:5 - error: Type of parameter "conn" is unknown (reportUnknownParameterType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:153:11 - error: "asyncpg" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:157:5 - error: Type of "root" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:160:5 - error: Type of "node_rows" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:161:5 - error: Type of "node_ids" is partially unknown
+    Type of "node_ids" is "list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:161:29 - error: Type of "r" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:162:5 - error: Type of "edge_rows" is partially unknown
+    Type of "edge_rows" is "Unknown | list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:165:5 - error: Type of "hold_rows" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:166:5 - error: Type of "progress" is partially unknown
+    Type of "progress" is "dict[Unknown, tuple[int, int]]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:167:29 - error: Argument type is unknown
+    Argument corresponds to parameter "x" in function "__new__" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:167:45 - error: Argument type is unknown
+    Argument corresponds to parameter "x" in function "__new__" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:168:13 - error: Type of "r" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:32 - error: Argument type is unknown
+    Argument corresponds to parameter "root" in function "_run_view_from_rows" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:38 - error: Argument type is unknown
+    Argument corresponds to parameter "node_rows" in function "_run_view_from_rows" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:49 - error: Argument type is partially unknown
+    Argument corresponds to parameter "edge_rows" in function "_run_view_from_rows"
+    Argument type is "Unknown | list[Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:60 - error: Argument type is unknown
+    Argument corresponds to parameter "hold_rows" in function "_run_view_from_rows" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:71 - error: Argument type is partially unknown
+    Argument corresponds to parameter "progress" in function "_run_view_from_rows"
+    Argument type is "dict[Unknown, tuple[int, int]]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:50:5 - error: Type of "fetch_run_view" is partially unknown
+    Type of "fetch_run_view" is "(conn: Unknown, schema: str, run_id: UUID) -> CoroutineType[Any, Any, RunView | None]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:99:12 - error: Return type, "Unknown | None", is partially unknown (reportUnknownVariableType)
+23 errors, 0 warnings, 0 informations

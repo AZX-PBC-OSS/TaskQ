@@ -1,0 +1,115 @@
+F
+=================================== FAILURES ===================================
+__________________ test_sse_first_frame_is_the_full_snapshot ___________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f32009f4a00>
+module_pg_schema = ModulePgSchema(schema_name='tq_298ca97352', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_298ca9735287')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_sse_first_frame_is_the_full_snapshot(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        demo_app_module: Any,
+    ) -> None:
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema)
+>       frames = await _first_frames(app, run_id, None, 1)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:246: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:221: in _first_frames
+    async with client.stream(
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:214: in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_client.py:1583: in stream
+    response = await self.send(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1629: in send
+    response = await self._send_handling_auth(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1657: in _send_handling_auth
+    response = await self._send_handling_redirects(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1694: in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_client.py:1730: in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_transports/asgi.py:170: in handle_async_request
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/applications.py:1163: in __call__
+    await super().__call__(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/applications.py:96: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:186: in __call__
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:164: in __call__
+    await self.app(scope, receive, _send)
+.venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py:63: in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py:18: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:676: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2734: in app
+    await route.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1780: in handle
+    await self.original_router.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2789: in handle
+    await included_router._handle_selected(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1800: in _handle_selected
+    await original_route.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1279: in handle
+    await app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:158: in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:145: in app
+    await response(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/responses.py:275: in __call__
+    async with create_collapsing_task_group() as task_group:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:235: in __aexit__
+    await self.gen.athrow(value)
+.venv/lib/python3.13/site-packages/starlette/_utils.py:115: in create_collapsing_task_group
+    raise exc from exc.__cause__ or context
+.venv/lib/python3.13/site-packages/starlette/responses.py:278: in wrap
+    await func()
+.venv/lib/python3.13/site-packages/starlette/responses.py:252: in stream_response
+    async for chunk in self.body_iterator:
+src/taskq/web/admin/_wf_actions.py:185: in _stream_generator
+    row = await conn.fetchrow(_RUN_REVISION_SQL.format(schema=schema), run_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedFunctionError: function max(uuid) does not exist
+E   HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+
+asyncpg/protocol/protocol.pyx:165: UndefinedFunctionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:22:53 [info     ] node.held                      hold_id=01a11952-1a9d-7391-bdaf-530e5c874197 node=review run_id=01a11952-1a82-7021-a256-e3013396d62e signals=['Approval']
+2026-10-07 19:22:53 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:22:53 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_sse_first_frame_is_the_full_snapshot
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.19s

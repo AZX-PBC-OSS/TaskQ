@@ -1,0 +1,36 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:190:20 - error: Condition will always evaluate to True since the types "str" and "int | None" have no overlap (reportUnnecessaryComparison)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:205:29 - error: Type "str" is not assignable to declared type "int | None"
+    Type "str" is not assignable to type "int | None"
+      "str" is not assignable to "int"
+      "str" is not assignable to "None" (reportAssignmentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:208:14 - error: Condition will always evaluate to True since the types "str" and "int | None" have no overlap (reportUnnecessaryComparison)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:215:29 - error: Type "str" is not assignable to declared type "int | None"
+    Type "str" is not assignable to type "int | None"
+      "str" is not assignable to "int"
+      "str" is not assignable to "None" (reportAssignmentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:315:29 - error: Argument of type "BoundedPool" cannot be assigned to parameter "pool" of type "Pool[Record]" in function "__init__"
+    "BoundedPool" is not assignable to "Pool[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:319:59 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:358:29 - error: Argument of type "BoundedPool" cannot be assigned to parameter "pool" of type "Pool[Record]" in function "__init__"
+    "BoundedPool" is not assignable to "Pool[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:370:62 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:398:17 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "pool" of type "Pool[Record]" in function "cancel_workflow_run"
+    "PoolConnectionProxy[Record]" is not assignable to "Pool[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:400:25 - error: Argument of type "UUID" cannot be assigned to parameter "flow_id" of type "JobId" in function "cancel_workflow_run"
+    "UUID" is not assignable to "JobId" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:93:5 - error: Type of "parents" is partially unknown
+    Type of "parents" is "list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:162:5 - error: Type of "edge_rows" is partially unknown
+    Type of "edge_rows" is "Any | list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:49 - error: Argument type is partially unknown
+    Argument corresponds to parameter "edge_rows" in function "_run_view_from_rows"
+    Argument type is "Any | list[Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:99:12 - error: Return type, "Unknown | None", is partially unknown (reportUnknownVariableType)
+14 errors, 0 warnings, 0 informations

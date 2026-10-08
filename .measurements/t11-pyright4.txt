@@ -1,0 +1,31 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:192:49 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "fetch_run_view"
+    "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:322:59 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:375:62 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:94:5 - error: Type of "parents" is partially unknown
+    Type of "parents" is "list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:173:32 - error: Argument of type "Record" cannot be assigned to parameter "root" of type "Mapping[str, Any]" in function "_run_view_from_rows"
+    "Record" is not assignable to "Mapping[str, Any]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:173:38 - error: Argument of type "list[Record]" cannot be assigned to parameter "node_rows" of type "Sequence[Mapping[str, Any]]" in function "_run_view_from_rows"
+    "list[Record]" is not assignable to "Sequence[Mapping[str, Any]]"
+      Type parameter "_T_co@Sequence" is covariant, but "Record" is not a subtype of "Mapping[str, Any]"
+        "Record" is not assignable to "Mapping[str, Any]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:173:49 - error: Argument of type "list[Record]" cannot be assigned to parameter "edge_rows" of type "Sequence[Mapping[str, Any]]" in function "_run_view_from_rows"
+    "list[Record]" is not assignable to "Sequence[Mapping[str, Any]]"
+      Type parameter "_T_co@Sequence" is covariant, but "Record" is not a subtype of "Mapping[str, Any]"
+        "Record" is not assignable to "Mapping[str, Any]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:173:60 - error: Argument of type "list[Record]" cannot be assigned to parameter "hold_rows" of type "Sequence[Mapping[str, Any]]" in function "_run_view_from_rows"
+    "list[Record]" is not assignable to "Sequence[Mapping[str, Any]]"
+      Type parameter "_T_co@Sequence" is covariant, but "Record" is not a subtype of "Mapping[str, Any]"
+        "Record" is not assignable to "Mapping[str, Any]" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:99:12 - error: Return type, "Unknown | None", is partially unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:163:45 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "fetch_run_view"
+    "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+10 errors, 0 warnings, 0 informations

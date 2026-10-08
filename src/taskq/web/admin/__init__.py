@@ -13,6 +13,7 @@ from taskq.web.admin._factory import (
     get_schema,
     get_settings,
     get_templates,
+    get_workflow_app,
     setup_admin_state,
 )
 
@@ -26,5 +27,6 @@ __all__ = [
     "get_schema",
     "get_settings",
     "get_templates",
+    "get_workflow_app",
     "setup_admin_state",
 ]

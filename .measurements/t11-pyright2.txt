@@ -1,0 +1,28 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:191:20 - error: Condition will always evaluate to True since the types "str" and "int | None" have no overlap (reportUnnecessaryComparison)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:206:29 - error: Type "str" is not assignable to declared type "int | None"
+    Type "str" is not assignable to type "int | None"
+      "str" is not assignable to "int"
+      "str" is not assignable to "None" (reportAssignmentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:209:14 - error: Condition will always evaluate to True since the types "str" and "int | None" have no overlap (reportUnnecessaryComparison)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:216:29 - error: Type "str" is not assignable to declared type "int | None"
+    Type "str" is not assignable to type "int | None"
+      "str" is not assignable to "int"
+      "str" is not assignable to "None" (reportAssignmentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:320:59 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:371:62 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:93:5 - error: Type of "parents" is partially unknown
+    Type of "parents" is "list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:162:5 - error: Type of "edge_rows" is partially unknown
+    Type of "edge_rows" is "Any | list[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:172:49 - error: Argument type is partially unknown
+    Argument corresponds to parameter "edge_rows" in function "_run_view_from_rows"
+    Argument type is "Any | list[Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:99:12 - error: Return type, "Unknown | None", is partially unknown (reportUnknownVariableType)
+10 errors, 0 warnings, 0 informations
