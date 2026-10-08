@@ -93,8 +93,11 @@ def demo_env(tmp_path_factory: pytest.TempPathFactory) -> Any:
     shapes mirror _module()'s (the gate models' names + fields are the
     typed door's contract — they must agree with the flows the test
     process creates)."""
-    old = os.environ.get("TASKQ_ENVIRONMENT")
-    os.environ.setdefault("TASKQ_ENVIRONMENT", "dev")
+    # The env posture rides a raw MonkeyPatch (the suite-hygiene law: a
+    # bare os.environ write has no teardown — the atk_iso incident). The
+    # undo() runs at the fixture's end, every exit path.
+    env_patch = pytest.MonkeyPatch()
+    env_patch.setenv("TASKQ_ENVIRONMENT", "dev")
     module = _module()
     sys.modules[MODULE_NAME] = module
     app_dir = tmp_path_factory.mktemp("attack4-app")
@@ -127,10 +130,7 @@ def demo_env(tmp_path_factory: pytest.TempPathFactory) -> Any:
     module.app_dir = str(app_dir)  # type: ignore[attr-defined]
     yield module
     del sys.modules[MODULE_NAME]
-    if old is None:
-        os.environ.pop("TASKQ_ENVIRONMENT", None)
-    else:
-        os.environ["TASKQ_ENVIRONMENT"] = old
+    env_patch.undo()
 
 
 def _cli(

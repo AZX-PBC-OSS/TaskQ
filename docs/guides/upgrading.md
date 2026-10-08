@@ -1920,6 +1920,118 @@ hand-written block there is invisible to the release-notes pipeline),
 is why the pending notes live in this guide. At release time the generated
 changelog becomes the authoritative record and these notes age out.
 
+### Workflows (the DAG engine)
+
+The workflow round's pending notes, moved here from hand-written
+`CHANGELOG.md` blocks (the generator owns that file — these entries were
+invisible to the release-notes pipeline there; CERT2 F-CERT2-1's cure —
+nothing was lost, the move is documented here).
+
+
+### Added
+
+* **Admin (T11): the workflow-run explorer** — the runs list + the run
+  page (`/taskq/workflows/{id}`): the rows-alone Mermaid graph (the
+  collapsed map = one hexagon + the done/total counter), the node drill
+  panel (the attempts, the trace id, the captured error, one upstream
+  hop, the attempt ledger), the holds & decisions panel (the waiting-on
+  state + the declared payload schema + the prefilled example), the
+  audit trail (every operator action is a ROW), and the SSE
+  revisioned-snapshot feed (the seq-cursor + `Last-Event-ID` replay —
+  the reconnect never loses state). The page sets `suppress_refresh`
+  (the meta refresh is the killer); the no-JS surface is the
+  server-rendered snapshot, stated on the page. The nodes are keyboard
+  operable (tab + Enter). The vendored `mermaid.min.js` v11.12.2
+  (2,754,895 B / 774 KB gzipped) joins alpine/htmx/lucide in
+  `/static` — no bundler, no React, no CDN.
+* **The typed actions** — the admin's `resolve`/`deliver` validate
+  through the MOUNTED WorkflowApp's bound gates (`create_router(
+  workflow_app=...)`); without definitions the doors answer 501 — no
+  untyped deliver surface ships.
+* **CLI (T12): `taskq flows`** — list/status/holds/signal/resolve/
+  cancel/retry: one question, one command; the analysis lives in the
+  pure module (`workflows/_cli.py`, the `_doctor` seam — the shared
+  §17.5 derivation + the why-stuck arm); the typed door validates the
+  shell's JSON against the bound gates (the named pydantic refusal; the
+  hold survives); the write verbs ride the engine's audit rows with the
+  `cli:<user>` principal; the read verbs are read-only (pinned).
+* **Examples (T13): the doc-ingest pipeline** — the nine shapes
+  (heterogeneous fork, batch collect with the partial failures, the
+  typed HITL hold inside the budget-capped loop, the worked duality of
+  the edge policies, the union routing with `assert_never`, the typed
+  terminal verdict, the cron-slot run key) in ONE flow, shipped
+  abstract, executed in CI (the fast-tier smoke + the Mermaid golden +
+  the examples lane: the join fires exactly once across 3 rounds; the
+  cron slot's idempotency live). The grep gate: zero case-study strings
+  in the shipped tree.
+* **Demo (T16): the doc_ingest graph LIVE** — `examples/workflows.py` +
+  the app's trigger route (the F3 envelope) + the mounted WorkflowApp +
+  the in-process drive loop; the admin's run explorer renders the
+  demo's runs live.
+* **The context contract** — the body's ctx carries the runtime info:
+  the flow name, the queue, the claim timestamp, the loop's
+  budget_remaining_ms, the consumed hold's epoch (the observability
+  primitive for body authors; the pins are surface-driven).
+* **loop(gates=...)** — the mid-loop hold's gate is declared at wiring
+  (the typed door's compile visibility).
+
+### Fixed
+
+* **The corrupted terminal (the case study's own incident class):** a
+  node downstream of a map-join consumer dispatched before its parent
+  existed — the gather fired on an EMPTY collect and the run terminalized
+  SUCCEEDED with nothing done. The full static insert: every non-item
+  node exists before the run is live; the fork ADOPTS the pre-inserted
+  join; the drain's spawn is join-wait (deps 1 + the edge-ledger row) so
+  a consumer's claim follows the join's RESULT write; the spawn key is
+  the static key (the arbiter unifies the births — no double rows).
+* **The held-drive livelock:** `drive(until="held")` read the hold
+  through `scheduled_at > now()` — NULL for a legal no-deadline hold —
+  and spun max_ticks (5000 polls). The hold MARKER is the question.
+* **The held-drive starvation:** the hold check ran before the tick —
+  one held node starved the run's other claimable work. The held answer
+  is the quiescent one.
+* **The coercion completeness:** a list/union/generic param walks the
+  TypeAdapter (the collect's dicts reached the body raw and the union's
+  `match` fell to the never-arm).
+* **The gather's packer** delivers the FLAT shape its contract promises
+  (a gather over list-parents flattens one level; the map join packs
+  the items as-is).
+* **The capture policy lands:** the workflow's declared
+  `capture=` now reaches the failing node's capture jsonb (it was
+  inert); a refused capture writes NULL, never `{}`; the truncation
+  loop no longer crashes on its own marker's int.
+
+
+### Added
+
+* **Workflows (T06):** the failed-parent propagation — a parent's TERMINAL
+  failure resolves the joins counting it by the edge's declared
+  `failure_policy`: `fail_closed` (the default) blocks the join (the record
+  names the failed parent), peer-cancels the running siblings
+  (`CancelledByPeerFailure` + `metadata.peer_cancel`) and fails the flow;
+  `collect` fans the failure in as a typed `FailureInfo` item (the estate's
+  `ErrorInfo` envelope, the full attempt history) and fires the join with
+  the partial result. A skip fans in with zero ledger rows.
+* **Workflows (T07):** the declared maximum fan-in per join (1000) refused
+  at validate with the child-driven alternative named; the child-driven
+  escape (`JoinSpec(child_driven=True)`) counts terminal children from the
+  edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
+  curve pinned across the boundary (the refit + the 100k-edge plan assert).
+* **Workflows (T08):** the status + progress rollup — the §17.5 derivation
+  table (the absorbed-failure clause stated first), the rows-only
+  reconstruction (the two-source rule: the ledger for the attempted
+  terminals, the node row's error jsonb for the never-granted ones), the
+  G7 always-on reported==reconstructed assertion in every workflow
+  integration test, the `taskq.wf_progress_nodes_total{workflow, state}`
+  gauge (the declared-workflow dimension, the `_other_` collapse, sampled
+  by the maintenance leader on the admin surface), the
+  `TaskQWorkflowBlockedStuck` alert in both rule files, the runbook row,
+  the insights SQL recipes, the hypothesis totality property, the
+  (state, event) totality table (64 cells, zero undefined), one-run-one-
+  trace ×10 concurrent, the index-driven rollup cost gate
+  (`jobs_wf_flow_nodes_idx`, migration 01.00.25_01).
+
 ### Jobs and batches
 
 - **`JobsClient.cancel_where(filter, reason)`**: bulk cancel all jobs

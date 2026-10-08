@@ -5,7 +5,7 @@ to ensure route registration order (static paths before {job_id}).
 """
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -19,6 +19,7 @@ from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._sse_limit import acquire_sse_slot, release_after
 from taskq.web.admin._audit import (
     ACTION_JOB_CANCEL,
     TARGET_TYPE_JOB,
@@ -42,7 +43,6 @@ from taskq.web.admin._factory import (
     get_backend,
     get_base_path,
     get_csrf_token,
-    get_pg_pool,
     get_principal,
     get_realtime_ctx,
     get_schema,
@@ -1038,8 +1038,9 @@ def register(router: APIRouter) -> None:
     async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
         flow_id: uuid.UUID,
         request: Request,
-        pg_pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
+        settings: TaskQSettings = Depends(get_settings),
         last_event_id: int | None = Query(default=None),
     ) -> Any:
         """The run's progress stream (T21): the seq-cursor replay over the ONE
@@ -1089,12 +1090,32 @@ def register(router: APIRouter) -> None:
 
         wsql = render_workflow_sql(schema)
 
-        async def _frames() -> AsyncIterator[ServerSentEvent]:
+        # THE CAP: each stream pins a poll loop + a socket for as long as
+        # the client holds it — the uncapped scan's guard (the SSE-cap
+        # law) refuses an endpoint without this, and a burst of open
+        # streams would exhaust exactly what the cap bounds. The slot is
+        # taken here (after the cheap 400 guards) and ownership transfers
+        # to the wrapped generator on the success path only; release_after
+        # releases exactly once, in the generator's own finally.
+        sse_slot = await acquire_sse_slot(
+            "flow-progress-stream", settings.admin_max_sse_connections, surface="admin"
+        )
+
+        # The long-lived stream manages its OWN checkouts (bounded polls —
+        # the guard's stream-resolver exception), so the generator takes
+        # the raw pool the BoundedPool wraps: the bound stays on every
+        # handler-side checkout, the stream's own poll acquire is its own.
+        async def _frames() -> AsyncGenerator[ServerSentEvent, None]:
             async for frame in progress_stream_generator(
-                pg_pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
+                pool.pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
             ):
-                yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
+                yield ServerSentEvent(
+                    event=frame["event"], id=frame["id"], data=frame["data"]
+                )
 
         return _EventSourceResponse(
-            _frames(), headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+            release_after(
+                sse_slot, _frames(), "flow-progress-stream", surface="admin"
+            ),
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

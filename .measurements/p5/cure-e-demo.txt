@@ -1,0 +1,265 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________________________ test_trigger_app_enqueue ___________________________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_39562a93b67f'
+redis_url = 'redis://localhost:44951/1'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff984bc6250>
+
+    @pytest.mark.integration
+    @pytest.mark.redis
+    def test_trigger_app_enqueue(
+        pg_dsn: str,
+        redis_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """TestClient(app) from examples.app: GET / returns 200 with
+        actor names; POST /enqueue/counter answers the ONE success envelope
+        (201 {"job_id","url"}, F3) whose url keys at the admin job page."""
+        monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
+        monkeypatch.setenv("TASKQ_REDIS_URL", redis_url)
+        schema = f"tes_trigger_{new_base62()}".lower()
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+        monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+        monkeypatch.setenv("TASKQ_ADMIN_URL", "http://localhost:9999")
+        monkeypatch.setenv("TASKQ_QUEUES", "examples")
+    
+        asyncio.run(_migrate(pg_dsn, schema))
+    
+        trigger_app = _fresh_trigger_app()
+        app = trigger_app.app
+    
+        # The drift pin: the app's import-time settings resolved THIS test's
+        # DSN - the container's mapped port - never the hardcoded
+        # ``localhost:5432`` field default (see ``_fresh_trigger_app`` for the
+        # incident). Both sides derive from the same fixture value, so exact
+        # equality is the invariant; a future regression that lets a stale
+        # module (default DSN) reach the lifespan fails HERE, naming the
+        # resolved DSN, instead of as a connection refused on 5432.
+        assert str(trigger_app.settings.pg_dsn) == pg_dsn, (
+            f"examples.app resolved settings for {trigger_app.settings.pg_dsn}, "
+            f"not this test's DSN {pg_dsn} - the import-time settings freeze "
+            "regressed (see _fresh_trigger_app)"
+        )
+    
+        from fastapi.testclient import TestClient
+    
+>       with TestClient(app, follow_redirects=False) as client:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_examples_smoke.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/starlette/testclient.py:517: in __enter__
+    portal.call(self.wait_startup)
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:340: in call
+    return cast(T_Retval, self.start_task_soon(func, *args).result())
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:460: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:402: in __get_result
+    raise self._exception
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:265: in _call_func
+    retval = await retval_or_awaitable
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/starlette/testclient.py:552: in wait_startup
+    await receive()
+.venv/lib/python3.13/site-packages/starlette/testclient.py:543: in receive
+    self.task.result()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:453: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:402: in __get_result
+    raise self._exception
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:265: in _call_func
+    retval = await retval_or_awaitable
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/starlette/testclient.py:533: in lifespan
+    await self.app(scope, self.stream_receive.receive, self.stream_send.send)
+.venv/lib/python3.13/site-packages/fastapi/applications.py:1163: in __call__
+    await super().__call__(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/applications.py:96: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:151: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py:49: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py:18: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:676: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2726: in app
+    await self.lifespan(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:654: in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:214: in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+application = <fastapi.applications.FastAPI object at 0x7ff98737d940>
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
+        if settings.migrate_on_start:
+            # PHASE=None (pre AND post) is the demo's fresh-schema contract
+            # (the stranger test's stumble #2): the pre-only default leaves
+            # the OLD single-column idempotency index standing (its drop is a
+            # post migration, gated for ROLLING deploys — a fresh demo schema
+            # has no old workers to protect), and the static workflow nodes'
+            # per-flow keys collide on it across runs (the second run's
+            # create_flow raised UniqueViolationError on wf:gather).
+            await apply_pending_locked(str(settings.pg_dsn), schema=settings.schema_name, phase=None)
+    
+        async with AsyncExitStack() as stack:
+            pg_pool: asyncpg.Pool = await stack.enter_async_context(
+                asyncpg.create_pool(str(settings.pg_dsn), min_size=1, max_size=2),  # type: ignore[arg-type]  # Why: asyncpg.create_pool returns AsyncContextManager[Pool | None]; enter_async_context expects AsyncContextManager[T]; pyright cannot resolve the generic.
+            )
+    
+            redis_client: Any = None
+            if settings.redis_url is not None:
+                import redis.asyncio as aioredis
+    
+                redis_client = aioredis.from_url(str(settings.redis_url))
+                stack.push_async_callback(redis_client.aclose)
+    
+            application.state.redis_client = redis_client
+            application.state.pg_pool = pg_pool
+    
+            tq = await stack.enter_async_context(
+                TaskQ(
+                    pool=pg_pool,
+                    schema=settings.schema_name,
+                    redis_client=redis_client,
+                ),
+            )
+            application.state.tq = tq
+    
+            # THE WORKFLOW DEMO (T16): the drive loop's task + the mounted
+            # WorkflowApp — the admin's typed resolve/deliver doors validate
+            # through IT (no untyped deliver surface ships).
+            from examples.workflows import drive_loop, wf_app
+    
+            application.state.workflow_app = wf_app
+            drive_task = asyncio.create_task(drive_loop(pg_pool, settings.schema_name))
+            # Task.cancel is a SYNC method (it returns bool) — pushed as a
+            # SYNC callback. push_async_callback would await the bool at
+            # teardown (TypeError: object bool can't be used in 'await' —
+            # CERT2 F-CERT2-1's demo-teardown red; the serve path itself
+            # was always fine, the live stack proves it).
+>           stack.push_callback(drive_task.cancel)
+            ^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'AsyncExitStack' object has no attribute 'push_callback'
+
+examples/app.py:205: AttributeError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=eb4b15967039 redis=8deb80043a09 state_dir=/tmp/pytest-of-rich/pytest-18560
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_window
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_token
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_inmemory
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=reservation name=example_concurrency
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_window
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_token
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=rate_limit name=example_inmemory
+2026-10-08 06:46:41 [debug    ] registry-registered            kind=reservation name=example_concurrency
+2026-10-08 06:46:41 [info     ] workflow-drive-loop-started    schema=tes_trigger_ivrhwd0w
+2026-10-08 06:46:41 [error    ] workflow-drive-pass-failed
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /tmp/opencode/wt-taskqflow-p5/examples/workflows.py:226 in drive_loop        │
+│                                                                              │
+│   223 │   log.info("workflow-drive-loop-started", schema=schema)             │
+│   224 │   while True:                                                        │
+│   225 │   │   try:                                                           │
+│ ❱ 226 │   │   │   await _drive_pending(pool, schema)                         │
+│   227 │   │   except asyncio.CancelledError:                                 │
+│   228 │   │   │   raise                                                      │
+│   229 │   │   except Exception:                                              │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │       log = <BoundLoggerLazyProxy(logger=None, wrapper_class=None,       │ │
+│ │             processors=None, context_class=None, initial_values={},      │ │
+│ │             logger_factory_args=('examples.workflow_drive_loop',))>      │ │
+│ │      pool = <asyncpg.pool.Pool object at 0x7ff987403b80>                 │ │
+│ │    schema = 'tes_trigger_ivrhwd0w'                                       │ │
+│ │ structlog = <module 'structlog' from                                     │ │
+│ │             '/tmp/opencode/wt-taskqflow-p5/.venv/lib/python3.13/site-pa… │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /tmp/opencode/wt-taskqflow-p5/examples/workflows.py:203 in _drive_pending    │
+│                                                                              │
+│   200 async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:     │
+│   201 │   """One drive pass over the pending runs (the demo's in-process     │
+│   202 │   driver; a worker process would drive the same rows)."""            │
+│ ❱ 203 │   rows = await pool.fetch(                                           │
+│   204 │   │   f"SELECT id FROM \"{schema}\".jobs WHERE step_key = '__flow__' │
+│       # Why: the schema is the app's settings-validated identifier; every va │
+│       parameter.                                                             │
+│   205 │   │   "AND status = 'running' LIMIT 5"                               │
+│   206 │   )                                                                  │
+│                                                                              │
+│ ╭─────────────────────── locals ────────────────────────╮                    │
+│ │   pool = <asyncpg.pool.Pool object at 0x7ff987403b80> │                    │
+│ │ schema = 'tes_trigger_ivrhwd0w'                       │                    │
+│ ╰───────────────────────────────────────────────────────╯                    │
+│                                                                              │
+│ /tmp/opencode/wt-taskqflow-p5/.venv/lib/python3.13/site-packages/asyncpg/poo │
+│ l.py:628 in fetch                                                            │
+│                                                                              │
+│    625 │   │                                                                 │
+│    626 │   │   .. versionadded:: 0.10.0                                      │
+│    627 │   │   """                                                           │
+│ ❱  628 │   │   async with self.acquire() as con:                             │
+│    629 │   │   │   return await con.fetch(                                   │
+│    630 │   │   │   │   query,                                                │
+│    631 │   │   │   │   *args,                                                │
+│                                                                              │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮ │
+│ │         args = ()                                                        │ │
+│ │        query = 'SELECT id FROM "tes_trigger_ivrhwd0w".jobs WHERE         │ │
+│ │                step_key = \'__flow__\' AND statu'+21                     │ │
+│ │ record_class = None                                                      │ │
+│ │         self = <asyncpg.pool.Pool object at 0x7ff987403b80>              │ │
+│ │      timeout = None                                                      │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ /tmp/opencode/wt-taskqflow-p5/.venv/lib/python3.13/site-packages/asyncpg/poo │
+│ l.py:1056 in __aenter__                                                      │
+│                                                                              │
+│   1053 │   async def __aenter__(self):                                       │
+│   1054 │   │   if self.connection is not None or self.done:                  │
+│   1055 │   │   │   raise exceptions.InterfaceError('a connection is already  │
+│ ❱ 1056 │   │   self.connection = await self.pool._acquire(self.timeout)      │
+│   1057 │   │   return self.connection                                        │
+│   1058 │                                                                     │
+│   1059 │   async def __aexit__(                                              │
+│                                                                              │
+│ ╭───────────────────────────── locals ──────────────────────────────╮        │
+│ │ self = <asyncpg.pool.PoolAcquireContext object at 0x7ff983827f40> │        │
+│ ╰───────────────────────────────────────────────────────────────────╯        │
+│                                                                              │
+│ /tmp/opencode/wt-taskqflow-p5/.venv/lib/python3.13/site-packages/asyncpg/poo │
+│ l.py:892 in _acquire                                                         │
+│                                                                              │
+│    889 │   │   │   │   return proxy                                          │
+│    890 │   │                                                                 │
+│    891 │   │   if self._closing:                                             │
+│ ❱  892 │   │   │   raise exceptions.InterfaceError('pool is closing')        │
+│    893 │   │   self._check_init()                                            │
+│    894 │   │                                                                 │
+│    895 │   │   if timeout is None:                                           │
+│                                                                              │
+│ ╭──────────────────────── locals ────────────────────────╮                   │
+│ │    self = <asyncpg.pool.Pool object at 0x7ff987403b80> │                   │
+│ │ timeout = None                                         │                   │
+│ ╰────────────────────────────────────────────────────────╯                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+InterfaceError: pool is closing
+
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=eb4b15967039 redis=8deb80043a09
+=========================== short test summary info ============================
+FAILED tests/test_examples_smoke.py::test_trigger_app_enqueue - AttributeErro...
+1 failed in 3.14s

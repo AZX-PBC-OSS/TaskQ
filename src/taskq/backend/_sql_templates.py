@@ -105,6 +105,12 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "map_index",
     "step_key",
     "code_version",
+    # 01.00.26 (the loop-budget round) / 01.00.30 (its archive mirror):
+    # the loop node's budget state. The same mirror parity as the block
+    # above — the archive sweep cannot archive a column it doesn't name.
+    "budget_deadline",
+    "budget_paused",
+    "budget_remaining_ms",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is

@@ -197,7 +197,12 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
 
         application.state.workflow_app = wf_app
         drive_task = asyncio.create_task(drive_loop(pg_pool, settings.schema_name))
-        stack.push_async_callback(drive_task.cancel)
+        # Task.cancel is a SYNC method (it returns bool) — pushed as a
+        # SYNC callback. push_async_callback would await the bool at
+        # teardown (TypeError: object bool can't be used in 'await' —
+        # CERT2 F-CERT2-1's demo-teardown red; the serve path itself
+        # was always fine, the live stack proves it).
+        stack.callback(drive_task.cancel)
 
         # The Backend the client built reaches the admin router too: without
         # it the admin UI's backend-mediated mutation buttons (job cancel,

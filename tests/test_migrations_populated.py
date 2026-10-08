@@ -185,6 +185,13 @@ def _job_row(
         "map_index": None,
         "step_key": None,
         "code_version": None,
+        # 01.00.26's loop-budget columns (mirrored onto jobs_archive by
+        # 01.00.30): the seeder's rows are VANILLA rows -- the DEFAULT/NULL
+        # shapes, stated explicitly so the runtime intersection never
+        # KeyErrors.
+        "budget_deadline": None,
+        "budget_paused": False,
+        "budget_remaining_ms": None,
         "identity_key": f"ident-{i % 50}" if i % 4 == 0 else None,
         "fairness_key": f"fair-{i % 10}" if i % 7 == 0 else None,
         "payload": _payload(i),

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import socket
 import sys
 import time
@@ -127,26 +126,18 @@ def _module() -> types.ModuleType:
 def demo_env() -> Iterator[types.ModuleType]:
     """The module's dev posture + its WorkflowApp module (the typed
     door's source), for the whole module's life."""
-    old = {
-        k: os.environ.get(k)
-        for k in (
-            "TASKQ_ENVIRONMENT",
-            "TASKQ_ADMIN_ACTIONS_ENABLED",
-            "TASKQ_ADMIN_UI_SECURE_COOKIES",
-        )
-    }
-    os.environ["TASKQ_ENVIRONMENT"] = "dev"
-    os.environ["TASKQ_ADMIN_ACTIONS_ENABLED"] = "true"
-    os.environ["TASKQ_ADMIN_UI_SECURE_COOKIES"] = "false"
+    # The dev posture rides a raw MonkeyPatch (the suite-hygiene law: a
+    # bare os.environ write has no teardown — the atk_iso incident). The
+    # undo() runs at the fixture's end, every exit path.
+    env_patch = pytest.MonkeyPatch()
+    env_patch.setenv("TASKQ_ENVIRONMENT", "dev")
+    env_patch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
+    env_patch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
     module = _module()
     sys.modules[MODULE_NAME] = module
     yield module
     del sys.modules[MODULE_NAME]
-    for k, v in old.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+    env_patch.undo()
 
 
 def _free_port() -> int:

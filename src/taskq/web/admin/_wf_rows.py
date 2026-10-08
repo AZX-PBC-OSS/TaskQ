@@ -19,13 +19,14 @@ one engine, three surfaces (backend, SSE, CLI), no mapping drift.
 
 from __future__ import annotations
 
-import json
+import contextlib
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import NodeView, derive_workflow_status
@@ -212,10 +213,8 @@ def _run_view_from_rows(
     ]
     payload: object = root["payload"]
     if isinstance(payload, str):
-        import contextlib
-
-        with contextlib.suppress(json.JSONDecodeError):
-            payload = json.loads(payload)
+        with contextlib.suppress(ValueError):
+            payload = _json_loads(payload)
     return RunView(
         run_id=str(root["id"]),
         workflow=root["workflow"] or root["actor"],

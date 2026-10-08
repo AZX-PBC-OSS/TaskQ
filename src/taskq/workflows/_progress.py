@@ -39,12 +39,12 @@ zero-finalize-changes probe is a shipped pin).
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, Final
 
 import asyncpg
 import structlog
 
+from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import _jsonb
@@ -177,7 +177,7 @@ def validate_emission(
 def _cap_data(data: dict[str, Any]) -> dict[str, Any]:
     """T18's D5 cap shape: oversize data truncated WITH THE MARKER (never
     silently — the reader must know it read a truncation)."""
-    raw = json.dumps(data, default=str).encode()
+    raw = _json_dumps(data)
     if len(raw) <= DATA_MAX_BYTES:
         return data
     return {"__truncated__": len(raw)}

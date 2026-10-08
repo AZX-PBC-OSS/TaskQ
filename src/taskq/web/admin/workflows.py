@@ -21,7 +21,7 @@ patch on those nodes (the render-once, patch-forever contract).
 
 from __future__ import annotations
 
-import json
+import contextlib
 import uuid
 from datetime import datetime
 from typing import Any, cast
@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
+from taskq._json import loads as _json_loads
 from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import reject_unknown_query_params
 from taskq.web.admin._factory import (
@@ -85,10 +86,8 @@ def _json_of(raw: object) -> object:
     """The jsonb column's decode for the template (asyncpg hands str for
     untyped jsonb params)."""
     if isinstance(raw, str):
-        import contextlib
-
-        with contextlib.suppress(json.JSONDecodeError):
-            return json.loads(raw)
+        with contextlib.suppress(ValueError):
+            return _json_loads(raw)
     return raw
 
 

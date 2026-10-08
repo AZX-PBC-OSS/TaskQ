@@ -25,7 +25,6 @@ THE OUTPUT CONTRACT (the acceptance gates):
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +32,7 @@ from typing import Any, Final, cast
 
 from pydantic import BaseModel
 
+from taskq._json import loads as _json_loads
 from taskq.workflows._status import NodeView, WorkflowStatus, derive_workflow_status
 from taskq.workflows.api._hitl import HoldContext
 
@@ -280,8 +280,8 @@ def parse_decision(raw: str) -> dict[str, object]:
     anything else raises the named error the operator SEES (the caller
     turns it into exit 1 — the CLI's refusal shape, never a traceback)."""
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        parsed = _json_loads(raw)
+    except ValueError as exc:
         raise ValueError(f"the decision is not valid JSON: {exc}") from None
     if not isinstance(parsed, dict):
         raise ValueError(

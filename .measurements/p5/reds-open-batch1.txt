@@ -1,0 +1,335 @@
+....F...............F..........F........F...F.FF..........F.....         [100%]
+=================================== FAILURES ===================================
+_____________________ test_no_module_level_schema_constant _____________________
+
+    def test_no_module_level_schema_constant() -> None:
+        """No test file may define a module-level ``_SCHEMA`` / ``SCHEMA``
+        constant. These tend to be shared (and stale) across many tests in
+        a file; prefer fixture-derived or per-test-local schema names.
+        """
+        offenders = [
+            str(p.relative_to(_TESTS_DIR))
+            for p in _test_files()
+            if _MODULE_SCHEMA_CONST_RE.search(p.read_text())
+        ]
+>       assert not offenders, (
+            "Found module-level _SCHEMA/SCHEMA constant(s) in:\n"
+            + "\n".join(f"  - {f}" for f in offenders)
+            + "\n\nUse module_pg_schema.schema_name (or a local per-test/per-call "
+            "variable) instead of a module-level constant."
+        )
+E       AssertionError: Found module-level _SCHEMA/SCHEMA constant(s) in:
+E           - t21_numbers_run.py
+E         
+E         Use module_pg_schema.schema_name (or a local per-test/per-call variable) instead of a module-level constant.
+E       assert not ['t21_numbers_run.py']
+
+tests/test_suite_hygiene.py:200: AssertionError
+_________________ test_no_test_file_writes_os_environ_directly _________________
+
+    def test_no_test_file_writes_os_environ_directly() -> None:
+        """No file under tests/ may mutate ``os.environ`` directly - env writes
+        go through ``monkeypatch.setenv`` / ``delenv`` (or, session-scoped, a
+        raw ``pytest.MonkeyPatch`` instance with ``undo()``).
+    
+        A bare ``os.environ[...] = ...`` has no teardown: on the test's failure
+        path the value stays in the process environment and leaks into every
+        later reader - the atk_iso incident, where ``TASKQ_SCHEMA_NAME``
+        survived into the CLI's settings load.
+        """
+        offenders: list[str] = []
+        for path in _all_test_tree_files():
+            for site in _os_environ_direct_writes(ast.parse(path.read_text())):
+                offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
+>       assert not offenders, (
+            "Found direct os.environ mutation(s) in the test tree:\n"
+            + "\n".join(f"  - {f}" for f in offenders)
+            + "\n\nUse monkeypatch.setenv/delenv (or, in a session fixture, a raw\n"
+            "pytest.MonkeyPatch() instance with undo()) so every exit path restores\n"
+            "the process environment. A bare os.environ write has no teardown and\n"
+            "leaks into later tests' settings loads (the atk_iso incident)."
+        )
+E       AssertionError: Found direct os.environ mutation(s) in the test tree:
+E           - attack4-cli-races.py: line 133: os.environ subscript write/del
+E           - attack4-admin-chaos.py: line 138: os.environ subscript write/del
+E           - attack4-admin-chaos.py: line 139: os.environ subscript write/del
+E           - attack4-admin-chaos.py: line 140: os.environ subscript write/del
+E           - attack4-admin-chaos.py: line 149: os.environ subscript write/del
+E         
+E         Use monkeypatch.setenv/delenv (or, in a session fixture, a raw
+E         pytest.MonkeyPatch() instance with undo()) so every exit path restores
+E         the process environment. A bare os.environ write has no teardown and
+E         leaks into later tests' settings loads (the atk_iso incident).
+E       assert not ['attack4-cli-races.py: line 133: os.environ subscript write/del', 'attack4-admin-chaos.py: line 138: os.environ subsc...haos.py: line 140: os.environ subscript write/del', 'attack4-admin-chaos.py: line 149: os.environ subscript write/del']
+
+tests/test_suite_hygiene.py:407: AssertionError
+________ test_changelog_carries_only_release_please_generated_sections _________
+
+    def test_changelog_carries_only_release_please_generated_sections() -> None:
+        """No hand-written block: anything outside the generator's heading
+        vocabulary is outside its model of the file and will not survive (or
+        be honoured by) the next release run."""
+        foreign = _non_generated_sections()
+>       assert not foreign, (
+            "CHANGELOG.md contains sections release-please did not generate:\n  "
+            + "\n  ".join(foreign)
+            + "\nThe file is regenerated from conventional commits on release; "
+            "hand-written entries are invisible to that pipeline. Breaking "
+            "changes belong in commit messages as `type!:` subjects or "
+            "`BREAKING CHANGE:` footers, which drive BOTH the generated notes "
+            "and the SemVer bump. Human-facing migration notes belong in "
+            "docs/guides/upgrading.md."
+        )
+E       AssertionError: CHANGELOG.md contains sections release-please did not generate:
+E           ## [Unreleased — TaskQflow phase 4]
+E           ## [Unreleased — TaskQflow phase 2]
+E         The file is regenerated from conventional commits on release; hand-written entries are invisible to that pipeline. Breaking changes belong in commit messages as `type!:` subjects or `BREAKING CHANGE:` footers, which drive BOTH the generated notes and the SemVer bump. Human-facing migration notes belong in docs/guides/upgrading.md.
+E       assert not ['## [Unreleased — TaskQflow phase 4]', '## [Unreleased — TaskQflow phase 2]']
+
+tests/test_breaking_change_markers.py:412: AssertionError
+___________ test_strict_fifo_lateral_probe_rides_the_unrouted_index ____________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_15ea7201b111'
+mixed_population_schema = 'unrouted_oracle_ox2gwgxh'
+
+    @pytest.mark.integration
+    async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
+        pg_dsn: str, mixed_population_schema: str
+    ) -> None:
+        """EXPLAIN ANALYZE the production strict-FIFO candidates lateral over
+        the shape: the probe must ride jobs_unrouted_actor_dispatch_idx
+        (the marker is in the index predicate), so not one re-pended row is
+        visited, the pending-only twin would walk all _REPEND_ROWS of them
+        as "Rows Removed by Filter" before the first admissible row."""
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+>           plan = await _explain_analyze(
+                conn,
+                _params_wrapper(
+                    _STRICT_FIFO_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=False
+                ),
+                ["default"],
+                10,
+                new_uuid(),
+                timedelta(seconds=30),
+                2,
+            )
+
+tests/test_migration_lock_scope_dead_index.py:619: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_migration_lock_scope_dead_index.py:599: in _explain_analyze
+    rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", *params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "wf_exec_capable" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+___________ test_round_robin_lateral_probe_rides_the_unrouted_index ____________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_15ea7201b111'
+mixed_population_schema = 'unrouted_oracle_ox2gwgxh'
+
+    @pytest.mark.integration
+    async def test_round_robin_lateral_probe_rides_the_unrouted_index(
+        pg_dsn: str, mixed_population_schema: str
+    ) -> None:
+        """Same oracle for the round-robin candidates lateral (rr_keys
+        literalized to the one seeded cohort): the probe must ride an
+        UNROUTED marker-partial index and visit zero re-pended rows.
+    
+        Which of the two unrouted marker indexes carries the probe is the
+        planner's estimate comparison, not a contract: the cohort-equality
+        qual (``COALESCE(fairness_key, '__null__') = <key>``) is an Index
+        Cond on jobs_unrouted_round_robin_probe_idx and a post-scan Filter on
+        jobs_unrouted_actor_dispatch_idx, and migration 01.00.22_01's
+        expression statistics - the fixture's ANALYZE populates them with a
+        single all-NULL cohort, honestly pricing the equality at selectivity
+        1.0 - legitimately re-price that comparison at this population. What
+        is a contract is the PARTIAL-index predicate: either marker index
+        contains unrouted rows only, so the probe visits zero re-pended rows
+        (asserted below via the Rows-Removed oracle). The deep regime's
+        bounded-walk contract is pinned separately by
+        tests/test_dispatch_backlog_depth_bound.py, whose re-pended pins red
+        without the statistics object - the mutation proof that the depth
+        contract and this toy-scale index choice are different claims."""
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+>           plan = await _explain_analyze(
+                conn,
+                _params_wrapper(_ROUND_ROBIN_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=True),
+                ["default"],
+                10,
+                new_uuid(),
+                timedelta(seconds=30),
+                2,
+            )
+
+tests/test_migration_lock_scope_dead_index.py:667: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_migration_lock_scope_dead_index.py:599: in _explain_analyze
+    rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", *params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "wf_exec_capable" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+__________________ test_no_stdlib_json_imports_outside__json ___________________
+
+    def test_no_stdlib_json_imports_outside__json() -> None:
+        # Guard the guard: if ``taskq`` resolved somewhere without _json.py
+        # (a stale site-packages shadow, an unexpected editable-install
+        # layout), rglob would scan the wrong tree -- or nothing at all --
+        # and this pin would pass vacuously. Fail loudly instead.
+        assert _SANCTIONED.exists(), (
+            f"expected the taskq package at {_PACKAGE_ROOT} to contain _json.py; "
+            "the doctrine sweep is scanning the wrong tree"
+        )
+        violations: list[str] = []
+        for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+            if path == _SANCTIONED:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "json" or alias.name.startswith("json.") for alias in node.names
+                ):
+                    violations.append(f"{path}:{node.lineno} import json")
+                if isinstance(node, ast.ImportFrom) and (
+                    node.module == "json" or (node.module or "").startswith("json.")
+                ):
+                    violations.append(f"{path}:{node.lineno} from {node.module} import ...")
+                if isinstance(node, ast.Call) and (
+                    (isinstance(node.func, ast.Attribute) and node.func.attr == "import_module")
+                    or (isinstance(node.func, ast.Name) and node.func.id == "__import__")
+                ):
+                    for arg in node.args:
+                        if (
+                            isinstance(arg, ast.Constant)
+                            and isinstance(arg.value, str)
+                            and (arg.value == "json" or arg.value.startswith("json."))
+                        ):
+                            violations.append(f"{path}:{node.lineno} dynamic import of {arg.value!r}")
+>       assert violations == [], (
+            "taskq/_json.py's doctrine says the library never imports stdlib "
+            f"json directly; found violations: {violations}"
+        )
+E       AssertionError: taskq/_json.py's doctrine says the library never imports stdlib json directly; found violations: ['/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/_wf_actions.py:30 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/_wf_rows.py:22 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/workflows.py:24 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/workflows/_cli.py:28 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/workflows/_progress.py:42 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/workflows/_progress_read.py:35 import json', '/tmp/opencode/wt-taskqflow-p5/src/taskq/workflows/_progress_read.py:170 import json']
+E       assert ['/tmp/openco...rt json', ...] == []
+E         
+E         Left contains 7 more items, first extra item: '/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/_wf_actions.py:30 import json'
+E         Use -v to get more diff
+
+tests/test_no_stdlib_json.py:65: AssertionError
+_______________ test_copy_from_columns_match_jobs_table_exactly ________________
+
+pg_conn = <asyncpg.connection.Connection object at 0x7f7d3f9abf20>
+settings = TaskQSettings(pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_bdd281dd9559', pg_is_pooled=False, schema_name='tq_bdd281...imeout_ms=5000.0, unique_for_lock_timeout_ms=5000.0, idempotency_lock_timeout_ms=5000.0, timescaledb_hypertables=False)
+
+    async def test_copy_from_columns_match_jobs_table_exactly(
+        pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """COPY_FROM_COLUMNS is the single source of truth for both the
+        enqueue_batch_fast COPY tuple and the archive sweep's explicit column
+        lists. If a future migration adds a column to `jobs` without updating
+        it, the archive sweep would silently stop archiving that column (data
+        loss on prune) and the COPY path would fail or misalign. Lock the
+        tuple to the actual table definition: exact set equality, no missing,
+        no extras."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    
+        rows = await pg_conn.fetch(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'jobs'
+            """,
+            settings.schema_name,
+        )
+        actual = {r["column_name"] for r in rows}
+        declared = set(COPY_FROM_COLUMNS)
+>       assert declared == actual, (
+            f"COPY_FROM_COLUMNS drifted from jobs table: "
+            f"missing from tuple: {sorted(actual - declared)}, "
+            f"not in table: {sorted(declared - actual)}"
+        )
+E       AssertionError: COPY_FROM_COLUMNS drifted from jobs table: missing from tuple: ['budget_deadline', 'budget_paused', 'budget_remaining_ms'], not in table: []
+E       assert {'actor', 'as...m_epoch', ...} == {'actor', 'as...ning_ms', ...}
+E         
+E         Extra items in the right set:
+E         'budget_deadline'
+E         'budget_paused'
+E         'budget_remaining_ms'
+E         Use -v to get more diff
+
+tests/test_migrations.py:112: AssertionError
+___________ test_jobs_archive_columns_match_jobs_plus_archive_fields ___________
+
+pg_conn = <asyncpg.connection.Connection object at 0x7f7d3e2205f0>
+settings = TaskQSettings(pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_bdd281dd9559', pg_is_pooled=False, schema_name='tq_bdd281...imeout_ms=5000.0, unique_for_lock_timeout_ms=5000.0, idempotency_lock_timeout_ms=5000.0, timescaledb_hypertables=False)
+
+    async def test_jobs_archive_columns_match_jobs_plus_archive_fields(
+        pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    
+        jobs_cols = await pg_conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'jobs'
+            ORDER BY ordinal_position
+            """,
+            settings.schema_name,
+        )
+        archive_cols = await pg_conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'jobs_archive'
+            ORDER BY ordinal_position
+            """,
+            settings.schema_name,
+        )
+    
+        jobs_col_map = {r["column_name"]: r for r in jobs_cols}
+        archive_col_map = {r["column_name"]: r for r in archive_cols}
+    
+        for name in jobs_col_map:
+>           assert name in archive_col_map, f"jobs column {name!r} missing from jobs_archive"
+E           AssertionError: jobs column 'budget_deadline' missing from jobs_archive
+E           assert 'budget_deadline' in {'id': <Record column_name='id' data_type='uuid' is_nullable='NO' column_default=None>, 'actor': <Record column_name='...None>, 'identity_key': <Record column_name='identity_key' data_type='text' is_nullable='YES' column_default=None>, ...}
+
+tests/test_migrations.py:201: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_suite_hygiene.py::test_no_module_level_schema_constant - As...
+FAILED tests/test_suite_hygiene.py::test_no_test_file_writes_os_environ_directly
+FAILED tests/test_breaking_change_markers.py::test_changelog_carries_only_release_please_generated_sections
+FAILED tests/test_migration_lock_scope_dead_index.py::test_strict_fifo_lateral_probe_rides_the_unrouted_index
+FAILED tests/test_migration_lock_scope_dead_index.py::test_round_robin_lateral_probe_rides_the_unrouted_index
+FAILED tests/test_no_stdlib_json.py::test_no_stdlib_json_imports_outside__json
+FAILED tests/test_migrations.py::test_copy_from_columns_match_jobs_table_exactly
+FAILED tests/test_migrations.py::test_jobs_archive_columns_match_jobs_plus_archive_fields
+8 failed, 56 passed in 21.14s

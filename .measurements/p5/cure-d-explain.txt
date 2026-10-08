@@ -1,0 +1,116 @@
+.......F.F.                                                              [100%]
+=================================== FAILURES ===================================
+___________ test_strict_fifo_lateral_probe_rides_the_unrouted_index ____________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_945d69a2a3de'
+mixed_population_schema = 'unrouted_oracle_y9wdrzge'
+
+    @pytest.mark.integration
+    async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
+        pg_dsn: str, mixed_population_schema: str
+    ) -> None:
+        """EXPLAIN ANALYZE the production strict-FIFO candidates lateral over
+        the shape: the probe must ride jobs_unrouted_actor_dispatch_idx
+        (the marker is in the index predicate), so not one re-pended row is
+        visited, the pending-only twin would walk all _REPEND_ROWS of them
+        as "Rows Removed by Filter" before the first admissible row."""
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+>           plan = await _explain_analyze(
+                conn,
+                _params_wrapper(
+                    _STRICT_FIFO_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=False
+                ),
+                ["default"],
+                10,
+                new_uuid(),
+                timedelta(seconds=30),
+                2,
+            )
+
+tests/test_migration_lock_scope_dead_index.py:630: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_migration_lock_scope_dead_index.py:610: in _explain_analyze
+    rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", *params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.PostgresSyntaxError: syntax error at or near ","
+
+asyncpg/protocol/protocol.pyx:165: PostgresSyntaxError
+___________ test_round_robin_lateral_probe_rides_the_unrouted_index ____________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_945d69a2a3de'
+mixed_population_schema = 'unrouted_oracle_y9wdrzge'
+
+    @pytest.mark.integration
+    async def test_round_robin_lateral_probe_rides_the_unrouted_index(
+        pg_dsn: str, mixed_population_schema: str
+    ) -> None:
+        """Same oracle for the round-robin candidates lateral (rr_keys
+        literalized to the one seeded cohort): the probe must ride an
+        UNROUTED marker-partial index and visit zero re-pended rows.
+    
+        Which of the two unrouted marker indexes carries the probe is the
+        planner's estimate comparison, not a contract: the cohort-equality
+        qual (``COALESCE(fairness_key, '__null__') = <key>``) is an Index
+        Cond on jobs_unrouted_round_robin_probe_idx and a post-scan Filter on
+        jobs_unrouted_actor_dispatch_idx, and migration 01.00.22_01's
+        expression statistics - the fixture's ANALYZE populates them with a
+        single all-NULL cohort, honestly pricing the equality at selectivity
+        1.0 - legitimately re-price that comparison at this population. What
+        is a contract is the PARTIAL-index predicate: either marker index
+        contains unrouted rows only, so the probe visits zero re-pended rows
+        (asserted below via the Rows-Removed oracle). The deep regime's
+        bounded-walk contract is pinned separately by
+        tests/test_dispatch_backlog_depth_bound.py, whose re-pended pins red
+        without the statistics object - the mutation proof that the depth
+        contract and this toy-scale index choice are different claims."""
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+>           plan = await _explain_analyze(
+                conn,
+                _params_wrapper(_ROUND_ROBIN_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=True),
+                ["default"],
+                10,
+                new_uuid(),
+                timedelta(seconds=30),
+                2,
+            )
+
+tests/test_migration_lock_scope_dead_index.py:678: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_migration_lock_scope_dead_index.py:610: in _explain_analyze
+    rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", *params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.PostgresSyntaxError: syntax error at or near ","
+
+asyncpg/protocol/protocol.pyx:165: PostgresSyntaxError
+=========================== short test summary info ============================
+FAILED tests/test_migration_lock_scope_dead_index.py::test_strict_fifo_lateral_probe_rides_the_unrouted_index
+FAILED tests/test_migration_lock_scope_dead_index.py::test_round_robin_lateral_probe_rides_the_unrouted_index
+2 failed, 9 passed in 2.12s
