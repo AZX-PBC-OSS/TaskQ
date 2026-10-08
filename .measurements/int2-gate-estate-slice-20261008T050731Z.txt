@@ -1,0 +1,4 @@
+# the estate regression slice x3 on the reconciled double — head after cure-fold
+26 passed in 3.53s
+26 passed in 3.54s
+26 passed in 3.54s
