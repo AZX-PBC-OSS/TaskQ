@@ -55,3 +55,20 @@ duplicate-finalize numbers are P1 FINAL's imported evidence
 
 The bands carry `load_sensitive` (the serial perf lane); measured cost
 ~7 s per run warm; no new lane added.
+
+## The hold→resume latency band (T10, G11c — the third workflow band)
+
+The deliver CAS (validate → the `'held' → 'delivered'` CAS → the node's
+resume write — ONE transaction, two statements) measured at the pin
+shape (one held node, one run, the local PG lane):
+
+| metric | value | source |
+| --- | --- | --- |
+| hold→resume (the deliver's commit → the row claimable) | see `.measurements/t10-hold-resume-band.json` (`hold_to_resume_ms`) | `tests/test_wf_hitl_pins.py::test_hold_to_resume_latency_band` |
+| the PINNED band | **≤ 50 ms** (the assert fails past 500 ms — the CI headroom; the band is the p99-far-bound, not the p50) | the same pin |
+
+The band's rationale: the deliver is two statements in one tx (the row
+CAS + the node's held-representation clear) — single-digit
+milliseconds at the pin shape; 50 ms gives the fleet-lane headroom
+(the load-sensitive marker applies — the pin runs in the default lane,
+the band is wide enough to be deterministic-by-construction).

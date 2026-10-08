@@ -542,6 +542,18 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    async def wf_signal_sweep_call() -> int:
+        # THE SIGNAL SWEEP'S EXPIRY ARM (T10): the ONLY live timer on a
+        # held row — the deadline is DB-CLOCK compared; the expired hold
+        # → the DEFINED 'abandoned' state (never a silent orphan). The
+        # lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_expired_signals
+
+        return await sweep_expired_signals(
+            ctx.deps.dispatcher_pool,
+            schema=ctx.deps.settings.schema_name,
+        )
+
     async def wf_loop_budget_call() -> int:
         # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
         # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
@@ -775,6 +787,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=True,
             dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
+        ),
+        _SweepSpec(
+            # wf_signal_sweep — THE HELD ROWS' TIMER (T10): the expiry
+            # arm (the only live timer on a held row; the DB-clock
+            # comparison).
+            name="wf_signal_sweep",
+            call=wf_signal_sweep_call,
+            warn_event="sweep-wf-signal-sweep-failed",
+            warn_kind="sweep_wf_signal_sweep_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
         ),
         _SweepSpec(
             # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
