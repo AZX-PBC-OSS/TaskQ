@@ -21,6 +21,7 @@ registered-definition registry; ``_capture`` owns the failure IO-capture
 writer; ``_version`` owns the canonical code-version hash.
 """
 
+from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, emit_batch
 from taskq.workflows._sweep import (
     SweepResult,
     drain_outbox,
@@ -33,6 +34,7 @@ from taskq.workflows._types import (
     ChildSpec,
     ConsumerBinding,
     DecrementHit,
+    EmitChild,
     FailureInfo,
     FailurePolicy,
     FinalizeResult,
@@ -90,6 +92,7 @@ from taskq.workflows.ledger import (
 
 __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
+    "EMIT_CURSOR_KEY",
     "FAILURE_POLICIES",
     "MAX_FAN_IN_PER_JOIN",
     "AbsorbingPolicy",
@@ -101,6 +104,8 @@ __all__ = [
     "Done",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
+    "EmitChild",
+    "EmitFencedError",
     "Exit",
     "FailureInfo",
     "FailurePolicy",
@@ -126,6 +131,7 @@ __all__ = [
     "build",
     "claim_step_ledger",
     "drain_outbox",
+    "emit_batch",
     "fan_in_skip",
     "finalize_node",
     "gather",

@@ -26,7 +26,7 @@ semantics.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -41,7 +41,7 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
-from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
+from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec, JoinSpec, NodeSpec, _jsonb
 from taskq.workflows.api._graph import Exit
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.engine import fan_in_skip, finalize_node
@@ -112,6 +112,62 @@ class StepContext:
     #: The workflow's redact hook (chain → hook — the hold context's
     #: persist-time redact; attack-3 H3's cure).
     _redact: Callable[[str], str] | None = None
+    #: This node's claim view's worker (the emit's cursor checkpoint
+    #: fences on it — T20). ``None`` = the context was built without a
+    #: claim (a unit-test direct call) — the emit refuses loudly.
+    _worker_id: JobId | None = None
+
+    async def cursor(self) -> dict[str, object]:
+        """THE STREAMING SOURCE'S CHECKPOINTED CURSOR (T20): read from
+        THIS source row's own metadata — the emit tx's checkpoint, under
+        the ``emit_cursor`` key. ``{}`` before the first emit; the
+        resume's body re-reads it to continue from the last COMMITTED
+        page (never N-1, never N+1)."""
+        from taskq.workflows._emit import EMIT_CURSOR_KEY
+
+        async with self._pool.acquire() as conn:
+            raw = await conn.fetchval(
+                _stmt(_SOURCE_CURSOR_SQL_TEMPLATE, self._wsql.schema),
+                self.job_id,
+                EMIT_CURSOR_KEY,
+            )
+        if raw is None:
+            return {}
+        decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
+        assert isinstance(decoded, dict), "the cursor checkpoint is a jsonb object"
+        return cast("dict[str, object]", decoded)
+
+    async def emit_batch(
+        self,
+        children: Sequence[EmitChild],
+        *,
+        cursor: dict[str, object],
+    ) -> tuple[JobId, ...]:
+        """THE STREAMING SOURCE'S EMIT (T20): this page's chain starts +
+        the edges + THIS node's cursor checkpoint, ONE transaction, while
+        the source stays ``running`` (see ``taskq.workflows._emit`` — the
+        fork-atomicity law at page granularity; a kill at any statement
+        window rolls the whole page back). Each yield of the paged
+        generator body is ONE ``ctx.emit_batch`` call."""
+        from taskq.workflows._emit import emit_batch as _emit_batch
+
+        if self._worker_id is None:
+            raise WorkflowRunError(
+                "ctx.emit_batch ran without this node's claim view — the "
+                "emit's cursor checkpoint fences on the claim (worker, "
+                "attempt, epoch), which this context does not carry"
+            )
+        return await _emit_batch(
+            self._pool,
+            self._wsql,
+            flow_id=self.flow_id,
+            source_id=self.job_id,
+            worker_id=self._worker_id,
+            attempt=self.attempt,
+            claim_epoch=0,  # the runner's own claim writes epoch 0 (_NODE_CLAIM_SQL_TEMPLATE)
+            children=children,
+            cursor=cursor,
+        )
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
@@ -431,6 +487,13 @@ _ITEM_KEY = "wf_item"
 _NODE_BY_STEP_KEY_SQL_TEMPLATE = """
 SELECT id FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
+"""
+
+#: The streaming source's checkpointed cursor read (T20): the key is the
+#: bound EMIT_CURSOR_KEY constant — never an f-string SQL (the S608 rule);
+#: the row is the SOURCE's own.
+_SOURCE_CURSOR_SQL_TEMPLATE = """
+SELECT metadata -> $2 FROM {schema}.jobs WHERE id = $1
 """
 
 _EDGE_INSERT_SQL_TEMPLATE = """
@@ -806,6 +869,7 @@ class FlowRunner:
             _wsql=self.wsql,
             _map_index=row["map_index"],
             _ledger_id=ledger_id,
+            _worker_id=self._worker_id,
             _workflow_name=self.compiled.name,
             _redact=self._redact_hook(),
         )
