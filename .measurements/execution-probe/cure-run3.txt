@@ -1,0 +1,43 @@
+========================================================================
+PHASE A — the mixed fleet: capable worker + vanilla co-tenant
+========================================================================
+== flow created: 01a11a32-2daf-7d43-bcb0-e0710d63a816
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+== capable worker (default+gpu) + vanilla co-tenant launched — waiting 40 s
+== flow root status: running
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: scheduled
+    screen (map=1) q=gpu: scheduled
+    screen (map=2) q=gpu: scheduled
+== bodies in the CAPABLE worker's process: 3
+== bodies in the VANILLA co-tenant's process: 0
+== bodies in ANY OTHER process (the probe's own pid et al): 0
+== bodies that ran MORE THAN ONCE (the snooze-loop red): none
+== the vanilla co-tenant's flow-row claim/snooze lines: 11
+== PHASE A VERDICT: RED
+========================================================================
+PHASE B — drive() while the capable worker runs: who executes?
+========================================================================
+== flow created: 01a11a33-1a8f-7d41-adf6-b601e14744a3
+== capable worker launched — driving
+== drive verdict: 'terminal'
+== bodies in the WORKER process: 0
+== bodies in the DRIVING process: 3
+== flow root status: succeeded
+== PHASE B VERDICT: RED
+========================================================================
+PHASE S — the split placement, both pools live: each node on ITS pool
+========================================================================
+== flow created: 01a11a33-1afc-7361-8a37-8914f3540241
+== capable workers: default-only + gpu-only — waiting for the flow
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: pending
+    screen (map=1) q=gpu: pending
+    screen (map=2) q=gpu: pending
+== source bodies: 1 — pids: [1130448]
+== screen bodies: 2 — pids: [1130449, 1130449]
+== flow root status: running
+== PHASE S VERDICT: RED
+========================================================================
+CURE PROBE COMPLETE

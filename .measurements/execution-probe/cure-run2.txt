@@ -1,0 +1,45 @@
+========================================================================
+PHASE A — the mixed fleet: capable worker + vanilla co-tenant
+========================================================================
+== flow created: 01a11a30-5bce-7500-a026-eb5093d53460
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+== capable worker (default+gpu) + vanilla co-tenant launched — waiting 40 s
+== flow root status: running
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: running
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: running
+== bodies in the CAPABLE worker's process: 0
+== bodies in the VANILLA co-tenant's process: 0
+== bodies in ANY OTHER process (the probe's own pid et al): 0
+== bodies that ran MORE THAN ONCE (the snooze-loop red): none
+== the vanilla co-tenant's flow-row claim/snooze lines: 0
+== PHASE A VERDICT: RED
+========================================================================
+PHASE B — drive() while the capable worker runs: who executes?
+========================================================================
+== flow created: 01a11a31-215a-7411-bb05-4f60ba92feac
+== capable worker launched — driving
+== drive verdict: 'terminal'
+== bodies in the WORKER process: 0
+== bodies in the DRIVING process: 3
+== flow root status: succeeded
+== PHASE B VERDICT: RED
+========================================================================
+PHASE S — the split placement, both pools live: each node on ITS pool
+========================================================================
+== flow created: 01a11a31-219d-7152-8db9-b9a539298f87
+== capable workers: default-only + gpu-only — waiting for the flow
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: running
+    __flow__ (map=None) q=default: running
+    doc_source (map=None) q=default: running
+== source bodies: 0 — pids: []
+== screen bodies: 0 — pids: []
+== flow root status: running
+== PHASE S VERDICT: RED
+========================================================================
+CURE PROBE COMPLETE

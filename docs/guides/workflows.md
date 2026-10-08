@@ -241,6 +241,86 @@ arms off):
 The arms' imports stay inside the spec calls (nothing outside the package
 may import `taskq.workflows` at module scope).
 
+## THE WORKER EXECUTION — the queue is the runtime, in production
+
+A workflow row IS a `jobs` row, and the vanilla claim path dispatches it
+— but a claimed row is work only if the claiming worker can RESOLVE the
+body. Three cures ship, one machinery:
+
+**1. THE EXECUTION FENCE (the claim's capability leg).** A worker that
+never imported the flow definitions cannot resolve any body — handing it
+a workflow row buys a claim-snooze-claim loop. So the claim statement's
+fence admits flow rows ONLY when THIS round's worker registered itself
+capable: the workers row's `metadata.workflow_execution` boolean, stamped
+at boot. A non-capable worker NEVER claims a flow row — the row waits for
+a capable worker (the defined pre-deployment state; the stranded-jobs
+detector surfaces a flow nobody can run). The fence short-circuits on the
+`step_key` probe — a vanilla row's plan cost is one column test, the same
+cost class the P3 fence's own comment pins (the zero-tax law: the vanilla
+claim path is unchanged; the dispatch band stays green).
+
+**2. THE BOOT PROJECTION (the F3 law's call site).** A worker whose
+process imported at least one `WorkflowApp` boots CAPABLE: the projection
+compiles every imported app's declared workflows (which is what populates
+the D1 definition registry in the worker's process — the body resolution
+answers from these very compiles) and projects the compiled graphs'
+`(actor, queue)` cohorts into `actor_config` rows — the SAME carrier, the
+same `sync_actor_config` surface, the same drift guards the vanilla
+`@actor` refs ride. The dispatch capacity LATERAL sees the workflow
+cohorts; the admin's actors page, the drift machinery and
+`TASKQ_QUEUES_STRICT` see them too — no second, invisible actor
+population.
+
+**3. THE INTERCEPT (the claimed row's execution door).** A claimed row
+carrying the flow lineage (`metadata.flow_id`) executes through the
+WORKFLOW machinery, never the actor registry: the body resolves from the
+registered definition (D1 — the flow root's stamped `metadata.workflow`
+name, the same durable leg the leader's fire arm uses) and runs via the
+runner's ledger-claim + finalize machinery — the same two-transaction
+finalize, the same fences, the same ladder. NOT a second execution
+semantics: the in-process driver and the worker's door differ only in WHO
+CLAIMED (the runner's own claim stamps `claim_epoch` 0; the fleet's
+dispatch claim carries the row's epoch — every fence reads the epoch it
+fences against). A row whose stamped name resolves to nothing (the
+definitions not imported anywhere — a deployment defect, or a hand-crafted
+row) parks at the snooze cadence budget-free, `released_reason=
+'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
+LOUD, never a silent wedge.
+
+### THE SPLIT PLACEMENT — one actor, one queue (the design law)
+
+`actor_config` is keyed by actor name: ONE queue per actor, the estate's
+own law. A flow's heterogeneous placement (§9.1 — a source on `default`,
+a chain on `gpu`) is therefore expressed with **distinct actor names per
+queue** — the chain's gpu step is a gpu-named actor:
+
+```python
+CHAIN = Chain(
+    name="gpu-chain", start="screen", steps={...},
+    actor="wf-gpu", queue="gpu",   # the chain's steps: a gpu-NAMED actor
+)
+
+@app.workflow("ingest")
+def ingest() -> object:
+    src = chain_source(CHAIN, source_body, key="doc_source")  # actor 'wf', queue 'default'
+    return build(src)
+```
+
+One actor name declared over TWO queues is a cohort conflict — refused
+loudly (the boot refuses, the drift-guard precedent; the error names the
+cure). The override-warning path (one queue silently winning) is dead by
+construction.
+
+### The orchestration-only drive
+
+`drive(flow_id, execute=False)` is the fleet-mode driver: the driving
+process claims and executes NOTHING — the tick runs only the sweep arms,
+and the flow's work executes in the fleet's workers through the
+queue-routed dispatch. The `execute=True` default is the dev-loop driver,
+unchanged. Each node on ITS pool: a `default`-subscribed worker executes
+the source, a `gpu`-subscribed worker the chain — the queue column is
+load-bearing end to end.
+
 ## The build-time validators
 
 A malformed graph is a coding error, refused before any row is written:

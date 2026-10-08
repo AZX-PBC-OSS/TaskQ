@@ -1,0 +1,15 @@
+{"actor":"wf","registered":"default","stored":"gpu","level":"warning","logger":"taskq.worker.startup","timestamp":"2026-10-08T05:37:17.182882Z","event":"actor-config-queue-override"}
+== actor_config rows stamped for the workflow actors
+== flow created: 01a11a04-1380-7103-bb1c-5bd6304aaf85
+== vanilla worker launched — watching 30s
+   [22:37:17] __flow__ q=default -> status=running attempt=0 released=None
+   [22:37:17] doc_source q=default -> status=pending attempt=0 released=None
+== BODY EXECUTIONS OBSERVED (all schemas, cumulative): 3
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'source', 'job_id': '01a11a03-fe67-7b23-a7cb-165ccf05f503'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a03-fe72-7ba0-aace-fe77d966359f'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a03-fe72-7ba0-aace-fe8e3270106b'}
+== the worker's actor-not-found lines: 0
+== the rows at the end:
+    {'id': UUID('01a11a04-1380-7103-bb1c-5bd6304aaf85'), 'step_key': '__flow__', 'actor': 'wf', 'queue': 'default', 'status': 'running', 'attempt': 0, 'map_index': None, 'flow': '01a11a04-1380-7103-bb1c-5bd6304aaf85', 'released': None, 'started_at': None, 'finished_at': None}
+    {'id': UUID('01a11a04-1382-7da0-b874-6254b471e35b'), 'step_key': 'doc_source', 'actor': 'wf', 'queue': 'default', 'status': 'pending', 'attempt': 0, 'map_index': None, 'flow': '01a11a04-1380-7103-bb1c-5bd6304aaf85', 'released': None, 'started_at': None, 'finished_at': None}
+== flow root status: running
