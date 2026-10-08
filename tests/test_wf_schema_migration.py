@@ -201,6 +201,48 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     assert '"violates": false' in out, out
 
 
+#: §16.1's BOOT SURFACES (F-R5's widening): every process entry the
+#: package ships — the library root, the worker's boot entry (the
+#: intercept seam), the CLI, the web assembly, and the admin's workflow
+#: PAGES module. The pin's old probe checked ONLY ``taskq/__init__``, so
+#: the stated law and its enforcement didn't match the shipped tree:
+#: ``web/admin/_wf_rows.py`` imported the package at module scope (and
+#: ``web/admin/workflows.py`` imported _wf_rows) with every pin green.
+#: Each surface is probed in a FRESH interpreter — the runtime truth
+#: (``taskq.workflows`` absent from ``sys.modules``), not a grep.
+_IMPORT_LAW_SURFACES = (
+    "import taskq",
+    "import taskq.worker.run",
+    "import taskq.cli",
+    "import taskq.web",
+    "import taskq.web.admin.workflows",
+)
+
+
+@pytest.mark.parametrize("surface", _IMPORT_LAW_SURFACES)
+def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> None:
+    """The §16.1 law, widened (F-R5): importing ANY boot surface must
+    leave ``taskq.workflows`` unloaded — a module-scope workflows import
+    anywhere in the surface's transitive tree is convicted. The admin's
+    page modules are the proven violator (lazy-discovery loads them only
+    when the pages render; their seams import lazily — the
+    ``_wf_actions`` pattern)."""
+    out = subprocess.run(  # noqa: S603 # Why: the fresh-interpreter probe runs the same venv's interpreter with a fixed argv; the surface strings are the pin module's own constant tuple, never user input.
+        [
+            sys.executable,
+            "-c",
+            f"{surface}, sys, json; "
+            "print(json.dumps({'surface': "
+            f"\"{surface}\", 'violates': 'taskq.workflows' in sys.modules}}))",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout
+    assert '"violates": false' in out, out
+
+
 def test_import_law_red_drill(tmp_path: Path) -> None:
     """The revert drill: the pin CAN fail — a module-level import of the
     workflows package in ``taskq/__init__.py`` is convicted by the same AST
