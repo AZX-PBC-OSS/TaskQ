@@ -348,6 +348,138 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "so a second pass returns zero (the same self-draining shape "
         "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
     ),
+    # ── The workflow engine's per-run writes (T06..T21, the phase work):
+    # every write set below is ONE RUN's own rows — the compiled graph's
+    # node count (a definition-time constant, never the jobs backlog) —
+    # or ONE keyed row (id / arbiter). The class this file guards is work
+    # proportional to an unbounded BACKLOG inside one transaction; a
+    # statement whose row count is bounded by one workflow's graph cannot
+    # grow with the backlog no matter how many runs exist (runs are
+    # isolated rows; no statement here scans by anything broader than its
+    # own flow id).
+    "CANCEL_NODES_SQL_TEMPLATE": (
+        "(metadata->>'flow_id')::uuid = $1",
+        "the cancel cascade's node leg: its write set is ONE run's "
+        "non-terminal rows — the compiled graph's node count, a "
+        "definition-time constant",
+    ),
+    "CANCEL_ROOT_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single root row (the cancel's linearization flip)",
+    ),
+    "_EXIT_CANCEL_NODES_SQL_TEMPLATE": (
+        "(metadata->>'flow_id')::uuid = $1",
+        "the id-addressed cancel cascade's node leg (T12's twin of "
+        "CANCEL_NODES_SQL_TEMPLATE): ONE run's non-terminal rows",
+    ),
+    "_EXIT_CANCEL_ROOT_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single root row (the id-addressed cancel's flip)",
+    ),
+    "INCREMENT_DEPS_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single child row (the static create path's dep reservation + the join-wait mark)",
+    ),
+    "NODE_CLAIM_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single node row (the in-process claim's CAS)",
+    ),
+    "ROOT_START_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single root row (pending → running at create)",
+    ),
+    "EXIT_SKIP_SQL_TEMPLATE": (
+        "AND step_key = ANY($3)",
+        "the early-exit's downstream mark: its write set is the ids bound "
+        "as the step-key array — the compiled graph's transitive "
+        "descendants of ONE exited node, a definition-time constant",
+    ),
+    "RETRY_FLOW_REOPEN_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single root row (the manual resume's reopen)",
+    ),
+    "RETRY_NODE_CAS_SQL_TEMPLATE": (
+        "WHERE step_key = $2",
+        "ONE run's named step's rows (step_key + flow_id bound): a retry "
+        "addresses ONE node key — the row count is that key's row count "
+        "in one run (1 off-map, the map's items)",
+    ),
+    "RETRY_REOPEN_CLOSURE_SQL_TEMPLATE": (
+        "AND step_key = ANY($2)",
+        "the manual resume's closure reopen: its write set is the "
+        "descendant keys bound as an array (the graph's transitive "
+        "closure of the retried node), failed_parent-stamped rows only",
+    ),
+    "NODE_REPEND_SQL_TEMPLATE": (
+        "WHERE id = $1",
+        "keyed single node row (the ladder's repend CAS)",
+    ),
+    "LOOP_ADVANCE_SQL": (
+        "WHERE id = $1",
+        "keyed single loop-node row (the iteration cursor's guarded "
+        "advance; the budget cap bounds the iterations, not the backlog)",
+    ),
+    "LOOP_EXHAUST_SQL": (
+        "WHERE id = $1",
+        "keyed single loop-node row + its flow's root row (the CTE pair)",
+    ),
+    "LOOP_INIT_SQL": (
+        "WHERE id = $1",
+        "keyed single loop-node row (the budget deadline's stamp)",
+    ),
+    "LOOP_REMAINING_SQL": (
+        "WHERE id = $1",
+        "keyed single loop-node row (the budget read-back write)",
+    ),
+    # ── The HITL machinery's writes (T10): every write set is ONE hold
+    # row or ONE resumed node row — the hold id is THE reply handle (the
+    # mint's uuid7); a run's holds are its wait sites, not backlog rows.
+    "_CANCEL_RUN_SIGNALS_SQL": (
+        "AND status = 'held'",
+        "the cancel cascade's signal leg: ONE run's HELD holds — the "
+        "run's wait sites (per wait site, one epoch-held row; the held "
+        "population is the graph's wait count, a definition-time constant)",
+    ),
+    "_DELIVER_CAS_SQL": (
+        "WHERE id = $2",
+        "keyed single hold row (the deliver CAS — the reply handle)",
+    ),
+    "_DELIVER_RESUME_SQL": (
+        "WHERE id = $1",
+        "keyed single node row (the delivered hold's wake)",
+    ),
+    "_HOLD_AWAITED_LEDGER_SQL": (
+        "WHERE id = $1",
+        "keyed single ledger row (the wait's awaited stamp)",
+    ),
+    "_HOLD_HOLD_NODE_SQL": (
+        "WHERE id = $1",
+        "keyed single node row (the held representation's stamp)",
+    ),
+    "_RESOLVE_CAS_SQL": (
+        "WHERE id = $1",
+        "keyed single hold row (the resolve CAS — the reply handle)",
+    ),
+    # ── The progress channels (T21 decision d): the two-channel write set
+    # is nodes x channels — the node is the ONE row the attempt claims.
+    "PROGRESS_STATE_UPSERT_SQL": (
+        "ON CONFLICT (node_id, channel)",
+        "the STATE channel's upsert: its write set is the ONE conflict "
+        "row (node_id, channel) — DH1's fence, the row count is nodes x "
+        "channels, never event count",
+    ),
+    "PROGRESS_STREAM_APPEND_TRIM_SQL": (
+        "OFFSET GREATEST($6::int - 1, 0)",
+        "the STREAM channel's append+trim: ONE inserted row, and the "
+        "trim's DELETE is the ring's own tail beyond the declared bound "
+        "(the OFFSET subquery) — the table never exceeds nodes x the ring "
+        "size (DH3's fence)",
+    ),
+    "EMIT_CURSOR_SQL": (
+        "claim_epoch = $5",
+        "keyed single source row (the emit's cursor checkpoint — the "
+        "full claim fence: worker, attempt, epoch)",
+    ),
 }
 
 
