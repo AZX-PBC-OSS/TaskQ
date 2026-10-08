@@ -21,7 +21,6 @@ import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
-from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import (
     NodeView,
@@ -29,6 +28,7 @@ from taskq.workflows._status import (
     reconstruct_workflow_status,
 )
 from taskq.workflows._sweep import sweep_join_rederive
+from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
     RedLog,
     claim_view,

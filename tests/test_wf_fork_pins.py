@@ -21,10 +21,10 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
 from taskq.workflows._fork import insert_fork
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import drain_outbox
+from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
     RedLog,
