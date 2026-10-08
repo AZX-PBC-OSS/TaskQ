@@ -1,0 +1,12 @@
+# F-R1 receipt — the merge gate's format step, the CI'S EXACT STEP, on the cure branch's head
+# CI: .github/workflows/ci.yaml 'Check formatting' -> uv run --no-sync ruff format --check .
+# head: af1b877992c1052781d70361b64459c409d0c89f
+# date: 2026-10-08T23:34:29Z
+
+$ uv run --no-sync ruff format --check .
+1614 files already formatted
+exit: 0
+
+$ uv run --no-sync ruff check .
+All checks passed!
+exit: 0
