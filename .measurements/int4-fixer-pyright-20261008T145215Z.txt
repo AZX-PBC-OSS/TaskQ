@@ -1,0 +1,4 @@
+# pyright FULL tree — head b7774945
+0 errors, 0 warnings, 0 informations
+# the scoped capture (the round's touched modules):
+0 errors, 0 warnings, 0 informations

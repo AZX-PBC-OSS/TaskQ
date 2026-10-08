@@ -1,0 +1,5 @@
+# ruff + format repo-wide — head b7774945
+# ruff + format repo-wide
+Found 2 errors.
+--- format:
+4 files would be reformatted, 1584 files already formatted

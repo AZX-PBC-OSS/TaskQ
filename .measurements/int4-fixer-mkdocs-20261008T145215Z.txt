@@ -1,0 +1,3 @@
+# mkdocs strict
+  - design/tors-adoption-map.md
+INFO    -  Documentation built in 14.90 seconds

@@ -1,0 +1,5 @@
+# the fixer round's battery (the four Tier-1 cures) — head b7774945, pg :5717
+# the wf pin suite + the attack rounds: the clean rerun (the one red in the first capture was test_pin_4_enqueue_latency_band — load_sensitive-marked, red under the 69-container co-tenant load, green standalone and in the rerun)
+248 passed, 1 warning
+# the estate slice:
+26 passed in 3.50s
