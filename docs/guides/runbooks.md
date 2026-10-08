@@ -822,3 +822,32 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 - [Configuration](configuration.md): `TASKQ_EVENT_WRITER_*`,
   `TASKQ_SWEEP_*` and `TASKQ_CRON_TICK_LIMIT` knobs referenced above.
 - [Troubleshooting](troubleshooting.md): symptom-first diagnosis paths.
+
+---
+
+## TaskQWfRunStuck
+
+**What fired.** A workflow run's derived status has been `blocked` (or the root `running` with nothing claimable) beyond the expected wall: the run holds on a human past its deadline, or a join waits on parents that can never terminalize.
+
+**How to confirm.**
+
+- CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the ladder headroom).
+- CLI: `taskq flows holds <run_id>` — the pending HITL holds. A hold past its `expires_at` is the expiry sweep's input (the sweep resolves it `expired` per the gate's on_timeout).
+- Admin: the run page (`/taskq/workflows/<id>`) renders the same derivation + the audit trail (who resolved what, when).
+
+**How to remediate.**
+
+1. The run holds on a human: `taskq flows resolve <hold_id> '<decision json>' --app myapp.workflows:app` (the typed door — a wrong payload is refused with the named error and the hold survives).
+2. A node failed with ladder headroom: `taskq flows retry <run_id> <node>` (the ledger is kept; the ceiling raises; the blocked closure re-opens).
+3. A join waiting on the fence's record (`failed_parent`/`orphan_parent`/`flow_dead`): the parent's retry re-opens it; a `flow_dead` join is the flow's own death — the run is terminal, start a new run.
+4. The run should never finish: `taskq flows cancel <run_id> --reason ...` (the cascade resolves the held signals in the same snapshot; the audit row carries the reason).
+
+Nothing is lost by waiting: a held run's budget is PAUSED (the hold counts for nothing on wake), and the rows are the truth — the driver picks the work up when the resolve lands.
+
+## TaskQWfHoldExpired
+
+**What fired.** The signals' expiry sweep resolved hold rows past their deadline (`status='expired'`): a human did not answer in the gate's window, and the gate's `on_timeout` policy took over (`fail` → the node fails through the ladder; the sweep-enforced cap).
+
+**How to confirm.** `taskq flows holds <run_id>` (the pending set) vs the run's `wf_signals` rows with `status='expired'`; the node panel's attempt ledger shows the expiry's terminal.
+
+**How to remediate.** Re-run the node (`taskq flows retry <run_id> <node>`) — the re-run registers a NEW hold (a NEW epoch; the stale payload cannot answer it — the epoch is the fence). If the deadline was too tight for the humans, declare a longer `timeout_s=` at the gate (or accept the W1 warning and wait forever — deliberately, with the warning read).

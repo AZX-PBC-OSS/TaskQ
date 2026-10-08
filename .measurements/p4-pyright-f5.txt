@@ -1,0 +1,9 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:121:54 - error: "_new_runtime" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:121:54 - error: Argument type is unknown
+    Argument corresponds to parameter "default_factory" in function "field" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:387:5 - error: Function "_new_runtime" is not accessed (reportUnusedFunction)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:935:42 - error: Argument type is partially unknown
+    Argument corresponds to parameter "param" in function "_type_adapter_for"
+    Argument type is "object | type[Unknown]" (reportUnknownArgumentType)
+4 errors, 0 warnings, 0 informations

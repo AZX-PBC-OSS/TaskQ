@@ -1,0 +1,48 @@
+........F                                                                [100%]
+=================================== FAILURES ===================================
+_________________ test_resolve_reducer_the_definition_fallback _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f79c186f640>
+wf_schema = 'tq_6e8d0bafcc'
+
+    async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
+        """The body-from-definition resolution (D1): a fired join's reducer
+        resolves from the REGISTERED DEFINITION in whatever process heals —
+        the definition fallback's adapter is the boundary."""
+        from taskq.workflows import FlowRunner, WorkflowApp, build, step
+    
+        ran: dict[str, bool] = {}
+    
+        async def join_body(ctx: Any, items: list[str]) -> list[str]:
+            ran["join"] = True
+            return items
+    
+        app = WorkflowApp()
+    
+        @app.workflow("reducer_fallback")
+        def reducer_fallback() -> object:
+            return build(step(join_body, Ingest(doc_id="d"), key="solo"))
+    
+>       app.get("reducer_fallback")  # the compile REGISTERS the bodies (D1)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_coverage_closing2.py:149: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:295: in get
+    returned = record_under(graph, build_fn)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_graph.py:197: in record_under
+    return build_fn()
+           ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @app.workflow("reducer_fallback")
+    def reducer_fallback() -> object:
+>       return build(step(join_body, Ingest(doc_id="d"), key="solo"))
+                                     ^^^^^^
+E       NameError: name 'Ingest' is not defined
+
+tests/test_wf_coverage_closing2.py:147: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing2.py::test_resolve_reducer_the_definition_fallback
+1 failed, 8 passed in 4.86s

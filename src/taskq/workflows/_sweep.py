@@ -296,6 +296,24 @@ async def drain_outbox(
             ],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
+        # THE SPAWN'S EDGE ROW (attack4's direct-consumer cure): the
+        # spawned consumer's parent edge joins the EDGE LEDGER in the
+        # drain's own transaction — the parent-result resolution READS
+        # the ledger (``_PARENT_RESULTS_BY_KEY_SQL``), so a spawned
+        # consumer without its edge row could never resolve its parent's
+        # result (the dispatch-bug assert; the probe file:
+        # tests/attack4_wf_map_grandchild.py). The policy is the
+        # consumer's declared on_failure (the binding carried it).
+        edge_rows = [
+            (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+            for spawn_id, r, b in zip(ids, rows, bindings, strict=True)
+        ]
+        await conn.executemany(
+            f"INSERT INTO {schema_of(wsql)}.wf_edge "  # noqa: S608  # Why: only the validated schema identifier interpolates; every value is $-bound.
+            "(child_id, flow_id, parent_id, failure_policy) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            edge_rows,
+        )
     return len(rows)
 
 

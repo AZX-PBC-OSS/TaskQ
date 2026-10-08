@@ -103,7 +103,7 @@ async def insert_fork(
         )
         if join_id is not None:
             await conn.execute(
-                f"UPDATE {wsql.schema}.jobs "
+                f"UPDATE {wsql.schema}.jobs "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is a bound parameter.
                 "SET deps_pending = deps_pending + $1, "
                 "metadata = jsonb_set(metadata, '{consumers}', $2::jsonb, true) "
                 "WHERE id = $3",

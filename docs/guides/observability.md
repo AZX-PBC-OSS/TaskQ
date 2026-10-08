@@ -1391,3 +1391,31 @@ custom reporter is installed and failing.
 - [runbooks.md](runbooks.md): the alerts these metrics feed, with confirm/remediate steps
 - [../api-reference/testing.md](../api-reference/testing.md): test fixtures, `setup_tracer`, `setup_meter`
 - [cancellation.md](cancellation.md): cancel phases, `cancel_phase_change` log events
+
+---
+
+## The observability triad (workflows)
+
+ONE engine, three surfaces, no surface owns state:
+
+1. **The metrics** — the gauge + the counters (the promtool-gated registry): `taskq.wf_progress_nodes_total{workflow, state}` and friends. A surface that wants a number reads the gauge, never its own query.
+2. **The admin view** — the live graph page (the run explorer; see the workflows guide's "Visualizing workflows"): the rows-alone Mermaid + the SSE revisioned-snapshot feed + the node panel + the audit trail.
+3. **The CLI** — `taskq flows` (one question, one command; see the CLI guide). The status derivation is THE §17.5 derivation in all three surfaces — no mapping drift, because there is ONE source.
+
+## The marking taxonomy (the node states' one vocabulary)
+
+The node rows' statuses are the jobs table's own vocabulary (the workflow engine introduces no new enum values); the workflow-level status is the §17.5 derivation over them:
+
+| Node status | Meaning | The admin graph's fill | The CLI's why-stuck answer |
+|-------------|---------|------------------------|----------------------------|
+| `pending` (deps 0, no hold) | queued, dispatchable | grey | — (live) |
+| `pending` + `deps_pending > 0` | JOIN-WAIT: waiting on the declared parents | grey | the deps counter + the remedy |
+| `pending` + the hold marker | HELD: waiting on a human (the signal row is the truth) | **amber** | the gate + the hold id + the deadline + the remedy |
+| `scheduled` | the ladder's backoff / the retry's sleep | grey | — (live) |
+| `running` | an attempt is live | blue | — |
+| `succeeded` | the terminal good | green | — |
+| `failed` | the ladder exhausted (or `permanent`/`non_retryable`: one terminal) | red | the error + the headroom + the retry remedy |
+| `absorbed` (a failed node whose edge's policy absorbed it) | surfaced in the envelope; the barrier does NOT fail | red | the policy named |
+| `cancelled` | the cancel cascade took it | grey | — |
+
+The workflow-level statuses (the derivation's output, precedence in order): `running` → `failed` → `blocked` → `complete` → `cancelled` → `pending`.

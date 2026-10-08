@@ -1,0 +1,410 @@
+........................................................................ [ 42%]
+.....................................................F.................. [ 85%]
+......................../tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pytest_cov/plugin.py:366: CovReportWarning: Failed to generate report: No data to report.
+
+  warnings.warn(CovReportWarning(message), stacklevel=1)
+
+WARNING: Failed to generate report: No data to report.
+
+                                                                         [100%]
+=================================== FAILURES ===================================
+_______________________ test_pin_4_enqueue_latency_band ________________________
+
+jobs_app = JobsApp(deps=WorkerDeps(settings=WorkerSettings(pg_dsn='postgresql://taskq:***@localhost:5697/tq_db_fd7c5218c403', pg_...7fd3fbde60d0 [unlocked]>, drain_failures=0), backend=<taskq.backend.postgres.PostgresBackend object at 0x7fd3fbb14d70>)
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    @pytest.mark.load_sensitive
+    async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
+        """THE ENQUEUE-LATENCY NOISE BAND: vanilla enqueue p50 inside the
+        recorded band with the workflow-schema build present (best-round p50 —
+        the house benchmark's noise-robust statistic). RED DRILL (recorded):
+        a fixture hook touching the new columns on the hot path (an extra
+        round-trip read of the five columns per enqueue) must move the band —
+        the pin can fail. Both measurements land in .measurements/."""
+        from taskq.backend._protocol import EnqueueArgs
+        from taskq.backend.postgres import PostgresBackend
+    
+        backend: PostgresBackend = jobs_app.backend
+    
+        async def measure_enqueue(extra_hook: bool) -> list[list[int]]:
+            pool = backend._worker_pool  # benchmark-only: direct enqueue measurement
+            schema = backend._schema_name  # benchmark-only
+            rounds: list[list[int]] = []
+            for _ in range(3):
+                batch: list[int] = []
+                for _ in range(50):
+                    start = time.perf_counter_ns()
+                    args = EnqueueArgs(
+                        id=new_job_id(),
+                        actor="bench",
+                        queue="default",
+                        payload={"pin": 4},
+                        max_attempts=3,
+                        retry_kind="transient",
+                        scheduled_at=None,
+                    )
+                    await backend.enqueue(args)
+                    if extra_hook:
+                        # THE RED-DRILL HOOK: the hot path touching the new
+                        # columns — an extra round-trip read of all five, the
+                        # cost-class regression the band must catch.
+                        await pool.execute(
+                            f"SELECT parent_id, deps_pending, map_index, step_key, "
+                            f'code_version FROM "{schema}".jobs WHERE id = $1',
+                            args.id,
+                        )
+                    batch.append((time.perf_counter_ns() - start) // 1_000)
+                rounds.append(batch)
+            return rounds
+    
+        rounds: list[list[int]] = []
+        rounds.extend(await measure_enqueue(extra_hook=False))
+        best = min(rounds, key=sum)
+        p50 = _percentile(best, 50)
+        p99 = _percentile(best, 99)
+    
+        rounds.clear()
+        rounds.extend(await measure_enqueue(extra_hook=True))
+        red_best = min(rounds, key=sum)
+        red_p50 = _percentile(red_best, 50)
+    
+        _write_measurement(
+            "pin4-enqueue-band.json",
+            {
+                "pin": "enqueue-latency-band",
+                "p50_us": p50,
+                "p99_us": p99,
+                "best_round_ms": best,
+                "budget_us": _PIN4_P50_BUDGET_US,
+                "red_drill": {
+                    "hook": "extra round-trip read of the five workflow columns per enqueue",
+                    "p50_us": red_p50,
+                    "best_round_ms": red_best,
+                    "moved_the_band": red_p50 > p50,
+                },
+            },
+        )
+        assert p50 <= _PIN4_P50_BUDGET_US, f"enqueue p50 {p50 / 1000:.2f} ms exceeds the band"
+>       assert red_p50 > p50, (
+            "the red drill did not fire: the hot-path column touch did not move "
+            "the band — the pin cannot fail, it is a decoration"
+        )
+E       AssertionError: the red drill did not fire: the hot-path column touch did not move the band — the pin cannot fail, it is a decoration
+E       assert 3754 > 3817
+
+tests/test_wf_perf_bands.py:234: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+2026-10-07 20:54:42 [info     ] worker-startup-budget          connections_overrides=False direct=12 host_direct=localhost host_pooled=localhost pgbouncer_recommended=False pooled=12 total_pg=24.0
+2026-10-07 20:54:42 [info     ] pool-opened                    host=localhost ownership=dsn pool=dispatcher
+2026-10-07 20:54:42 [info     ] pool-opened                    host=localhost ownership=dsn pool=heartbeat
+2026-10-07 20:54:42 [info     ] pool-opened                    host=localhost ownership=dsn pool=worker
+2026-10-07 20:54:42 [info     ] keepalive-applied              keepcnt=3 keepidle=30 keepintvl=5 label=notify
+2026-10-07 20:54:42 [info     ] dedicated-connection-opened    host=localhost keepalive=True label=notify
+2026-10-07 20:54:42 [info     ] notify-listen-issued           channel=taskq_wake_6ff665765c owns_notify=True
+2026-10-07 20:54:42 [info     ] keepalive-applied              keepcnt=3 keepidle=30 keepintvl=5 label=leader
+2026-10-07 20:54:42 [info     ] dedicated-connection-opened    host=localhost keepalive=True label=leader
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-288c-7372-bbd0-01eef5d09cc8 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2896-7b03-8355-ea45a7eb0f0c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-289a-7191-a202-32ca6f4e3098 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-289d-7092-beeb-89b349f0f0db kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28a1-7cb1-95d4-1f733465ee74 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28a5-7851-988a-9600e3a3498f kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28a8-78d0-b83f-7fdb344d9f32 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28ac-74c3-9506-c42a8fa5f61d kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28b2-7c03-8c8c-84b38a6eaeea kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28b6-7e41-9a53-13c8cd198f70 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28bc-7b03-a195-b7e26187f3c2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28c1-7133-995f-ced3711f6d3c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28c6-7a70-a17c-8e9a0ea96dbb kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28cc-7953-9ece-8b220ce0d316 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28d1-7e83-9b71-2c020e65bb33 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28d5-78b0-9e9a-b62644de83b3 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28d9-7e81-8fad-7b559ab12847 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28de-7030-b1dd-27caf3b0ecf4 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28e4-7921-89b9-0a682fc3d1ab kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28e9-75d3-8dd3-c49ee7257e9f kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28ed-72f1-850a-cff246113841 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28f2-7c92-9687-afab3b7c144f kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28f8-7c02-9695-91e53a112691 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-28fe-72c3-a77f-446c61cca32a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2903-7c41-a815-85d513021736 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2906-7062-badf-159816bfe26c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-290c-7923-8dd9-69a340aac921 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2910-7da2-b1d9-7e7a31bcea2c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2915-7ff1-9adf-da20b58b9a1c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-291a-71e0-93ff-eca531198cdf kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-291e-7e52-a8a3-78d8fc5abb78 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2922-7482-944b-1697fbbe68cc kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2925-7462-abaf-f137b95b10b9 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2929-7ea2-993b-d74d4bcf7f2a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-292c-7be0-a8cb-014102f108ac kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2930-7c90-882a-e5d6161bfbef kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2934-7782-8474-03452cbbea26 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2937-77e1-8da6-565c2ec6166c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-293b-7b01-afca-e417840fe5ad kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-293e-7eb2-bada-1c0b7d24e2c6 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2942-70e0-b925-4e84fc1b9226 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2946-7dd3-91ea-fec161dd8c75 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-294a-7c12-8380-4888e3e49ccc kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-294d-7273-8546-8fd6bc1fbfa1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2951-7821-8ac1-a2dddebbd466 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2955-7102-b537-3b85762962c2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2959-7281-943a-dad263b35e93 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-295d-77d0-ad0a-923ebbf35678 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2961-7121-8dd0-e3ad1288a0f7 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2964-77d0-ba13-67a14b5f019a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2968-75e2-b855-18fc2667bccb kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-296c-7fa1-94b7-0ce6e4a8c8e9 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-296f-7bc1-b0ee-a5daaecc5d15 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2973-7282-a9fe-e7e10af64fca kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2977-7553-9a63-68bbc2664497 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-297a-7e10-a126-bb17e9656dcc kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-297e-7d01-b839-78bfb1094db8 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2981-7752-9e17-b83a07d6f785 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2985-76d0-bead-a1aed816d63a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2989-7291-a779-c84fdf9f6338 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-298d-76e0-bade-cc3027ccf1f7 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2990-77f3-813f-710a9df89bda kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2996-78a3-8926-979468d8c5fb kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-299a-73d1-9fb8-a70c33ac4713 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-299d-76f0-81a1-4fca92275b5e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29a1-7e51-824e-5e8938fa6c0b kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29a5-7402-9564-80bd8bd338e1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29a9-7d12-bb7d-6b3cd703f136 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29ac-7021-8a38-6d954876c4fc kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29b0-7690-a138-e7146f2ba276 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29b3-7bc3-8797-4722b363e603 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29b7-7c12-a540-686321ae67ff kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29bb-7c70-bd6d-1a8c517c1f95 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29bf-7d73-b16b-b3bbb4193003 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29c1-7d12-a8fc-c76c900dc766 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29c4-78a0-b456-737bb5e3b386 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29c6-70f1-a201-b3de677af080 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29c9-7083-b2c7-d5bca72e8af6 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29cc-7af3-a464-4e0a82854753 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29cf-7c41-8c04-d14d6cfb6686 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29d2-7221-9f09-2579e3567592 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29d4-78d1-9626-f06f2220d353 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29d7-7cc0-9caa-27d387155275 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29d9-7840-88cf-8c258f347b55 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29dc-7233-bd7b-8145fa322a92 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29df-7793-a0bc-888df0c07d97 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-29e1-7401-8248-4530964c1dab kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a23-74d3-8798-fe8aed710777 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a27-7890-b385-942c8cd1a101 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a2a-7453-9873-4c40623a61b9 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a2d-7101-8842-a89f90ccbc2e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a2f-7503-8d30-27ffe6f49ca9 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a32-7011-b03c-674a1eba3c42 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a35-7760-8a2a-5a973426b6ac kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a38-7761-8c2a-d921d0e59e62 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a3c-7c82-af79-972850704e8d kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a40-7ba1-87d3-1d9c0902428e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a43-7623-b091-5a42791f5cda kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a47-7a81-a326-e90ccb7c2a9e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a4b-7441-ba6a-3977ddf28110 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a4e-7211-9d42-e44887557ad8 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a52-79f2-8244-f86b0f10b047 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a56-78a0-bcaa-92a60188eb9a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a5a-7f83-a3f8-792eb34941de kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a5d-7a73-ac7c-83b936c7b9b2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a61-7272-83d3-97db0ff37634 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a65-7ae2-aeab-0d0ec22e3158 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a68-79a3-8c63-646ed2e81a5b kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a6c-74a2-bde9-4b37931e8dd9 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a70-77a3-929a-e71e0b3b07f1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a73-7353-8e52-c956caa21f2d kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a77-76d3-90e9-05796ae70620 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a7b-7c00-bbd7-55b80c6a1d83 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a7e-79b2-9da7-0207c66baf4f kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a82-7ba0-bebb-575c97c409bd kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a86-7e41-a602-082ab1e7200a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a89-7171-8811-56bb2516cdf2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a8d-7753-bbe5-c0334e36908c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a91-7d93-b4f5-e4f73f144a7c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a94-7df3-bb51-fe691d7e527b kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a98-7792-aafd-d516cee86801 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a9c-7450-89a7-bb2f54cedd87 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2a9f-7573-a8df-ed68c7f863e2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2aa3-78d3-81ca-f98ea11c5e5b kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2aa6-78b3-939f-2db07ff90d1c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2aaa-76c1-bcec-d598137ffcc1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2aae-7da2-999e-0f8a24e33e6c kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ab2-7651-8241-6ab1ca8e70c8 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ab5-7020-b7ad-cc14c1587a46 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ab9-7df3-9023-c63224d5011a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2abd-7c92-8ef5-4d312152e424 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ac1-7450-b2b6-e6339c71e3f0 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ac4-7b32-8434-08d3dcb86ba3 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ac8-77b1-adb0-17950d218e9a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2acc-71c3-8f4b-8e3206e61dd1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2acf-7330-816b-1a4aa980d254 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ad3-7723-bc64-6c563cdde4cf kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ad6-7113-8105-e9f55f396c78 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ada-7d32-8d5b-56a39ad4debe kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ade-7a62-a184-5ee377915776 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b37-7972-86c2-90f5a739d418 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b3c-79d0-84f5-e78c83103165 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b3f-71b1-be78-785e4b906836 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b42-72f3-895b-a552834e5e78 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b46-73d0-b2b1-75994f9363f5 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b4b-7e30-852d-aa6eb6827574 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b50-7df0-ab81-ece0a7a47d88 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b53-7f50-a61d-0505d436b7c1 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b56-7c60-ae1a-f686a09d7adb kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b59-73e1-9df0-aa00757f8e2e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b5c-7310-93fb-8ddfe2c8b658 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b60-7520-a394-8db401be3f69 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b62-7703-9e65-6ee22ab18b51 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b65-7df0-9b82-978439fe073a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b68-7af0-8cd5-277db08b6840 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b6b-7182-822e-24905fc08316 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b6f-77b3-9809-d023507bfdce kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b72-7fe1-b46f-9fe52f6af4fa kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b75-7783-832c-029d0ed2cd1e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b78-7502-8cc5-de56e3182690 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b7b-7882-aeeb-3d681377def4 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b7e-7a13-87c5-57f7d0bb3f0a kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b80-7391-a0ab-64dbc8f014e2 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b84-7742-ac56-3d109063ae8d kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b88-7743-98a3-510c3a1553ba kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b8c-7e71-ac33-482da093b6ba kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b93-74c3-bd44-7193857976f7 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b98-7a43-8112-4a83513eb738 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b9c-7a82-bf98-0877899672d3 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2b9f-7f40-9872-0b56cb453ad0 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ba3-7282-9206-8b591b0ce1a4 kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ba7-74b2-9df0-1fab888d84ea kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2baa-7602-9c80-0c9cf980dc0e kind=enqueue queue=default
+2026-10-07 20:54:42 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bb0-74f3-a553-c64500864216 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bb5-7b21-8b07-e4ccc2d0b4b7 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bb9-7292-9a32-342016927d31 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bbc-7042-8702-f2cddf16314d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bc0-7562-b319-6e53a5c26fc8 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bc4-7332-861e-eb496f5f6c9c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bc8-7761-9ae3-292af167b2db kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bcb-7041-9804-807cc43ffc86 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bcf-7ae3-bb17-f494fb776ad8 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bd3-7043-a1de-d70ae2eaef3e kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bd7-7082-af01-0343de5b1055 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bda-76d0-80ed-5d962b68c2b2 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2bde-7972-9a89-a50fb1a69a3f kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c31-7063-9f57-91e638f4afd1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c36-7b03-8e4a-25a03a5807d0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c3b-7ba1-8cc4-da758c1bfe1a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c3f-7ee3-9b94-4b8a76398957 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c42-7501-a9de-44891eb8fd50 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c48-7063-a372-319462c65f17 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c4b-7d00-8f6a-4e3267b077a9 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c4f-7bf3-876c-bdc85830c999 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c52-7e43-a8d9-ad5916d176f8 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c55-7911-b674-fc16bf62ea79 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c58-70a3-9957-4c69ebb967bf kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c80-7381-9f55-9fda1dd11164 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c84-7a00-8079-964e85c62102 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c89-7bb3-bbb4-25ae62b289b3 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c8d-7663-85a6-f6f370492f34 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c91-76c3-aa9b-882f90c64468 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c94-75c2-ba93-151db277c6d1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c98-7021-a560-f607149f17a0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c9b-7333-b74e-e36f7fb00f7a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2c9f-7f81-9394-a6f87a107c94 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ca3-72b0-b7b4-40683026a859 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ca9-7a30-92cd-d9ee7ab9e2f3 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cac-7972-a225-aa6eb0617c34 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cb0-7ce1-b2d5-018201e7fdc9 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cb3-76a3-8444-a4bbbd38ea3d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cb7-7dd2-a1db-e0d9e42dd31e kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cbb-7ec3-a403-fe5223fd7389 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cbf-7a30-adc8-c660af00a071 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cc2-7910-b6b7-5027e577ea95 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cc6-7692-8618-f7a1a87cae3a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cca-7753-8039-540d673a204d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ccd-7c50-bf83-3df7a4ec0fdc kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cd1-7931-8158-fd813136505a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cd5-7921-b696-8f73de752783 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cd9-70f3-a694-13ac936a0a00 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cdd-7ca3-b6a1-c72c17b709a2 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ce1-76e2-a662-1e2bd70cdd2d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ce6-76d1-85e2-8a1748c66ac0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cea-7460-95da-4057ff816a6c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cee-7be0-ba46-02ac9f2a8824 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cf2-7381-b7c7-4b0a2d0d355c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cf5-7372-b1e1-970d2650c35d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cf9-7362-9b16-24ac2afec5fe kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2cfd-70e3-8e83-0071be3dd561 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d00-7d43-a18f-2ab94fd50f42 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d04-7143-b2fd-d1d9ad7c4be7 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d08-7890-a7f5-6610d1fcb9eb kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d0c-76f2-b724-8a456392e5cd kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d10-7701-aff1-05f5843649c3 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d14-76e1-9d8b-1675b13eb952 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d18-7840-bf14-39710da107ea kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d1b-76e3-b2c8-3b43c50ec0c4 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d1f-7d51-8a77-2588f6b4984d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d23-7622-86a6-0bc037e41e9f kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d26-7311-8011-2bdb875d4375 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d2a-7421-9ab1-122794fdb6db kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d2e-7042-9e21-bb0a87b1d5b0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d32-7020-8016-ecddfb2c5a0f kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d35-7103-adc5-edba19b98de6 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d39-7fb0-90c5-ad4b40d3d4a1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d3d-76a3-a098-823170888d61 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d41-7301-9982-aaf8a1c13598 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d45-7a80-b3ba-5f8a0055ef96 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d4b-7af3-a03c-5970da888a91 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d4e-7231-b4a6-c6d4629605d5 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d52-7072-9760-65eb3ff211fc kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d56-7fe1-a273-ca9e45c6d694 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d5a-7041-b5f4-e26a8a40ec7c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d5e-71f3-8fd2-3c6a137c7f6e kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d62-7e40-a0c1-fd9a2d755647 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d66-7e21-b40e-e73223735126 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d69-7f12-b164-6639f1959254 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d6d-75e2-8e8a-2aa89f4aedf2 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d71-7d51-98ea-7c3384f01b08 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d74-70b0-befd-afda8f498c3c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d78-7de2-bdfe-049b9dfd8b22 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d7c-71c2-a185-acc689694ca9 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d7f-70f3-91a9-4b0d8374dd03 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d83-7cd1-9fe4-54f98d662a74 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d87-73d3-8aac-675f1687dfe2 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d8b-7012-afae-f46131fe6ab4 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d8e-7210-bbca-559c94b9a23a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d92-7370-a1d6-8c340614cab9 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d96-7321-b22d-39696a9c2123 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d9a-7d31-b4c9-a8185dbc7ce8 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2d9e-7972-9911-d2277ccf054c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2da1-7b91-a572-4a1941f8a0fc kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2da6-71c2-a4d8-c9574f1881a1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2da9-7d71-99e6-15bdb12108a4 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dad-72b2-8bb3-23c287e225a0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2db1-75a1-af4a-135f99fe5561 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2db5-7991-b565-8841a4167767 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2db9-7402-b697-a782211d5964 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dbc-7b13-b000-ddcfa587ac0a kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dc0-7890-a3d0-373162e8f6d0 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dc4-7030-88eb-18a441bab9e1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dc7-76a1-8c64-c1bccfd6d04b kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dcb-74b3-9f43-a3c1d895f313 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dcf-7f61-a4e3-5cf44f033c3e kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dd3-7642-9d86-53377af3c7a7 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dd6-7963-876a-ba50a0f8298e kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dda-7300-a4be-d54090c65fd6 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dde-7111-842b-ed58dfac44b1 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2de1-7f92-a602-47032b1e742d kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2de5-73e3-907f-1559234570c2 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2de9-7373-be93-ce41cef1ca14 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2ded-70f2-a7aa-1f1f80cee255 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2df1-7572-ae3c-38d44e219644 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2df4-7193-9b88-72352e5f9f9c kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2df8-7593-a510-a0ac1c099038 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2dfc-72b0-b404-c99abc190f56 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2e00-7c30-a528-44f51c319d06 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2e04-7841-919d-0be5ad526723 kind=enqueue queue=default
+2026-10-07 20:54:43 [debug    ] enqueue                        actor=bench idempotency_key=None job_id=01a119a6-2e07-7880-91ff-f0372457c673 kind=enqueue queue=default
+=========================== short test summary info ============================
+FAILED tests/test_wf_perf_bands.py::test_pin_4_enqueue_latency_band - Asserti...
+1 failed, 167 passed in 113.52s (0:01:53)

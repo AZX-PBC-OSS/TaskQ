@@ -1,0 +1,50 @@
+........F                                                                [100%]
+=================================== FAILURES ===================================
+_________________ test_resolve_reducer_the_definition_fallback _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f1056577640>
+wf_schema = 'tq_75a8fef058'
+
+    async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
+        """The body-from-definition resolution (D1): a fired join's reducer
+        resolves from the REGISTERED DEFINITION in whatever process heals —
+        the definition fallback's adapter is the boundary."""
+        from taskq.workflows import FlowRunner, WorkflowApp, build, step
+    
+        ran: dict[str, bool] = {}
+    
+        async def join_body(ctx: Any, items: list[str]) -> list[str]:
+            ran["join"] = True
+            return items
+    
+        app = WorkflowApp()
+    
+        @app.workflow("reducer_fallback")
+        def reducer_fallback() -> object:
+            return build(step(join_body, Ingest(doc_id="d"), key="solo"))
+    
+        app.get("reducer_fallback")  # the compile REGISTERS the bodies (D1)
+    
+        from taskq.workflows._reducers import resolve_flow_reducer
+    
+        # The DEFINITION fallback: the body resolves from the REGISTERED
+        # DEFINITION (D1's body-from-definition; the healed join's reducer in
+        # whatever process heals).
+        body = resolve_flow_reducer(
+            "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", "solo", workflow_name="reducer_fallback"
+        )
+        assert body is not None
+>       await body()
+
+tests/test_wf_coverage_closing2.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def _definition_adapter() -> None:
+>       await definition_body(None)
+              ^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: test_resolve_reducer_the_definition_fallback.<locals>.join_body() missing 1 required positional argument: 'items'
+
+src/taskq/workflows/_reducers.py:93: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing2.py::test_resolve_reducer_the_definition_fallback
+1 failed, 8 passed in 0.99s
