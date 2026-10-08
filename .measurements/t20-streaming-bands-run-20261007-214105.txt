@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/tmp/opencode/wt-taskqflow-t20/scripts/measure_t20_streaming_bands.py", line 312, in <module>
+    raise SystemExit(asyncio.run(main()))
+                     ~~~~~~~~~~~^^^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 196, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 119, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/tmp/opencode/wt-taskqflow-t20/scripts/measure_t20_streaming_bands.py", line 182, in main
+    await emit_batch(
+    ...<9 lines>...
+    )
+  File "/tmp/opencode/wt-taskqflow-t20/src/taskq/workflows/_emit.py", line 176, in emit_batch
+    raise EmitFencedError(
+    ...<4 lines>...
+    )
+taskq.workflows._emit.EmitFencedError: the emit's cursor checkpoint updated nothing — the source 01a119d0-a257-7e43-845c-db3673aec596's claim was superseded (reclaimed and re-claimed under this emit); the tx rolled back, nothing was written
