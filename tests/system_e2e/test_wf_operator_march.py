@@ -287,3 +287,88 @@ async def _resolve_holds(pool: asyncpg.Pool, schema: str, flow_id: str) -> None:
                 principal="operator-march",
             )
         await asyncio.sleep(0.3)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# THE UPGRADE PATH: the PRIOR RELEASE's schema → the FULL chain on
+# POPULATED data → the WORKFLOWS LIVE.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.timeout(900)
+async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: Any,
+    sys_ledger: asyncpg.Connection,
+) -> None:
+    """The upgrade's whole arc: migrate to the PRIOR RELEASE's tip (the
+    pre-workflow target — the schema the workflows' columns have not
+    landed on), POPULATE it (vanilla rows at work), apply the FULL
+    chain over the populated data (the migration-chain proof's live
+    face), then run the WORKFLOWS on the upgraded schema — the march
+    executes to terminal, the invariants close. The upgrade is not a
+    fresh install wearing a hat: the data predates the columns."""
+    import asyncpg as _asyncpg
+
+    from taskq.migrate import apply_pending
+    from taskq.testing.pg import seed_actors  # pyright: ignore[reportPrivateImportUsage]  # Why: the fixture module re-exports the seed; the private path is the honest home.
+    from tests.test_wf_pre_workflow_tolerance_pins import (  # pyright: ignore[reportPrivateImportUsage]
+        PRE_WORKFLOW_TARGET,
+    )
+
+    # THE PRIOR RELEASE'S SCHEMA (the pre-workflow tip), populated.
+    schema = module_pg_schema.schema_name + "_upg"
+    await clean_pg_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await clean_pg_conn.execute(f'CREATE SCHEMA "{schema}"')
+    await apply_pending(clean_pg_conn, schema=schema, target=PRE_WORKFLOW_TARGET)
+    dsn = module_pg_schema.pg_dsn
+    # THE POPULATION: vanilla rows the old release wrote (the upgrade's
+    # data the chain must carry).
+    for i in range(3):
+        await clean_pg_conn.execute(
+            f"""INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts,
+                    retry_kind, status, attempt, idempotency_scope, idempotency_key)
+                VALUES (gen_random_uuid(), 'van', 'default', '{{}}'::jsonb, 3,
+                        'transient', 'succeeded', 1, 'scope-upg', $1)""",
+            f"upg-seed-{i}",
+        )
+
+    # THE FULL CHAIN over the populated data.
+    applied = await apply_pending(clean_pg_conn, schema=schema)
+    print(f"[upgrade] the chain applied {len(applied)} migrations over the populated schema")
+
+    # THE WORKFLOWS LIVE: a real fleet on the UPGRADED schema runs the
+    # march to terminal.
+    conn = await _asyncpg.connect(dsn)
+    upg_conn = await _asyncpg.connect(dsn, server_settings={"search_path": f"{schema},public"})
+    try:
+        await seed_actors(upg_conn, schema)
+    finally:
+        await upg_conn.close()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    fleet: dict[str, WorkerProc] = {}
+    try:
+        # The march's fleet boots on the UPGRADED schema (the march
+        # helpers take the schema explicitly).
+        from tests.system_e2e._wf_harness import spawn_wf_fleet as _spawn
+
+        fleet = await _spawn(conn, dsn, schema, ["u1", "u2"])
+        from taskq.workflows.api._runner import FlowRunner
+
+        runner = FlowRunner(MARCH_FLOWS["reclaim_target"], pool, schema)
+        flow_id = await runner.create_flow(run_key="operator-march:upgrade-path")
+        await tag_run_rows(pool, schema, str(flow_id), _TAG)
+        status, measured = await wait_flow_terminal(
+            conn, schema, str(flow_id), bound_s=MARCH_SETTLE_BOUND_S * 2
+        )
+        print(f"[upgrade] the workflows live on the upgraded schema: {status} in {measured:.2f}s")
+        assert status == "complete", (
+            f"the upgraded schema's run derived {status!r} — the workflows do not live here"
+        )
+        await tag_run_rows(pool, schema, str(flow_id), _TAG)
+        await assert_balanced(sys_ledger, schema, _TAG)
+    finally:
+        for pod in fleet.values():
+            reap(pod)
+        await pool.close()
+        await conn.close()
