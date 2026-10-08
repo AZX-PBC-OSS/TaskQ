@@ -1,0 +1,91 @@
+F..F                                                                     [100%]
+=================================== FAILURES ===================================
+_____________________ test_leg2_the_kill_and_resume_drill ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f826b672200>
+module_pg_schema = ModulePgSchema(schema_name='tq_58cc2a344c', pg_dsn='postgresql://taskq:taskq@localhost:44993/tq_db_58cc2a344cb9')
+wf_conn = <asyncpg.connection.Connection object at 0x7f8268fd34d0>
+
+    async def test_leg2_the_kill_and_resume_drill(
+        module_pg_pool: Any, module_pg_schema: Any, wf_conn: Any
+    ) -> None:
+        """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
+        fresh worker re-claims it (the lease expiry + the reclaim) and the
+        run COMPLETES. The operator's resilience story, runnable."""
+        schema = module_pg_schema.schema_name
+        # The trigger: the demo run's rows (the worker executes them through
+        # the intercept).
+        from examples.workflows import trigger_run
+    
+        run_id = await trigger_run(module_pg_pool, schema)
+        run_id_uuid = __import__("uuid").UUID(run_id)
+    
+        # The kill-and-resume: the demo's own worker processes.
+        demo_wd = Path(__file__).parent.parent
+        worker_env = {
+            **os.environ,
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_ENVIRONMENT": "dev",
+            "TASKQ_ADMIN_ACTIONS_ENABLED": "true",
+            "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
+        }
+        worker_argv = [
+            sys.executable, "-m", "taskq", "worker",
+            "--actors", "examples.workflows:ACTORS",
+        ]
+    
+        def spawn(tag: str) -> subprocess.Popen[bytes]:
+            return subprocess.Popen(  # noqa: S603  # Why: fixed argv, this interpreter, the project's own module.
+                worker_argv, env=worker_env, cwd=str(demo_wd),
+                stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),  # noqa: SIM115
+                stderr=subprocess.STDOUT,
+            )
+    
+        # WORKER 1: runs the flow's nodes.
+        killed = spawn("killed")
+        killed_deadline = time.time() + 90
+        saw_running = False
+        while time.time() < killed_deadline:
+            state = await wf_conn.fetchval(
+>               f'SELECT count(*) FROM "{wf_schema}".jobs '
+                                         ^^^^^^^^^
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
+                run_id_uuid,
+            )
+E           NameError: name 'wf_schema' is not defined
+
+tests/test_wf_demo_legs.py:180: NameError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=444b3de61c49 redis=20108688a7e3 state_dir=/tmp/pytest-of-rich/pytest-18605
+_________________ test_leg4_the_conditional_router_routes_live _________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f826b672200>
+module_pg_schema = ModulePgSchema(schema_name='tq_58cc2a344c', pg_dsn='postgresql://taskq:taskq@localhost:44993/tq_db_58cc2a344cb9')
+wf_pool = <asyncpg.pool.Pool object at 0x7f826aed5240>
+wf_conn = <asyncpg.connection.Connection object at 0x7f8268f174d0>
+
+    async def test_leg4_the_conditional_router_routes_live(
+        module_pg_pool: Any, module_pg_schema: Any, wf_pool: Any, wf_conn: Any
+    ) -> None:
+        """The T20 router LIVE: the chain's SCREEN step routes each record —
+        READABLE → index, UNREADABLE → dead_letter; the totals are the
+        fence. THE RUNNABLE PATH: the demo's ``doc_screen_router`` run."""
+        from examples.workflows import SCREEN_CHAIN, _DOC_SOURCE
+        from taskq.workflows import FlowRunner
+    
+        # The demo's corpus: a doc MISSING from the source = the UNREADABLE arm.
+        assert "doc-doomed" in _DOC_SOURCE  # the demo's corpus is intact
+        compiled = wf_app_fixture().get("doc_screen_router")
+>       runner = FlowRunner(compiled, wf_pool, wf_schema)
+                                               ^^^^^^^^^
+E       NameError: name 'wf_schema' is not defined
+
+tests/test_wf_demo_legs.py:304: NameError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=444b3de61c49 redis=20108688a7e3
+=========================== short test summary info ============================
+FAILED tests/test_wf_demo_legs.py::test_leg2_the_kill_and_resume_drill - Name...
+FAILED tests/test_wf_demo_legs.py::test_leg4_the_conditional_router_routes_live
+2 failed, 2 passed in 5.80s

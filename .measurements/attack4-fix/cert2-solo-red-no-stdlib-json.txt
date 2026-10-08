@@ -1,0 +1,52 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________________ test_no_stdlib_json_imports_outside__json ___________________
+
+    def test_no_stdlib_json_imports_outside__json() -> None:
+        # Guard the guard: if ``taskq`` resolved somewhere without _json.py
+        # (a stale site-packages shadow, an unexpected editable-install
+        # layout), rglob would scan the wrong tree -- or nothing at all --
+        # and this pin would pass vacuously. Fail loudly instead.
+        assert _SANCTIONED.exists(), (
+            f"expected the taskq package at {_PACKAGE_ROOT} to contain _json.py; "
+            "the doctrine sweep is scanning the wrong tree"
+        )
+        violations: list[str] = []
+        for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+            if path == _SANCTIONED:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "json" or alias.name.startswith("json.") for alias in node.names
+                ):
+                    violations.append(f"{path}:{node.lineno} import json")
+                if isinstance(node, ast.ImportFrom) and (
+                    node.module == "json" or (node.module or "").startswith("json.")
+                ):
+                    violations.append(f"{path}:{node.lineno} from {node.module} import ...")
+                if isinstance(node, ast.Call) and (
+                    (isinstance(node.func, ast.Attribute) and node.func.attr == "import_module")
+                    or (isinstance(node.func, ast.Name) and node.func.id == "__import__")
+                ):
+                    for arg in node.args:
+                        if (
+                            isinstance(arg, ast.Constant)
+                            and isinstance(arg.value, str)
+                            and (arg.value == "json" or arg.value.startswith("json."))
+                        ):
+                            violations.append(f"{path}:{node.lineno} dynamic import of {arg.value!r}")
+>       assert violations == [], (
+            "taskq/_json.py's doctrine says the library never imports stdlib "
+            f"json directly; found violations: {violations}"
+        )
+E       AssertionError: taskq/_json.py's doctrine says the library never imports stdlib json directly; found violations: ['/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:30 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:22 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:24 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_cli.py:28 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:42 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress_read.py:35 import json', '/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress_read.py:170 import json']
+E       assert ['/tmp/openco...rt json', ...] == []
+E         
+E         Left contains 7 more items, first extra item: '/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:30 import json'
+E         Use -v to get more diff
+
+tests/test_no_stdlib_json.py:65: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_no_stdlib_json.py::test_no_stdlib_json_imports_outside__json
+1 failed in 0.64s

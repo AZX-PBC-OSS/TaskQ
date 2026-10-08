@@ -1,0 +1,29 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_changelog_carries_only_release_please_generated_sections _________
+
+    def test_changelog_carries_only_release_please_generated_sections() -> None:
+        """No hand-written block: anything outside the generator's heading
+        vocabulary is outside its model of the file and will not survive (or
+        be honoured by) the next release run."""
+        foreign = _non_generated_sections()
+>       assert not foreign, (
+            "CHANGELOG.md contains sections release-please did not generate:\n  "
+            + "\n  ".join(foreign)
+            + "\nThe file is regenerated from conventional commits on release; "
+            "hand-written entries are invisible to that pipeline. Breaking "
+            "changes belong in commit messages as `type!:` subjects or "
+            "`BREAKING CHANGE:` footers, which drive BOTH the generated notes "
+            "and the SemVer bump. Human-facing migration notes belong in "
+            "docs/guides/upgrading.md."
+        )
+E       AssertionError: CHANGELOG.md contains sections release-please did not generate:
+E           ## [Unreleased — TaskQflow phase 4]
+E           ## [Unreleased — TaskQflow phase 2]
+E         The file is regenerated from conventional commits on release; hand-written entries are invisible to that pipeline. Breaking changes belong in commit messages as `type!:` subjects or `BREAKING CHANGE:` footers, which drive BOTH the generated notes and the SemVer bump. Human-facing migration notes belong in docs/guides/upgrading.md.
+E       assert not ['## [Unreleased — TaskQflow phase 4]', '## [Unreleased — TaskQflow phase 2]']
+
+tests/test_breaking_change_markers.py:412: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_breaking_change_markers.py::test_changelog_carries_only_release_please_generated_sections
+1 failed in 0.25s

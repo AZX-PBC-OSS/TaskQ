@@ -1,0 +1,74 @@
+...F                                                                     [100%]
+=================================== FAILURES ===================================
+_____________________ test_leg2_the_kill_and_resume_drill ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f3260286200>
+module_pg_schema = ModulePgSchema(schema_name='tq_7abb2e1eba', pg_dsn='postgresql://taskq:taskq@localhost:44997/tq_db_7abb2e1eba27')
+wf_schema = 'tq_7abb2e1eba'
+wf_conn = <asyncpg.connection.Connection object at 0x7f32623276b0>
+
+    async def test_leg2_the_kill_and_resume_drill(
+        module_pg_pool: Any, module_pg_schema: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
+        fresh worker re-claims it (the lease expiry + the reclaim) and the
+        run COMPLETES. The operator's resilience story, runnable."""
+        schema = module_pg_schema.schema_name
+        # The trigger: the demo run's rows (the worker executes them through
+        # the intercept).
+        from examples.workflows import trigger_run
+    
+        run_id = await trigger_run(module_pg_pool, schema)
+        run_id_uuid = __import__("uuid").UUID(run_id)
+    
+        # The kill-and-resume: the demo's own worker processes.
+        demo_wd = Path(__file__).parent.parent
+        worker_env = {
+            **os.environ,
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_ENVIRONMENT": "dev",
+            "TASKQ_ADMIN_ACTIONS_ENABLED": "true",
+            "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
+        }
+        worker_argv = [
+            sys.executable, "-m", "taskq", "worker",
+            "--actors", "examples.workflows:ACTORS",
+        ]
+    
+        def spawn(tag: str) -> subprocess.Popen[bytes]:
+            return subprocess.Popen(  # noqa: S603  # Why: fixed argv, this interpreter, the project's own module.
+                worker_argv, env=worker_env, cwd=str(demo_wd),
+                stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),  # noqa: SIM115
+                stderr=subprocess.STDOUT,
+            )
+    
+        # WORKER 1: runs the flow's nodes.
+        killed = spawn("killed")
+        killed_deadline = time.time() + 90
+        saw_running = False
+        while time.time() < killed_deadline:
+            state = await wf_conn.fetchval(
+                f'SELECT count(*) FROM "{wf_schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
+                run_id_uuid,
+            )
+            if state:
+                saw_running = True
+                break
+            await asyncio.sleep(0.3)
+        assert saw_running, "the worker never claimed the flow's nodes"
+    
+        # THE KILL (SIGKILL — the operator's drill's teeth: no shutdown, no
+        # cleanup; the lease expires on the row).
+        killed.send_signal(signal.SIGKILL)
+>       await asyncio.to_thread(killed.wait)
+              ^^^^^^^
+E       NameError: name 'asyncio' is not defined. Did you forget to import 'asyncio'?
+
+tests/test_wf_demo_legs.py:193: NameError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=4add6b65d4e5 redis=f46767a5e4c1
+=========================== short test summary info ============================
+FAILED tests/test_wf_demo_legs.py::test_leg2_the_kill_and_resume_drill - Name...
+1 failed, 3 passed in 5.83s

@@ -1,0 +1,18 @@
+SOLO-RED: tests/test_auth_credential_refresh_integration.py::test_dedicated_conn_factory_refreshes_on_each_open
+SOLO-RED: tests/test_auth_credential_refresh_integration.py::test_rotated_credential_is_used_by_new_connections
+SOLO-RED: tests/test_breaking_change_markers.py::test_changelog_carries_only_release_please_generated_sections
+SOLO-RED: tests/test_enterprise_dsn_surfaces.py::test_ipv6_dsn_pool_connects
+SOLO-RED: tests/test_enterprise_dsn_surfaces.py::test_rds_iam_multi_host_dsn_reaches_the_server_well_formed
+SOLO-RED: tests/test_examples_smoke.py::test_trigger_app_enqueue
+SOLO-RED: tests/test_migration_lock_scope_dead_index.py::test_round_robin_lateral_probe_rides_the_unrouted_index
+SOLO-RED: tests/test_migration_lock_scope_dead_index.py::test_strict_fifo_lateral_probe_rides_the_unrouted_index
+SOLO-RED: tests/test_migrations.py::test_copy_from_columns_match_jobs_table_exactly
+SOLO-RED: tests/test_migrations.py::test_jobs_archive_columns_match_jobs_plus_archive_fields
+SOLO-RED: tests/test_no_stdlib_json.py::test_no_stdlib_json_imports_outside__json
+SOLO-RED: tests/test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains
+SOLO-RED: tests/test_suite_hygiene.py::test_no_module_level_schema_constant
+SOLO-RED: tests/test_suite_hygiene.py::test_no_test_file_writes_os_environ_directly
+SOLO-RED: tests/test_timescale_three_mode_lifecycle.py::test_full_lifecycle_on_each_of_the_three_modes[timescale-tsl]
+SOLO-RED: tests/web_admin/test_bounded_pool.py::test_no_handler_takes_the_raw_pool_dependency
+SOLO-RED: tests/web_admin/test_workflows_page.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+DONE
