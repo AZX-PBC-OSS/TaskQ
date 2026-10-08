@@ -1,0 +1,58 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________________ test_retry_classifier_routes_by_kind _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fe901001130>
+wf_schema = 'tq_ff4021932c'
+wf_pool = <asyncpg.pool.Pool object at 0x7fe9010ca980>
+
+    async def test_retry_classifier_routes_by_kind(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #12's cure: the retry knob routes by kind — a ``permanent``
+        body failure takes NO ladder (one terminal, immediately)."""
+        app = WorkflowApp()
+    
+        async def always_fails(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("boom")
+    
+        @app.workflow("retry_flow")
+        def retry_flow() -> object:
+            node = step(
+                always_fails,
+                Ingest(doc_id="d"),
+                key="perm",
+                retry_kind="permanent",
+                max_attempts=3,
+            )
+            return build(node)
+    
+        runner = FlowRunner(app.get("retry_flow"), wf_pool, wf_schema)
+>       flow_id = await runner.create_flow()
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:235: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:518: in create_flow
+    await self._insert_static_nodes(conn, claim.flow_id, input)
+src/taskq/workflows/api/_runner.py:565: in _insert_static_nodes
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.CheckViolationError: new row for relation "jobs" violates check constraint "jobs_retry_kind_check"
+E   DETAIL:  Failing row contains (01a1198a-2d1e-73f3-834a-71bd5f8db58a, wf, default, null, null, {"wf_args": [{"doc_id": "d"}], "wf_input": null}, 1, pending, 0, 0, 3, permanent, null, null, null, 2026-10-08 03:24:08.350308+00, 2026-10-08 03:24:08.350308+00, null, null, null, null, null, null, 0, null, null, null, {}, 0, null, null, null, wf:perm, null, null, {"flow_id": "01a1198a-2d18-73f1-a01f-703dc2cf7995"}, {}, workflow:01a1198a-2d18-73f1-a01f-703dc2cf7995, 0, 0, 0, 5, 3600, exponential, 0.2, f, 0, null, 0, null, perm, null, null, f, null).
+
+asyncpg/protocol/protocol.pyx:205: CheckViolationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_retry_classifier_routes_by_kind - a...
+1 failed in 0.83s

@@ -30,6 +30,7 @@ Additional routes:
   states via :meth:`RateLimitRegistry.peek_all`.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -38,7 +39,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -156,7 +157,16 @@ _templates = Environment(
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     if settings.migrate_on_start:
-        await apply_pending_locked(str(settings.pg_dsn), schema=settings.schema_name)
+        # PHASE=None (pre AND post) is the demo's fresh-schema contract
+        # (the stranger test's stumble #2): the pre-only default leaves
+        # the OLD single-column idempotency index standing (its drop is a
+        # post migration, gated for ROLLING deploys — a fresh demo schema
+        # has no old workers to protect), and the static workflow nodes'
+        # per-flow keys collide on it across runs (the second run's
+        # create_flow raised UniqueViolationError on wf:gather).
+        await apply_pending_locked(
+            str(settings.pg_dsn), schema=settings.schema_name, phase=None
+        )
 
     async with AsyncExitStack() as stack:
         pg_pool: asyncpg.Pool = await stack.enter_async_context(
@@ -182,6 +192,15 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         )
         application.state.tq = tq
 
+        # THE WORKFLOW DEMO (T16): the drive loop's task + the mounted
+        # WorkflowApp — the admin's typed resolve/deliver doors validate
+        # through IT (no untyped deliver surface ships).
+        from examples.workflows import drive_loop, wf_app
+
+        application.state.workflow_app = wf_app
+        drive_task = asyncio.create_task(drive_loop(pg_pool, settings.schema_name))
+        stack.push_async_callback(drive_task.cancel)
+
         # The Backend the client built reaches the admin router too: without
         # it the admin UI's backend-mediated mutation buttons (job cancel,
         # job retry, schedule run-now) render but every one answers 503.
@@ -192,6 +211,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             base_path="/taskq",
             rate_limit_registry=rl_registry,
             backend=tq.backend,
+            workflow_app=wf_app,
         )
         setup_admin_state(application, admin_bundle)
         application.include_router(admin_bundle.router, prefix="/taskq")
@@ -310,6 +330,37 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
     return JSONResponse(
         {"job_id": str(handle.job_id), "url": f"/taskq/jobs/{handle.job_id}"},
         status_code=201,
+    )
+
+
+# ── the workflow demo (T16) ─────────────────────────────────────────────
+#
+# The SAME envelope contract (the repo's F3 finding): the workflow
+# trigger answers 202 with the RUN id + the run-watch url (the admin's
+# workflow page — the graph view with the live SSE). A run-key conflict
+# (the same cron slot twice) answers 200 with the EXISTING run — the
+# run-level idempotency is the demo, not an error.
+
+
+@app.post("/workflows/{workflow_name}/run")
+async def run_workflow(workflow_name: str, request: Request) -> Response:
+    """Trigger the demo workflow; 202 + {run_id, url} — the F3 envelope."""
+    from examples.workflows import trigger_run
+
+    if workflow_name != "doc_ingest":
+        raise HTTPException(status_code=404, detail=f"no demo workflow {workflow_name!r}")
+    pool: asyncpg.Pool = request.app.state.pg_pool  # type: ignore[attr-defined]  # Why: the lifespan set it.
+    settings_obj = TaskQSettings.load()
+    run_key: str | None = None
+    if request.method == "POST":
+        form = await request.form()
+        raw_slot = form.get("slot")
+        if isinstance(raw_slot, str) and raw_slot:
+            run_key = f"doc_ingest:demo:{raw_slot}"
+    run_id = await trigger_run(pool, settings_obj.schema_name, run_key)
+    return JSONResponse(
+        {"run_id": run_id, "url": f"/taskq/workflows/{run_id}"},
+        status_code=202,
     )
 
 

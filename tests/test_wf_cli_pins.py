@@ -70,12 +70,12 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     module = types.ModuleType(MODULE_NAME)
     app_obj = WorkflowApp()
 
-    @app_obj.workflow("hold_flow")
+    @app_obj.workflow("cli_hold_flow")
     def hold_flow() -> object:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
-    @app_obj.workflow("fail_flow")
+    @app_obj.workflow("cli_fail_flow")
     def fail_flow() -> object:
         return build(step(_explode_once, Ingest(doc_id="d1"), key="doomed", max_attempts=1))
 
@@ -98,7 +98,7 @@ async def _explode_once(ctx: Any, params: Ingest) -> str:
     return "ok"
 
 
-async def _held_run(wf_pool: Any, wf_schema: str, *, name: str = "hold_flow") -> str:
+async def _held_run(wf_pool: Any, wf_schema: str, *, name: str = "cli_hold_flow") -> str:
     """A real run driven to its hold; the run id (str) is the CLI's address."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -151,7 +151,7 @@ async def test_holds_on_a_terminal_run_is_the_healthy_zero(
     """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
     defined healthy-zero state — the line SAYS the zero is state (a blank
     section that reads as zero-holds reds)."""
-    compiled = sys.modules[MODULE_NAME].app.get("fail_flow")  # type: ignore[attr-defined]
+    compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = await flow_runner.create_flow()
     await flow_runner.drive(flow_id)
@@ -207,7 +207,7 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
     assert audit["reason"] == "editor approved"
 
     # The flow resumes and completes (the rows are the verdict).
-    compiled = sys.modules[MODULE_NAME].app.get("hold_flow")  # type: ignore[attr-defined]
+    compiled = sys.modules[MODULE_NAME].app.get("cli_hold_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     outcome = await flow_runner.drive(JobId(run_id))
     assert outcome == "terminal"
@@ -238,7 +238,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
 ) -> None:
     """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
     completes after the operator's retry (§22.6's manual leg)."""
-    compiled = sys.modules[MODULE_NAME].app.get("fail_flow")  # type: ignore[attr-defined]
+    compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = await flow_runner.create_flow()
     await flow_runner.drive(flow_id)

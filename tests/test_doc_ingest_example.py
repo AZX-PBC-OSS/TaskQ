@@ -188,7 +188,19 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
         result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
         assert result.status == "delivered"
         outcome = await runner.drive(run_id)
-        assert outcome == "terminal", f"round {round_no}: the run never terminalized"
+        # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
+        # corrupted-terminal probe's lesson: a failed run is terminal
+        # too; asserting "terminal" alone was the vacuous assertion the
+        # cursored fence's first green hid behind).
+        assert outcome == "terminal"
+        root = await wf_conn.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+        )
+        assert root == "succeeded", (
+            f"round {round_no}: the run terminalized as {root!r} — the "
+            "corrupted-terminal class (the work was wrong; the record "
+            "must not look healthy)"
+        )
 
         # THE EXACTLY-ONCE PIN: the join-fire ledger has ONE row per join.
         fires = await wf_conn.fetch(

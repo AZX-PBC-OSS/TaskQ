@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 __all__ = ["FORK_CHUNK", "insert_fork"]
 
+
 #: Fan-out chunk size: rows per parallel-array INSERT statement.
 FORK_CHUNK = 500
 
@@ -87,25 +88,49 @@ async def insert_fork(
 
     join_id: JobId | None = None
     if fork.join is not None:
-        join_id = JobId(new_uuid())
-        await conn.execute(
-            wsql.fork_join_node,
-            join_id,
-            fork.join.actor,
-            fork.join.queue,
-            _jsonb(fork.join.payload),
-            fork.max_attempts,
-            fork.retry_kind,
-            parent_id,
+        # THE ADOPTION PROBE (attack4's full-static-insert cure): the
+        # API's create_flow pre-inserted EVERY node — the join included
+        # (deps 1: its source edge). When the row exists, the fork
+        # ADOPTS it: add the items' weight to the counter + stamp the
+        # consumers — never a second insert (the plain insert's
+        # idempotency collision killed the second demo run's fork). The
+        # engine's raw shapes (no static row) keep the insert path.
+        join_id = await conn.fetchval(
+            f"SELECT id FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
+            "AND (metadata->>'flow_id')::uuid = $2",
             fork.join.step_key,
-            len(children),
-            fork.trace_id,
-            _jsonb(
-                _join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven)
-            ),
-            f"workflow:{flow_id}",
-            f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
+            flow_id,
         )
+        if join_id is not None:
+            await conn.execute(
+                f"UPDATE {wsql.schema}.jobs "
+                "SET deps_pending = deps_pending + $1, "
+                "metadata = jsonb_set(metadata, '{consumers}', $2::jsonb, true) "
+                "WHERE id = $3",
+                len(children),
+                _jsonb(_join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven).get("consumers") or []),
+                join_id,
+            )
+        else:
+            join_id = JobId(new_uuid())
+            await conn.execute(
+                wsql.fork_join_node,
+                join_id,
+                fork.join.actor,
+                fork.join.queue,
+                _jsonb(fork.join.payload),
+                fork.max_attempts,
+                fork.retry_kind,
+                parent_id,
+                fork.join.step_key,
+                len(children),
+                fork.trace_id,
+                _jsonb(
+                    _join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven)
+                ),
+                f"workflow:{flow_id}",
+                f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
+            )
         # The join's edges: one per child (the ledger's truth — the
         # fan-out's children feed the join).
         for start in range(0, len(child_ids), FORK_CHUNK):

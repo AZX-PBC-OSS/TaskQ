@@ -148,7 +148,7 @@ def test_bar_walk() -> None:
     sequencing, a consumed terminal, the input parameter on create_flow."""
     app = WorkflowApp()
 
-    @app.workflow("doc_ingest")
+    @app.workflow("bar_walk_doc_ingest")
     def doc_ingest() -> object:
         fetched = step(_fetch, DocIngest(doc_id="d1"))  # Promise[Report]
         embed_p = step(_embed, fetched)  # Promise[Vec] — sequenced
@@ -156,7 +156,7 @@ def test_bar_walk() -> None:
         both = gather([fetched, fetched])  # the ALL-upstream join
         return build(step(_summarize, both, key="summarize"))
 
-    compiled = app.get("doc_ingest")
+    compiled = app.get("bar_walk_doc_ingest")
     assert compiled is not None
     keys = set(compiled.node_keys())
     assert {"_fetch", "_embed", "summarize"} <= keys
