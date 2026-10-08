@@ -331,6 +331,7 @@ ignore = [
 # is the module fixture's schema identifier (module_pg_schema), values all
 # $N-bound.
 "tests/test_wf_runner_pins.py" = ["S608"]
+"tests/test_wf_loop_pins.py" = ["S608"]
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated (a test-generated, fixture-owned name), and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the

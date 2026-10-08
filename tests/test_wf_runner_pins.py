@@ -111,7 +111,7 @@ async def test_create_flow_carries_input_and_drives(
     flow_id = await runner.create_flow(input={"doc_id": "d1"})
     # THE INPUT IS ON THE ROW (cut #7: never a closure).
     raw = await wf_conn.fetchval(
-        f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1', flow_id  # noqa: S608  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
+        f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1', flow_id  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
     )
     assert raw is not None and "wf_input" in raw
     assert await runner.drive(flow_id) == "terminal"

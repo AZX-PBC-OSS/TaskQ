@@ -103,6 +103,12 @@ class NodeDecl:
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
+    # THE LOOP ATTACHMENT (T19): the loop node's spec + the iteration
+    # body + the awaited until-predicate. ``loop_spec is not None`` IS
+    # the loop-node marker.
+    loop_spec: object | None = None
+    loop_body: BodyFn | None = None
+    loop_until: Callable[[], Awaitable[bool]] | None = None
 
 
 class Promise[T_co]:

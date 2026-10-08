@@ -26,6 +26,7 @@ from taskq.workflows._sweep import (
     drain_outbox,
     reap_phantom_ledger,
     sweep_join_rederive,
+    sweep_loop_budget,
 )
 from taskq.workflows._types import (
     AbsorbingPolicy,
@@ -51,6 +52,7 @@ from taskq.workflows.api import (
     sink,
     step,
 )
+from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.definitions import (
@@ -95,6 +97,7 @@ __all__ = [
     "ConsumerBinding",
     "DeadlockRetriesExhaustedError",
     "DecrementHit",
+    "Done",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
     "FailureInfo",
@@ -107,6 +110,7 @@ __all__ = [
     "LedgerClaim",
     "NodeSpec",
     "Promise",
+    "Refine",
     "RunClaim",
     "StepBody",
     "StepContext",
@@ -126,6 +130,7 @@ __all__ = [
     "get_registry",
     "insert_flow_run",
     "insert_node",
+    "loop",
     "map_source",
     "memoized_step_result",
     "reap_phantom_ledger",
@@ -137,6 +142,7 @@ __all__ = [
     "step_idempotency_key",
     "step_idempotency_scope",
     "sweep_join_rederive",
+    "sweep_loop_budget",
     "validate_fork",
     "validate_join_spec",
 ]

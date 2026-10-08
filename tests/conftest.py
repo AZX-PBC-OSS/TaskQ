@@ -137,6 +137,7 @@ from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
     propagation_redlog,  # pyright: ignore[reportUnusedImport]
     wf_conn,  # pyright: ignore[reportUnusedImport]
     wf_g7_status_truth,  # pyright: ignore[reportUnusedImport]
+    wf_pool,  # pyright: ignore[reportUnusedImport]
     wf_schema,  # pyright: ignore[reportUnusedImport]
     wf_sql,  # pyright: ignore[reportUnusedImport]
 )

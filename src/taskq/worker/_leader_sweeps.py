@@ -542,6 +542,20 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    async def wf_loop_budget_call() -> int:
+        # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
+        # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
+        # held-loop inertness); the exhaustion is the NAMED state and the
+        # flow terminalizes in the same tx. The lazy import keeps the
+        # §16.1 import law.
+        from taskq.workflows import sweep_loop_budget
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_loop_budget(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     async def wf_phantom_reap_call() -> int:
         from taskq.workflows import reap_phantom_ledger
         from taskq.workflows.engine import render_workflow_sql
@@ -761,6 +775,23 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=True,
             dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
+        ),
+        _SweepSpec(
+            # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
+            # the iteration-cap wall, one arm, `AND NOT budget_paused`
+            # (the held-loop inertness — the CONSUME-BUDGET dragon's
+            # cure); the exhaustion is the NAMED state and the flow
+            # terminalizes in the same tx (STRANDED-FLOW). NOT a drain:
+            # the exhaustion is idempotent (a terminal loop row updates
+            # nothing), a second pass returns zero.
+            name="wf_loop_budget",
+            call=wf_loop_budget_call,
+            warn_event="sweep-wf-loop-budget-failed",
+            warn_kind="sweep_wf_loop_budget_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedColumnError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_loop_budget_tick"),
         ),
         _SweepSpec(
             # ONE full-table-scoped pass per tick, deliberately NOT a

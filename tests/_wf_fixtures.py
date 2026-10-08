@@ -176,6 +176,18 @@ def wf_schema(module_pg_schema: Any) -> str:
 
 
 @pytest.fixture
+async def wf_pool(module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
+    """The RUNNER's pool (T09): the flow runner acquires from a pool (its
+    claims + finalizes); the module's DSN builds it — one pool per test,
+    closed at teardown. The loop pins (T19) share it (a fixture
+    duplicated across two files is a seam owed NOW — this is the
+    seam's home, beside the other wf fixtures)."""
+    pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture
 def wf_sql(module_pg_schema: Any) -> WorkflowSql:
     """The workflow statement bundle rendered for the module's schema."""
     return render_workflow_sql(module_pg_schema.schema_name)

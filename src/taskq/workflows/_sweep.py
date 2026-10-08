@@ -301,3 +301,88 @@ async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     for flow_id in {r["flow_id"] for r in rows}:
         forget_flow_reducers(JobId(flow_id))
     return len(rows)
+
+
+async def sweep_loop_budget(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    batch_size: int = 100,
+) -> int:
+    """THE BUDGET SWEEP ARM (T19) — the loop walls' enforcer: the BUDGET
+    wall (a running loop whose ``budget_deadline`` is past PG's
+    ``clock_timestamp()``) and the ITERATION CAP wall (a running loop at/
+    over ``max_iterations`` — the crash-dead-worker path; a live worker's
+    loop is terminated by the ADVANCE statement's own guard, atomically
+    with the carry). THE ARM'S HEART: ``AND NOT budget_paused`` — a loop
+    holding on a human is INVISIBLE to the wall even when its deadline is
+    FORCED into the past (the CONSUME-BUDGET dragon's cure; the arm
+    missing the leg is the mutation the pin drills, kept red forever).
+
+    Exhaustion = the NAMED state (``iteration_cap_exhausted`` /
+    ``budget_exhausted`` in the loop's metadata + the typed failure
+    class) and the FLOW TERMINALIZES IN THE SAME TRANSACTION
+    (STRANDED-FLOW — the spike's cut 5: a wedged ``running`` flow that
+    ticks forever is the convicted variant). The escalation outbox row
+    (``on_exhausted="escalate"``) rides the same tx — no second delivery
+    mechanism. §22.6's exclusivity: the arm never touches a reclaim-owned
+    row; the clock comparison is PG's own (the DB-clock doctrine).
+
+    Returns the number of loops exhausted."""
+    from taskq._ids import new_uuid
+    from taskq.workflows.api._sql_loop import (
+        ITERATION_STATE_BUDGET_EXHAUSTED,
+        ITERATION_STATE_CAP_EXHAUSTED,
+        LOOP_BUDGET_SWEEP_SQL,
+        LOOP_ERROR_BUDGET,
+        LOOP_ERROR_CAP,
+        LOOP_ESCALATION_OUTBOX_SQL,
+        LOOP_EXHAUST_SQL,
+        LOOP_KIND_MARKER,
+        LOOP_NODE_WALL_SQL,
+        render_loop_sql,
+    )
+
+    exhausted = 0
+    async with pool.acquire() as conn, conn.transaction():
+        loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+        for loop_row in loops:
+            loop_id = loop_row["id"]
+            # WHICH wall (the named state's truth): the metadata's
+            # iteration counter vs max_iterations — the cap names
+            # ``iteration_cap_exhausted``, the budget its own state.
+            state = await conn.fetchrow(
+                LOOP_NODE_WALL_SQL.replace("{schema}", wsql.schema), loop_id
+            )
+            assert state is not None
+            cap_hit = (
+                state["max_iterations"] is not None
+                and (state["iteration"] or 0) >= state["max_iterations"]
+            )
+            error_class = LOOP_ERROR_CAP if cap_hit else LOOP_ERROR_BUDGET
+            iteration_state = (
+                ITERATION_STATE_CAP_EXHAUSTED if cap_hit else ITERATION_STATE_BUDGET_EXHAUSTED
+            )
+            result = await conn.fetchrow(
+                render_loop_sql(LOOP_EXHAUST_SQL, wsql.schema),
+                loop_id,
+                error_class,
+                f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}',
+                f"the loop's {'iteration cap' if cap_hit else 'budget'} wall fired "
+                f"(the sweep's arm; the named state: {iteration_state})",
+            )
+            if result is None or not result["loop_exhausted"]:
+                continue  # another writer got there first — the CAS held
+            # THE ESCALATION OUTBOX ROW (the same tx): the operator-facing
+            # arm of on_exhausted="escalate" — the named state is the
+            # record, the escalation actor's enqueue the action.
+            await conn.execute(
+                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema),
+                new_uuid(),
+                loop_id,
+                loop_row["flow_id"],
+                "loop.escalation",
+                '{"actor": "loop_escalation", "queue": "default"}',
+            )
+            exhausted += 1
+    return exhausted
