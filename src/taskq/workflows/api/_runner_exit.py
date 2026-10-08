@@ -254,7 +254,7 @@ async def cancel_workflow_run(
         if flipped is None:
             return 0  # already terminal — idempotent
         await conn.execute(render_sql(_EXIT_CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
-        held = await cancel_run_signals(pool, schema=schema, workflow_id=flow_id)
+        held = await cancel_run_signals(conn, schema=schema, workflow_id=flow_id)
         # THE AUDIT ROW (the caller owns the tx — the same-tx
         # guarantee; the lazy import keeps the layering).
         from taskq.web.admin._audit import record_admin_action
@@ -304,14 +304,10 @@ async def retry_workflow_node(
         )
         if node_id is None:
             return 0
-        descendants = await conn.fetch(
-            render_sql(_DESCENDANTS_SQL, schema), flow_id, [node_key]
-        )
+        descendants = await conn.fetch(render_sql(_DESCENDANTS_SQL, schema), flow_id, [node_key])
         keys = [r["step_key"] for r in descendants]
         if keys:
-            await conn.execute(
-                render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys
-            )
+            await conn.execute(render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys)
         await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, schema), flow_id)
         # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee).
         from taskq.web.admin._audit import record_admin_action
@@ -328,6 +324,7 @@ async def retry_workflow_node(
         )
     return 1
 
+
 _DESCENDANTS_SQL = """
 SELECT DISTINCT c.step_key
 FROM {schema}.wf_edge e
@@ -335,4 +332,3 @@ JOIN {schema}.jobs c ON c.id = e.child_id
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE (p.metadata->>'flow_id')::uuid = $1 AND p.step_key = ANY($2)
 """
-
