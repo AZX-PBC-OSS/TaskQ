@@ -1,0 +1,8 @@
+....................................................xx.xx............... [ 81%]
+................                                                         [100%]
+=========================== short test summary info ============================
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_7_create_flow_takes_input - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_bar_walk - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_4_dispatch_time_predicate - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_1_join_user_body - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+84 passed, 4 xfailed in 43.95s
