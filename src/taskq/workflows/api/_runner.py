@@ -742,7 +742,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             if flipped is None:
                 return 0  # already terminal — idempotent
             await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, self.schema), flow_id)
-            held = await cancel_run_signals(self.pool, schema=self.schema, workflow_id=flow_id)
+            held = await cancel_run_signals(conn, schema=self.schema, workflow_id=flow_id)
             # THE AUDIT ROW (the caller owns the tx — the same-tx
             # guarantee; the lazy import keeps the layering).
             from taskq.web.admin._audit import record_admin_action

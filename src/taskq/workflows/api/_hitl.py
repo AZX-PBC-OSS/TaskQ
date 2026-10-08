@@ -846,11 +846,16 @@ class HitlClient:
         )
 
 
-async def cancel_run_signals(pool: asyncpg.Pool, *, schema: str, workflow_id: JobId) -> int:
+async def cancel_run_signals(conn: ConnLike, *, schema: str, workflow_id: JobId) -> int:
     """The CANCEL CASCADE's signal leg: the run's held signals →
-    ``cancelled`` (the same one-tx cancel — the caller owns the
-    transaction's flow flip; a LATE operator deliver returns the typed
-    ``refused`` — no zombie wake, no resume event, pin 1's shape)."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(_render(_CANCEL_RUN_SIGNALS_SQL, schema), workflow_id)
+    ``cancelled`` (the same one-tx cancel — THIS leg runs on the CALLER'S
+    CONNECTION, inside the caller's transaction: the statement is ONE
+    UPDATE, so composing with it costs nothing and the torn state is
+    IMPOSSIBLE by construction — the attack-4 finding (F-P4-TORN-CANCEL)
+    was the leg riding a SECOND pool connection in autocommit, where an
+    outer rollback left ``signal='cancelled'`` standing on a run that
+    never cancelled: a held operator's decision destroyed by a cancel
+    that never landed. The record cannot lie: the signal write, the root
+    flip, and the audit row commit together or not at all)."""
+    rows = await conn.fetch(_render(_CANCEL_RUN_SIGNALS_SQL, schema), workflow_id)
     return len(rows)
