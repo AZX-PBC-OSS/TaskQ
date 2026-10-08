@@ -144,6 +144,11 @@ class NodeDecl:
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
+    # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
+    # pattern): a pydantic model the node's ``ctx.progress`` data
+    # emissions must satisfy. On a MAP SOURCE the declaration reaches the
+    # children (the ``<src>.item`` keys resolve it through their source).
+    progress_schema: type[BaseModel] | None = None
     # THE MAP ATTACHMENT (the source node owns its fork): the per-item
     # body + the children's placement/policy. ``map_item is not None`` IS
     # the map-source marker (the runner's fork decision reads it).
@@ -290,6 +295,7 @@ def step(
     retry_kind: str | None = None,
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
+    progress_schema: type[BaseModel] | None = None,
 ) -> Promise[Any]:
     """Wire ONE node: ``p = step(fetch_body, params)``.
 
@@ -297,7 +303,11 @@ def step(
     there are several — the join's user body IS this node's body, run
     inside the join's finalize tx with the DECODED parent results); plain
     arguments ride the node payload. ``skip=`` is the dispatch-time
-    predicate (cut #4)."""
+    predicate (cut #4). ``progress_schema=`` is the node's DECLARED
+    progress payload schema (T21 — the TypedGate-door pattern): the
+    body's ``ctx.progress`` data emissions are validated against it, a
+    wrong shape refused (the declaration is what makes a separate UI
+    render the emission — the context-contract law)."""
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))
@@ -344,6 +354,7 @@ def step(
             retry_kind=retry_kind,
             skip=skip,
             gates=gates,
+            progress_schema=progress_schema,
             kind="gather" if len(keys) > 1 else "step",
         )
     )

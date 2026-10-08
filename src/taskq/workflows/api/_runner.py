@@ -39,6 +39,14 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
+from taskq.workflows._progress import (
+    KIND_NODE_STARTED,
+    KIND_NODE_TERMINAL,
+    MESSAGE_TERMINAL_MAX,
+    ProgressEmitter,
+    project_auto_event,
+    validate_emission,
+)
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec, JoinSpec, NodeSpec, _jsonb
@@ -116,6 +124,12 @@ class StepContext:
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
+    # THE EMISSION OP's buffer (T21): the attempt's own ProgressEmitter —
+    # the runner wires it at the claim seam. None when unwired (direct
+    # testing): ctx.progress then VALIDATES the shape (the typed door is
+    # the authoring contract) and drops the emission (the deliberate
+    # no-op — the jobs ctx's unwired pattern), never a crash.
+    _progress: ProgressEmitter | None = None
 
     async def cursor(self) -> dict[str, object]:
         """THE STREAMING SOURCE'S CHECKPOINTED CURSOR (T20): read from
@@ -168,6 +182,40 @@ class StepContext:
             children=children,
             cursor=cursor,
         )
+
+    async def progress(
+        self,
+        pct: int | None = None,
+        message: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        """THE EMISSION OP (T21 decision a): report the node's progress —
+        ``await ctx.progress(75, "page 3/4", {"page": 3})``.
+
+        TYPED + BOUNDED: ``pct`` is an int 0..100 or None; ``message`` is
+        chars-capped; ``data`` is jsonb, capped with the
+        ``__truncated__`` marker (T18's D5 shape) and — when the node
+        DECLARED a payload schema (``step(body, ..., progress_schema=
+        Model)``, the TypedGate-door pattern) — validated against it, a
+        wrong shape refused with :class:`taskq.workflows.ProgressRefusedError`.
+
+        BEST-EFFORT BY CONSTRUCTION (decision e — THE LAW: observability
+        degrades FIRST, never correctness): the call updates an in-memory
+        buffer latest-wins and arms the cadence flush (~20 deltas/s at
+        the 50 ms cadence); it NEVER awaits the network and NEVER
+        touches the finalize path — the attempt's final flush runs
+        bounded, BEFORE the node's finalize transactions. A flush that
+        fails is counted on the record (the emitter's ``write_errors``,
+        the first loss warned); a node whose every flush fails still
+        terminalizes normally. A lost emission costs FRESHNESS; a
+        blocked node costs CORRECTNESS.
+        """
+        emitter = self._progress
+        schema = emitter.schema_decl if emitter is not None else None
+        pct_v, message_v, data_v = validate_emission(pct, message, data, schema)
+        if emitter is None:
+            return  # unwired (direct testing): the deliberate no-op
+        emitter.submit(pct_v, message_v, data_v)
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
@@ -842,6 +890,18 @@ class FlowRunner:
             return  # someone else claimed it (or the flow died) — no error
         attempt = int(claimed)
 
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+
         # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
         # flow's state — never at create time.
         if (
@@ -852,11 +912,28 @@ class FlowRunner:
             await self._finalize_skipped(flow_id, row, node)
             return
 
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+
         # THE LOOP NODE (T19): the driver owns the node's lifecycle
         # (the iterations, the walls) — the caller's body path never
-        # runs for it.
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
         if node is not None and node.loop_spec is not None:
-            await self._run_loop_node(flow_id, row, attempt, node, ledger_id)
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
             return
 
         parents_ordered, parents_by_key = await self._parent_results(row["id"])
@@ -879,6 +956,7 @@ class FlowRunner:
             _worker_id=self._worker_id,
             _workflow_name=self.compiled.name,
             _redact=self._redact_hook(),
+            _progress=emitter,
         )
         try:
             if body is None:
@@ -913,7 +991,10 @@ class FlowRunner:
             # THE HOLD (T10): the node rests in the held representation
             # (pending + the deadline + the signal row as truth) — NO
             # terminal, NO ledger failure; the resume re-executes the
-            # body from the top. The runner's tick reports it ran.
+            # body from the top. The runner's tick reports it ran. The
+            # buffer's final flush runs FIRST (bounded, best-effort —
+            # the hold is not a terminal; the progress survives).
+            await emitter.aclose()
             logger.info(
                 "node.held",
                 run_id=str(flow_id),
@@ -923,8 +1004,13 @@ class FlowRunner:
             )
             return
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
+            # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
+            # law): the final flush is bounded and best-effort — it can
+            # cost freshness, never the ladder's correctness.
+            await emitter.aclose()
             await self._ladder_or_fail(flow_id, row, attempt, node, exc)
             return
+        await emitter.aclose()
         await self._finalize_success(flow_id, row, attempt, node, result)
 
     def _redact_hook(self) -> Callable[[str], str] | None:
@@ -938,6 +1024,18 @@ class FlowRunner:
             return get_registry().get(self.compiled.name).redact
         except KeyError:
             return None
+
+    def _progress_schema(self, node_key: str, node: Any) -> type[BaseModel] | None:
+        """The node's DECLARED progress payload schema (T21 decision a):
+        the node's own decl; a MAP CHILD (the fork-spawned ``<src>.item``
+        keys — no decl of their own) inherits its SOURCE's declaration."""
+        if node is not None and getattr(node, "progress_schema", None) is not None:
+            return node.progress_schema
+        if node_key.endswith(".item"):
+            source = self.compiled.nodes.get(node_key[: -len(".item")])
+            if source is not None and source.progress_schema is not None:
+                return source.progress_schema
+        return None
 
     def _resolve_body(self, node_key: str, node: Any) -> Any:
         """D1: the body resolves from the REGISTERED DEFINITION — never
@@ -1168,11 +1266,12 @@ class FlowRunner:
         attempt: int,
         node: Any,
         result: dict[str, object] | None,
+        emitter: ProgressEmitter | None = None,
     ) -> None:
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
             fork = self._map_fork(row, node, result)
-        await finalize_node(
+        final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -1186,6 +1285,41 @@ class FlowRunner:
             fork=fork,
             map_index=row["map_index"],
         )
+        # THE AUTO PROJECTION — TERMINAL (T21 decision b): the finalize
+        # seam's additive write, AFTER the two-tx finalize returned (the
+        # projection is never inside the finalize's transactions — the
+        # zero-finalize-changes probe pins the terminal-mark statement's
+        # blindness to the progress substrate). The LEDGER owns the
+        # state; the projection only publishes it to the stream.
+        if final.applied:
+            await self._project_auto(
+                flow_id,
+                JobId(row["id"]),
+                KIND_NODE_TERMINAL,
+                {"outcome": "succeeded", "step_key": row["step_key"]},
+            )
+
+    async def _project_auto(
+        self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
+    ) -> None:
+        """One auto-class projection, best-effort (T21 decision e): a lost
+        projection is a FRESHNESS loss — counted and warned, never raised
+        into the node's path."""
+        try:
+            await project_auto_event(
+                self.pool, self.wsql, flow_id=flow_id, node_id=node_id, kind=kind, payload=payload
+            )
+        except (
+            Exception
+        ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
+            logger.warning(
+                "progress_projection_lost",
+                kind="progress_projection_lost",
+                run_id=str(flow_id),
+                node=str(node_id),
+                projection=kind,
+                error=str(exc)[:200],
+            )
 
     def _map_fork(
         self, row: dict[str, Any], node: Any, result: dict[str, object] | None
@@ -1246,6 +1380,7 @@ class FlowRunner:
         attempt: int,
         node: Any,
         ledger_id: JobId | None = None,
+        emitter: ProgressEmitter | None = None,
     ) -> None:
         """THE LOOP DRIVER (T19): fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -1355,7 +1490,9 @@ class FlowRunner:
             # THE UNTIL PREDICATE — awaited (a sync closure returning a
             # coroutine object is the convicted dragon).
             if node.loop_until is not None and await node.loop_until():
-                await self._finalize_success(flow_id, row, attempt, node, _encode_result(carry))
+                await self._finalize_success(
+                    flow_id, row, attempt, node, _encode_result(carry), emitter=emitter
+                )
                 return
 
             # THE CAP CHECK (the driver's top-of-loop face — the advance
@@ -1389,7 +1526,7 @@ class FlowRunner:
                 if memo_doc.get("done"):
                     payload: object = memo_doc.get("payload")
                     await self._finalize_success(
-                        flow_id, row, attempt, node, _encode_result(payload)
+                        flow_id, row, attempt, node, _encode_result(payload), emitter=emitter
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
@@ -1416,6 +1553,7 @@ class FlowRunner:
                     _ledger_id=ledger_id,
                     _workflow_name=self.compiled.name,
                     _redact=self._redact_hook(),
+                    _progress=emitter,
                 )
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)
@@ -1452,7 +1590,7 @@ class FlowRunner:
                 if isinstance(outcome, Done):
                     done_payload = cast(object, outcome.payload)  # the union's boundary
                     await self._finalize_success(
-                        flow_id, row, attempt, node, _encode_result(done_payload)
+                        flow_id, row, attempt, node, _encode_result(done_payload), emitter=emitter
                     )
                     return
                 assert isinstance(outcome, Refine), (
@@ -1687,7 +1825,7 @@ class FlowRunner:
                     0.05 * (2 ** (failed_count)),
                 )
                 return
-        await finalize_node(
+        final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -1698,9 +1836,20 @@ class FlowRunner:
             claim_epoch=0,
             outcome="failed",
             error_class=type(exc).__name__,
-            error_message=str(exc)[:500],
+            error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
             map_index=row["map_index"],
         )
+        if final.applied:
+            await self._project_auto(
+                flow_id,
+                JobId(row["id"]),
+                KIND_NODE_TERMINAL,
+                {
+                    "outcome": "failed",
+                    "step_key": row["step_key"],
+                    "error_class": type(exc).__name__,
+                },
+            )
 
     # ── the typed early-exit + the manual retry ──────────────────────
 
@@ -1865,6 +2014,12 @@ class FlowRunner:
             outcome="succeeded",
             result=dict(_SKIPPED_RESULT),
             map_index=row["map_index"],
+        )
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_TERMINAL,
+            {"outcome": "succeeded", "step_key": row["step_key"], "skipped": True},
         )
 
     # ── reads ────────────────────────────────────────────────────────
