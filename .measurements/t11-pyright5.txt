@@ -1,0 +1,12 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:322:59 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:375:62 - error: Argument type is partially unknown
+    Argument corresponds to parameter "decision" in function "_validate_through_gates"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:22:8 - error: Import "asyncpg" is not accessed (reportUnusedImport)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/workflows.py:99:12 - error: Return type, "Unknown | None", is partially unknown (reportUnknownVariableType)
+4 errors, 0 warnings, 0 informations

@@ -1,0 +1,3 @@
+DRILL (the convicted variant — suppress_refresh forgotten): meta refresh present: True → the live-state pin REDS (the reload destroys the live SVG + reconnects from snapshot)
+DRILL (the shipped page — suppress_refresh=True): meta refresh present: False
+RED EVIDENCE: the meta-refresh dragon's tooth observed; the shipped page cures it.

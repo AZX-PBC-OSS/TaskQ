@@ -88,3 +88,26 @@ The two-channel persistence's bands, re-proven on the BUILT code
 | the read-side aggregate's fn time (200 children, mid-flight-capable) | **0.009 ms** (the PoC's 0.22 ms shape; the read writes nothing) | the numbers run |
 | the finalize's blindness to emission (structural) | the terminal-mark statement touches NO progress table (the zero-finalize-changes probe); a 10k-emission node finalizes normally | `test_zero_finalize_changes_probe` |
 | the crash window | freshness-only loss: the display's STATE ledger-derived at every sample; the terminal heals | `test_crash_window_freshness_only_loss_then_the_terminal_heals` |
+## The click→panel latency band (T11, the admin workflow page)
+
+The node-detail panel's data path (the route's full read through the
+ASGI transport — the server half of the click→panel budget; the DOM
+patch is the P2 stack's 0.075 ms avg, 0.2 ms worst), measured on the
+local PG lane (the band's set-then-pin discipline — G11's method):
+
+| metric | value | source |
+| --- | --- | --- |
+| the panel route's read (20 samples) | avg 1.205 ms · p95 3.238 ms | `.measurements/t11-latency-band.json` |
+| the PINNED band | **≤ 50 ms** (p95, the assert's headroom ×15) | `tests/web_admin/test_workflows_page.py::test_panel_latency_band` |
+
+## The vendored mermaid.min.js (T11 — the air-gap argument)
+
+The same argument alpine/htmx/lucide carry: an air-gapped ops
+deployment must not lose the graph to a CDN. The shipped file IS
+mermaid v11.12.2's IIFE build, pinned:
+
+| fact | value |
+| --- | --- |
+| raw | 2,754,895 B (the ticket's recorded size, byte-exact) |
+| gzipped | 792,766 B ≈ 774 KB (the admin's `GZipStaticOnly` middleware serves /static/* gzipped) |
+| no bundler / no React / no CDN | the file is a self-contained IIFE; the grep-able pin |

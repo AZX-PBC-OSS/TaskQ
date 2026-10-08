@@ -1,0 +1,263 @@
+..FFF.....F..                                                            [100%]
+=================================== FAILURES ===================================
+__________________ test_sse_first_frame_is_the_full_snapshot ___________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07b68f0b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_sse_first_frame_is_the_full_snapshot(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        demo_app_module: Any,
+    ) -> None:
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+>       frames = await _stream_frames(module_pg_schema, run_id)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:299: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+run_id = '01a11967-3d85-74f3-9cc5-6c78bbc5cbfe', last_event_id = None, count = 1
+
+    async def _stream_frames(
+        module_pg_schema: Any, run_id: str, *, last_event_id: str | None = None, count: int = 1
+    ) -> list[dict[str, Any]]:
+        """`count` frames off the REAL generator, bounded (a hang is a defect
+        with a timeout — the bound is stated, and asyncio.timeout raises)."""
+        from taskq.web.admin._wf_actions import _stream_generator
+    
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
+        try:
+            gen = _stream_generator(
+                pool,
+                module_pg_schema.schema_name,
+>               uuid.UUID(run_id),
+                ^^^^
+                int(last_event_id) if last_event_id is not None else 0,
+            )
+E           NameError: name 'uuid' is not defined. Did you forget to import 'uuid'?
+
+tests/web_admin/test_workflows_page.py:252: NameError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:45:58 [info     ] node.held                      hold_id=01a11967-3d9f-76f1-8e9e-63ae46d72add node=review run_id=01a11967-3d85-74f3-9cc5-6c78bbc5cbfe signals=['Approval']
+___________ test_resolve_through_the_typed_door_delivers_and_audits ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07b68f0b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f07b6cb9040>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_resolve_through_the_typed_door_delivers_and_audits(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        clean_pg_conn: asyncpg.Connection,
+        demo_app_module: Any,
+    ) -> None:
+        """THE AUDIT PIN (G4): a Resolve with the mounted definitions
+        delivers + writes the audit row; a WRONG payload is the named
+        pydantic refusal and moves nothing."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        from taskq.workflows.api._hitl import HitlClient
+    
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    
+        # THE WRONG PAYLOAD: the named refusal, the hold SURVIVES.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")  # the CSRF cookie's set
+>           bad = await http.post(
+                f"/api/runs/{run_id}/resolve",
+                data={
+                    "hold_id": hold.hold_id,
+                    "decision": json.dumps({"verdict": 42}),
+                    "csrf_token": _csrf_of(http),
+                },
+            )
+
+tests/web_admin/test_workflows_page.py:389: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/httpx/_client.py:1859: in post
+    return await self.request(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1540: in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_client.py:1629: in send
+    response = await self._send_handling_auth(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1657: in _send_handling_auth
+    response = await self._send_handling_redirects(
+.venv/lib/python3.13/site-packages/httpx/_client.py:1694: in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_client.py:1730: in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/httpx/_transports/asgi.py:170: in handle_async_request
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/applications.py:1163: in __call__
+    await super().__call__(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/applications.py:96: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:186: in __call__
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:164: in __call__
+    await self.app(scope, receive, _send)
+.venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py:63: in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py:18: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:676: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2734: in app
+    await route.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1780: in handle
+    await self.original_router.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2789: in handle
+    await included_router._handle_selected(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1800: in _handle_selected
+    await original_route.handle(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:1279: in handle
+    await app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:158: in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.13/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:144: in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+src/taskq/web/admin/_factory.py:524: in csrf_aware_handler
+    response = await original_handler(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/fastapi/routing.py:706: in app
+    raw_response = await run_endpoint_function(
+.venv/lib/python3.13/site-packages/fastapi/routing.py:352: in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/web/admin/_wf_actions.py:309: in run_resolve
+    hold = await client.get(hold_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_hitl.py:412: in get
+    async with self._pool.acquire() as conn:
+               ^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <PoolConnectionProxy [released] 0x7f07b6d8bc40>, attr = 'acquire'
+
+    def __getattr__(self, attr: str) -> Any:
+        # Proxy all unresolved attributes to the wrapped Connection object.
+>       return getattr(self._con, attr)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Connection' object has no attribute 'acquire'
+
+.venv/lib/python3.13/site-packages/asyncpg/pool.py:93: AttributeError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:45:58 [info     ] node.held                      hold_id=01a11967-3e3f-7c93-b750-f85710179d8c node=review run_id=01a11967-3e28-7240-baf2-0c55c4590019 signals=['Approval']
+2026-10-07 19:45:58 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:45:59 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+_______________ test_sse_unknown_run_streams_the_empty_snapshot ________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07b68f0b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+
+    async def test_sse_unknown_run_streams_the_empty_snapshot(
+        module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """THE STATES MATRIX (3): a stream for an unknown/not-yet-inserted
+        run emits the snapshot with ZERO nodes — a defined state, not a
+        hang, not a blank."""
+>       frames = await _stream_frames(
+            module_pg_schema, "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
+        )
+
+tests/web_admin/test_workflows_page.py:335: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+run_id = '018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f', last_event_id = None, count = 1
+
+    async def _stream_frames(
+        module_pg_schema: Any, run_id: str, *, last_event_id: str | None = None, count: int = 1
+    ) -> list[dict[str, Any]]:
+        """`count` frames off the REAL generator, bounded (a hang is a defect
+        with a timeout — the bound is stated, and asyncio.timeout raises)."""
+        from taskq.web.admin._wf_actions import _stream_generator
+    
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
+        try:
+            gen = _stream_generator(
+                pool,
+                module_pg_schema.schema_name,
+>               uuid.UUID(run_id),
+                ^^^^
+                int(last_event_id) if last_event_id is not None else 0,
+            )
+E           NameError: name 'uuid' is not defined. Did you forget to import 'uuid'?
+
+tests/web_admin/test_workflows_page.py:252: NameError
+____________ test_sse_reconnect_last_event_id_continues_the_cursor _____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f07b68f0b80>
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_sse_reconnect_last_event_id_continues_the_cursor(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        demo_app_module: Any,
+    ) -> None:
+        """THE REPLAY PIN: a reconnect with Last-Event-ID continues the
+        cursor (seq > cursor) and the frame carries the WHOLE state — the
+        reconnect never loses it (the state-losing variant reds)."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema)
+>       frames = await _stream_frames(module_pg_schema, run_id)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:318: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+module_pg_schema = ModulePgSchema(schema_name='tq_c8657d69d1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c8657d69d1bc')
+run_id = '01a11967-4310-7d42-b3c1-d2cb61ba57b2', last_event_id = None, count = 1
+
+    async def _stream_frames(
+        module_pg_schema: Any, run_id: str, *, last_event_id: str | None = None, count: int = 1
+    ) -> list[dict[str, Any]]:
+        """`count` frames off the REAL generator, bounded (a hang is a defect
+        with a timeout — the bound is stated, and asyncio.timeout raises)."""
+        from taskq.web.admin._wf_actions import _stream_generator
+    
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
+        try:
+            gen = _stream_generator(
+                pool,
+                module_pg_schema.schema_name,
+>               uuid.UUID(run_id),
+                ^^^^
+                int(last_event_id) if last_event_id is not None else 0,
+            )
+E           NameError: name 'uuid' is not defined. Did you forget to import 'uuid'?
+
+tests/web_admin/test_workflows_page.py:252: NameError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:46:00 [info     ] node.held                      hold_id=01a11967-4324-78d1-90e8-78a2f7015f6b node=review run_id=01a11967-4310-7d42-b3c1-d2cb61ba57b2 signals=['Approval']
+2026-10-07 19:46:00 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:46:00 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_sse_first_frame_is_the_full_snapshot
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_through_the_typed_door_delivers_and_audits
+FAILED tests/web_admin/test_workflows_page.py::test_sse_unknown_run_streams_the_empty_snapshot
+FAILED tests/web_admin/test_workflows_page.py::test_sse_reconnect_last_event_id_continues_the_cursor
+4 failed, 9 passed in 3.10s
