@@ -72,6 +72,14 @@ class WorkflowRegistry:
 
     def register(self, definition: WorkflowDef) -> WorkflowDef:
         if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
             raise DuplicateWorkflowError(
                 f"workflow {definition.name!r} is already registered; a second "
                 "registration is a coding error, never a shadow"

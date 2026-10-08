@@ -1,0 +1,9 @@
+  note: pyright flags attack_wf_negative_types.py:45 (reportUnusedVariable) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:105 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:113 (reportUnusedFunction) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:114 (reportUnusedCoroutine) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:27 (reportUnusedImport) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:48 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:61 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:66 (?, reportArgumentType) — not a MUST_ERROR marker (informational)
+the type gate holds: every MUST_ERROR marker (6) reds on pyright 1.1.414 AND ty 0.0.85

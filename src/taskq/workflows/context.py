@@ -17,6 +17,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import BaseModel
+
+from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.ledger import (
@@ -90,4 +93,66 @@ class WorkflowSteps:
             # The ON CONFLICT path: the recorded result returns rather than
             # re-executing (the map-child retry's semantics).
             return claim.result
-        return await fn(*args, **kwargs)
+        if claim.status == "succeeded" and claim.result is not None:
+            # The ON CONFLICT path: the recorded result returns rather than
+            # re-executing (the map-child retry's semantics).
+            return claim.result
+        try:
+            result = await fn(*args, **kwargs)
+        except Exception as exc:
+            await self._record_terminal(
+                name, claim, "failed", None, type(exc).__name__, str(exc)[:500]
+            )
+            raise
+        # THE STEP'S OWN TERMINAL (the re-execution doctrine's cheap side):
+        # the memoized replay reads TERMINAL rows — a claim left 'running'
+        # would re-execute on every resume (the defect the runner pins
+        # convict: pre-wait side effects replay cheap, or not at all). The
+        # FAILURE path records too: a raising step's claim terminalizes
+        # 'failed' (the ladder's ledger shape), then the exception
+        # propagates to the node's own failure handling.
+        await self._record_terminal(name, claim, "succeeded", result, None, None)
+        return result
+
+    @staticmethod
+    def _encode_step_result(result: Any) -> str:
+        """The step result's jsonb form — the RAW value (no envelope: the
+        memoized replay returns exactly what the step returned)."""
+        if isinstance(result, BaseModel):
+            return dumps_jsonb_str(result.model_dump(mode="json"))
+        return dumps_jsonb_str(result)
+
+    async def _record_terminal(
+        self,
+        name: str,
+        claim: LedgerClaim,
+        status: str,
+        result: Any,
+        error_class: str | None,
+        error_message: str | None,
+    ) -> None:
+        """The step ledger's terminal write (the claim's own row when the
+        id is held — the strongest key — else the arbiter tuple)."""
+        if claim.ledger_id is not None:
+            await self._conn.execute(
+                self._wsql.ledger_terminal_by_id,
+                claim.ledger_id,
+                status,
+                self._encode_step_result(result),
+                error_class,
+                error_message,
+                None,
+            )
+        else:
+            await self._conn.execute(
+                self._wsql.ledger_terminal,
+                self._flow_id,
+                name,
+                self._attempt,
+                status,
+                self._encode_step_result(result),
+                error_class,
+                error_message,
+                None,
+                self._map_index,
+            )

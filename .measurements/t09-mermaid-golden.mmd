@@ -1,0 +1,12 @@
+flowchart TD
+    a["a"]
+    b["b"]
+    p["p"]
+    q["q"]
+    reducer[["reducer"]]
+    tail["tail"]
+    a -->|dict[str, int]| reducer
+    b -->|dict[str, int]| reducer
+    p -->|Report| a
+    q -->|Report| b
+    reducer -->|dict[str, int]| tail
