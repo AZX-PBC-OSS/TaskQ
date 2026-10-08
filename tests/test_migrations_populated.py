@@ -180,7 +180,8 @@ def _job_row(
         # 01.00.24's workflow columns: the seeder's rows are VANILLA rows
         # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
         # explicitly so the runtime column intersection never KeyErrors.
-        "parent_id": None,
+        # (parent_id's VALUE is seeded below — the fan-out ledger's
+        # deterministic pointer, the one column both rounds share.)
         "deps_pending": 0,
         "map_index": None,
         "step_key": None,

@@ -167,7 +167,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         claim: RunClaim = await self._insert_root(input, run_key)
         if not claim.created:
             return claim.flow_id
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn, conn.transaction():
             # THE CREATE IS ONE TRANSACTION (the deploy matrix's fleet-
             # crash cure): the rows, the edges, the root's start — one
             # commit. The create ran statement-autocommit before, and the
@@ -177,12 +177,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             # crashed the worker), the flow's own wiring half-born. A
             # transaction bounds the dispatch's visibility to the WHOLE
             # wiring (the fork's atomicity law, create-time face).
-            async with conn.transaction():
-                await self._insert_static_nodes(conn, claim.flow_id, input)
-                # The run is LIVE: the root flips pending → running (the
-                # maintenance leg's derivation owns the TERMINAL verdict
-                # from the rows — the root is a cache, never the decider).
-                await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
+            await self._insert_static_nodes(conn, claim.flow_id, input)
+            # The run is LIVE: the root flips pending → running (the
+            # maintenance leg's derivation owns the TERMINAL verdict
+            # from the rows — the root is a cache, never the decider).
+            await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
         return claim.flow_id
 
     async def _insert_root(self, input: object, run_key: str | None) -> RunClaim:
@@ -551,8 +550,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 # Edge order (map children distinct, the gather's wiring
                 # order).
                 parents_values = [r for _key, r in parents_ordered]
-                if node is not None and node.kind == "gather" and parents_values and all(
-                    isinstance(v, list) for v in parents_values
+                if (
+                    node is not None
+                    and node.kind == "gather"
+                    and parents_values
+                    and all(isinstance(v, list) for v in parents_values)
                 ):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
@@ -615,9 +617,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         await self._finalize_success(flow_id, row, attempt, node, result, claim_epoch=claim_epoch)
         return "succeeded"
 
-    async def _stamp_code_version(
-        self, job_id: JobId, node_key: str, node: Any, body: Any
-    ) -> None:
+    async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
         """The per-attempt ``code_version`` record's write (T03/§22.1):
         the claim's own stamp — the body's canonical content hash onto
         the row. Best-effort (a record, never a gate): a body the hash
@@ -627,7 +627,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         from taskq.workflows._version import compute_code_version
 
-        target = body if body is not None else (getattr(node, "body", None) if node is not None else None)
+        target = (
+            body
+            if body is not None
+            else (getattr(node, "body", None) if node is not None else None)
+        )
         if target is None:
             return  # the join/gather kinds: the identity packer is the engine's own code
         try:
@@ -636,7 +640,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
                 inspect.getsource(target),
             )
-        except Exception as exc:  # Why: the record's asymmetry — a hash loss is logged, never a node failure.
+        except (
+            Exception
+        ) as exc:  # Why: the record's asymmetry — a hash loss is logged, never a node failure.
             logger.warning(
                 "node.code-version-unstamped",
                 node=node_key,
@@ -644,8 +650,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             )
             return
         async with self.pool.acquire() as conn:
+            # S608: the schema identifier is the settings boundary the
+            # runner validated at build; the values are $-bound.
             await conn.execute(
-                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',
+                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',  # noqa: S608
                 job_id,
                 version,
             )

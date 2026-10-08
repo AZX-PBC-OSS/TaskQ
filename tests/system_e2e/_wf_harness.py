@@ -35,7 +35,6 @@ from tests.system_e2e._harness import (
     WorkerProc,
     spawn_joined_worker,
 )
-
 from tests.system_e2e._wf_app import MARCH_WORKER_QUEUES
 
 #: The workflow-capable entry: subprocesses run THIS module (its app
@@ -54,7 +53,7 @@ MARCH_LEADER_LEASE_S = 20.0
 #: of tolerance — the ladder heals THROUGH the window instead of the
 #: fail-fast isolation eating the pod) demands a lease that covers its
 #: own worst coherent failed-beat cascade (the settings validator's
-#: floor: 0.5 + 11 × 1.0 = 11.5s). The march bounds derive from THIS
+#: floor: 0.5 + 11 x 1.0 = 11.5s). The march bounds derive from THIS
 #: lease — never the vanilla harness's 8s.
 MARCH_LOCK_LEASE_S = 15.0
 
@@ -71,9 +70,7 @@ MARCH_SETTLE_BOUND_S = (
 #: ``reclaim_target`` long node sleeps 30s — the re-claimed attempt pays
 #: it again) — all stretched.
 RECLAIM_BODY_S = 30.0  # the long node's sleep (the killed attempt's remainder)
-RECLAIM_BOUND_S = (
-    MARCH_LOCK_LEASE_S + SWEEP_INTERVAL_S + 5.0 + RECLAIM_BODY_S
-) * TIER_LOAD_STRETCH
+RECLAIM_BOUND_S = (MARCH_LOCK_LEASE_S + SWEEP_INTERVAL_S + 5.0 + RECLAIM_BODY_S) * TIER_LOAD_STRETCH
 
 
 async def spawn_wf_fleet(
@@ -168,9 +165,7 @@ async def wait_flow_terminal(
     )
 
 
-async def tag_run_rows(
-    pool: asyncpg.Pool, schema: str, flow_id: str, tag: str
-) -> None:
+async def tag_run_rows(pool: asyncpg.Pool, schema: str, flow_id: str, tag: str) -> None:
     """Stamp *tag* on every row of the run NOW (the invariants'
     population filter). Called immediately before each
     ``assert_balanced``: rows born since the last stamp (map forks,

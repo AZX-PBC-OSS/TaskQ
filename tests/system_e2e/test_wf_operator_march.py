@@ -85,21 +85,21 @@ async def test_the_operators_march_deploy_to_rollback(
 
         # ══ 2. OBSERVE ═══════════════════════════════════════════════
         # The leader's seat is TAKEN and its lease advancing.
-        leader = await conn.fetchrow(f'SELECT worker_id::text, expires_at FROM "{schema}".maintenance_leader')
-        assert leader is not None, "no leader elected — the fleet's maintenance is headless"
-        seen_before = await conn.fetchval(
-            f'SELECT last_seen_at FROM "{schema}".maintenance_leader'
+        leader = await conn.fetchrow(
+            f'SELECT worker_id::text, expires_at FROM "{schema}".maintenance_leader'
         )
+        assert leader is not None, "no leader elected — the fleet's maintenance is headless"
+        seen_before = await conn.fetchval(f'SELECT last_seen_at FROM "{schema}".maintenance_leader')
         await asyncio.sleep(1.5)
         seen_after = await conn.fetchval(f'SELECT last_seen_at FROM "{schema}".maintenance_leader')
         assert seen_after > seen_before, "the leader's beat is not advancing"
 
         # The run goes live; the OBSERVE reads its derived status + the
         # explorer's display against the rows.
-        from taskq.workflows.api._runner import FlowRunner
+        from taskq.backend._protocol import JobId as Jid
         from taskq.workflows._progress_read import run_display
         from taskq.workflows._sql import WorkflowSql
-        from taskq.backend._protocol import JobId as Jid
+        from taskq.workflows.api._runner import FlowRunner
 
         pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=4)
         wsql = WorkflowSql.build(schema)
@@ -201,9 +201,7 @@ async def test_the_operators_march_deploy_to_rollback(
         extras.append(gen2)
         print(f"[operator] the second generation joined: pid={gen2.proc.pid}")
 
-        resolver = asyncio.create_task(
-            _resolve_holds(pool, schema, str(upgrade_id))
-        )
+        resolver = asyncio.create_task(_resolve_holds(pool, schema, str(upgrade_id)))
         status, measured = await wait_flow_terminal(
             conn, schema, str(upgrade_id), bound_s=MARCH_SETTLE_BOUND_S * 2
         )
@@ -311,7 +309,9 @@ async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
     import asyncpg as _asyncpg
 
     from taskq.migrate import apply_pending
-    from taskq.testing.pg import seed_actors  # pyright: ignore[reportPrivateImportUsage]  # Why: the fixture module re-exports the seed; the private path is the honest home.
+    from taskq.testing.pg import (
+        seed_actors,  # pyright: ignore[reportPrivateImportUsage]  # Why: the fixture module re-exports the seed; the private path is the honest home.
+    )
     from tests.test_wf_pre_workflow_tolerance_pins import (  # pyright: ignore[reportPrivateImportUsage]
         PRE_WORKFLOW_TARGET,
     )

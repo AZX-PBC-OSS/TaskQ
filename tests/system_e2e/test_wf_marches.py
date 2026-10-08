@@ -60,7 +60,7 @@ from tests.system_e2e._harness import (
     reap,
 )
 from tests.system_e2e._invariants import assert_balanced
-from tests.system_e2e._wf_app import CronKick, MARCH_FLOWS
+from tests.system_e2e._wf_app import MARCH_FLOWS, CronKick
 from tests.system_e2e._wf_harness import (
     MARCH_SETTLE_BOUND_S,
     join_fires,
@@ -226,9 +226,9 @@ async def test_the_deep_research_march_kick_to_explorer(
         # ══ 7. THE KILL STORM: SIGKILL one pod mid-map. The march must
         # complete ANYWAY (the reclaim machinery owns the corpse's rows).
         victim_pid = await conn.fetchval(
-            f"SELECT pid FROM \"{schema}\".workers WHERE id = "
-            f"(SELECT locked_by_worker FROM \"{schema}\".jobs "
-            f'WHERE (metadata->>\'flow_id\')::uuid = $1::uuid AND status = \'running\' '
+            f'SELECT pid FROM "{schema}".workers WHERE id = '
+            f'(SELECT locked_by_worker FROM "{schema}".jobs '
+            f"WHERE (metadata->>'flow_id')::uuid = $1::uuid AND status = 'running' "
             f"AND locked_by_worker IS NOT NULL LIMIT 1)",
             flow_id,
         )
@@ -335,8 +335,7 @@ async def test_the_deep_research_march_kick_to_explorer(
             [a["hold_id"] for a in audited],
         )
         assert len(audit_rows) == len(audited), (
-            f"the resolve audit trail is short: {len(audit_rows)} rows for "
-            f"{len(audited)} resolves"
+            f"the resolve audit trail is short: {len(audit_rows)} rows for {len(audited)} resolves"
         )
         assert all(r["principal_subject"].startswith("march-editor") for r in audit_rows), (
             f"the resolves' principal is not the march's editor: {[dict(r) for r in audit_rows]}"
@@ -422,8 +421,22 @@ async def test_the_streaming_emit_march_conditional_chains(
         # THE CONDITIONAL CHAINS: the flagged records walked the
         # manual-review step (their chains' extra hop — the route rode
         # the body's OWN typed outcome), the clean did not.
-        flagged = [c for c in children if (json.loads(c["payload"]) if isinstance(c["payload"], str) else c["payload"]).get("wf_item", {}).get("risk", 0) > 0.8]
-        clean = [c for c in children if (json.loads(c["payload"]) if isinstance(c["payload"], str) else c["payload"]).get("wf_item", {}).get("risk", 0) <= 0.8]
+        flagged = [
+            c
+            for c in children
+            if (json.loads(c["payload"]) if isinstance(c["payload"], str) else c["payload"])
+            .get("wf_item", {})
+            .get("risk", 0)
+            > 0.8
+        ]
+        clean = [
+            c
+            for c in children
+            if (json.loads(c["payload"]) if isinstance(c["payload"], str) else c["payload"])
+            .get("wf_item", {})
+            .get("risk", 0)
+            <= 0.8
+        ]
         assert len(flagged) == 2 and len(clean) == 2, (
             f"the risk split is not 2/2: {[dict(c) for c in children]}"
         )
@@ -433,9 +446,7 @@ async def test_the_streaming_emit_march_conditional_chains(
                   AND step_key = 'manual_review' AND status = 'succeeded'""",
             str(flow_id),
         )
-        assert reviewed == 2, (
-            f"the flagged records' manual-review hop ran {reviewed} times, not 2"
-        )
+        assert reviewed == 2, f"the flagged records' manual-review hop ran {reviewed} times, not 2"
         cursor = await conn.fetchval(
             f"""SELECT metadata->'emit_cursor' FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid
