@@ -235,7 +235,27 @@ class ProgressEmitter:
         self._flush_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
 
+    @property
+    def schema_decl(self) -> type[Any] | None:
+        """The node's DECLARED payload schema (the TypedGate-door pattern)
+        — the validation contract ``ctx.progress``'s typed gate enforces."""
+        return self._schema_decl
+
     # ── the op the body calls (via ctx.progress) ────────────────────────
+    async def emit(
+        self,
+        pct: int | None,
+        message: str | None,
+        data: dict[str, Any] | None,
+    ) -> None:
+        """The validated path (``ctx.progress``'s delegate): the typed
+        gate runs FIRST (a wrong shape is :class:`ProgressRefusedError`,
+        raised INTO the body — an authoring error is the body's problem),
+        then the buffer takes it latest-wins and the cadence flush is
+        armed. Never awaits the network."""
+        pct_v, message_v, data_v = validate_emission(pct, message, data, self._schema_decl)
+        self.submit(pct_v, message_v, data_v)
+
     def submit(
         self,
         pct: int | None,
