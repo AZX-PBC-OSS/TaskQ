@@ -1,0 +1,9 @@
+# the integration battery (round 2): the fleet seed + the hot-statement plans (the attack2 seeder — 20k vanilla + the 1001-row flow) — head d130fca5, pg :5706 (scratch copy; the lane probe untouched)
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 443, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg/protocol/protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedTableError: relation "attack2.jobs" does not exist

@@ -1,0 +1,3 @@
+=========================== short test summary info ============================
+FAILED tests/test_audit_sweep_registry_differential.py::test_audit_wf_arms_are_pure_appends_after_the_legacy_block
+1 failed, 25 passed in 3.65s

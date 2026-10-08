@@ -1,14 +1,4 @@
-{
-  "measured_at": "2026-10-08T05:08:07.599019+00:00",
-  "dsn_schema": "t20_perf",
-  "page_size": 40,
-  "jit": "off (the container's tuning; fsync/synchronous_commit off)",
-  "emit_tx_per_page": {
-    "p50_ms": 5.112,
-    "p95_ms": 13.089,
-    "max_ms": 13.089,
-    "rounds": 5
-  },
+# the integration battery (round 2): the T20 streaming bands (the emit tx, the dispatch band, the plain-jobs baseline, the depth probe, the chain fork tx) — head d130fca5, pg :5706
   "dispatch_band_200_chain": {
     "p50_ms": 9.748,
     "p95_ms": 13.673,

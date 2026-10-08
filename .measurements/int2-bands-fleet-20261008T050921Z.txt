@@ -1,3 +1,4 @@
+# the integration battery (round 2): the fleet queries (the rollup's index serviceability at the REAL fleet shape — the uuid cast vs the text equality, 20k+1501 rows ANALYZEd) — head d130fca5, pg :5706
 ===== rollup (uuid cast — the shipped shape)
 Aggregate rows=3.0 time=0.539ms
   Sort rows=500.0 time=0.516ms

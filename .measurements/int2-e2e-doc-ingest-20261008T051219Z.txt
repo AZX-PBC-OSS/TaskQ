@@ -1,0 +1,23 @@
+# THE E2E STRANGER SANITY — the composed doc_ingest run, end-to-end (fresh schema, the fixed read) — head d130fca5, pg :5706, schema int_e2e
+== THE MERMAID RENDER (the compile-time emission)
+flowchart TD
+    doc_source["doc_source"]
+
+== THE FLOW CREATED: 01a119ed-39ae-7b63-b049-283cb0855b8a
+== THE DRAIN: 'terminal'
+== THE ROOT (derived from the rows): status=failed error_class=UnabsorbedNodeFailure
+== THE REPORT ENVELOPE: {'failed_chains': 0, 'total': 0}
+== THE POISONED DOC'S ROW: None
+== FlowRunner.result: {}
+== THE PROGRESS LINE (0 rows):
+== THE EXPLORER READ (1 nodes):
+   01a119ed-39b6-7ea3-926d-bc1b0a8cf4f0: {'status': 'failed', 'pct': 10, 'message': 'page 0', 'error_class': 'UnencodableValue'}
+== THE SOURCE'S STREAM RING (7 events, coalesced):
+   auto/wf.node.started: {"attempt": 1, "step_key": "doc_source", "map_index": null}
+   user/progress: {"pct": 10, "data": {"page": 0}, "message": "page 0"}
+   auto/wf.node.started: {"attempt": 2, "step_key": "doc_source", "map_index": null}
+   user/progress: {"pct": 10, "data": {"page": 0}, "message": "page 0"}
+   auto/wf.node.started: {"attempt": 3, "step_key": "doc_source", "map_index": null}
+   user/progress: {"pct": 10, "data": {"page": 0}, "message": "page 0"}
+   auto/wf.node.terminal: {"outcome": "failed", "step_key": "doc_source", "error_class": "UnencodableValue"}
+== THE E2E VERDICT: RED — see above

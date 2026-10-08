@@ -1,0 +1,2 @@
+# the integration battery (round 2): the fleet seed + the hot-statement plans (the attack2 seeder — 20k vanilla + the 1001-row flow, the attack2 schema applied fresh on :5706) — head d130fca5
+wrote .measurements/attack2/explain-hot-statements-attack2.txt
