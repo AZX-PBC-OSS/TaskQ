@@ -601,7 +601,7 @@ query.
 
 ### The router: conditional edges, total or refused
 
-```python
+```python no-exec — not executed: fragment, the author's bodies (screen_app, enrich_app, score_app, manual_review) are the workflow's own
 CHAIN = Chain(
     name="application-enrichment",
     start="screen",
