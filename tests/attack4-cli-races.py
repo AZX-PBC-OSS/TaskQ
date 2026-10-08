@@ -331,16 +331,19 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     """A deliberately stuck run: 'doomed' fails on an EXHAUSTED ladder
     (max_attempts=1); 'downstream' can never run. ``flows status`` must
     name the FAILED row as the thing to retry (with its remedy), and the
-    blocked row's answer must be TRUE — the observed output (run5) fails
-    both honesty halves:
+    blocked row's answer must be TRUE — run5's observed output failed
+    both honesty halves (the attack-4 report's F-P4-WHYSTUCK-*); both
+    cures are pinned here as hard asserts (the xfail was the pre-cure
+    shape, the attack-4 fixer's round 1 removed it):
 
-    * F-P4-WHYSTUCK-LADDER-LIE: the status read drops the attempt
-      counters (cli.py's FlowNodeRow never receives attempt/max_attempts)
-      — an EXHAUSTED ladder prints "ladder headroom 3 attempt(s) left";
-    * F-P4-WHYSTUCK-FALSE-REMEDY: a blocked-after-failed-parent row reads
-      as "JOIN-WAIT … remedy: none — the join fires when its parents
-      finalize" — but the parent HAS finalized (as a failure); the join
-      never fires."""
+    * F-P4-WHYSTUCK-LADDER-LIE (cured): the status read carries the
+      attempt counters — an EXHAUSTED ladder reads "the ladder is
+      EXHAUSTED", never "ladder headroom 3";
+    * F-P4-WHYSTUCK-FALSE-REMEDY (cured): the create path stamps the
+      join marker (the engine's own law on the static path), so the
+      failed-parent cascade resolves the row to BLOCKED-failed_parent —
+      the remedy derives from the REASON, the join-fires promise is
+      gone."""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4b_stuck_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
@@ -358,28 +361,20 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     assert "doomed: FAILED" in out, f"the failed row is not named: {out!r}"
     assert "the upstream blew up" in out, "the error message did not ride the why-stuck line"
     assert "taskq flows retry" in out, "the remedy is missing"
-    # THE LADDER'S TRUTH (F-P4-WHYSTUCK-LADDER-LIE): the ladder was
+    # THE LADDER'S TRUTH (F-P4-WHYSTUCK-LADDER-LIE, CURED): the ladder was
     # max_attempts=1 and it spent its attempt — the honest note is
-    # "the ladder is EXHAUSTED", not "headroom 3".
-    try:
-        assert "the ladder is EXHAUSTED" in out, f"the exhausted ladder is misreported: {out!r}"
-    except AssertionError:
-        pytest.xfail(
-            "F-P4-WHYSTUCK-LADDER-LIE: the status read drops the attempt counters — "
-            "every failed row reads 'ladder headroom 3 attempt(s) left'"
-        )
-    # THE CONSEQUENCE'S TRUTH (F-P4-WHYSTUCK-FALSE-REMEDY): the blocked
-    # row must not promise a join that can never fire.
-    try:
-        assert "downstream: BLOCKED" in out, f"the blocked row is not named: {out!r}"
-        assert "the join fires when its parents finalize" not in out, (
-            "the false remedy: the parent finalized as a FAILURE — the join never fires"
-        )
-    except AssertionError:
-        pytest.xfail(
-            "F-P4-WHYSTUCK-FALSE-REMEDY: a blocked-after-failed-parent row reads as "
-            "'JOIN-WAIT … remedy: none — the join fires when its parents finalize'"
-        )
+    # "the ladder is EXHAUSTED", not "headroom 3". The status read carries
+    # the row's own attempt counters now.
+    assert "the ladder is EXHAUSTED" in out, f"the exhausted ladder is misreported: {out!r}"
+    # THE CONSEQUENCE'S TRUTH (F-P4-WHYSTUCK-FALSE-REMEDY, CURED): the
+    # blocked row's answer derives from the blocking REASON — the parent
+    # finalized as a FAILURE, so the row reads BLOCKED-failed_parent and
+    # the join-fires promise is GONE (the create path stamps the join
+    # marker; the failed-parent cascade resolves the row).
+    assert "downstream: BLOCKED" in out, f"the blocked row is not named: {out!r}"
+    assert "the join fires when its parents finalize" not in out, (
+        "the false remedy: the parent finalized as a FAILURE — the join never fires"
+    )
 
 
 # ── the exit-code contract ───────────────────────────────────────────────

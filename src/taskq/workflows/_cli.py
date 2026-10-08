@@ -104,7 +104,15 @@ def derive_flow_status(nodes: Sequence[FlowNodeRow]) -> WorkflowStatus:
 def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
     """THE WHY-STUCK ARM (the explain seam): what this node is waiting
     on and the ONE command that answers it. A live (non-stuck) node
-    yields an empty list — a running row is not a finding."""
+    yields an empty list — a running row is not a finding.
+
+    THE BLOCKED-BEFORE-JOIN-WAIT ORDER (attack-4 F-P4-WHYSTUCK-FALSE-
+    REMEDY's cure): a row whose parent ALREADY finalized as a failure
+    carries ``blocking_reason='failed_parent'`` — the join can NEVER
+    fire. Reading the join-wait arm first promised "the join fires when
+    its parents finalize" for a join that never will; the blocking
+    REASON wins the read, and each reason's remedy derives from the
+    reason (truthful per state), never from the shape it resembles."""
     if node.hold is not None:
         deadline = (
             f" · deadline {node.hold.expires_at}"
@@ -121,6 +129,26 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             # THE WAITING-ON STATE's why (the author's declared reason —
             # the operator reads it without opening the code).
             lines.insert(1, f"       reason: {node.hold.reason}")
+        return lines
+    if node.blocking_reason is not None and node.view().is_blocked_row:
+        reason = node.blocking_reason
+        if reason == "failed_parent":
+            lines = [
+                f"  {node.step_key}: BLOCKED — failed_parent "
+                "(source: the row's metadata.blocking_reason stamp): a "
+                "fail_closed parent finalized as a FAILURE — the join can "
+                "never fire and this node can never run",
+                f"       remedy: retry the failed upstream node — "
+                f"taskq flows status {run_id} names it "
+                "(or cancel the run: the path is dead)",
+            ]
+        else:
+            lines = [
+                f"  {node.step_key}: BLOCKED — {reason} "
+                "(source: the row's metadata.blocking_reason stamp)",
+                f"       remedy: retry the failed upstream node — "
+                f"taskq flows status {run_id} names it",
+            ]
         return lines
     if node.view().is_join_wait:
         return [
@@ -141,13 +169,6 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             "(source: the jobs row's error columns + attempt counters)",
             f"       remedy: taskq flows retry {run_id} {node.step_key}"
             "  (re-pends the node and re-opens its blocked closure)",
-        ]
-    if node.blocking_reason is not None and node.view().is_blocked_row:
-        return [
-            f"  {node.step_key}: BLOCKED — {node.blocking_reason} "
-            "(source: the row's metadata.blocking_reason stamp)",
-            f"       remedy: retry the failed upstream node — "
-            f"taskq flows status {run_id} names it",
         ]
     return []
 
@@ -203,8 +224,10 @@ def format_flow_status(
     stuck_cap = 12
     lines.extend(stuck[:stuck_cap])
     if len(stuck) > stuck_cap:
-        lines.append(f"  ... and {len(stuck) - stuck_cap} more stuck row(s) — narrow with "
-                     f"taskq flows holds {run_id} or the admin's run explorer")
+        lines.append(
+            f"  ... and {len(stuck) - stuck_cap} more stuck row(s) — narrow with "
+            f"taskq flows holds {run_id} or the admin's run explorer"
+        )
     if not stuck:
         lines.append("next: nothing is stuck — the run is progressing or terminal")
     return lines

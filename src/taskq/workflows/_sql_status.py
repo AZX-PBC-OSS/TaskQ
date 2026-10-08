@@ -73,6 +73,7 @@ WORKFLOW_NODES_SQL = (
     """\
 SELECT j.id, j.step_key, j.status, j.deps_pending,
        j.metadata->>'blocking_reason' AS blocking_reason,
+       j.attempt, j.max_attempts,
        """
     + _absorbed_exists("j")
     + """ AS absorbed,
