@@ -23,7 +23,13 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, ProgressRefusedError, WorkflowApp, build, step
+from taskq.workflows._progress import ProgressRefusedError
+from taskq.workflows import (
+    FlowRunner,
+    WorkflowApp,
+    build,
+    step,
+)
 from taskq.workflows._progress import (
     CLASS_AUTO,
     CLASS_USER,

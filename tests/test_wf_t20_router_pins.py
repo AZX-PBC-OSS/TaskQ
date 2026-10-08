@@ -220,7 +220,7 @@ async def test_t20_chain_routes_through_the_certified_fork(
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
     worker, attempt, epoch = await claim_source(wf_conn, wf_schema, source_id)
 
-    from taskq.workflows import emit_batch
+    from taskq.workflows._emit import emit_batch
     from taskq.workflows.engine import finalize_node
     from taskq.workflows.ledger import claim_step_ledger
 
@@ -364,7 +364,7 @@ async def test_t20_router_not_total_fails_the_row_loudly(
     chain visibly dies. The silent-drop variant (the record vanishing,
     the run 'succeeding' minus one) is the convicted shape."""
     from taskq.backend._protocol import JobId as JId
-    from taskq.workflows import emit_batch
+    from taskq.workflows._emit import emit_batch
     from taskq.workflows.engine import finalize_node
 
     chain = the_chain()

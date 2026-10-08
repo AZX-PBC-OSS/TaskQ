@@ -19,7 +19,13 @@ taskq`` NEVER imports this package). The wiring:
 Module homes: ``_graph`` owns the recorder + the wiring verbs; ``_app``
 owns the app/decorators/compiled-workflow/channel; ``_validate`` owns
 ``validate()``; ``_mermaid`` owns the emission; ``_runner`` owns
-create/drive/result.
+create/drive/result — split by concern (§7b) into ``_sql_runner`` (the
+named statements), ``_runner_codec`` (the row-codec seam),
+``_runner_errors`` (the loud refusal), ``_ctx``/``_ctx_wait`` (the body's
+context + the HITL wait/deliver machinery), ``_runner_loop`` (the T19
+driver), ``_runner_chain`` (the T20 routed finalize),
+``_runner_ladder`` (the retry ladder + the failure-class classifier),
+and ``_runner_exit`` (§17.1's exit + §17.2's manual resume).
 """
 
 from taskq.workflows.api._app import (

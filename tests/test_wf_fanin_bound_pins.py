@@ -34,7 +34,7 @@ import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import finalize_node
+from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec
 from taskq.workflows.definitions import (
@@ -111,7 +111,7 @@ async def test_t07_pin_child_driven_join_fires_exactly_once(
     child-driven join: 50 duplicate finalizes → 1 decrement; the
     wf_join_fire PK rejects the double-fire. The convicted variant (a
     child-driven join whose count double-fires) reds on the PK."""
-    from taskq.workflows import insert_node
+    from taskq.workflows.engine import insert_node
     from taskq.workflows._types import NodeSpec
     from tests._wf_fixtures import claim_view, fire_count, node_state, seed_flow, seed_running_node
 

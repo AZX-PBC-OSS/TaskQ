@@ -106,7 +106,7 @@ async def test_a3_fail_policy_escalates_anyway(
         flow_id,
         '{"iteration": 3, "max_iterations": 3, "kind": "loop"}',
     )
-    from taskq.workflows import sweep_loop_budget
+    from taskq.workflows._sweep import sweep_loop_budget
 
     await sweep_loop_budget(wf_pool, runner.wsql)
     outbox = await wf_conn.fetch(
@@ -258,7 +258,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     )
     # IDEMPOTENCE: a second drive (the racing sweep's shadow) must not
     # resurrect or double-terminalize.
-    from taskq.workflows import sweep_loop_budget
+    from taskq.workflows._sweep import sweep_loop_budget
 
     await sweep_loop_budget(wf_pool, runner.wsql)
     await runner.drive(flow_id, max_ticks=5)
@@ -290,7 +290,7 @@ async def test_a3_cap_bounds_spawns_through_the_memo_replay(
     await runner.drive(flow_id)
     assert len(calls) == 4, f"the cap did NOT bound spawns exactly: {len(calls)}"
     # The sweep's shadow on the terminal rows changes nothing.
-    from taskq.workflows import sweep_loop_budget
+    from taskq.workflows._sweep import sweep_loop_budget
 
     await sweep_loop_budget(wf_pool, runner.wsql)
     assert len(calls) == 4, f"the sweep's pass SPAWNED iterations: {len(calls)}"

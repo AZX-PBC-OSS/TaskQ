@@ -21,7 +21,7 @@ import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import finalize_node
+from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import (
     NodeView,
