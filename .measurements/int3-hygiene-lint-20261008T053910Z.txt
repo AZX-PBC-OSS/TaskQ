@@ -1,0 +1,4 @@
+# ruff scoped to the split's modules — head 59c7b188
+# the repo-wide run's fixables are the co-tenant's in-flight files (worker/run.py F401/F821, _worker_execution.py)
+Found 5 errors.
+19 files already formatted

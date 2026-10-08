@@ -1,0 +1,4 @@
+# THE E2E STRANGER SANITY — the composed doc_ingest run after the split — head 223a09b1, pg :5709
+   user/progress: {"pct": 50, "data": {"page": 1}, "message": "page 1"}
+   auto/wf.node.terminal: {"outcome": "succeeded", "step_key": "doc_source"}
+== THE E2E VERDICT: THE COMPOSED SYSTEM WORKS
