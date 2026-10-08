@@ -1094,6 +1094,22 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
         f'"{ts_schema}"."job_events"',
         widened,
     )
+    # THE BGW RE-DEFERMENT (the deadlock cure, 2026-10-08): add_retention_
+    # policy RE-ARMS the policy's background job at ~now — undoing the
+    # ts_conn fixture's far-future deferral. The bgw then races the test:
+    # its drop_chunks takes AccessExclusiveLock on the below-floor chunk
+    # while this connection holds row locks from the seeds and the RED
+    # sweep — PG answers the mutual wait with DeadlockDetectedError on
+    # the GREEN-phase seed (deterministic 3/3, the policy's first run
+    # lands within the test's own window every time). The test reads the
+    # policy's REGISTERED CONFIG (the floor assertion above — a config
+    # read, not a run) and never needs the policy to fire mid-test, so
+    # the job goes back to the fixture's contract: next_start in the far
+    # future, the drop belongs to nobody's clock but an explicit
+    # _force_policies_now call.
+    await _schedule_policies(
+        ts_conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+    )
     now = datetime.now(UTC)
     floor = await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
     assert floor == now - widened, (

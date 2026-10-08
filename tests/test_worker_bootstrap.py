@@ -87,6 +87,53 @@ async def _run_and_cancel(coro_factory: Any, *, sleep: float = 1.5) -> None:
         await task
 
 
+#: Boot-poll headroom: 30s is ~15x the measured solo boot (~2s) — the same
+#: bound the ensure_slots poll below already carries. Under a loaded box the
+#: boot slows; the poll follows it instead of racing a fixed sleep.
+_BOOT_POLL_TIMEOUT = 30.0
+
+
+async def _run_until_ready(
+    coro_factory: Any,
+    ready: Any,
+    *,
+    timeout: float = _BOOT_POLL_TIMEOUT,  # noqa: ASYNC109  # Why: the timeout is the poll deadline's bound, not an async-with timeout pattern — the poll loop IS the condition wait.
+) -> None:
+    """Run ``_main``-wrapping coroutine until ``ready()`` answers truthy —
+    the boot-race cure: poll the CONDITION, never the clock.
+
+    THE BOOT-RACE CLASS (named and cured 2026-10-08): the boot tests used to
+    sleep a fixed 2-4s and then assert the boot's durable effects (the
+    actor_config sync, the worker registration). The sleeps were sized on a
+    quiet box; under a loaded one — a parallel battery, the 10-container
+    co-tenancy this campaign's own lanes created — the boot takes longer,
+    the sleep expires before the sync, and the assertion reads the PRE-boot
+    table: the "never registered within the window" flake, every victim
+    green solo. The condition poll (0.05s cadence, bounded by a generous
+    deadline with headroom) follows the boot's actual pace. A deadline
+    expiry falls through to the caller's assertion, which names the missing
+    state — a slow boot reads as a slow failure, never a wrong one.
+    """
+
+    async def _runner() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await coro_factory()
+
+    task = asyncio.create_task(_runner())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    try:
+        while not task.done() and loop.time() < deadline:
+            if await ready():
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 class _Payload(BaseModel):
     x: int
 
@@ -145,25 +192,22 @@ async def test_bootstrap_populates_actor_config(pg_dsn: str) -> None:
 
     settings = _settings(pg_dsn)
 
-    async def _runner() -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await _main(settings, actor_registry=registry)
+    async def _ready() -> bool:
+        poll_conn = await asyncpg.connect(pg_dsn)
+        try:
+            n = await poll_conn.fetchval(f"SELECT count(*) FROM {_SCHEMA_LABEL}.actor_config")
+        finally:
+            await poll_conn.close()
+        return n == 2
 
-    task = asyncio.create_task(_runner())
-    await asyncio.sleep(2.0)
-    if not task.done():
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    else:
-        await task
+    await _run_until_ready(lambda: _main(settings, actor_registry=registry), _ready)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
         rows = await conn.fetch(
             f"SELECT actor, max_concurrent, queue FROM {_SCHEMA_LABEL}.actor_config ORDER BY actor"
         )
-        assert len(rows) == 2
+        assert len(rows) == 2, f"boot registered {len(rows)} actor rows, expected 2"
         assert rows[0]["actor"] == "actor_a"
         assert rows[0]["max_concurrent"] == 2
         assert rows[0]["queue"] == "default"
@@ -343,25 +387,22 @@ async def test_empty_registry_starts_cleanly(pg_dsn: str) -> None:
     finally:
         await conn.close()
 
-    async def _runner() -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await _main(settings, actor_registry=registry)
+    async def _ready() -> bool:
+        poll_conn = await asyncpg.connect(pg_dsn)
+        try:
+            n = await poll_conn.fetchval(f"SELECT count(*) FROM {_SCHEMA_LABEL}.actor_config")
+        finally:
+            await poll_conn.close()
+        return n == 1
 
-    task = asyncio.create_task(_runner())
-    await asyncio.sleep(2.0)
-    if not task.done():
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    else:
-        await task
+    await _run_until_ready(lambda: _main(settings, actor_registry=registry), _ready)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
         rows = await conn.fetch(
             f"SELECT actor, max_concurrent FROM {_SCHEMA_LABEL}.actor_config ORDER BY actor"
         )
-        assert len(rows) == 1
+        assert len(rows) == 1, f"boot left {len(rows)} actor rows, expected 1 (legacy)"
         assert rows[0]["actor"] == "legacy"
         assert rows[0]["max_concurrent"] == 1
     finally:
@@ -544,9 +585,25 @@ async def test_cancelling_main_terminates_the_worker(pg_dsn: str) -> None:
             await _main(settings)
 
     task = asyncio.create_task(_run())
-    # Cancel mid-run: the instant the hang used to land, with the group
-    # fully spawned and parked.
-    await asyncio.sleep(4.0)
+    # The cancel must land on a PARKED, fully-booted worker — the pre-cancel
+    # state the pin is about. Poll the boot registration (the workers row)
+    # instead of a fixed sleep: the fixed 4s window expired before the boot
+    # finished under a loaded box, cancelling mid-bootstrap and failing on a
+    # path this pin never meant to exercise (the boot-race class — see
+    # _run_until_ready).
+    poll_conn = await asyncpg.connect(pg_dsn)
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _BOOT_POLL_TIMEOUT
+        while loop.time() < deadline:
+            registered = await poll_conn.fetchval(f"SELECT count(*) FROM {schema}.workers")
+            if registered:
+                break
+            if task.done():
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        await poll_conn.close()
     task.cancel()
     # A drained exit is seconds of work. The bound must not await the task:
     # a worker absorbing its cancellation is exactly the regression this

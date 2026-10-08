@@ -149,6 +149,24 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "map_index",
         "step_key",
         "code_version",
+        # The loop-budget columns (01.00.26 / 01.00.30 its archive mirror):
+        # the SAME law as the workflow columns -- vanilla enqueues never set
+        # them (budget_paused DEFAULT false, the rest NULL), only the loop
+        # node's own writes do. They joined COPY_FROM_COLUMNS for the archive
+        # CTE's mirror parity and MUST join this omission set in the same
+        # commit: the COPY record builder serializes exactly the non-omitted
+        # columns, so a column added to COPY_FROM_COLUMNS without either
+        # extending the records or omitting it here desyncs the arity --
+        # asyncpg's copy_in answers a 39-wide record against 42 columns with
+        # a bare "IndexError: tuple index out of range" from protocol.pyx,
+        # and EVERY enqueue_batch_fast COPY in the suite dies with it
+        # (measured 2026-10-08: 50 of the fast tier's 57 failures were this
+        # one missing omission, the mirror-divergence pins its downstream
+        # victims). The arity pin (test_enqueue_copy_record_arity) holds the
+        # law from the records' side.
+        "budget_deadline",
+        "budget_paused",
+        "budget_remaining_ms",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
