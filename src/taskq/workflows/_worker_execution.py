@@ -335,9 +335,27 @@ async def execute_flow_job(
         "payload": job.payload,
         "trace_id": job.trace_id,
     }
-    return await runner.run_fleet_claimed_step(
-        JobId(cast(UUID, flow_raw)),
-        row,
-        attempt=job.attempt,
-        claim_epoch=job.claim_epoch,
-    )
+    from taskq.workflows.api._runner_errors import WorkflowRunError
+
+    try:
+        return await runner.run_fleet_claimed_step(
+            JobId(cast(UUID, flow_raw)),
+            row,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+        )
+    except WorkflowRunError as exc:
+        # THE UNRESOLVABLE STEP's parking shape (the deploy matrix's
+        # fleet-crash cure): a step key this process's graph does not
+        # carry (the root marker row, a version-skewed step) raised the
+        # runner's WorkflowRunError — which ESCAPED the door and killed
+        # the worker (the whole fleet died with it, every live run of
+        # the estate stalled behind the corpse). The runner's OWN ladder
+        # owns execution failures; only the RESOLUTION failure escapes,
+        # and that one is the parking's shape — translate it, the
+        # caller's defined snooze/release handles it (the loud, budget-
+        # free parking, never a crash).
+        raise WorkflowBodyUnresolvableError(
+            f"row {job.id}'s step {read['step_key']!r} is unresolvable in "
+            f"this process: {exc}"
+        ) from exc

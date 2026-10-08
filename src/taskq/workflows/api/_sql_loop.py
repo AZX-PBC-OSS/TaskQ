@@ -45,7 +45,18 @@ def render_loop_sql(template: str, schema: str) -> str:
 #: the iteration counter (the cap wall's truth) and the carry.
 LOOP_INIT_SQL = """\
 UPDATE {schema}.jobs
-SET budget_deadline = now() + ($2::double precision * interval '1 second'),
+SET budget_deadline = CASE
+        -- THE NO-WALL SHAPE (the deploy matrix's drain-cure): a loop
+        -- that declares NO budget is NOT a loop with an already-expired
+        -- budget. ``$2`` NULL → the deadline NULL (the sweep's arm
+        -- reads a NULL deadline as NO wall); the old init coerced the
+        -- absence to ``now() + 0`` — a deadline in the PAST the instant
+        -- it landed, so the budget sweep's arm exhausted every
+        -- budget-less loop that ever lost its holder (the drain cell's
+        -- requeue was eaten by a wall the app never declared).
+        WHEN $2::double precision IS NULL THEN NULL
+        ELSE now() + ($2::double precision * interval '1 second')
+    END,
     metadata = metadata || $3::jsonb
 WHERE id = $1
   AND status = 'running'

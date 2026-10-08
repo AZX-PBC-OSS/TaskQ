@@ -18,26 +18,73 @@ from typing import Final
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
 TERMINAL_MARK_SQL = """\
-UPDATE {schema}.jobs
-SET status = $2::"{schema}".job_status,
-    finished_at = clock_timestamp(),
-    result = $3::jsonb,
-    result_size_bytes = $4,
-    error_class = $5,
-    error_message = $6,
-    error_traceback = $7
-WHERE id = $1
-  -- THE TERMINAL-MARK FENCE (P3 rule 6: the CAS IS the shape guard) —
-  -- status + worker + ATTEMPT + claim_epoch. The attempt is the fencing
-  -- token (hardening H8): a status-only CAS loses to the zombie on the
-  -- next attempt's re-claim, corrupting the result AND the counter. A
-  -- fenced-out write updates nothing, and tx2 never executes (the rowcount
-  -- gate — 50 duplicate finalizes → 1 decrement).
-  AND status = 'running'
-  AND locked_by_worker = $8
-  AND attempt = $9
-  AND claim_epoch = $10
-RETURNING id, status, attempt
+WITH upd AS (
+    UPDATE {schema}.jobs
+    SET status = $2::"{schema}".job_status,
+        finished_at = clock_timestamp(),
+        result = $3::jsonb,
+        result_size_bytes = $4,
+        error_class = $5,
+        error_message = $6,
+        error_traceback = $7
+    WHERE id = $1
+      -- THE TERMINAL-MARK FENCE (P3 rule 6: the CAS IS the shape guard) —
+      -- status + worker + ATTEMPT + claim_epoch. The attempt is the fencing
+      -- token (hardening H8): a status-only CAS loses to the zombie on the
+      -- next attempt's re-claim, corrupting the result AND the counter. A
+      -- fenced-out write updates nothing, and tx2 never executes (the rowcount
+      -- gate — 50 duplicate finalizes → 1 decrement).
+      AND status = 'running'
+      AND locked_by_worker = $8
+      AND attempt = $9
+      AND claim_epoch = $10
+    RETURNING id, status, attempt, started_at, scheduled_at
+),
+-- THE ATTEMPT LEDGER'S TERMINAL ROW (the deploy matrix's audit cure):
+-- the workflow node's terminal write records the attempt row the SAME
+-- way every vanilla terminal write does (mark_succeeded / mark_failed
+-- shape): the shared tier invariant reads a terminal row's OWN attempt
+-- here — a wf row terminal without it is "a mutation with no audit
+-- row", the conservation's false alarm and the audit trail's real hole.
+-- THE HOLDER CTE (the FK idiom every job_attempts insert shares): the
+-- worker id rides the row ONLY when the worker row EXISTS (a reaped
+-- worker's terminal write records a NULL worker_id — the FK's ON
+-- DELETE SET NULL face; a raw $8 would violate the FK on a reaped
+-- holder).
+holder AS (
+    SELECT id FROM {schema}.workers WHERE id = $8 FOR KEY SHARE
+),
+att AS (
+    INSERT INTO {schema}.job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
+    SELECT upd.id, upd.attempt,
+           -- A row claimed before started_at existed (a hand-built test
+           -- row, a legacy shape) records the terminal instant as its
+           -- start — the attempt LEDGER is the record of the attempt,
+           -- and NOT NULL is the ledger's own law (the sweep's shape).
+           COALESCE(upd.started_at, clock_timestamp()),
+           clock_timestamp(), $2::text,
+           $5, $6, $7,
+           trunc(EXTRACT(EPOCH FROM (clock_timestamp() - COALESCE(upd.started_at, clock_timestamp()))) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb,
+           upd.scheduled_at
+    FROM upd
+    ON CONFLICT (job_id, attempt) DO NOTHING
+),
+-- THE STATE_CHANGE EVENT rides the same transaction (the audit trail's
+-- law: a terminal transition an events reader cannot see never happened).
+evt AS (
+    INSERT INTO {schema}.job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT upd.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object('from_state', 'running',
+                                                'to_state', $2::text,
+                                                'worker_id', $8::text,
+                                                'error_class', $5::text))
+    FROM upd
+)
+SELECT id, status, attempt FROM upd
 """
 
 

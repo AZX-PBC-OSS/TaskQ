@@ -222,7 +222,20 @@ maintained AS (
           -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).
           OR NOT COALESCE(pf.has_live, true)
       )
-    RETURNING f.id
+    RETURNING f.id, f.status::text AS to_state
+),
+-- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit cure):
+-- the root's terminal is a mutation like any other — the events reader
+-- gets the state_change that names it (the shared tier invariant reads
+-- a terminal row's OWN event here; a derived write is not exempt).
+evt AS (
+    INSERT INTO {schema}.job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT m.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running',
+                              'to_state', m.to_state,
+                              'reason', 'workflow-maintained')
+    FROM maintained m
 )
 SELECT count(*)::int AS roots_updated FROM maintained
 """

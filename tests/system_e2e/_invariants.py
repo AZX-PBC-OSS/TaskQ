@@ -374,11 +374,19 @@ async def delete_tagged(conn: asyncpg.Connection, schema: str, tag: str) -> None
     await conn.execute(f'DELETE FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]', tag)
 
 
-async def assert_balanced(conn: asyncpg.Connection, schema: str, tag: str) -> dict[str, int]:
+async def assert_balanced(
+    conn: asyncpg.Connection, schema: str, tag: str, *, settle: bool = True
+) -> dict[str, int]:
     """Run the shared invariants over the tagged population and return the
     live status counts. Every scenario ends here; a violation names its
-    own defect in the failure message."""
-    counts = await settle_terminal(conn, schema, tag, cap_secs=120.0 * TIER_LOAD_STRETCH)
+    own defect in the failure message. ``settle=False`` is the LIVE-run
+    variant (a scenario whose run STAYS live by design — the config-drift
+    cell's unserved node never resolves): the conservation and the audit
+    trail still close, the terminal settle does not."""
+    if settle:
+        counts = await settle_terminal(conn, schema, tag, cap_secs=120.0 * TIER_LOAD_STRETCH)
+    else:
+        counts = {}
     violations = await conservation_violations(conn, schema, tag)
     violations += await audit_violations(conn, schema, tag)
     assert not violations, "the system invariants do not balance after settle:\n" + "\n".join(

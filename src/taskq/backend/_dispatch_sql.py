@@ -315,6 +315,18 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
       -- Short-circuits on the step_key probe — vanilla rows evaluate no
       -- subplan.
       --
+      -- THE ROOT-MARKER LEG (the deploy matrix's fleet-crash cure): the
+      -- flow ROOT's row (step_key '__flow__') is a CACHE — the run's
+      -- derived-status carrier, never a job (the ROOT_START derivation
+      -- owns its lifecycle; no body exists for it, and the door's body
+      -- resolution refuses foreign step keys LOUDLY — a claimed root
+      -- crashed the worker, the whole fleet died with it, and every
+      -- live run of the estate stalled behind the corpse). The in-
+      -- process driver's own claimable enumeration excludes the root
+      -- (CLAIMABLE_NODES_SQL's step_key <> '__flow__' leg); the fleet
+      -- dispatch carries the SAME exclusion — one vocabulary, the root
+      -- is never work.
+      --
       -- THE EXECUTION LEG (the execution verdict's cure): a workflow
       -- row's body resolves from the registered workflow definition
       -- (D1), which lives only in a worker whose process imported the
@@ -334,7 +346,8 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
       AND (
           __WF_ALIAS__.step_key IS NULL
           OR (
-              (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
+              __WF_ALIAS__.step_key <> '__flow__'
+              AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
               AND NOT EXISTS (
                   SELECT 1
                   FROM "{schema}".jobs wf_flow
@@ -356,14 +369,19 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
 #: decision.
 _WF_PROBE_FENCE_TEMPLATE = """\
       -- THE DISPATCH FENCE, P3 leg only (the probe carries no worker
-      -- identity — see the derivation at _wf_dispatch_fence).
+      -- identity — see the derivation at _wf_dispatch_fence); the ROOT-
+      -- MARKER leg rides too (the root is never work — the probe's
+      -- "routable row remains" answer must not count it).
       AND NOT (
           __WF_ALIAS__.step_key IS NOT NULL
-          AND EXISTS (
-              SELECT 1
-              FROM "{schema}".jobs wf_flow
-              WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
-                AND wf_flow.status IN __WF_TERMINAL__
+          AND (
+              __WF_ALIAS__.step_key = '__flow__'
+              OR EXISTS (
+                  SELECT 1
+                  FROM "{schema}".jobs wf_flow
+                  WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                    AND wf_flow.status IN __WF_TERMINAL__
+              )
           )
       )
 """

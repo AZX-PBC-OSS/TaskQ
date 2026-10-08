@@ -685,6 +685,33 @@ _ARCHIVE_CTE_SQL = (
 
 _DB_NOW_SQL = "SELECT clock_timestamp()"
 
+#: The workflow-era columns the LOOP-BUDGET round added (01.00.26 jobs,
+#: 01.00.30 the archive mirror): the columns the PRE-BUDGET schemas (the
+#: rolling-deploy tolerance's own target, 01.00.23_01) do not carry.
+_BUDGET_ERA_JOBS_COLUMNS = frozenset(
+    {"budget_deadline", "budget_paused", "budget_remaining_ms"}
+)
+_JOBS_PRE_BUDGET_COLUMNS = tuple(
+    c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS
+)
+
+#: The archive write's PRE-BUDGET variant (the rolling-deploy tolerance's
+#: write half): identical statement, the column lists minus the budget
+#: trio — a schema the budget round has not landed on cannot mirror
+#: columns it does not have, and the mirror's own law (name EXACTLY the
+#: columns BOTH sides carry) makes the variant the honest write there.
+#: The qualified list replaces FIRST (the ``j.`` prefixes make it
+#: unambiguous), the plain list second.
+_ARCHIVE_CTE_PRE_BUDGET_SQL = (
+    _ARCHIVE_CTE_SQL.replace(
+        _JOBS_COLUMNS_QUALIFIED_CSV,
+        ", ".join(f"j.{c}" for c in _JOBS_PRE_BUDGET_COLUMNS),
+    ).replace(
+        _JOBS_COLUMNS_CSV,
+        ", ".join(_JOBS_PRE_BUDGET_COLUMNS),
+    )
+)
+
 
 # The expire_at bound is statement_timestamp() (STABLE) for the same
 # index-cond reason as the archive CTEs above: jobs_archive_expire_at_idx
@@ -986,7 +1013,7 @@ async def prune_terminal_jobs(
                     sweep_name="prune",
                     sizer=sizer,
                 )
-            except asyncpg.UndefinedTableError:
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
                 # THE ROLLING-DEPLOY TOLERANCE (T18's own guard's edge): a
                 # schema the 01.00.23 round has not landed on yet has NO
                 # wf_edge table — the guard cannot resolve, and an
@@ -1000,11 +1027,22 @@ async def prune_terminal_jobs(
                 # the REST of the drain unguarded after a migration
                 # landed mid-prune — the next batch re-tries the guarded
                 # statement and resumes guarded).
+                #
+                # THE COLUMN HALF (the deploy matrix's battery finding):
+                # the budget round (01.00.26/30) added its trio to BOTH
+                # mirror sides — a schema the budget round has not landed
+                # on raises UndefinedColumnError from the WRITE (the
+                # mirror names columns the schema does not carry), the
+                # same fatal class at the same tolerance edge. The
+                # fallback's write is the PRE-BUDGET variant (the
+                # mirror's own law: name exactly the columns BOTH sides
+                # carry) — the tolerance survives its own round's
+                # successors, not only its own round.
                 _log_workflow_guard_fallback_once()
                 rows = await _run_prune_archive_batch(
                     conn,
                     candidate_sql=_unguarded_candidate_sql(schema),
-                    write_sql=write_sql,
+                    write_sql=_ARCHIVE_CTE_PRE_BUDGET_SQL.format(schema=schema),
                     status=status,
                     retention=retention,
                     size=size,
@@ -1057,18 +1095,22 @@ async def prune_terminal_jobs(
                             sweep_name="prune",
                             sizer=sizer,
                         )
-                    except asyncpg.UndefinedTableError:
+                    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
                         # THE SAME ROLLING-DEPLOY TOLERANCE, PER-ACTOR ARM:
                         # the per-actor candidate composes the SAME
                         # workflow-liveness guard (the pre-rewrite shape
                         # had NO tolerance here — a pre-workflow schema
                         # with actor_overrides configured was the leader's
-                        # death). Same per-batch fallback, same log-once.
+                        # death). Same per-batch fallback, same log-once;
+                        # the COLUMN half rides too (the budget round's
+                        # trio — the write's mirror names columns a
+                        # pre-budget schema does not carry), the fallback's
+                        # write is the PRE-BUDGET variant.
                         _log_workflow_guard_fallback_once()
                         rows = await _run_prune_archive_batch(
                             conn,
                             candidate_sql=_unguarded_candidate_actor_sql(schema),
-                            write_sql=write_sql,
+                            write_sql=_ARCHIVE_CTE_PRE_BUDGET_SQL.format(schema=schema),
                             status=status,
                             retention=actor_retention,
                             size=size,

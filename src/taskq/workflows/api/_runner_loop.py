@@ -174,7 +174,7 @@ class LoopOps(_LoopHost):
                 await conn.execute(
                     render_loop_sql(LOOP_INIT_SQL, self.schema),
                     row["id"],
-                    spec.budget_s or 0.0,
+                    spec.budget_s,  # NULL = the no-wall shape (the sweep reads NULL as no deadline)
                     dumps_jsonb_str(init_meta),
                 )
             meta_doc = init_meta

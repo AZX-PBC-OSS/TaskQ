@@ -1,0 +1,367 @@
+FFFFFF                                                                   [100%]
+=================================== FAILURES ===================================
+___ test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves ____
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c722c60>
+
+    @pytest.mark.timeout(600)
+    async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.1: a node job mid-flight on a killed worker is re-pended by
+        the lease/reclaim machinery (``lock_expired``); the join counter
+        never moved while the row was owned by the corpse; a surviving pod
+        finishes the work; the per-attempt ``code_version`` record rides
+        BOTH claims (§22.1's per-attempt record)."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["w1", "w2"])
+>           flow_id = await _tagged_run(matrix_pool, schema, "reclaim_target")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:166: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'reclaim_target'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+_______ test_config_drift_cell_the_unserved_queue_is_named_not_orphaned ________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c723110>
+
+    @pytest.mark.timeout(600)
+    async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.5: an in-flight run whose downstream node is re-routed to a
+        REMOVED queue: the node enters the blocked-with-reason state the
+        derivation renders, the row stays claimable (never a crash, never a
+        silent orphan), and the shipped alert's confirming read
+        (``TaskQQueueUnserved``: depth > 0 with zero live workers) names the
+        queue — the operator's next step is NAMED."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["d1"])
+>           flow_id = await _tagged_run(matrix_pool, schema, "drift_target")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:453: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'drift_target'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+______________________ test_cron_slot_fires_twice_one_run ______________________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c7f86e0>
+
+    @pytest.mark.timeout(600)
+    async def test_cron_slot_fires_twice_one_run(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """G3's system-tier pin: the cron entry's slot fires twice (a clock
+        edge, an operator re-trigger) → ONE run — the run-level arbiter
+        composes with the cron-slot key. The variant regimes RACE (the two
+        creates run concurrently); one row is born."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["c1"])
+            slot = f"deep-research:{datetime.now(UTC).strftime('%Y%m%dT%H%M')}"
+            scope = run_idempotency_scope("deep_research")
+            print(f"[cell-7] slot={slot} scope={scope}")
+    
+            # THE DOUBLE FIRE: two concurrent creations, same slot key.
+>           first, second = await asyncio.gather(
+                _tagged_run(matrix_pool, schema, "deep_research", run_key=slot),
+                _tagged_run(matrix_pool, schema, "deep_research", run_key=slot),
+            )
+
+tests/system_e2e/test_wf_deploy_matrix.py:530: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'deep_research'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+----------------------------- Captured stdout call -----------------------------
+[cell-7] slot=deep-research:20261008T1415 scope=workflow-run:deep_research
+_____ test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock ______
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c7fa030>
+
+    @pytest.mark.timeout(600)
+    async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.2: a held migration lock (a REAL session holding ACCESS
+        EXCLUSIVE on jobs) during a finalize → the transient classification
+        (``LockNotAvailable``) → the ladder retries → succeeds; no state
+        corruption, no orphaned counter decrement. The injection rides the
+        real held-migration-lock drill (a second session's ``LOCK TABLE``),
+        never a bespoke fault hack."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        lock_session: asyncpg.Connection | None = None
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["m1", "m2"])
+>           flow_id = await _tagged_run(matrix_pool, schema, "doc_ingest_march")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:287: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'doc_ingest_march'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+_______ test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once _______
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c7fac60>
+
+    @pytest.mark.timeout(600)
+    async def test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """F7: a worker receiving SIGTERM MID-LOOP-ITERATION must
+        finish-or-requeue per the termination grace; the loop's carry
+        advances EXACTLY ONCE on the requeue (no double-apply, no lost
+        iteration) — P3 rule 3's shape under drain."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["dr1", "dr2"])
+>           flow_id = await _tagged_run(matrix_pool, schema, "drain_loop")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:602: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'drain_loop'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+____________ test_rollback_cell_the_v1_pod_never_claims_a_flow_row _____________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7f868dbf7d00>
+module_pg_schema = ModulePgSchema(schema_name='tq_e2e1f73a52', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_e2e1f73a521b')
+sys_ledger = <asyncpg.connection.Connection object at 0x7f868c7fb980>
+
+    @pytest.mark.timeout(600)
+    async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.3: a v1 worker (the VANILLA entry — no workflow capability)
+        meets a v2 fleet mid-run: the dispatch fence NEVER hands it a
+        workflow row (no crash loop — the pod claims nothing it cannot
+        execute); the capable fleet finishes the run; the additive-only
+        ledger means the vanilla rollback always safe — the v1 pod's own
+        writes are row shapes it knows (tags, statuses), never the wf
+        columns."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        v1: WorkerProc | None = None
+        try:
+            fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["v2a"])
+            # THE ROLLBACK'S POD: the vanilla entry — the workers row carries
+            # NO workflow_execution stamp (the metadata key is stamped false,
+            # the fence's data leg).
+            v1 = spawn_worker(
+                module_pg_schema.pg_dsn,
+                schema,
+                tag="wf-v1pod",
+                extra_env={
+                    "TASKQ_LEADER_LEASE": str(MARCH_LEADER_LEASE_S),
+                    "TASKQ_QUEUES": "system_e2e,default",
+                },
+            )
+            wait_worker_ready(v1)
+    
+>           flow_id = await _tagged_run(matrix_pool, schema, "reclaim_target")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:379: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/test_wf_deploy_matrix.py:135: in _tagged_run
+    flow_id = await _create_run(pool, schema, flow_name, run_key=run_key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/system_e2e/test_wf_deploy_matrix.py:126: in _create_run
+    runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:83: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:93: in _run_rules
+    diagnostics += _rule_acyclicity(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = 'reclaim_target'
+
+    def _rule_acyclicity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+        every join wait forever; no sweep can heal a topological lie)."""
+        white, gray, black = 0, 1, 2
+>       color = dict.fromkeys(compiled.nodes, white)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'nodes'
+
+src/taskq/workflows/api/_validate.py:111: AttributeError
+=========================== short test summary info ============================
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_config_drift_cell_the_unserved_queue_is_named_not_orphaned
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_cron_slot_fires_twice_one_run
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_rollback_cell_the_v1_pod_never_claims_a_flow_row
+6 failed in 53.20s

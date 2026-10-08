@@ -1,0 +1,8 @@
+/tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_kill_entry.py
+  /tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_kill_entry.py:62:42 - error: "parse_rowcount" is not exported from module "taskq.worker.heartbeat" (reportPrivateImportUsage)
+  /tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_kill_entry.py:134:23 - error: "parse_rowcount" is not exported from module "taskq.worker.heartbeat" (reportPrivateImportUsage)
+/tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_wf_app.py
+  /tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_wf_app.py:115:5 - error: Function declaration "_source_names" is obscured by a declaration of the same name (reportRedeclaration)
+  /tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_wf_app.py:124:36 - error: Cannot access attribute "step_key" for class "FailureInfo"
+    Attribute "step_key" is unknown (reportAttributeAccessIssue)
+4 errors, 0 warnings, 0 informations

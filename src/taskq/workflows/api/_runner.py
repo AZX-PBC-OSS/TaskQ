@@ -168,11 +168,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         if not claim.created:
             return claim.flow_id
         async with self.pool.acquire() as conn:
-            await self._insert_static_nodes(conn, claim.flow_id, input)
-            # The run is LIVE: the root flips pending → running (the
-            # maintenance leg's derivation owns the TERMINAL verdict
-            # from the rows — the root is a cache, never the decider).
-            await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
+            # THE CREATE IS ONE TRANSACTION (the deploy matrix's fleet-
+            # crash cure): the rows, the edges, the root's start — one
+            # commit. The create ran statement-autocommit before, and the
+            # fleet's dispatch round swept the not-yet-wired rows UP
+            # INSIDE the create: a join-wait child claimed (and EXECUTED
+            # — its parents' results did not exist, the arg resolution
+            # crashed the worker), the flow's own wiring half-born. A
+            # transaction bounds the dispatch's visibility to the WHOLE
+            # wiring (the fork's atomicity law, create-time face).
+            async with conn.transaction():
+                await self._insert_static_nodes(conn, claim.flow_id, input)
+                # The run is LIVE: the root flips pending → running (the
+                # maintenance leg's derivation owns the TERMINAL verdict
+                # from the rows — the root is a cache, never the decider).
+                await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
         return claim.flow_id
 
     async def _insert_root(self, input: object, run_key: str | None) -> RunClaim:
@@ -435,6 +445,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         own claim stamps 0; a fleet-claimed row carries its dispatch
         claim's epoch. Returns the attempt's outcome label (the caller's
         log line — the ROW is the truth, this is the record's echo)."""
+        # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
+        # matrix's audit cure): the record is "written at claim by the
+        # workflow claim path" — every claim's execution stamps the
+        # row's ``code_version`` with the body's canonical content hash,
+        # so a re-claimed node's SECOND attempt rewrites the record (the
+        # §22.1 record rides BOTH claims). A RECORD, never a gate: a
+        # hash failure is a logged loss, never a node failure.
+        await self._stamp_code_version(JobId(row["id"]), row["step_key"], node, body)
+
         # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
         # additive write, class='auto', the ONE stream. Best-effort: a
         # lost projection is a logged freshness loss, never a node
@@ -483,13 +502,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 await emitter.aclose()
             return "loop"
 
-        parents_ordered, parents_by_key = await self._parent_results(row["id"])
-        payload_raw = row["payload"]
-        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
-        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
-        args = self._resolve_args(node, body, parents_by_key, payload_doc)
-
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
@@ -512,6 +524,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             claimed_at=datetime.now(UTC),
         )
         try:
+            # THE LADDER'S BOUNDARY OPENS AT THE ARGS RESOLUTION (the
+            # deploy matrix's fleet-crash cure): the parents' results'
+            # read and the arg resolution ran BEFORE the try — a
+            # resolution failure (a parent with no result yet, a payload
+            # decode) escaped the ladder's classification and killed the
+            # WORKER (the exception surfaced on the dispatch loop, the
+            # whole process died with every live run of its estate).
+            # The boundary is the EXECUTION'S boundary: from the ledger
+            # claim on, anything the attempt raises routes through the
+            # ladder — never through the worker's skull.
+            parents_ordered, parents_by_key = await self._parent_results(row["id"])
+            payload_raw = row["payload"]
+            payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+            assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+            payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+            args = self._resolve_args(node, body, parents_by_key, payload_doc)
             if body is None:
                 # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
                 # join's result IS the decoded parents' list — the FLAT
@@ -586,6 +614,41 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         await emitter.aclose()
         await self._finalize_success(flow_id, row, attempt, node, result, claim_epoch=claim_epoch)
         return "succeeded"
+
+    async def _stamp_code_version(
+        self, job_id: JobId, node_key: str, node: Any, body: Any
+    ) -> None:
+        """The per-attempt ``code_version`` record's write (T03/§22.1):
+        the claim's own stamp — the body's canonical content hash onto
+        the row. Best-effort (a record, never a gate): a body the hash
+        cannot read (a builtin, a partial) records as NULL, the loss
+        logged; the row's claim never fails on its own audit."""
+        import inspect
+
+        from taskq.workflows._version import compute_code_version
+
+        target = body if body is not None else (getattr(node, "body", None) if node is not None else None)
+        if target is None:
+            return  # the join/gather kinds: the identity packer is the engine's own code
+        try:
+            version = compute_code_version(
+                getattr(target, "__module__", "") or "",
+                getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
+                inspect.getsource(target),
+            )
+        except Exception as exc:  # Why: the record's asymmetry — a hash loss is logged, never a node failure.
+            logger.warning(
+                "node.code-version-unstamped",
+                node=node_key,
+                error=str(exc)[:200],
+            )
+            return
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',
+                job_id,
+                version,
+            )
 
     def _redact_hook(self) -> Callable[[str], str] | None:
         """The workflow's OWN redact hook from the REGISTERED DEFINITION
