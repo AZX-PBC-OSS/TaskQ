@@ -1414,3 +1414,23 @@ class UnknownQueueError(TaskQError):
                 f"{offending} from TASKQ_QUEUES, or deploy/register an actor "
                 f"whose queue is {offending}."
             )
+
+
+class SignalTimeoutError(TaskQError):
+    """A held signal's deadline passed under ``on_timeout="fail"`` — the
+    dedicated typed failure (GAPS-ESTATE F9's glossary shape: the
+    ``Signal`` prefix, the :class:`TaskQError` base; NOT
+    ``TaskQSignalTimeout``, which would break the exceptions glossary's
+    one-prefix rule). The named state's ledger record: the hold row's
+    ``abandoned`` + the node's typed failure — never a silent orphan.
+
+    See also :class:`SignalAbandonedError` (the operator-abandon shape —
+    the same defined state, a different door)."""
+
+
+class SignalAbandonedError(TaskQError):
+    """A held signal was abandoned by policy (the operator-abandon / the
+    sweep's escalation arm): the same DEFINED state as
+    :class:`SignalTimeoutError` — a named ledger record, never a silent
+    orphan. The distinction is the DOOR (the timeout sweep vs the
+    operator's action), not the state."""
