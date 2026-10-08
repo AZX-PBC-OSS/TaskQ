@@ -63,6 +63,18 @@ from taskq.workflows._sql_ledger import (
     LEDGER_TERMINAL_BY_ID_SQL,
     LEDGER_TERMINAL_SQL,
 )
+from taskq.workflows._sql_progress import (
+    PROGRESS_CHILD_RESULTS_SQL,
+    PROGRESS_REPLAY_NODE_SQL,
+    PROGRESS_REPLAY_RUN_SQL,
+    PROGRESS_RING_OLDEST_NODE_SQL,
+    PROGRESS_RING_OLDEST_RUN_SQL,
+    PROGRESS_RING_PRUNE_SQL,
+    PROGRESS_STATE_READ_NODE_SQL,
+    PROGRESS_STATE_READ_RUN_SQL,
+    PROGRESS_STATE_UPSERT_SQL,
+    PROGRESS_STREAM_APPEND_TRIM_SQL,
+)
 from taskq.workflows._sql_status import (
     WORKFLOW_MAP_PROGRESS_SQL,
     WORKFLOW_NODES_SQL,
@@ -157,6 +169,17 @@ class WorkflowSql:
     workflow_nodes: str
     workflow_map_progress: str
     workflow_root_maintain: str
+    # T21's progress surface (the two-channel persistence + the faces).
+    progress_state_upsert: str
+    progress_stream_append: str
+    progress_ring_prune: str
+    progress_replay_node: str
+    progress_replay_run: str
+    progress_ring_oldest_node: str
+    progress_ring_oldest_run: str
+    progress_state_read_node: str
+    progress_state_read_run: str
+    progress_child_results: str
 
     @staticmethod
     def build(schema: str) -> WorkflowSql:
@@ -222,4 +245,14 @@ class WorkflowSql:
             workflow_nodes=render(WORKFLOW_NODES_SQL),
             workflow_map_progress=render(WORKFLOW_MAP_PROGRESS_SQL),
             workflow_root_maintain=render(WORKFLOW_ROOT_MAINTAIN_SQL),
+            progress_state_upsert=render(PROGRESS_STATE_UPSERT_SQL),
+            progress_stream_append=render(PROGRESS_STREAM_APPEND_TRIM_SQL),
+            progress_ring_prune=render(PROGRESS_RING_PRUNE_SQL),
+            progress_replay_node=render(PROGRESS_REPLAY_NODE_SQL),
+            progress_replay_run=render(PROGRESS_REPLAY_RUN_SQL),
+            progress_ring_oldest_node=render(PROGRESS_RING_OLDEST_NODE_SQL),
+            progress_ring_oldest_run=render(PROGRESS_RING_OLDEST_RUN_SQL),
+            progress_state_read_node=render(PROGRESS_STATE_READ_NODE_SQL),
+            progress_state_read_run=render(PROGRESS_STATE_READ_RUN_SQL),
+            progress_child_results=render(PROGRESS_CHILD_RESULTS_SQL),
         )
