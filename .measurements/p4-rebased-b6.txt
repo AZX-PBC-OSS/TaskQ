@@ -1,0 +1,277 @@
+.................F...................FF................................. [ 41%]
+..................+++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_3 (140161543853760) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_2 (140161561474752) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_1 (140161569867456) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_0 (140161519511232) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+FE...................................................................... [ 92%]
+.............                                                            [100%]
+==================================== ERRORS ====================================
+_ ERROR at teardown of test_full_run_the_example_executes_and_the_join_fires_exactly_once _
+test left asyncio task(s) still pending on the module event loop - a live loop keeps writing shared state into later tests. Cancel and await every task the test created:
+  - task 'Task-3597' pending at test end (finished or reaped during teardown without the test awaiting it); coroutine: <coroutine object test_full_run_the_example_executes_and_the_join_fires_exactly_once at 0x13d44a80>
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 22:42:05 [info     ] signal.resolved                hold_id=01a11a08-799c-7b53-82b2-675fe56e6fd3 run_id=01a11a08-7904-7240-9de1-fd77fdcc2aa3 signal=ReviewDecision
+2026-10-07 22:42:05 [debug    ] loop.wake                      loop=review remaining_ms=3599960
+=================================== FAILURES ===================================
+__________________ test_capture_policies_none_and_errors_only __________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f79e8e01f00>
+wf_schema = 'tq_51a28e774e'
+wf_conn = <asyncpg.connection.Connection object at 0x7f79e8acd8b0>
+
+    async def test_capture_policies_none_and_errors_only(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """The declared capture policy decides the failing node's capture
+        jsonb: none → NO capture; errors-only → the error text, never the
+        input."""
+        from pydantic import BaseModel as _BM
+    
+        for policy, want_capture in (("none", False), ("errors-only", True)):
+            app = WorkflowApp()
+    
+            async def fails(ctx: Any, params: Ingest) -> str:
+                raise ValueError("the capture probe's boom")
+    
+            @app.workflow(f"cap_{policy}", capture=policy)
+            def cap_wf() -> object:
+                return build(step(fails, Ingest(doc_id="the input text"), key="solo"))
+    
+            runner = FlowRunner(app.get(f"cap_{policy}"), wf_pool, wf_schema)
+            flow_id = await runner.create_flow()
+            assert await runner.drive(flow_id) == "terminal"
+            rows = await wf_pool.fetch(
+                f'SELECT capture FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+                flow_id,
+            )
+            captures = [r["capture"] for r in rows if r["capture"] is not None]
+            if want_capture:
+                assert captures, f"{policy}: the error capture must ride the ledger"
+                text = str(captures[-1])
+                assert "boom" in text
+            else:
+>               assert not captures, f"{policy}: the capture is REFUSED by the policy"
+E               AssertionError: none: the capture is REFUSED by the policy
+E               assert not ['{"error": "the capture probe\'s boom"}']
+
+tests/test_wf_coverage_closing.py:160: AssertionError
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f79e8e03d00>
+wf_schema = 'tq_7bf6e16569'
+wf_conn = <asyncpg.connection.Connection object at 0x7f79e8b526c0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return ["a", "b", "c"]  # the map's source returns the LIST (the fork's items)
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            if ctx.node_key != "asserting.item":
+                SEEN.setdefault("child_keys", []).append(ctx.node_key)
+                SEEN["child_failed"] = ctx.node_key
+            else:
+                SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+        await runner.drive(flow_id)
+        root = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+        )
+        if root != "succeeded":
+            errors = await wf_conn.fetch(
+                f'SELECT step_key, error_class, error_message FROM "{wf_schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND error_message IS NOT NULL",
+                flow_id,
+            )
+>           pytest.fail(
+                f"the run failed: {root} — "
+                + json.dumps([dict(r) for r in errors], default=str)
+            )
+E           Failed: the run failed: failed — [{"step_key": "asserting", "error_class": "AssertionError", "error_message": "{'flow_id': '01a11a08-4b17-7c01-9298-00906090c786', 'node_key': 'asserting', 'attempt': 3, 'input': {'doc_id': 'd1'}, ...}\nassert None == 'context_contract'\n +  where None = StepContext(flow_id=UUID('01a11a08-4b17-7c01-9298-00906090c786'), job_id=UUID('01a11a08-4b1d-7041-ae67-91e4c7f7aacb'),...sEmitter object at 0x7f79ea0e5010>, flow_name=None, queue=None, claimed_at=None, budget_remaining_ms=None, _runtime={}).flow_name"}]
+
+tests/test_wf_context_contract.py:90: Failed
+__________________ test_the_loop_ctx_carries_the_budget_wall ___________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f79e8e03700>
+wf_schema = 'tq_7bf6e16569'
+
+    async def test_the_loop_ctx_carries_the_budget_wall(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
+        number, not None — the wall EXISTS when budget_s is set)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["budget_ms"] = ctx.budget_remaining_ms
+            seen["flow_name"] = ctx.flow_name
+            return Done("finished")
+    
+        @app.workflow("ctx_budget")
+        def ctx_budget() -> object:
+            return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+    
+        runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()  # no input — ctx.input is None (the honest zero)
+        assert await runner.drive(flow_id) == "terminal"
+>       assert seen["flow_name"] == "ctx_budget"
+E       AssertionError: assert None == 'ctx_budget'
+
+tests/test_wf_context_contract.py:123: AssertionError
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+item = <Coroutine test_full_run_the_example_executes_and_the_join_fires_exactly_once>
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_call(item: pytest.Item) -> object:
+        """Snapshot the test-end residue: tasks minted during THIS call and
+        still pending when the call phase ends (before any fixture teardown
+        can reap them).
+    
+        Bounded and cheap: two :func:`asyncio.all_tasks` set diffs per async
+        item, the same primitive the guard's baseline diff uses.  The window
+        is read only when the guard stashed a loop for this item (async items
+        on the module loop); sync tests mint no loop tasks and skip.  The
+        snapshot is captured even when the call raises - a settle-assertion
+        failure unwinding through ``finally`` blocks is exactly the path
+        whose residue must be remembered.
+        """
+        loop = item.stash.get(_GUARD_LOOP_KEY, None)
+        if loop is None:
+            result = yield
+            return result
+        pending_at_call_start = asyncio.all_tasks(loop)
+        try:
+>           result = yield
+                     ^^^^^
+
+tests/conftest.py:505: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:569: in runtest
+    super().runtest()
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:905: in inner
+    runner.run(coro, context=context)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:713: in run_until_complete
+    self.run_forever()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:684: in run_forever
+    self._run_once()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:2023: in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <selectors.EpollSelector object at 0x7f79ea2fbd70>, timeout = 0.02
+
+    def select(self, timeout=None):
+        if timeout is None:
+            timeout = -1
+        elif timeout <= 0:
+            timeout = 0
+        else:
+            # epoll_wait() has a resolution of 1 millisecond, round away
+            # from zero to wait *at least* timeout seconds.
+            timeout = math.ceil(timeout * 1e3) * 1e-3
+    
+        # epoll_wait() expects `maxevents` to be greater than zero;
+        # we want to make sure that `select()` can be called when no
+        # FD is registered.
+        max_ev = len(self._fd_to_key) or 1
+    
+        ready = []
+        try:
+>           fd_event_list = self._selector.poll(timeout, max_ev)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: Timeout (>120.0s) from pytest-timeout.
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/selectors.py:452: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 22:42:05 [info     ] signal.resolved                hold_id=01a11a08-799c-7b53-82b2-675fe56e6fd3 run_id=01a11a08-7904-7240-9de1-fd77fdcc2aa3 signal=ReviewDecision
+2026-10-07 22:42:05 [debug    ] loop.wake                      loop=review remaining_ms=3599960
+=========================== short test summary info ============================
+ERROR tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+FAILED tests/test_wf_coverage_closing.py::test_capture_policies_none_and_errors_only
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+FAILED tests/test_wf_context_contract.py::test_the_loop_ctx_carries_the_budget_wall
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+4 failed, 170 passed, 1 error in 165.36s (0:02:45)

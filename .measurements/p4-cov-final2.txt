@@ -1,0 +1,378 @@
+.....................................FF.F............................... [ 35%]
+.............F.F.F.F.................................................... [ 71%]
+..........................................................               [100%]
+=================================== FAILURES ===================================
+___________ test_display_shows_failure_with_pct_inside_the_liar_reds ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b2834410>
+wf_schema = 'tq_ff6d571b77'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b03fbe80>
+wf_sql = WorkflowSql(schema='tq_ff6d571b77', terminal_mark='UPDATE tq_ff6d571b77.jobs\nSET status = $2::"tq_ff6d571b77".job_sta...status, result\nFROM tq_ff6d571b77.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+progress_redlog = <tests._wf_fixtures.RedLog object at 0x7f09b2706eb0>
+
+    async def test_display_shows_failure_with_pct_inside_the_liar_reds(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        progress_redlog: RedLog,
+    ) -> None:
+        """DH4 on the BUILT display: a body reports pct=99 'almost done' then
+        FAILS → the explorer shows FAILED with pct=99 rendered INSIDE it —
+        never 99%-running. THE LIAR RED (the counterfactual display deriving
+        the state from the progress events) shows running/99 on the dead node
+        — observed, kept red forever."""
+        app = WorkflowApp()
+    
+        async def liar(ctx: Any, params: Ingest) -> dict[str, object]:
+            await ctx.progress(99, "almost done", None)
+            raise ValueError("the body failed at 99%")
+    
+        @app.workflow("t21_liar_display")
+        def t21_liar_display() -> object:
+            return build(step(liar, Ingest(doc_id="d1"), key="liar", max_attempts=1))
+    
+        runner = FlowRunner(app.get("t21_liar_display"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+    
+        node = await wf_conn.fetchval(
+            f"""SELECT id FROM "{wf_schema}".jobs WHERE step_key = 'liar'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+        ledger_rows = [
+            dict(r)
+            for r in await wf_conn.fetch(
+                f"""SELECT id, step_key, status::text AS status, error_class
+                    FROM "{wf_schema}".jobs WHERE id = $1""",
+                node,
+            )
+        ]
+        state_rows = [dict(r) for r in await wf_conn.fetch(wf_sql.progress_state_read_node, node)]
+        events = [dict(r) for r in await wf_conn.fetch(wf_sql.progress_replay_node, 0, node, 1000)]
+        display = rebuild_display(ledger_rows, state_rows, events)
+        d = display[str(node)]
+        assert d["status"] == "failed", (
+            f"the display shows {d['status']!r} at pct {d['pct']} — the LIE (the "
+            "progress overrode the ledger)"
+        )
+>       assert d["pct"] == 99 and d["message"] == "almost done", (
+            "the last progress must render INSIDE the terminal state (advisory)"
+        )
+E       AssertionError: the last progress must render INSIDE the terminal state (advisory)
+E       assert (None == 99)
+
+tests/test_wf_progress_faces.py:270: AssertionError
+___________ test_reconnect_reconstructs_the_display_full_and_partial ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b2898140>
+wf_schema = 'tq_ff6d571b77'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b03f8640>
+wf_sql = WorkflowSql(schema='tq_ff6d571b77', terminal_mark='UPDATE tq_ff6d571b77.jobs\nSET status = $2::"tq_ff6d571b77".job_sta...status, result\nFROM tq_ff6d571b77.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+
+    async def test_reconnect_reconstructs_the_display_full_and_partial(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+    ) -> None:
+        """A consumer disconnecting mid-map (the cursor at the median seq) and
+        reconnecting reconstructs the display for every node: the connect
+        shape is the STATE channel + the LEDGER first, then the replayed tail
+        (latest-wins needs no history). And the PRUNED window (DH6) names
+        itself: mode='partial' with the state re-sync — the display converges
+        from the re-sync."""
+        n = 12
+        flow_id, runner, source = await _map_flow(
+            wf_schema, wf_pool, children=n, name="t21_reconnect_flow"
+        )
+        _ = source
+        await runner.drive(flow_id)
+    
+        async def node_of(map_index: int) -> JobId:
+            nid = await wf_conn.fetchval(
+                f"""SELECT id FROM "{wf_schema}".jobs WHERE step_key = 'fetch.item'
+                    AND map_index = $1 AND (metadata->>'flow_id')::uuid = $2::uuid""",
+                map_index,
+                flow_id,
+            )
+            assert nid is not None
+            return JobId(nid)
+    
+        ledger_rows = [
+            dict(r)
+            for r in await wf_conn.fetch(
+                f"""SELECT id, step_key, status::text AS status, error_class
+                    FROM "{wf_schema}".jobs
+                    WHERE (metadata->>'flow_id')::uuid = $1::uuid
+                    AND metadata ? 'flow_id' AND step_key <> '__flow__'""",
+                flow_id,
+            )
+        ]
+        state_rows = [dict(r) for r in await wf_conn.fetch(wf_sql.progress_state_read_run, flow_id)]
+        state_by_node = {str(s["node_id"]): s for s in state_rows if s["channel"] == "progress"}
+    
+        # FULL: the replay from the beginning alone reconstructs.
+        full = await progress_sse_face(wf_pool, wf_sql, flow_id=flow_id, last_event_id=0)
+        assert full.mode == "full"
+        display = rebuild_display(ledger_rows, [], full.events)
+        for i in range(n):
+            nid = str(await node_of(i))
+            d = display[nid]
+>           s = state_by_node[nid]
+                ^^^^^^^^^^^^^^^^^^
+E           KeyError: '01a11a01-bb9d-7702-9974-3d9aec22227d'
+
+tests/test_wf_progress_faces.py:144: KeyError
+______________ test_midflight_read_side_aggregate_writes_nothing _______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b296b890>
+wf_schema = 'tq_ff6d571b77'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b03fb4c0>
+wf_sql = WorkflowSql(schema='tq_ff6d571b77', terminal_mark='UPDATE tq_ff6d571b77.jobs\nSET status = $2::"tq_ff6d571b77".job_sta...status, result\nFROM tq_ff6d571b77.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+
+    async def test_midflight_read_side_aggregate_writes_nothing(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+    ) -> None:
+        """DH8 on the BUILT surface: a map MID-FLIGHT (half the children done)
+        — the DECLARED ``aggregate=`` fn runs over the DONE children's RESULT
+        rows AT READ TIME: mid-flight, unblocked, writing NOTHING. No join
+        node exists for it (``wf_join_fire`` count 0 for the whole run). The
+        map's progress line rides the grouped read."""
+    
+        def risk_mean(rows: list[dict[str, object]]) -> float:
+            return sum(int(r["risk"]) for r in rows) / len(rows)
+    
+        n = 12
+        flow_id, runner, source = await _map_flow(
+            wf_schema, wf_pool, children=n, aggregate=risk_mean, name="t21_agg_flow"
+        )
+        # run HALF the children (the mid-flight world: the PoC's 125/200)
+        rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]
+        assert rows, "the fork's children are claimable"
+        for row in rows[: len(rows) // 2]:
+            await runner._run_node(flow_id, row)  # pyright: ignore[reportPrivateUsage]
+    
+        done = await wf_conn.fetchval(
+            f"""SELECT count(*) FROM "{wf_schema}".jobs
+                WHERE parent_id = $1::uuid AND status = 'succeeded'""",
+            source,
+        )
+>       assert 0 < done < n, "the world is not mid-flight"
+E       AssertionError: the world is not mid-flight
+E       assert 0 < 0
+
+tests/test_wf_progress_faces.py:389: AssertionError
+________________ test_declared_schema_door_refuses_wrong_shape _________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b1fbb980>
+wf_schema = 'tq_849e0ef2b7'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b194bc40>
+
+    async def test_declared_schema_door_refuses_wrong_shape(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+    ) -> None:
+        """THE TYPED DOOR (decision a — the TypedGate-door pattern): a node
+        that declared ``progress_schema=Page`` refuses a wrong-shaped data
+        emission with :class:`ProgressRefusedError` — raised INTO the body,
+        which is the authoring error's place. The refusal ladders like any
+        body failure (the node's correctness path owns it)."""
+        app = WorkflowApp()
+    
+        async def lying_body(ctx: Any, params: Ingest) -> dict[str, object]:
+            await ctx.progress(50, "m", {"not_a_page": True})
+            return {"ok": True}
+    
+        @app.workflow("t21_lying")
+        def t21_lying() -> object:
+            return build(step(lying_body, Ingest(doc_id="d1"), key="lying", progress_schema=Page))
+    
+        runner = FlowRunner(app.get("t21_lying"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+        status = await wf_conn.fetchval(
+            f"""SELECT status::text FROM "{wf_schema}".jobs WHERE step_key = 'lying'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+        assert status == "failed", "a wrong-shaped emission passed the declared-schema door"
+        error_class = await wf_conn.fetchval(
+            f"""SELECT error_class FROM "{wf_schema}".jobs WHERE step_key = 'lying'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+>       assert error_class == "ProgressRefusedError"
+E       AssertionError: assert 'AttributeError' == 'ProgressRefusedError'
+E         
+E         - ProgressRefusedError
+E         + AttributeError
+
+tests/test_wf_progress_emission.py:151: AssertionError
+_____________ test_the_chain_body_emission_lands_in_both_channels ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b4a094f0>
+wf_schema = 'tq_849e0ef2b7'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b1948340>
+
+    async def test_the_chain_body_emission_lands_in_both_channels(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+    ) -> None:
+        """THE CHAIN, end-to-end on the built runner: a body's
+        ``ctx.progress`` calls land in the STREAM ring (class='user') AND the
+        STATE channel (latest-wins), and the engine's auto projections
+        (started + terminal) interleave in the SAME seq space — ONE stream,
+        ONE cursor. The occurrence counter is HONEST: it counts every
+        emission, coalesced or not."""
+        app = WorkflowApp()
+        seen: dict[str, Any] = {}
+    
+        async def work(ctx: Any, params: Ingest) -> dict[str, object]:
+            await ctx.progress(10, "starting", None)
+            for i in range(5):
+                await ctx.progress(20 + i * 10, f"page {i}", {"page": i})
+            seen["emitted"] = 6
+            return {"ok": True}
+    
+        @app.workflow("t21_chain")
+        def t21_chain() -> object:
+            return build(step(work, Ingest(doc_id="d1"), key="work", progress_schema=Page))
+    
+        runner = FlowRunner(app.get("t21_chain"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+    
+        node = await wf_conn.fetchval(
+            f"""SELECT id FROM "{wf_schema}".jobs WHERE step_key = 'work'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+        state = await wf_conn.fetchrow(
+            f"""SELECT pct, message, data, occurrences FROM "{wf_schema}".wf_node_progress
+                WHERE node_id = $1 AND channel = 'progress'""",
+            node,
+        )
+>       assert state is not None
+E       assert None is not None
+
+tests/test_wf_progress_emission.py:90: AssertionError
+_____________ test_chatty_body_coalesce_cadence_and_constant_rows ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b4a50d70>
+wf_schema = 'tq_849e0ef2b7'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b251d540>
+progress_redlog = <tests._wf_fixtures.RedLog object at 0x7f09b12cb3e0>
+
+    async def test_chatty_body_coalesce_cadence_and_constant_rows(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+        progress_redlog: RedLog,
+    ) -> None:
+        """THE CHATTY BODY on the BUILT op (the PoC's 10k-emission proof,
+        re-proven): 10,000 emissions in a tight loop →
+        * the flush count is the CADENCE's, not the emissions' (the coalesce
+          holds; the storm shape — a write per emission — is the convicted
+          variant, kept red in the redlog as the PoC's measured 2,000-row
+          counterfactual);
+        * ``occurrences == 10_000`` EXACTLY (the counter is honest);
+        * the STATE channel stays at 2 rows (channels progress + __stream__)
+          — CONSTANT under 10k (DH1's fence, PoC P4/P6)."""
+        app = WorkflowApp()
+    
+        async def chatty(ctx: Any, params: Ingest) -> dict[str, object]:
+            for i in range(10_000):
+                await ctx.progress(i % 101, f"e{i}", None)
+            return {"ok": True}
+    
+        @app.workflow("t21_chatty")
+        def t21_chatty() -> object:
+            return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
+    
+        runner = FlowRunner(app.get("t21_chatty"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        status = await runner.drive(flow_id)
+        assert status == "terminal"
+    
+        node = await wf_conn.fetchval(
+            f"""SELECT id FROM "{wf_schema}".jobs WHERE step_key = 'chatty'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+        state = await wf_conn.fetchrow(
+            f"""SELECT occurrences, last_seq FROM "{wf_schema}".wf_node_progress
+                WHERE node_id = $1 AND channel = 'progress'""",
+            node,
+        )
+>       assert state is not None
+E       assert None is not None
+
+tests/test_wf_progress_emission.py:233: AssertionError
+______________ test_terminal_projection_lands_after_the_finalize _______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f09b23d7890>
+wf_schema = 'tq_849e0ef2b7'
+wf_pool = <asyncpg.pool.Pool object at 0x7f09b251f1c0>
+
+    async def test_terminal_projection_lands_after_the_finalize(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """THE PROJECTION'S ORDER (the display-fence's substrate): the auto
+        TERMINAL event lands only AFTER the finalize applied (the ledger owns
+        the state; the projection publishes it) — and a FAILING node's
+        terminal carries the outcome, so the display can derive the failure
+        from the stream too (the ledger remains the authority)."""
+        app = WorkflowApp()
+    
+        async def boom(ctx: Any, params: Ingest) -> dict[str, object]:
+            await ctx.progress(99, "almost done", None)
+            raise ValueError("the body failed at 99%")
+    
+        @app.workflow("t21_boom")
+        def t21_boom() -> object:
+            return build(step(boom, Ingest(doc_id="d1"), key="boom", max_attempts=1))
+    
+        runner = FlowRunner(app.get("t21_boom"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+    
+        node = await wf_conn.fetchval(
+            f"""SELECT id FROM "{wf_schema}".jobs WHERE step_key = 'boom'
+                AND (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+        )
+        status = await wf_conn.fetchval(
+            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', node
+        )
+        assert status == "failed"
+        # THE LIE'S SUBSTRATE, on the record: the node's last progress said
+        # 99% — and the STATE row keeps it (advisory), while the LEDGER says
+        # failed. The display pins (the faces file) convict the liar that
+        # derives the state from HERE.
+        state = await wf_conn.fetchrow(
+            f"""SELECT pct, message FROM "{wf_schema}".wf_node_progress
+                WHERE node_id = $1 AND channel = 'progress'""",
+            node,
+        )
+>       assert state is not None and state["pct"] == 99 and state["message"] == "almost done"
+E       assert (None is not None)
+
+tests/test_wf_progress_emission.py:386: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_progress_faces.py::test_display_shows_failure_with_pct_inside_the_liar_reds
+FAILED tests/test_wf_progress_faces.py::test_reconnect_reconstructs_the_display_full_and_partial
+FAILED tests/test_wf_progress_faces.py::test_midflight_read_side_aggregate_writes_nothing
+FAILED tests/test_wf_progress_emission.py::test_declared_schema_door_refuses_wrong_shape
+FAILED tests/test_wf_progress_emission.py::test_the_chain_body_emission_lands_in_both_channels
+FAILED tests/test_wf_progress_emission.py::test_chatty_body_coalesce_cadence_and_constant_rows
+FAILED tests/test_wf_progress_emission.py::test_terminal_projection_lands_after_the_finalize
+7 failed, 195 passed, 1 warning in 75.78s (0:01:15)
