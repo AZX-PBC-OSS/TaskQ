@@ -164,9 +164,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         # has no old workers to protect), and the static workflow nodes'
         # per-flow keys collide on it across runs (the second run's
         # create_flow raised UniqueViolationError on wf:gather).
-        await apply_pending_locked(
-            str(settings.pg_dsn), schema=settings.schema_name, phase=None
-        )
+        await apply_pending_locked(str(settings.pg_dsn), schema=settings.schema_name, phase=None)
 
     async with AsyncExitStack() as stack:
         pg_pool: asyncpg.Pool = await stack.enter_async_context(
@@ -338,8 +336,10 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
 # The SAME envelope contract (the repo's F3 finding): the workflow
 # trigger answers 202 with the RUN id + the run-watch url (the admin's
 # workflow page — the graph view with the live SSE). A run-key conflict
-# (the same cron slot twice) answers 200 with the EXISTING run — the
-# run-level idempotency is the demo, not an error.
+# (the same cron slot twice) answers 202 WITH THE EXISTING run id (the
+# idempotency shows in the envelope — the SAME id for the same slot; the
+# code always answers 202, never a 200 re-read), the run-level
+# idempotency is the demo, not an error.
 
 
 @app.post("/workflows/{workflow_name}/run")
