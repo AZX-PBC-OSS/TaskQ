@@ -21,12 +21,25 @@ registered-definition registry; ``_capture`` owns the failure IO-capture
 writer; ``_version`` owns the canonical code-version hash.
 """
 
+from taskq.workflows._progress import (
+    CLASS_AUTO,
+    CLASS_USER,
+    KIND_NODE_STARTED,
+    KIND_NODE_TERMINAL,
+    KIND_PROGRESS,
+    KIND_VOCABULARY,
+    PROGRESS_RING_BOUND,
+    ProgressEmitter,
+    ProgressRefusedError,
+    project_auto_event,
+)
 from taskq.workflows._sweep import (
     SweepResult,
     drain_outbox,
     reap_phantom_ledger,
     sweep_join_rederive,
     sweep_loop_budget,
+    sweep_progress_ring_prune,
 )
 from taskq.workflows._types import (
     AbsorbingPolicy,
@@ -89,9 +102,16 @@ from taskq.workflows.ledger import (
 )
 
 __all__ = [
+    "CLASS_AUTO",
+    "CLASS_USER",
     "DISPATCH_EXCLUSION_CLAUSE",
     "FAILURE_POLICIES",
+    "KIND_NODE_STARTED",
+    "KIND_NODE_TERMINAL",
+    "KIND_PROGRESS",
+    "KIND_VOCABULARY",
     "MAX_FAN_IN_PER_JOIN",
+    "PROGRESS_RING_BOUND",
     "AbsorbingPolicy",
     "ChildSpec",
     "CompiledWorkflow",
@@ -111,6 +131,8 @@ __all__ = [
     "JoinSpec",
     "LedgerClaim",
     "NodeSpec",
+    "ProgressEmitter",
+    "ProgressRefusedError",
     "Promise",
     "Refine",
     "RunClaim",
@@ -135,6 +157,7 @@ __all__ = [
     "loop",
     "map_source",
     "memoized_step_result",
+    "project_auto_event",
     "reap_phantom_ledger",
     "render_workflow_sql",
     "resolve_step_body",
@@ -145,6 +168,7 @@ __all__ = [
     "step_idempotency_scope",
     "sweep_join_rederive",
     "sweep_loop_budget",
+    "sweep_progress_ring_prune",
     "validate_fork",
     "validate_join_spec",
 ]

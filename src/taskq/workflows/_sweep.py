@@ -40,6 +40,7 @@ from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.obs import get_logger
+from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
     BLOCKING_REASON_BODY_UNAVAILABLE,
@@ -50,7 +51,13 @@ from taskq.workflows._sql import (
 )
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
-__all__ = ["SweepResult", "drain_outbox", "reap_phantom_ledger", "sweep_join_rederive"]
+__all__ = [
+    "SweepResult",
+    "drain_outbox",
+    "reap_phantom_ledger",
+    "sweep_join_rederive",
+    "sweep_progress_ring_prune",
+]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -290,6 +297,31 @@ async def drain_outbox(
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)
+
+
+async def sweep_progress_ring_prune(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    ring_bound: int = PROGRESS_RING_BOUND,
+    batch_size: int = 200,
+) -> int:
+    """THE PROGRESS RING'S PRUNE ARM (T21) — the STREAM channel's
+    backstop: every node whose retained ring grew past the ring bound is
+    trimmed back to it, rank-based per node (the append statement's own
+    trim is the first fence — this arm prunes the LEAKED rings: nodes
+    whose emissions stopped before the trim could hold, and any future
+    writer bug's unpruned shape, the PoC's red world's 801-row leak
+    pruned to the bound in one pass).
+
+    Set-based and bounded twice: the over-bound owner set is LIMITed by
+    the batch, and each owner's trim is the append-trim's rank shape —
+    a leak drains over passes, never unbounded in one. §22.6's
+    exclusivity: the arm never touches reclaim-owned rows (the ring is
+    not a jobs row). Returns the pruned row count."""
+    async with pool.acquire() as conn:
+        pruned: int | None = await conn.fetchval(wsql.progress_ring_prune, ring_bound, batch_size)
+    return int(pruned or 0)
 
 
 async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:

@@ -577,6 +577,20 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             render_workflow_sql(ctx.deps.settings.schema_name),
         )
 
+    async def wf_progress_ring_prune_call() -> int:
+        # THE PROGRESS RING'S PRUNE ARM (T21): the STREAM channel's
+        # backstop — leaked rings (emissions that stopped before the
+        # append-trim could hold, any future writer bug's unpruned shape)
+        # are trimmed back to the ring bound, rank-based per node. The
+        # lazy import keeps the §16.1 import law.
+        from taskq.workflows import sweep_progress_ring_prune
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_progress_ring_prune(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     def _dbg_tick(event: str) -> Callable[[int, float], None]:
         """The standard success-path debug line: the sweep's tick event."""
 
@@ -831,6 +845,21 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
+        ),
+        _SweepSpec(
+            # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP (T21):
+            # leaked rings trimmed back to the bound, rank-based per
+            # node. A drain: a leak deeper than one pass's owner batch
+            # drains over passes (the PoC's 801-row leak pruned in one,
+            # but the arm never assumes it).
+            name="wf_progress_ring_prune",
+            call=wf_progress_ring_prune_call,
+            warn_event="sweep-wf-progress-ring-prune-failed",
+            warn_kind="sweep_wf_progress_ring_prune_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_progress_ring_prune_tick"),
         ),
     )
 

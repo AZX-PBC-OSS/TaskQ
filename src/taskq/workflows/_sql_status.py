@@ -90,14 +90,25 @@ ORDER BY j.id
 # The PER-MAP done/total (the counter's complement — "417/1000 · 3
 # retrying · 580 blocked" from ONE read, computed IN the query, never a
 # second instrument).
+#
+# T21 EXTENSION (the aggregation's map line, decision c): the same grouped
+# read LEFT JOINed to the STATE channel — the children's emitted progress
+# (avg pct, the freshest update) rides the SAME read, computed IN the
+# query, never a second instrument and never a per-child series (DH5's
+# fence: per-child progress lives in the ROWS this read serves on demand,
+# never in a metric label). A child that never emitted reads NULL avg_pct
+# — the LEFT JOIN keeps the counts complete without it.
 WORKFLOW_MAP_PROGRESS_SQL = """\
 SELECT c.step_key,
        count(*) AS total,
-       count(*) FILTER (WHERE c.status IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned'))
-           AS done,
+       count(*) FILTER (WHERE c.status IN {terminal}) AS done,
        count(*) FILTER (WHERE c.status = 'running') AS running,
-       count(*) FILTER (WHERE c.status = 'pending' AND c.deps_pending > 0) AS blocked
+       count(*) FILTER (WHERE c.status = 'pending' AND c.deps_pending > 0) AS blocked,
+       count(*) FILTER (WHERE c.status = 'failed') AS failed,
+       round(avg(p.pct))::int AS avg_pct,
+       max(p.updated_at) AS freshest
 FROM {schema}.jobs c
+LEFT JOIN {schema}.wf_node_progress p ON p.node_id = c.id AND p.channel = 'progress'
 WHERE c.parent_id = $1::uuid
 GROUP BY c.step_key
 """
