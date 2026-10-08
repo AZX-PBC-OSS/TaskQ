@@ -3893,7 +3893,6 @@ def _format_event_detail(detail: Any) -> str:
     return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix
 
 
-
 # ── flows: the workflow-run surface (T12) ───────────────────────────────
 #
 # One question, one command: stuck → status, deliver → signal, reply →
@@ -4007,8 +4006,12 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
         )
         if row["node_status"] is not None:
             entry["nodes"].append(
-                FlowNodeRow(step_key="", status=row["node_status"], deps_pending=row["deps_pending"],
-                            blocking_reason=row["blocking_reason"])
+                FlowNodeRow(
+                    step_key="",
+                    status=row["node_status"],
+                    deps_pending=row["deps_pending"],
+                    blocking_reason=row["blocking_reason"],
+                )
             )
     list_rows = [
         FlowListRow(
@@ -4053,7 +4056,7 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
         root = await conn.fetchrow(
             f"SELECT status, actor, metadata->>'workflow' AS workflow, "  # noqa: S608  # Why: schema identifier-validated above.
             "cancel_requested_at FROM "
-            f'"{settings.schema_name}".jobs WHERE id = $1 AND step_key = \'__flow__\'',
+            f"\"{settings.schema_name}\".jobs WHERE id = $1 AND step_key = '__flow__'",
             parsed,
         )
         if root is None:
@@ -4062,7 +4065,7 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
         held = await conn.fetch(
-            f'SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, '  # noqa: S608  # Why: schema identifier-validated above.
+            f"SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
             f'"{settings.schema_name}".wf_signals '
             "WHERE workflow_id = $1 AND status = 'held'",
@@ -4227,7 +4230,8 @@ def _validate_through_gate(
             validated = model.model_validate(payload)
         except ValidationError as exc:
             errors.append(
-                f"{model.__name__}: " + "; ".join(
+                f"{model.__name__}: "
+                + "; ".join(
                     f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
                 )
             )
@@ -4245,7 +4249,7 @@ async def _workflow_name_of(pool: asyncpg.Pool, schema: str, run_id: UUID) -> tu
     """The run's (workflow name, node_key-source, root status) — the
     minimal root read the write verbs need to address the typed door."""
     root = await pool.fetchval(
-        f'SELECT COALESCE(metadata->>\'workflow\', actor) FROM "{schema}".jobs '  # noqa: S608  # Why: schema identifier-validated by the caller's guard.
+        f"SELECT COALESCE(metadata->>'workflow', actor) FROM \"{schema}\".jobs "  # noqa: S608  # Why: schema identifier-validated by the caller's guard.
         "WHERE id = $1 AND step_key = '__flow__'",
         run_id,
     )
@@ -4398,7 +4402,9 @@ async def _flows_resolve(
         validated = _validate_through_gate(
             app_obj, root_name, hold.node_key, hold.signal_name, decision
         )
-        result = await client.resolve(str(hold_id), validated, reason=reason, principal=_cli_principal())
+        result = await client.resolve(
+            str(hold_id), validated, reason=reason, principal=_cli_principal()
+        )
         _echo_delivery(result, str(hold_id))
 
 
@@ -4426,8 +4432,10 @@ def flows_cancel(
                 principal=_cli_principal(),
             )
             if stopped:
-                typer.echo(f"cancelled: run {parsed} (the cascade landed; "
-                           f"{stopped - 1} held signal(s) resolved)")
+                typer.echo(
+                    f"cancelled: run {parsed} (the cascade landed; "
+                    f"{stopped - 1} held signal(s) resolved)"
+                )
             else:
                 typer.echo(f"no-op: run {parsed} is already terminal — nothing cancelled")
 

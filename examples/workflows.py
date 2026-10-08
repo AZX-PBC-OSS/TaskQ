@@ -54,8 +54,7 @@ from taskq.workflows.api import GateDecl
 DEMO_DOCS: list[str] = [f"doc-{i:03}" for i in range(6)] + ["doc-doomed"]
 
 _DOC_SOURCE: dict[str, str] = {
-    doc_id: f"the text of {doc_id} (the demo's stand-in corpus)"
-    for doc_id in DEMO_DOCS
+    doc_id: f"the text of {doc_id} (the demo's stand-in corpus)" for doc_id in DEMO_DOCS
 }
 
 
@@ -201,8 +200,8 @@ async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = Non
 async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
     """One drive pass over the pending runs (the demo's in-process
     driver; a worker process would drive the same rows)."""
-    rows = await pool.fetch(  # noqa: S608  # Why: the schema is the app's settings-validated identifier; every value is a bound parameter.
-        f"SELECT id FROM \"{schema}\".jobs WHERE step_key = '__flow__' "
+    rows = await pool.fetch(
+        f"SELECT id FROM \"{schema}\".jobs WHERE step_key = '__flow__' "  # noqa: S608  # Why: the schema is the app's settings-validated identifier; every value is a bound parameter.
         "AND status = 'running' LIMIT 5"
     )
     compiled = wf_app.get("doc_ingest")
