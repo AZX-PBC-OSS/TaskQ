@@ -30,15 +30,20 @@ from pathlib import Path
 PYRIGHT_VERSION = "1.1.414"
 TY_VERSION = "0.0.85"
 
-_PROBE = Path(__file__).parent / "attack_wf_negative_types.py"
+#: The probe CORPUS: one file per API surface round (T01's engine corpus,
+#: the T09 flow API's wiring corpus — the negative probes ship WITH the
+#: API, BUILD-PROTOCOL §7b). Each MUST_ERROR marker reds on BOTH checkers.
+_CORPUS: tuple[str, ...] = (
+    "attack_wf_negative_types.py",
+    "wf_api_negative_types.py",
+)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PROBE_REL = _PROBE.relative_to(_REPO_ROOT)
 
 
-def _must_error_lines() -> list[int]:
+def _must_error_lines(source: str) -> list[int]:
     import ast
 
-    source = _PROBE.read_text()
+
     tree = ast.parse(source)
     # The module docstring's range is EXCLUDED: it NAMES the convention
     # ("Each ``MUST_ERROR`` marker names...") — prose, never an asserted
@@ -58,7 +63,7 @@ def _must_error_lines() -> list[int]:
     ]
 
 
-def _pyright_errors() -> dict[int, set[str]]:
+def _pyright_errors(probe: Path) -> dict[int, set[str]]:
     out = subprocess.run(
         [
             "pyright",
@@ -71,7 +76,7 @@ def _pyright_errors() -> dict[int, set[str]]:
     assert PYRIGHT_VERSION in out, f"pyright must be pinned at {PYRIGHT_VERSION}, got {out!r}"
     proc = (
         subprocess.run(  # Why: fixed argv; the --outputjson machine format is the gate's contract.
-            ["pyright", "--outputjson", "--project", str(_PROBE.parent), str(_PROBE)],
+            ["pyright", "--outputjson", "--project", str(probe.parent), str(probe)],
             capture_output=True,
             text=True,
             check=False,  # a non-zero exit is EXPECTED (the corpus must red)
@@ -87,7 +92,7 @@ def _pyright_errors() -> dict[int, set[str]]:
     return errors
 
 
-def _ty_errors() -> dict[int, set[str]]:
+def _ty_errors(probe_rel: str) -> dict[int, set[str]]:
     out = subprocess.run(
         ["ty", "--version"],
         capture_output=True,
@@ -96,7 +101,7 @@ def _ty_errors() -> dict[int, set[str]]:
     ).stdout
     assert TY_VERSION in out, f"ty must be pinned at {TY_VERSION}, got {out!r}"
     proc = subprocess.run(
-        ["ty", "check", str(_PROBE_REL)],
+        ["ty", "check", probe_rel],
         capture_output=True,
         text=True,
         check=False,  # a non-zero exit is EXPECTED (the corpus must red)
@@ -123,32 +128,36 @@ def _ty_errors() -> dict[int, set[str]]:
 
 
 def main() -> int:
-    musts = _must_error_lines()
-    assert musts, "the probe corpus carries no MUST_ERROR markers — the gate cannot fail"
-    pyright_errors = _pyright_errors()
-    ty_errors = _ty_errors()
+    total_musts = 0
     failures: list[str] = []
-    for line in musts:
-        if not pyright_errors.get(line):
-            failures.append(
-                f"line {line}: pyright {PYRIGHT_VERSION} did NOT flag the MUST_ERROR probe (the Any leak ships)"
-            )
-        if not ty_errors.get(line):
-            failures.append(
-                f"line {line}: ty {TY_VERSION} did NOT flag the MUST_ERROR probe (the Any leak ships)"
-            )
-    for line, rules in sorted(pyright_errors.items()):
-        if line not in musts:
-            print(
-                f"  note: pyright flags line {line} ({', '.join(sorted(rules))}) — not a MUST_ERROR marker (informational)"
-            )
+    for corpus_name in _CORPUS:
+        probe = Path(__file__).parent / corpus_name
+        musts = _must_error_lines(probe.read_text())
+        total_musts += len(musts)
+        pyright_errors = _pyright_errors(probe)
+        ty_errors = _ty_errors(str(probe.relative_to(_REPO_ROOT)))
+        for line in musts:
+            if not pyright_errors.get(line):
+                failures.append(
+                    f"{corpus_name}:{line}: pyright {PYRIGHT_VERSION} did NOT flag the MUST_ERROR probe (the Any leak ships)"
+                )
+            if not ty_errors.get(line):
+                failures.append(
+                    f"{corpus_name}:{line}: ty {TY_VERSION} did NOT flag the MUST_ERROR probe (the Any leak ships)"
+                )
+        for line, rules in sorted(pyright_errors.items()):
+            if line not in musts:
+                print(
+                    f"  note: pyright flags {corpus_name}:{line} ({', '.join(sorted(rules))}) — not a MUST_ERROR marker (informational)"
+                )
+    assert total_musts, "the probe corpus carries no MUST_ERROR markers — the gate cannot fail"
     if failures:
         print("THE TYPE GATE REDS — a typed door leaks:")
         for failure in failures:
             print(f"  {failure}")
         return 1
     print(
-        f"the type gate holds: every MUST_ERROR marker ({len(musts)}) reds on "
+        f"the type gate holds: every MUST_ERROR marker ({total_musts}) reds on "
         f"pyright {PYRIGHT_VERSION} AND ty {TY_VERSION}"
     )
     return 0

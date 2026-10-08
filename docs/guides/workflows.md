@@ -311,3 +311,94 @@ disposition (applied 15 / declined-with-reason 1 / recorded 2 /
 verify-absent 2 / deferred 1), and the re-test that proves it closed —
 is `.measurements/t17-dispositions.md`; the session's own ledger
 (append-only) carries the same table.
+
+## §1 — The flow API: the concept (T09)
+
+`taskq.workflows` now ships the authoring surface: **plain types for
+data, `Promise[T]` for wiring**. A workflow is a build function — SYNC
+and PURE — that SPELLS the graph by dataflow:
+
+- a promise consumed downstream is an EDGE (the consumer dispatches
+  strictly after the producer terminalizes);
+- a call with SEVERAL promise arguments is the FAN-IN join — and its
+  user body IS that node's body, run inside the join's finalize
+  transaction with the DECODED parent results (cut #1's cure: the
+  reducer is in the wiring, not engine code; its result cascades
+  downstream as NORMAL steps);
+- `map_source(source, body)` is the map: the source's finalize forks N
+  children (fresh jobs — per-item ledger identity), the join collects,
+  and the promise is the FLAT `Promise[list[R]]` (never
+  `Promise[list[Promise[R]]]` — the checker rejected the nested shape);
+- `sink(...)` is the explicit fire-and-forget (RECORDED in the compiled
+  metadata — never silent); `build(result, *residuals)` is the terminal
+  completeness point (the `Promise[Never]` residuals are the static
+  side of E2's produced-never-consumed rule).
+
+Nothing about the tree is STORED: the graph is spelled by the wiring
+and compiled fresh — same module → same compile, byte-stable (the
+Mermaid golden's law). Sequencing, hence a depth-N DAG, is dataflow —
+cut #2's cure: the migration's depth-3 graph fits ONE flow.
+
+The dispatch-time predicates (cut #4's cure): `step(..., skip=pred)` —
+`pred: bool | Callable[[state], bool]` — is evaluated WHEN THE NODE
+DISPATCHES against the flow's state (`{"input": …, "results": {…}}`), a
+sibling's COMPLETED result decides it. A skipped child SUCCEEDS WITH
+THE RECORD (the result names the skip — the envelope never lies about
+what ran) and fans into its absorbing joins (collect | maybe) as a
+typed item — a skip is not an attempt (zero ledger rows).
+
+The typed boundary (cut #8's cure): the body's param annotations are
+the payload codec — the runner re-validates the jsonb round-trip into
+the DECLARED model; a body sees the type it declared, never a raw
+dict. `wf.validate()` refuses an unannotated body (E4 — the annotation
+IS the wiring).
+
+The retry knob (cut #12's cure): `step(..., retry_kind=..., max_attempts=...)`
+— `retry_kind="permanent"` takes NO ladder; a transient failure's
+attempts re-pend with backoff and emit NO terminal until exhaustion
+(P3 rule 7), then T06's propagation takes over.
+
+The reads (cuts #14/#19's cures): `FlowRunner.result(flow_id)` — the
+terminal's result, DECODED ONCE through the estate's JSON seam; the
+driver `drive(flow_id, until="held" | "terminal")` (cut #10's cure —
+landed with T19's loop; the bound `max_ticks` is the hang's fence).
+
+## §2 — The type contract (T01's two tables)
+
+The wiring's typing story has TWO faces, and both are load-bearing:
+
+1. **The checker face** (static): the plain-function bodies are
+   checker-typed end to end; the negative probes live in
+   `tests/typeprobe/` (pyright 1.1.414 + ty 0.0.85, the CI
+   `type-probes` gate). The checker is ABSENT at runtime — which is
+   exactly why the second face exists.
+2. **The validator face** (runtime, checker-independent): `wf.validate()`
+   re-proves the wiring's totality from the compiled graph (the rules
+   table in the API reference). A graph that typechecks AND validates
+   is pinned clean by BOTH; a mutation of either face reds its own pin.
+
+## §3 — Fan-out & reduce: the one-flow shape
+
+The common pipeline — fan-out N independent steps, reduce into a join,
+cascade downstream — is spelled (never glued):
+
+```python
+@app.workflow("doc_ingest")
+def doc_ingest() -> object:
+    a = step(stage_a, Ingest(doc_id="d1"), key="a")
+    b = step(stage_b, Ingest(doc_id="d1"), key="b")
+    reducer = step(reduce, a, b, key="reducer")   # the fan-in: TWO parents
+    return build(step(tail, reducer, key="tail")) # the cascade: a NORMAL step
+```
+
+The fan-in's failure policy is declared ON the join
+(`on_failure="fail_closed" | "collect"` — T06's duality: a failed
+parent either fails the join closed (the cascade, the peers
+peer-cancelled) or fans in as a typed `FailureInfo` item and the join
+FIRES with the typed partial). The fan-in bound is 1000 declared
+parents (`MAX_FAN_IN_PER_JOIN`) — past it, partition the map.
+
+For a RUNTIME-determined N: `map_source(source, item_body)` — the
+source's body returns the list, the fork spawns one fresh job per item
+(map_index = the item's ledger identity), and the join packs the
+decoded item results for the downstream body.
