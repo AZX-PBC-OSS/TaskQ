@@ -72,6 +72,7 @@ _RUN_EVENTS_SQL = (
     'FROM "{schema}".admin_audit '
     "WHERE (target_type = 'workflow_run' AND target_id = $1) "
     "OR (target_type = 'job' AND target_id LIKE $2) "
+    "OR detail->>'run_id' = $1 "
     "ORDER BY id DESC LIMIT 50"
 )
 
@@ -187,6 +188,29 @@ def register(router: APIRouter) -> None:
                     mode_label=realtime_ctx[1],
                 )
                 return HTMLResponse(content=html)
+            # THE UNINSTALLED PROBE (the degrade's real surface): the
+            # fetch's early return (no ROOT row) never touched the
+            # workflow tables — an uninstalled schema reads as an unknown
+            # id and 404s. One bounded probe decides.
+            async with pool.acquire() as conn:
+                try:
+                    await conn.fetchval(f'SELECT 1 FROM "{schema}".wf_signals LIMIT 1')
+                except UndefinedTableError:
+                    html = tmpl.get_template("workflow_detail.html").render(
+                        run=None,
+                        installed=False,
+                        notice_text=NOT_INSTALLED,
+                        derived="",
+                        nodes=[],
+                        holds=[],
+                        events=[],
+                        boot=None,
+                        csrf_token=csrf_token,
+                        actions_enabled=False,
+                        realtime_mode=realtime_ctx[0],
+                        mode_label=realtime_ctx[1],
+                    )
+                    return HTMLResponse(content=html)
             raise HTTPException(status_code=404, detail="Workflow run not found")
 
         nodes = [

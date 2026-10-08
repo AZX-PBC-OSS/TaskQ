@@ -9,12 +9,10 @@ on a REAL run (no mocks — a mock of the context would pin the mock)."""
 from __future__ import annotations
 
 import json
-import uuid as uuid_module
-
-import pytest
 from datetime import datetime
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from taskq.workflows import FlowRunner, WorkflowApp, build, loop, map_source, step
@@ -79,7 +77,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
 
     runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
     flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
-    outcome = await runner.drive(flow_id)
+    await runner.drive(flow_id)
     root = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )

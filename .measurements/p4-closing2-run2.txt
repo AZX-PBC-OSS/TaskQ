@@ -1,0 +1,77 @@
+.F..F.F..                                                                [100%]
+=================================== FAILURES ===================================
+_______ test_build_capture_truncates_the_multibyte_payload_under_the_cap _______
+
+    def test_build_capture_truncates_the_multibyte_payload_under_the_cap() -> None:
+        """The halving loop: a multi-byte-heavy payload (each char 3 UTF-8
+        bytes) truncates to the byte cap — the cap is BYTES, never chars."""
+        from taskq.workflows._capture import build_capture, utf8_byte_len
+    
+        heavy = "冰" * 4000  # 12 000 bytes of payload
+>       capture = build_capture(policy="errors-only", node_input=heavy, error="e", max_bytes=1024)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_coverage_closing2.py:38: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_capture.py:153: in build_capture
+    total = sum(utf8_byte_len(v) for v in capture.values())
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <dict_valueiterator object at 0x7f03b6406340>
+
+>   total = sum(utf8_byte_len(v) for v in capture.values())
+                ^^^^^^^^^^^^^^^^
+E   TypeError: 'int' object is not an instance of 'str'
+E   while processing 's'
+
+src/taskq/workflows/_capture.py:153: TypeError
+_________________ test_resolve_reducer_the_definition_fallback _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f03b5c5be80>
+wf_schema = 'tq_29030ed3ad'
+
+    async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
+        """The body-from-definition resolution (D1): a fired join's reducer
+        resolves from the REGISTERED DEFINITION in whatever process heals —
+        the definition fallback's adapter is the boundary."""
+        from taskq.workflows import FlowRunner, WorkflowApp, build, step
+    
+        ran: dict[str, bool] = {}
+    
+        async def join_body(ctx: Any, items: list[str]) -> list[str]:
+            ran["join"] = True
+            return items
+    
+        app = WorkflowApp()
+    
+        @app.workflow("reducer_fallback")
+        def reducer_fallback() -> object:
+            return build(step(join_body, Ingest(doc_id="d"), key="solo"))
+    
+>       from taskq.workflows._reducers import resolve_reducer
+E       ImportError: cannot import name 'resolve_reducer' from 'taskq.workflows._reducers' (/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_reducers.py)
+
+tests/test_wf_coverage_closing2.py:152: ImportError
+_______________________ test_insert_node_the_deps_guard ________________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f03b5ac8ac0>
+wf_schema = 'tq_29030ed3ad'
+
+    def test_insert_node_the_deps_guard(wf_pool: Any, wf_schema: str) -> None:
+        """The joined node's counter guard: the deps_pending is the declared
+        parent count's twin — a mismatching spec is the named refusal."""
+        import asyncio
+        import os
+    
+        import asyncpg as _asyncpg
+    
+>       from taskq.workflows import WorkflowSql, insert_node
+E       ImportError: cannot import name 'WorkflowSql' from 'taskq.workflows' (/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/__init__.py). Did you mean: 'workflows'?
+
+tests/test_wf_coverage_closing2.py:78: ImportError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing2.py::test_build_capture_truncates_the_multibyte_payload_under_the_cap
+FAILED tests/test_wf_coverage_closing2.py::test_resolve_reducer_the_definition_fallback
+FAILED tests/test_wf_coverage_closing2.py::test_insert_node_the_deps_guard - ...
+3 failed, 6 passed in 0.93s

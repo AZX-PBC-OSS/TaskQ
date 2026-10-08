@@ -1,8 +1,8 @@
 [
   {
-    "pin": "join-failure-policy-terminality",
-    "mutation": "the attempt-counting join \u2014 the M+1 case treated as M-1 (the collect fires where the policy says fail-closed)",
-    "red": "{\"required_join_fires\": 0}"
+    "pin": "t08-maintenance-root-wedge",
+    "mutation": "the maintenance leg without the failed-root arm (the old gate: the finalize required EVERY row terminal, and the stamped join row is terminalizable by nothing) \u2014 the root wedges 'running' forever (unbounded retention, the dead-run rescan every pass)",
+    "red": "{\"root_status\": \"failed\", \"reconstructed\": \"failed\", \"finished_at\": \"2026-10-08 04:27:03.062194+00:00\", \"error_class\": \"UnabsorbedNodeFailure\"}"
   }
 ]{"run": "20261007T193529-3269885-428cfe8c", "ts": "2026-10-07T19:35:29", "entries": [{"pin": "t06-pin4-skip-zero-ledger-rows", "mutation": "the skip helper wrote a ledger row \u2014 a skip recorded as an attempt (the convicted variant)", "red": "{\"failures_on_row\": [{\"error\": {\"error_class\": \"Skipped\", \"error_message\": \"the child was skipped (a skip is not an attempt)\", \"error_traceback\": null}, \"policy\": \"collect\", \"attempts\": [], \"node_key\": \"c0\", \"map_index\": null}]}"}]}
 {"run": "20261007T193529-3269885-d51303a0", "ts": "2026-10-07T19:35:29", "entries": [{"pin": "t06-pin1-stranded-join", "mutation": "the cascade's block arm dropped (the pre-T06 shipped shape: the join stays join-wait or fires over the failed parent)", "red": "{\"status\": \"pending\", \"deps_pending\": 2, \"blocking_reason\": \"failed_parent\"}"}, {"pin": "t06-pin1-block-arm-dropped", "mutation": "the cascade's block arm dead in the REAL engine's tx2 \u2014 the join never resolves (the pre-T06 shipped shape: the record shows a hanging join) and the flow's flip never lands (the flow arm is gated on the block arm)", "red": "{\"blocking_reason\": \"join\", \"deps_pending\": 2, \"flow_status\": \"running\"}"}]}

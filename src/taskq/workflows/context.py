@@ -93,10 +93,6 @@ class WorkflowSteps:
             # The ON CONFLICT path: the recorded result returns rather than
             # re-executing (the map-child retry's semantics).
             return claim.result
-        if claim.status == "succeeded" and claim.result is not None:
-            # The ON CONFLICT path: the recorded result returns rather than
-            # re-executing (the map-child retry's semantics).
-            return claim.result
         try:
             result = await fn(*args, **kwargs)
         except Exception as exc:

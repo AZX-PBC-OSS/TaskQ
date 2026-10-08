@@ -1,0 +1,88 @@
+F..F...                                                                  [100%]
+=================================== FAILURES ===================================
+_______________ test_ctx_step_opts_out_of_idempotency_and_reruns _______________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f956199d780>
+wf_schema = 'tq_75fbbdd39f'
+
+    async def test_ctx_step_opts_out_of_idempotency_and_reruns(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """``idempotent=False`` re-runs on redelivery (the body's declared
+        harmlessness) — the step ledger records NOTHING for it."""
+        calls = {"n": 0}
+    
+        async def body(ctx: Any, params: Ingest) -> int:
+            inner = await ctx.step("side-effect", _count, idempotent=False)
+            return inner
+    
+        async def _count() -> int:
+            calls["n"] += 1
+            return calls["n"]
+    
+        app = WorkflowApp()
+    
+        @app.workflow("step_optout")
+        def step_optout() -> object:
+            return build(step(body, Ingest(doc_id="d1"), key="solo"))
+    
+        runner = FlowRunner(app.get("step_optout"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        assert calls["n"] == 1
+        # THE LEDGER: no claim row for the opted-out step.
+        rows = await wf_pool.fetch(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+            flow_id,
+        )
+>       assert int(rows[0][0]) == 0
+E       assert 1 == 0
+E        +  where 1 = int(1)
+
+tests/test_wf_coverage_closing.py:57: AssertionError
+__________________ test_capture_policies_none_and_errors_only __________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f956199e800>
+wf_schema = 'tq_75fbbdd39f'
+wf_conn = <asyncpg.connection.Connection object at 0x7f956190db80>
+
+    async def test_capture_policies_none_and_errors_only(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """The declared capture policy decides the failing node's capture
+        jsonb: none → NO capture; errors-only → the error text, never the
+        input."""
+        from pydantic import BaseModel as _BM
+    
+        for policy, want_capture in (("none", False), ("errors-only", True)):
+            app = WorkflowApp()
+    
+            async def fails(ctx: Any, params: Ingest) -> str:
+                raise ValueError("the capture probe's boom")
+    
+            @app.workflow(f"cap_{policy}")
+            def cap_wf() -> object:
+                return build(step(fails, Ingest(doc_id="the input text"), key="solo"))
+    
+            runner = FlowRunner(app.get(f"cap_{policy}"), wf_pool, wf_schema)
+            flow_id = await runner.create_flow()
+            assert await runner.drive(flow_id) == "terminal"
+            rows = await wf_pool.fetch(
+                f'SELECT capture FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+                flow_id,
+            )
+            captures = [r["capture"] for r in rows if r["capture"] is not None]
+            if want_capture:
+                assert captures, f"{policy}: the error capture must ride the ledger"
+                text = str(captures[-1])
+                assert "boom" in text
+            else:
+>               assert not captures, f"{policy}: the capture is REFUSED by the policy"
+E               AssertionError: none: the capture is REFUSED by the policy
+E               assert not ['{"error": "the capture probe\'s boom"}']
+
+tests/test_wf_coverage_closing.py:158: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing.py::test_ctx_step_opts_out_of_idempotency_and_reruns
+FAILED tests/test_wf_coverage_closing.py::test_capture_policies_none_and_errors_only
+2 failed, 5 passed in 2.94s

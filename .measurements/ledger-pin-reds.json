@@ -1,8 +1,8 @@
 [
   {
-    "pin": "pin5-ledger-claim-atomic",
-    "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
-    "red": "{\"ledger\": \"running\", \"flow\": \"cancelled\"}"
+    "pin": "pin1-double-run",
+    "mutation": "the memoized lookup's statement mutated to match nothing (the replay forgets)",
+    "red": "{\"executions_after_redelivery\": 1}"
   }
 ]{"run": "20261007T193408-3269885-ff279a66", "ts": "2026-10-07T19:34:09", "entries": [{"pin": "pin5-ledger-claim-atomic", "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)", "red": "{\"ledger\": \"running\", \"flow\": \"cancelled\"}"}]}
 {"run": "20261007T193409-3269885-771a18d1", "ts": "2026-10-07T19:34:09", "entries": [{"pin": "pin1-double-run", "mutation": "the memoized lookup's statement mutated to match nothing (the replay forgets)", "red": "{\"executions_after_redelivery\": 1}"}]}

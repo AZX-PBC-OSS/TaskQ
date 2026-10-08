@@ -155,6 +155,11 @@ class CompiledWorkflow:
     #: validate's W2 reads it; ``None`` = no universe declared, nothing
     #: to convict.
     known_queues: frozenset[str] | None = None
+    # THE DECLARED POLICIES (§10.3 — the capture writer + the redact
+    # chain read them FROM THE COMPILE; the runner never hardcodes the
+    # default past this point — the declaration is the only source).
+    capture: Literal["none", "errors-only", "all"] = "errors-only"
+    redact: Callable[[dict[str, object]], dict[str, object]] | None = None
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -346,6 +351,8 @@ class WorkflowApp:
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),
+            capture=getattr(build_fn, "__wf_capture__", "errors-only"),
+            redact=getattr(build_fn, "__wf_redact__", None),
         )
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         # THE COMPILED CACHE (the worker-hosted execution door's D1

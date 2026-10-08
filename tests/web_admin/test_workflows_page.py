@@ -411,6 +411,91 @@ async def test_node_panel_unknown_node_is_a_404(
     assert resp.status_code == 404
 
 
+async def test_run_page_renders_the_audit_trail_after_a_resolve(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE AUDIT TRAIL VISIBLE PER OPERATOR ACTION (the G4 pin's page
+    face): after a resolve, the run page renders the trail's ROW (the
+    principal + the action + the reason); the empty trail renders the
+    defined line first."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema)
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        # THE EMPTY TRAIL (the defined state):
+        before = await http.get(f"/workflows/{run_id}")
+        assert "No operator actions recorded" in before.text
+        # The resolve (the action):
+        from taskq.workflows.api._hitl import HitlClient
+
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+        await http.get("/queues")
+        good = await http.post(
+            f"/api/runs/{run_id}/resolve",
+            data={
+                "hold_id": hold.hold_id,
+                "decision": json.dumps({"verdict": "approve", "note": ""}),
+                "reason": "the trail pin's resolve",
+                "csrf_token": _csrf_of(http),
+            },
+        )
+        assert good.status_code == 200, good.text
+        # THE TRAIL RENDERS THE ROW:
+        after = await http.get(f"/workflows/{run_id}")
+        html = after.text
+        assert "hitl.resolve" in html
+        # THE APOSTROPHE IS ESCAPED (Jinja's autoescape — the raw form
+        # never renders).
+        assert "the trail pin&#39;s resolve" in html or "the trail pin's resolve" in html
+        assert "anonymous" in html  # the dev path's named subject
+
+
+async def test_runs_list_renders_the_rows_and_the_cap_note(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    demo_app_module: Any,
+) -> None:
+    """The list page's LOADED state: the runs render (the links + the
+    statuses); the cap note states the render's bound."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema)
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workflows")
+    html = resp.text
+    assert f"/workflows/{run_id}" in html
+    assert "Workflow Runs" in html
+
+
+def test_the_cli_gate_models_the_key_error_path() -> None:
+    """gate_models_for's KeyError path: a node that is not in the
+    compiled graph is the named KeyError (the typed door's 422 maps
+    it)."""
+    from taskq.workflows import WorkflowApp, build, step
+
+    async def body(ctx: Any, params: Ingest) -> str:
+        return "ok"
+
+    app = WorkflowApp()
+
+    @app.workflow("gate_key_err")
+    def gate_key_err() -> object:
+        return build(step(body, Ingest(doc_id="d"), key="solo"))
+
+    from taskq.workflows._cli import gate_models_for
+
+    with pytest.raises(KeyError):
+        gate_models_for(app, "gate_key_err", "not-a-node")
+
+
 # ── the G7 rows==DOM check (the reconstruction, live in the page) ───────
 
 
@@ -498,3 +583,81 @@ def test_the_page_js_carries_the_keyboard_contract() -> None:
     assert "keydown" in js
     # The seq-cursor: a stale frame never overwrites a fresh one.
     assert "state.seq <= cursor" in js
+
+
+async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
+    module_pg_pool: Any, module_pg_schema: Any
+) -> None:
+    """THE UNINSTALLED DEGRADE: a schema with ONLY the vanilla tables (a
+    pre-workflow migration state) renders the NOTICE (both pages), never
+    a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
+    per module — the drop here would break the family; the fresh schema
+    applies the migrations then drops the workflow series' two tables."""
+    import httpx as _httpx
+
+    schema = module_pg_schema.schema_name + "_nowf"
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+    from taskq.migrate import apply_pending
+
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    bare = await asyncpg.connect(module_pg_schema.pg_dsn)
+    await apply_pending(bare, schema=schema)
+    await bare.execute(f'DROP TABLE "{schema}".wf_signals')
+    await bare.execute(f'DROP TABLE "{schema}".wf_edge')
+    await bare.close()
+    app = _make_admin_app(module_pg_pool, schema)
+    # THE DETAIL PAGE is the degrade's real surface (its reads touch the
+    # workflow tables); the LIST page reads only jobs (the roots live
+    # there) — its uninstalled branch is the pre-vanilla state, unreachable
+    # once jobs exists.
+    async with _httpx.AsyncClient(
+        transport=_httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        listed = await client.get("/workflows")
+        assert listed.status_code == 200  # jobs exists: the list renders (empty)
+        detail = await client.get(
+            "/workflows/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
+        )
+        assert detail.status_code == 200
+        assert "workflows not installed" in detail.text
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await conn.close()
+
+
+async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
+    module_pg_pool: Any, module_pg_schema: Any, demo_app_module: Any
+) -> None:
+    """THE DEGRADE's real path: a run EXISTS (the root row) + the
+    workflow tables dropped mid-flight — the fetch's edge read raises,
+    the page renders the NOTICE (never a 500)."""
+    import httpx as _httpx
+
+    from taskq.migrate import apply_pending
+
+    schema = module_pg_schema.schema_name + "_nowf2"
+    module_db = module_pg_schema.pg_dsn
+    conn = await asyncpg.connect(module_db)
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    bare = await asyncpg.connect(module_db)
+    await apply_pending(bare, schema=schema)
+    await bare.close()
+
+    # A REAL run (the root + the nodes exist), then the workflow tables drop.
+    run_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
+    compiled = sys.modules[MODULE_NAME].app.get("admin_hold_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, run_pool, schema)
+    flow_id = await runner.create_flow()
+    await runner.drive(flow_id, until="held")
+    await run_pool.close()
+    await conn.execute(f'DROP TABLE "{schema}".wf_edge')
+    await conn.execute(f'DROP TABLE "{schema}".wf_signals')
+
+    app = _make_admin_app(module_pg_pool, schema)
+    async with _httpx.AsyncClient(
+        transport=_httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/workflows/{flow_id}")
+        assert resp.status_code == 200
+        assert "workflows not installed" in resp.text
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await conn.close()

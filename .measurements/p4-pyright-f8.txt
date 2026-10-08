@@ -1,0 +1,5 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:932:42 - error: Argument type is partially unknown
+    Argument corresponds to parameter "param" in function "_type_adapter_for"
+    Argument type is "object | type[Unknown]" (reportUnknownArgumentType)
+1 error, 0 warnings, 0 informations

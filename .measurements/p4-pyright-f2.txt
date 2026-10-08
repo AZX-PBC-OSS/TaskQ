@@ -1,0 +1,10 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:121:5 - error: Type of "_runtime" is partially unknown
+    Type of "_runtime" is "dict[Unknown, Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:393:9 - error: Type of "built" is partially unknown
+    Type of "built" is "TypeAdapter[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:921:20 - error: Unnecessary "cast" call; type is already "object" (reportUnnecessaryCast)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:931:34 - error: Argument type is partially unknown
+    Argument corresponds to parameter "param" in function "_type_adapter_for"
+    Argument type is "object | type[Unknown]" (reportUnknownArgumentType)
+4 errors, 0 warnings, 0 informations

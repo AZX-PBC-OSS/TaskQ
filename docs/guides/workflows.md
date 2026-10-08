@@ -1073,3 +1073,43 @@ A consumer of either old vocabulary is served by the ONE stream through
 its shim unchanged — the consolidation is the migration win (the third
 vocabulary cannot sprout: the kind set is closed at the emit path and by
 the storage CHECK).
+---
+
+## The context contract (what a body asserts on)
+
+The body's `ctx` is the observability primitive: every field the contract names is on the LIVE surface (a body asserting on ctx is a pin, not a mock):
+
+| Field | What it is |
+|-------|-----------|
+| `ctx.flow_id` | the run's id (the address every surface takes) |
+| `ctx.job_id` | this node attempt's job row |
+| `ctx.node_key` | the node's key — the map's children run under `<source>.item` (the per-item ledger identity) |
+| `ctx.attempt` | the attempt ordinal (the ladder's count; holds do not advance it) |
+| `ctx.input` | the FLOW input (`create_flow(input=...)`) |
+| `ctx.flow_name` | the workflow's registered name |
+| `ctx.queue` | the queue this node rides (the wiring's placement) |
+| `ctx.claimed_at` | the attempt's claim timestamp |
+| `ctx.map_index` | the map item's index (None off a map) |
+| `ctx.budget_remaining_ms` | the loop's budget wall's remaining read (loop runs; None off a loop) |
+| `ctx.hold_epoch` | the last consumed hold's epoch (a resumed body's answer identity) |
+
+## Visualizing workflows: the admin's run explorer
+
+The admin UI's **Workflows** tab is the run explorer: the runs list (the inventory question — newest first, capped at 200), and the run page (`/taskq/workflows/{run_id}`):
+
+- **The graph** — the run's Mermaid, emitted FROM THE ROWS (the live graph is a row fact; the admin never imports the workflow's module): the collapsed map renders as ONE hexagon with a `done/total` counter — zero child boxes; the child detail lives in the node panel. Rendered ONCE by the vendored mermaid (no bundler, no React, no CDN — the air-gapped-ops argument); every later update is a classList patch on `data-node-key` — zero re-renders. The state colors: green succeeded, blue running, red failed, amber HELD (a human is waiting).
+- **The node panel** — click a node (or Tab to it and press Enter): the status header, the attempts + the retry kind, the trace id, the captured error (errors-only by default), one upstream hop (the causal chain via parent_id), and the attempt ledger.
+- **The holds & decisions** — the held row's waiting-on state: the gate, the node, the epoch, the deadline, the author's reason/tool/args, the DECLARED payload schema, and a prefilled valid example. The Resolve form delivers through the typed door (the wrong payload answers the named pydantic error inline; the hold survives). Resolved holds render as decisions (the rows-alone audit).
+- **The audit trail** — every operator action on the run (resolve/deliver/cancel) is a ROW here: the principal, the action, the reason. Reads are never audited.
+- **The live transport** — SSE (`/taskq/api/runs/{id}/stream`): every frame is a revisioned FULL snapshot; the seq-cursor drops stale frames; `Last-Event-ID` (EventSource supplies it for free on reconnect) continues the cursor and the next frame carries the whole state — **the reconnect never loses state**. The page sets `suppress_refresh=True` (the meta refresh would destroy the live SVG).
+- **The no-JS story, stated honestly**: the no-JS surface is the SERVER-RENDERED INITIAL SNAPSHOT (the state at page load, from the same grouped query the boot JSON carries). No interactive no-JS mode is invented; without JS the page is a snapshot, and says so where the live badge would be.
+
+## §7 — the diagnosis runbook
+
+A workflow is stuck. The order of questions:
+
+1. **What is the run's state?** `taskq flows status <run_id>` — the §17.5 derivation over the node rows; every stuck node names its waiting-on state + its remedy. The root row's own status is a CACHE (the rows are the truth — the page says so beside the derived status).
+2. **Is it waiting on a human?** `taskq flows holds <run_id>` — the pending holds with their deadlines. A hold with NO deadline is the W1 warning's subject (a workflow that waits forever on a human is a support ticket — the deadline is `timeout_s=`, explicit).
+3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
+4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
+5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.

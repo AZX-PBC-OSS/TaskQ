@@ -15,7 +15,6 @@ so the flip is forced — the same mechanism the T17 contract probes used.
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel
 
 from taskq.workflows import FlowRunner, WorkflowApp, build, step

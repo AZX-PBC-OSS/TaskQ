@@ -1,0 +1,45 @@
+....F..                                                                  [100%]
+=================================== FAILURES ===================================
+_______________ test_ctx_step_opts_out_of_idempotency_and_reruns _______________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f85490a7dc0>
+wf_schema = 'tq_0b6d724a0d'
+
+    async def test_ctx_step_opts_out_of_idempotency_and_reruns(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """``idempotent=False`` re-runs on redelivery (the body's declared
+        harmlessness) — the step ledger records NOTHING for it."""
+        calls = {"n": 0}
+    
+        async def body(ctx: Any, params: Ingest) -> int:
+            inner = await ctx.step("side-effect", _count, idempotent=False)
+            return inner
+    
+        async def _count() -> int:
+            calls["n"] += 1
+            return calls["n"]
+    
+        app = WorkflowApp()
+    
+        @app.workflow("step_optout")
+        def step_optout() -> object:
+            return build(step(body, Ingest(doc_id="d1"), key="solo"))
+    
+        runner = FlowRunner(app.get("step_optout"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        assert calls["n"] == 1
+        # THE LEDGER: no claim row for the opted-out step.
+        rows = await wf_pool.fetch(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+            flow_id,
+        )
+>       assert int(rows[0][0]) == 0
+E       assert 1 == 0
+E        +  where 1 = int(1)
+
+tests/test_wf_coverage_closing.py:57: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing.py::test_ctx_step_opts_out_of_idempotency_and_reruns
+1 failed, 6 passed in 6.55s

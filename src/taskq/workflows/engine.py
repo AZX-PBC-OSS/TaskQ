@@ -289,7 +289,7 @@ async def _run_tx1(
                 _jsonb(result),
                 error_class,
                 error_message,
-                _jsonb(capture),
+                _jsonb(capture) if capture is not None else None,
             )
         else:
             await conn.execute(
@@ -301,7 +301,7 @@ async def _run_tx1(
                 _jsonb(result),
                 error_class,
                 error_message,
-                _jsonb(capture),
+                _jsonb(capture) if capture is not None else None,
                 map_index,
             )
 

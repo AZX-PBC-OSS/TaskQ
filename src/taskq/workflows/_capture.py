@@ -145,13 +145,24 @@ def build_capture(
     if total > max_bytes:
         # Truncate the LARGEST field until the whole payload fits — the
         # error (the reason the capture exists) survives a bloated input.
-        for key in sorted(capture, key=lambda k: utf8_byte_len(capture[k]), reverse=True):
+        # THE MARKER IS NOT PAYLOAD (the second-pass crash's cure): the
+        # truncation count is an INT — summing it into the byte total
+        # crashed utf8_byte_len on the SECOND pass (the loop re-entered
+        # with the marker present); the marker is metadata, excluded
+        # from both the sort and the total.
+        for key in sorted(
+            (k for k in capture if k != TRUNCATED_MARKER),
+            key=lambda k: utf8_byte_len(capture[k]),
+            reverse=True,
+        ):
             overflow = total - max_bytes
             field_max = max(1, utf8_byte_len(capture[key]) - overflow)
             capture[key], cut = _truncate_to_byte_cap(capture[key], field_max)
             if cut is not None:
                 capture[TRUNCATED_MARKER] = capture.get(TRUNCATED_MARKER, 0) + cut
-            total = sum(utf8_byte_len(v) for v in capture.values())
+            total = sum(
+                utf8_byte_len(v) for k, v in capture.items() if k != TRUNCATED_MARKER
+            )
             if total <= max_bytes:
                 break
     return capture
