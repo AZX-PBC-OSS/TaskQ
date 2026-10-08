@@ -440,12 +440,16 @@ def chain_source(
     key: str | None = None,
     actor: str = "wf",
     queue: str = "default",
+    max_attempts: int = 3,
 ) -> Promise[Any]:
     """Wire a CHAIN SOURCE node (T20): *source_body* is the paged
     generator (each ``ctx.emit_batch`` yield = ONE page's emit tx — the
     children + edges + the cursor checkpoint while the source stays
     running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
-    the source instantiates per record. The chain's step rows exist only
+    the source instantiates per record; *max_attempts* is the source's
+    own ladder budget (a backpressured source's stalls ride the ladder —
+    budget it for the pages a resume must re-drive). The chain's step
+    rows exist only
     from the emit onward — they are NOT graph nodes; the runner resolves
     their bodies (registry, D1) and routes (the compiled chain). A chain
     step key that collides with a wired node or another chain's step is
@@ -474,6 +478,7 @@ def chain_source(
             body=source_body,
             parents=tuple(k for k, _ in sources if k == "p"),
             args=tuple(sources),
+            max_attempts=max_attempts,
             kind="chain_source",
             chain=chain,
         )

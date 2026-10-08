@@ -1,0 +1,4 @@
+=========================== short test summary info ============================
+ERROR tests/test_wf_t20_backpressure_pins.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.17s

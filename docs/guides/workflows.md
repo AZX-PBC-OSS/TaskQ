@@ -296,6 +296,7 @@ and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 | `tests/test_wf_t20_emit_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
 | `tests/test_wf_t20_fence_probe.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation drill's teeth, the source-terminal subject |
 | `tests/test_wf_t20_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
+| `tests/test_wf_t20_backpressure_pins.py` | T20's DH9: the pager blocks at the declared bound (the unbounded variant's blow-out captured red), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
 
 ## The ergonomic contract (T17 — the authoring session's paper cuts)
 
@@ -692,6 +693,46 @@ children + edges + cursor in ONE tx), and the chain-shaped dispatch
 backlog costs the same ms-class as plain jobs at 200 chains — the
 streaming source adds ONE bounded tx per page, not per record. See
 `perf-evidence-workflows-streaming.md`.
+
+### The emit backpressure (DH9): the declared max-in-flight bound
+
+A source outpacing its workers must not materialize unbounded pending
+children. The bound is the RUN's admission control — how many
+non-terminal rows the run may materialize — and its DECLARED HOME is the
+per-workflow policy surface (one home: a workflow may wire several chain
+sources; two Chain-level bounds would race — the resource question is
+the RUN's):
+
+```python no-exec — not executed: fragment, the author's own source body
+@app.workflow("application_sync", max_in_flight=200)
+def application_sync() -> object:
+    return build(chain_source(CHAIN, source_body, key="source"))
+```
+
+The default is the shipped fence-ON (`EMIT_MAX_IN_FLIGHT_DEFAULT`,
+1000); `None` is the EXPLICIT unbounded (the author takes the dragon —
+never a silent default).
+
+**The mechanism is the generator's laziness** (the PoC's proven one):
+before the emit tx, the emit admits its WHOLE page — the run's
+outstanding non-terminal rows (the ledger's truth: pending/scheduled/
+running, excluding the source's own claim) plus the page's width must
+fit under the bound, or the pager BLOCKS (a bounded poll OUTSIDE any
+tx — no connection, no transaction held while waiting; the body's next
+`fetch_page` simply doesn't happen). The admission's second gate sits
+INSIDE the tx under the flow's admission lock — the concurrent
+emitters' count+insert serialize (a lost admission rolls the tx back
+whole and retries; a guard, never a timing argument). A page wider than
+the bound can never be admitted — refused at the door, loudly.
+
+A stall past the wait's deadline is the LOUD refusal
+(`EmitBackpressureTimeout`) — and the certified ladder owns it: the
+source re-pends with backoff, the re-claim resumes FROM THE CURSOR, and
+the blocked page emits fresh (it never ran — nothing was written; the
+keys + the cursor make the retry free). The degradation is the dispatch
+band's latency, never unbounded memory. The bands re-measured WITH the
+bound live (`perf-evidence-workflows-streaming.md`): the emit tx's
+admission read + gate cost sub-ms per page — the band holds.
 
 ## §4 — HITL: humans are rows (T10)
 

@@ -116,6 +116,10 @@ class StepContext:
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
+    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the workflow's DECLARED
+    #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
+    #: the explicit unbounded).
+    _max_in_flight: int | None = None
 
     async def cursor(self) -> dict[str, object]:
         """THE STREAMING SOURCE'S CHECKPOINTED CURSOR (T20): read from
@@ -142,6 +146,7 @@ class StepContext:
         children: Sequence[EmitChild],
         *,
         cursor: dict[str, object],
+        backpressure_timeout_s: float = 30.0,
     ) -> tuple[JobId, ...]:
         """THE STREAMING SOURCE'S EMIT (T20): this page's chain starts +
         the edges + THIS node's cursor checkpoint, ONE transaction, while
@@ -167,6 +172,8 @@ class StepContext:
             claim_epoch=0,  # the runner's own claim writes epoch 0 (_NODE_CLAIM_SQL_TEMPLATE)
             children=children,
             cursor=cursor,
+            max_in_flight=self._max_in_flight,
+            backpressure_timeout_s=backpressure_timeout_s,
         )
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
@@ -877,6 +884,7 @@ class FlowRunner:
             _map_index=row["map_index"],
             _ledger_id=ledger_id,
             _worker_id=self._worker_id,
+            _max_in_flight=getattr(self.compiled, "max_in_flight", None),
             _workflow_name=self.compiled.name,
             _redact=self._redact_hook(),
         )
