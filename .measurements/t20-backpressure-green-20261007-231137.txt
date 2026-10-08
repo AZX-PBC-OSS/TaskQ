@@ -1,0 +1,4 @@
+[TaskQ] event=pair-stopped pg=600a29b8578d redis=a422a0bbdfbf
+=========================== short test summary info ============================
+FAILED tests/test_wf_t20_backpressure_pins.py::test_t20_max_in_flight_is_declared_at_the_workflow
+1 failed, 5 passed in 20.43s

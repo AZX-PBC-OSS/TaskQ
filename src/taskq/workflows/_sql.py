@@ -37,9 +37,11 @@ from taskq.workflows._sql_finalize import (
     COLLECT_FAN_IN_SQL,
     DECREMENT_ABSORBED_SQL,
     DECREMENT_SQL,
+    EMIT_ADMISSION_LOCK_SQL,
     EMIT_CHILDREN_SQL,
     EMIT_CURSOR_SQL,
     EMIT_EDGES_SQL,
+    EMIT_IN_FLIGHT_SQL,
     FAIL_CLOSED_CASCADE_SQL,
     FIRE_SQL,
     FLOW_STATUS_SQL,
@@ -147,6 +149,8 @@ class WorkflowSql:
     emit_children: str
     emit_edges: str
     emit_cursor: str
+    emit_in_flight: str
+    emit_admission_lock: str
     fork_join_node: str
     fork_join_consumers: str
     fork_consumer_edges: str
@@ -223,6 +227,8 @@ class WorkflowSql:
             emit_children=render(EMIT_CHILDREN_SQL),
             emit_edges=render(EMIT_EDGES_SQL),
             emit_cursor=render(EMIT_CURSOR_SQL),
+            emit_in_flight=render(EMIT_IN_FLIGHT_SQL),
+            emit_admission_lock=render(EMIT_ADMISSION_LOCK_SQL),
             fork_join_node=render(FORK_JOIN_NODE_SQL),
             fork_join_consumers=render(FORK_JOIN_CONSUMERS_SQL),
             fork_consumer_edges=render(FORK_CONSUMER_EDGES_SQL),

@@ -119,6 +119,12 @@ async def main() -> int:
     parser.add_argument("--page-size", type=int, default=40)
     parser.add_argument("--pages", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=30)
+    parser.add_argument(
+        "--max-in-flight",
+        type=int,
+        default=1000,
+        help="the declared max-in-flight bound the emits run under (DH9's fence live)",
+    )
     args = parser.parse_args()
 
     schema = args.schema
@@ -128,10 +134,12 @@ async def main() -> int:
 
     pool = await asyncpg.create_pool(args.dsn, min_size=2, max_size=10)
     wsql: WorkflowSql = render_workflow_sql(schema)
+    max_in_flight: int | None = args.max_in_flight
     results: dict[str, object] = {
         "measured_at": datetime.now(UTC).isoformat(),
         "dsn_schema": schema,
         "page_size": args.page_size,
+        "max_in_flight": max_in_flight,
         "jit": "off (the container's tuning; fsync/synchronous_commit off)",
     }
 
@@ -191,6 +199,10 @@ async def main() -> int:
             claim_epoch=0,
             children=children,
             cursor={"page": page},
+            # THE BOUND LIVE (DH9): the admission read (the outstanding
+            # count) + the in-tx admission gate ride every emit — this
+            # band IS the fenced band.
+            max_in_flight=max_in_flight,
         )
         emit_latencies.append((time.perf_counter() - t0) * 1000)
     results["emit_tx_per_page"] = band(emit_latencies)

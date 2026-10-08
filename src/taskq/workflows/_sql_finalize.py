@@ -199,6 +199,40 @@ RETURNING id
 """
 
 
+# ── T20 / DH9: THE EMIT BACKPRESSURE — the admission read + the lock ────
+# THE MAX-IN-FLIGHT BOUND (the ticket's decision 7, DECLARED at the
+# workflow level — ``@app.workflow(..., max_in_flight=…)``): before the
+# children land, the emit admits its WHOLE page — the run's outstanding
+# non-terminal row count (the ledger's truth: pending/scheduled/running —
+# the materialized-not-yet-done work) plus the page's width must fit
+# under the bound, or the pager BLOCKS (the generator's laziness is the
+# pause; the wait is OUTSIDE any tx — bounded, polled, connection-free).
+#
+# THE COUNT IS READ INSIDE THE EMIT TX UNDER THE FLOW'S ADMISSION LOCK
+# (DH4's pattern: the adjust and the count serialize on the SAME lock —
+# two concurrent emitters of one run cannot both admit past the bound):
+# over the bound inside the tx → the tx ABORTS (nothing partial) and the
+# caller's wait loop retries — a guard, never a timing argument.
+#
+# The count EXCLUDES the source's own row (the emitter's claim is not
+# the stream's backlog) and counts the run's non-terminal vocabulary:
+# a pending chain row, a scheduled ladder re-pend, a running child —
+# each is materialized work the bound exists to bound.
+EMIT_IN_FLIGHT_SQL = """\
+SELECT count(*) FROM {schema}.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND metadata ? 'flow_id'
+  AND step_key <> '__flow__'
+  AND id <> $2::uuid
+  AND status IN ('pending', 'scheduled', 'running')
+"""
+
+
+EMIT_ADMISSION_LOCK_SQL = """\
+SELECT pg_advisory_xact_lock(hashtext($1::text))
+"""
+
+
 FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,

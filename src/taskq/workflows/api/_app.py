@@ -30,6 +30,7 @@ from typing import Literal, cast, overload
 
 from pydantic import BaseModel
 
+from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
 from taskq.workflows.api._graph import BuildGraph, NodeDecl, Promise, record_under
 from taskq.workflows.definitions import DuplicateWorkflowError
 
@@ -146,6 +147,10 @@ class CompiledWorkflow:
     #: The workflow's declared chains (T20) — the chain SOURCE node owns
     #: its Chain; the runner resolves chain-step routes from here.
     chains: tuple[object, ...] = ()
+    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control,
+    #: declared at the workflow level; the runner hands it to every
+    #: ``ctx.emit_batch``. ``None`` = the explicit unbounded.
+    max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
     #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
     #: cure): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
     #: it.
@@ -275,12 +280,13 @@ class WorkflowApp:
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         channel: SignalChannel | None = None,
+        max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], object]], Callable[[], object]]:
-        """``@app.workflow(name, capture=…, redact=…)`` — the per-workflow
-        declaration (§10.3's policies). The declaration is what T04's
-        capture writer and every export surface consume; ``redact=fn``
-        POST-COMPOSES on the default chain's output (it can only redact
-        more, never less — TORS-REV-0.16 §G1).
+        """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
+        — the per-workflow declaration (§10.3's policies). The
+        declaration is what T04's capture writer and every export surface
+        consume; ``redact=fn`` POST-COMPOSES on the default chain's
+        output (it can only redact more, never less — TORS-REV-0.16 §G1).
 
         THE SIGNATURE TELLS THE TRUTH (the type-mechanism round): the
         build function is SYNC and PURE (``get``'s docstring — the
@@ -288,7 +294,15 @@ class WorkflowApp:
         ``Callable[[], object]``, NOT ``Callable[..., Awaitable[object]]``
         — the old annotation red every honest sync builder under a strict
         config (the probe corpus's unmarked decorator reds). An async fn
-        ALSO satisfies ``Callable[[], object]`` — nothing is refused."""
+        ALSO satisfies ``Callable[[], object]`` — nothing is refused.
+
+        THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control
+        — how many non-terminal rows the run may materialize. The emit
+        admits its WHOLE page under the bound; a fast source outpacing
+        its workers BLOCKS at the bound (the generator's laziness is the
+        pause; the stall rides the certified ladder). The default is the
+        shipped fence-ON (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is
+        the EXPLICIT unbounded (the author takes the dragon)."""
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
@@ -297,6 +311,7 @@ class WorkflowApp:
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
             build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]
             build_fn.__wf_redact__ = redact  # type: ignore[attr-defined]
+            build_fn.__wf_max_in_flight__ = max_in_flight  # type: ignore[attr-defined]  # Why: the declaration rides the function — the compile reads it.
             return build_fn
 
         return decorate
@@ -346,6 +361,7 @@ class WorkflowApp:
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),
+            max_in_flight=getattr(build_fn, "__wf_max_in_flight__", EMIT_MAX_IN_FLIGHT_DEFAULT),
         )
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         # THE COMPILED CACHE (the worker-hosted execution door's D1
