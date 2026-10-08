@@ -1,0 +1,12 @@
+=== THE T21 GATE — round 2 — 20261008T042547Z ===
+--- ruff check (src tests) ---
+All checks passed!
+--- ruff format --check (changed files) ---
+1 file would be reformatted, 34 files already formatted
+--- pyright (the touched surface) ---
+0 errors, 0 warnings, 0 informations
+--- pytest (the full wf family + the progress pins + the CI lane) ---
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_perf_bands.py::test_pin_4_enqueue_latency_band - Asserti...
+1 failed, 262 passed, 1 warning in 103.72s (0:01:43)

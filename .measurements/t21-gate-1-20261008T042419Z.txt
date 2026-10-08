@@ -1,0 +1,12 @@
+=== THE T21 GATE — round 1 — 20261008T042419Z ===
+--- ruff check (src tests) ---
+All checks passed!
+--- ruff format --check (changed files) ---
+1 file would be reformatted, 34 files already formatted
+--- pyright (the touched surface) ---
+0 errors, 0 warnings, 0 informations
+--- pytest (the full wf family + the progress pins + the CI lane) ---
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+263 passed, 1 warning in 81.71s (0:01:21)
