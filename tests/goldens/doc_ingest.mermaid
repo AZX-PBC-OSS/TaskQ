@@ -6,7 +6,7 @@ flowchart TD
     ingest["ingest"]
     ingest.join{{"ingest.join"}}
     publish[["publish"]]
-    review["review"]
+    review([("review ⇅ ⏳ReviewDecision/604800.0s")])
     route["route"]
     summarize["summarize"]
     classify -->|list[str]| gather:1

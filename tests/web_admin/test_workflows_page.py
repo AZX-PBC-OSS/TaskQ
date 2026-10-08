@@ -69,12 +69,12 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     module = types.ModuleType(MODULE_NAME)
     app_obj = WorkflowApp()
 
-    @app_obj.workflow("hold_flow")
+    @app_obj.workflow("admin_hold_flow")
     def hold_flow() -> object:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
-    @app_obj.workflow("plain_flow")
+    @app_obj.workflow("admin_plain_flow")
     def plain_flow() -> object:
         return build(step(_plain_body, Ingest(doc_id="d1"), key="solo"))
 
@@ -110,7 +110,7 @@ def _make_admin_app(pool: asyncpg.Pool, schema: str, wf_app: Any = None) -> Fast
 
 
 async def _seed_run(
-    pool: asyncpg.Pool, schema: str, *, name: str = "hold_flow"
+    pool: asyncpg.Pool, schema: str, *, name: str = "admin_hold_flow"
 ) -> str:
     """A REAL run driven to its hold (the rows the page renders)."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
@@ -167,7 +167,7 @@ async def test_run_page_zero_holds_is_the_defined_state(
     a different defined state."""
     schema = module_pg_schema.schema_name
     # A hold-free run: zero wf_signals rows, ever.
-    compiled = sys.modules[MODULE_NAME].app.get("plain_flow")  # type: ignore[attr-defined]
+    compiled = sys.modules[MODULE_NAME].app.get("admin_plain_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
     flow_id = await runner.create_flow()
     await runner.drive(flow_id)
@@ -464,7 +464,7 @@ async def test_panel_latency_band(
     schema = module_pg_schema.schema_name
 
     # A plain run (the panel read is status-independent).
-    compiled = sys.modules[MODULE_NAME].app.get("plain_flow")  # type: ignore[attr-defined]
+    compiled = sys.modules[MODULE_NAME].app.get("admin_plain_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
     flow_id = await runner.create_flow()
     await runner.drive(flow_id)

@@ -1,0 +1,140 @@
+........................................F..........FF.                   [100%]
+=================================== FAILURES ===================================
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_c89bb1531a', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c89bb1531a60')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8c5b492200>
+wf_schema = 'tq_c89bb1531a', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:221: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:103: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:308: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:331: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f8c62901160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function _wait at 0x7f8c61c553a0>}, actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_c89bb1531a', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c89bb1531a60')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8c5b491d80>
+wf_schema = 'tq_c89bb1531a'
+wf_conn = <asyncpg.connection.Connection object at 0x7f8c599349b0>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:103: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:308: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:331: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f8c62901160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function _wait at 0x7f8c61c553a0>}, actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+______________ test_status_reports_the_blocked_run_and_the_remedy ______________
+
+cli_settings = ModulePgSchema(schema_name='tq_c89bb1531a', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c89bb1531a60')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8c5b4913c0>
+wf_schema = 'tq_c89bb1531a', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_status_reports_the_blocked_run_and_the_remedy(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:171: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:103: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:308: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:331: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f8c62901160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function _wait at 0x7f8c61c553a0>}, actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+FAILED tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+3 failed, 51 passed in 14.58s

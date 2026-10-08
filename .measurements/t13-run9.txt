@@ -1,0 +1,39 @@
+..F..                                                                    [100%]
+=================================== FAILURES ===================================
+_______________ test_fast_tier_the_mermaid_golden_is_byte_stable _______________
+
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    def test_fast_tier_the_mermaid_golden_is_byte_stable(
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE GOLDEN: the example's compiled Mermaid is byte-stable — a
+        wiring change that alters the graph reds until the golden is
+        updated (the docs-truth discipline; the golden IS the reviewable
+        diff of the graph's shape)."""
+        rendered = example_ns["app"].get("doc_ingest").mermaid()
+        golden_path = Path(__file__).parent / "goldens" / "doc_ingest.mermaid"
+        if not golden_path.exists():
+            golden_path.parent.mkdir(parents=True, exist_ok=True)
+            golden_path.write_text(rendered)
+            pytest.fail(f"the golden did not exist and was WRITTEN — re-run to green: {golden_path}")
+>       assert rendered == golden_path.read_text(), (
+            "the example's graph changed — the Mermaid golden reds until you "
+            "review + update it (the docs-truth discipline)"
+        )
+E       AssertionError: the example's graph changed — the Mermaid golden reds until you review + update it (the docs-truth discipline)
+E       assert 'flowchart TD...tr]| gather\n' == 'flowchart TD...tr]| gather\n'
+E         
+E         Skipping 208 identical leading characters in diff, use -v to show
+E         -     review["review"]
+E         +     review([("review ⇅ ⏳ReviewDecision/604800.0s")])
+E               route["route"]
+E               summarize["summarize"]
+E               classify -->|list[str]| gather:1...
+E         
+E         ...Full output truncated (10 lines hidden), use '-vv' to show
+
+tests/test_doc_ingest_example.py:150: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_fast_tier_the_mermaid_golden_is_byte_stable
+1 failed, 4 passed in 5.41s

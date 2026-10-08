@@ -50,7 +50,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from taskq.workflows.api._graph import BodyFn, Promise, WorkflowBuildError, active_graph
+from taskq.workflows.api._graph import (
+    BodyFn,
+    GateDecl,
+    Promise,
+    WorkflowBuildError,
+    active_graph,
+)
 
 __all__ = [
     "Done",
@@ -215,6 +221,7 @@ def loop(
     budget_s: float | None = None,
     on_exhausted: ExhaustionPolicy = "escalate",
     escalates_to: BodyFn | None = None,
+    gates: tuple[GateDecl, ...] = (),
 ) -> Promise[Any]:
     """Wire a LOOP node: fresh jobs per iteration, the carry advanced
     exactly once per iteration (in the atomic advance+cap statement),
@@ -231,6 +238,12 @@ def loop(
     unset ``until`` with both unset is the "waits forever" class — the
     validate warning.
 
+    ``gates=`` declares the body's HOLD gates (T16's addition — the
+    typed door's compile visibility): a mid-loop ``wait_signal`` the
+    body makes is INVISIBLE to the admin's resolve/deliver doors unless
+    the gate is DECLARED on the node — the same law the step wiring's
+    ``gates=`` keeps.
+
     ``on_exhausted="escalate"`` (the default) ENQUEUES the escalation
     through the SAME outbox the fired joins use, addressed to THIS
     WORKFLOW'S REGISTERED ESCALATION STEP (attack-3 H1's cure): the
@@ -240,7 +253,13 @@ def loop(
     always resolves a body (never the ``loop_escalation``-actor ghost).
     ``on_exhausted="fail"`` terminal-fails the flow and enqueues
     NOTHING — the policy is READ by the driver AND the sweep, both arms
-    pinned end-to-end."""
+    pinned end-to-end.
+
+    ``gates=`` declares the body's HOLD gates (T16's addition — the
+    typed door's compile visibility): a mid-loop ``wait_signal`` the
+    body makes is INVISIBLE to the admin's resolve/deliver doors unless
+    the gate is DECLARED on the node — the same law the step wiring's
+    ``gates=`` keeps."""
     from taskq.workflows.api._graph import NodeDecl
 
     # THE NAMING RULE (cut #6's API-compile face — the same refusal
@@ -267,6 +286,7 @@ def loop(
         queue="default",
         body=None,  # the runner's loop driver is the engine-side body
         kind="loop",
+        gates=gates,
         loop_spec=spec,
         loop_body=body,
         loop_until=until,

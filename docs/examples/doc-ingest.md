@@ -146,20 +146,6 @@ def _readable_doc(item: Summary | Unreadable) -> str:
             assert_never(it)
 
 
-async def summarize_body(ctx: object, readable: list[str]) -> list[str]:
-    return readable
-
-
-async def extract_entities_body(ctx: object, readable: list[str]) -> list[str]:
-    return readable
-
-
-async def classify_body(ctx: object, readable: list[str]) -> list[str]:
-    # The MAYBE path's failure arm: an unclassifiable document's terminal
-    # failure is SURFACED in the report and the barrier does NOT fail.
-    return readable
-
-
 async def review_iteration(ctx: object, carry: int) -> Done[str] | Refine[str]:
     """Shapes 3+6 — the hold INSIDE the loop: the typed review pauses
     the budget (the hold counts for nothing on wake); a reject refines
@@ -215,6 +201,7 @@ def doc_ingest() -> object:
         max_iterations=3,
         budget_s=3600.0,
         on_exhausted="escalate",
+        gates=(REVIEW_GATE,),  # the typed door's compile visibility
     )
     published = step(publish_body, review, barrier, maybe_labels, key="publish")
     return build(published)

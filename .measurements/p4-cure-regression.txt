@@ -1,0 +1,165 @@
+........................................................................ [ 64%]
+..F............F.......................                                  [100%]
+=================================== FAILURES ===================================
+____________________ test_pin_20_outbox_drain_exactly_once _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fbfcd9737a0>
+wf_schema = 'tq_2776235dfd'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fbfcdaa0580>
+wf_sql = WorkflowSql(schema='tq_2776235dfd', terminal_mark='UPDATE tq_2776235dfd.jobs\nSET status = $2::"tq_2776235dfd".job_sta... COALESCE(pf.has_live, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n')
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7fbfd09064d0>
+
+    @pytest.mark.integration
+    async def test_pin_20_outbox_drain_exactly_once(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        engine_redlog: RedLog,
+    ) -> None:
+        """A crash between fire-commit and consumer-insert → the drain
+        completes the dispatch EXACTLY ONCE (the consumer insert idempotent
+        ``ON CONFLICT`` on the consumer step key via the composite arbiter,
+        the undelivered flag flipped in the insert's tx). The stranded-join
+        state (fired join, no consumer) and the double-insert variant each
+        red."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+    
+        # The finalize forks one child + a join declaring ONE consumer; the
+        # join fires in the same finalize's tx2 (deps 1 → 0) and the
+        # consumer's outbox row rides tx2. THE CRASH WINDOW: the worker dies
+        # before the drain — the outbox row sits undelivered.
+        fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        fork = ForkSpec(
+            children=(ChildSpec(step_key="c", actor="wf", queue="default"),),
+            join=JoinSpec(
+                step_key="join",
+                actor="wf",
+                queue="default",
+                consumers=(ConsumerBinding(step_key="consumer", actor="wf", queue="default"),),
+            ),
+        )
+        # The fork parent's terminal + fork land atomically (the engine's own
+        # tx1); the join waits on its one child c.
+        child_ids, _join_id = await _fork_with_edges(
+            wf_conn, wf_schema, wf_sql, flow_id, fork_parent, fork
+        )
+    
+        # The child c is claimed (running) and finalizes → the join hits 0 and
+        # fires in its tx2; the consumer's outbox row rides the same tx2. The
+        # worker then DIES before the drain — the outbox row sits undelivered
+        # (the stranded-join state the drain exists to cure).
+        child_c = child_ids[0]
+        c_worker = new_uuid()
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'running', attempt = 1, "
+            "locked_by_worker = $2, claim_epoch = 0, lock_expires_at = "
+            "now() + interval '90 seconds' WHERE id = $1",
+            child_c,
+            c_worker,
+        )
+        result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=child_c,
+            step_key="c",
+            worker_id=c_worker,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+        )
+        assert result.applied
+        assert result.fired, "the join fired in tx2"
+        outbox_rows = await wf_conn.fetch(
+            f'SELECT id, join_job_id, flow_id, consumer_step_key FROM "{wf_schema}".wf_outbox '
+            "WHERE NOT delivered"
+        )
+        assert len(outbox_rows) == 1, outbox_rows  # the consumer's outbox row
+    
+        # THE STRANDED-JOIN RED (the crash window): before the drain, the
+        # fired join's consumers never dispatched — the state the drain exists
+        # to prevent.
+        stranded = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1',
+            result.fired[0].join_job_id,
+        )
+        engine_redlog.red(
+            "pin20-outbox-flush-stranded",
+            "crash between fire-commit and consumer-insert (no drain yet)",
+            {"fired": True, "consumers_dispatched": int(stranded)},
+        )
+        assert int(stranded) == 0
+    
+        # THE SHIPPED DRAIN: the consumer dispatches exactly once...
+        delivered = await drain_outbox(module_pg_pool, wf_sql)
+        assert delivered == 1, delivered
+        consumers = await wf_conn.fetch(
+            f'SELECT id, idempotency_scope, idempotency_key FROM "{wf_schema}".jobs WHERE parent_id = $1',
+            result.fired[0].join_job_id,
+        )
+        assert len(consumers) == 1, len(consumers)
+>       assert consumers[0]["idempotency_key"] == f"wf:{flow_id}:consumer"
+E       AssertionError: assert 'wf:consumer' == 'wf:01a11989-...1e16:consumer'
+E         
+E         - wf:01a11989-ac44-75c3-831e-dc0143cd1e16:consumer
+E         + wf:consumer
+
+tests/test_wf_fork_pins.py:353: AssertionError
+_____________________ test_retry_classifier_routes_by_kind _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fbfcd972990>
+wf_schema = 'tq_989d0ecffc'
+wf_pool = <asyncpg.pool.Pool object at 0x7fbfd03b5600>
+
+    async def test_retry_classifier_routes_by_kind(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #12's cure: the retry knob routes by kind — a ``permanent``
+        body failure takes NO ladder (one terminal, immediately)."""
+        app = WorkflowApp()
+    
+        async def always_fails(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("boom")
+    
+        @app.workflow("retry_flow")
+        def retry_flow() -> object:
+            node = step(
+                always_fails,
+                Ingest(doc_id="d"),
+                key="perm",
+                retry_kind="permanent",
+                max_attempts=3,
+            )
+            return build(node)
+    
+        runner = FlowRunner(app.get("retry_flow"), wf_pool, wf_schema)
+>       flow_id = await runner.create_flow()
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:235: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:518: in create_flow
+    await self._insert_static_nodes(conn, claim.flow_id, input)
+src/taskq/workflows/api/_runner.py:565: in _insert_static_nodes
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.CheckViolationError: new row for relation "jobs" violates check constraint "jobs_retry_kind_check"
+E   DETAIL:  Failing row contains (01a11989-bb74-7fe3-b8dc-1bd084603adb, wf, default, null, null, {"wf_args": [{"doc_id": "d"}], "wf_input": null}, 1, pending, 0, 0, 3, permanent, null, null, null, 2026-10-08 03:23:39.252183+00, 2026-10-08 03:23:39.252183+00, null, null, null, null, null, null, 0, null, null, null, {}, 0, null, null, null, wf:perm, null, null, {"flow_id": "01a11989-bb6c-7ce2-b899-e534c13bbb0f"}, {}, workflow:01a11989-bb6c-7ce2-b899-e534c13bbb0f, 0, 0, 0, 5, 3600, exponential, 0.2, f, 0, null, 0, null, perm, null, null, f, null).
+
+asyncpg/protocol/protocol.pyx:205: CheckViolationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_fork_pins.py::test_pin_20_outbox_drain_exactly_once - As...
+FAILED tests/test_wf_runner_pins.py::test_retry_classifier_routes_by_kind - a...
+2 failed, 109 passed in 27.93s

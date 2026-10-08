@@ -30,16 +30,16 @@ class Ingest(BaseModel):
     doc_id: str
 
 
-@pytest.mark.xfail(
-    reason="F-P4-HELD-DRIVE-NULL-DEADLINE: the driver's held-question reads "
-    "scheduled_at > now(), NULL for a legal no-deadline hold — the phase-3 "
-    "fixer lands `metadata ? 'hold'` (see .measurements/"
-    "p4-attack-held-drive-null-deadline.md)",
-    strict=True,
-)
 async def test_drive_until_held_sees_a_no_deadline_hold(
     wf_pool: object, wf_schema: str
 ) -> None:
+    """THE LIVELock PIN, GREEN: the cure landed IN PHASE 4 (the held
+    marker is the question — `metadata ? 'hold'` replaced
+    `scheduled_at > now()` in the driver's held-count). The RED
+    evidence (the pre-cure spin, 126.82 s / 5000 ticks) is captured in
+    ``.measurements/p4-attack-held-drive-null-deadline.md``; this test
+    was strict-xfail until the cure flipped it — it stays a REGULAR pin
+    so a regression re-reds the suite."""
     app = WorkflowApp()
 
     @app.workflow("attack4_held_no_deadline")
