@@ -258,9 +258,7 @@ class FlowRunner:
                 # its parent exists (the stranded-edge lie).
                 continue
             data_args = [v for kind, v in node.args if kind == "d"]
-            payload: dict[str, object] = (
-                {_INPUT_KEY: input} if not node.parents else {}
-            )
+            payload: dict[str, object] = {_INPUT_KEY: input} if not node.parents else {}
             if data_args:
                 payload[_WF_ARGS_KEY] = [_encode_data_arg(v) for v in data_args]
             spec = NodeSpec(
@@ -403,6 +401,13 @@ class FlowRunner:
             await self._finalize_skipped(flow_id, row, node)
             return
 
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it.
+        if node is not None and node.loop_spec is not None:
+            await self._run_loop_node(flow_id, row, attempt, node)
+            return
+
         parents_ordered, parents_by_key = await self._parent_results(row["id"])
         payload_raw = row["payload"]
         payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
@@ -427,9 +432,7 @@ class FlowRunner:
                 # shape the downstream body's list param declares; the
                 # EDGE ORDER (map children distinct, the gather's wiring
                 # order).
-                result: dict[str, object] | None = {
-                    "value": [r for _key, r in parents_ordered]
-                }
+                result: dict[str, object] | None = {"value": [r for _key, r in parents_ordered]}
             else:
                 outcome_value = await body(ctx, *args)
                 result = _encode_result(outcome_value)
@@ -608,6 +611,278 @@ class FlowRunner:
             max_attempts=node.map_max_attempts,
         )
 
+    async def _run_loop_node(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+    ) -> None:
+        """THE LOOP DRIVER (T19): fresh jobs per iteration
+        (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
+        carry FROZEN AT SPAWN (read once per iteration from the row) and
+        advanced EXACTLY ONCE per iteration IN THE ADVANCE STATEMENT
+        (atomic with the cap guard — a refused advance IS the
+        exhaustion); the control union consumed (``Done`` stops,
+        ``Refine`` threads); ``until=`` AWAITED per iteration. The
+        budget deadline initializes FROM PG'S CLOCK at the first claim
+        (the DB-clock doctrine); ``budget_remaining_ms`` is the on-wake
+        read of the wall (holds are free)."""
+        from taskq._json import loads as _loads
+        from taskq.workflows.api._loop import Done, LoopSpec, Refine
+        from taskq.workflows.api._sql_loop import (
+            LOOP_ADVANCE_SQL,
+            LOOP_ERROR_BODY,
+            LOOP_INIT_SQL,
+            LOOP_NODE_STATE_SQL,
+            LOOP_REMAINING_SQL,
+            render_loop_sql,
+        )
+        from taskq.workflows.ledger import claim_step_ledger, memoized_step_result
+
+        spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
+
+        async with self.pool.acquire() as conn:
+            state = await conn.fetchrow(
+                render_loop_sql(LOOP_NODE_STATE_SQL, self.schema), row["id"]
+            )
+            assert state is not None
+        meta_raw = state["metadata"]
+        meta = _loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        assert isinstance(meta, dict)  # the Any-contract walk (the seed wrote the shape)
+        meta_doc = cast(dict[str, object], meta)  # the walk's boundary
+        # THE INIT (first claim): the budget wall starts HERE (PG's
+        # clock); the iteration counter + the initial carry are set.
+        initial_carry: object
+        if isinstance(spec.carry_type, dict | list | str | int | float | bool):
+            initial_carry = _jsonable(cast(object, spec.carry_type))
+        else:
+            initial_carry = None
+        if "iteration" not in meta:
+            init_meta: dict[str, object] = {
+                **meta_doc,
+                "kind": "loop",
+                "iteration": 0,
+                "carry": initial_carry,
+                "max_iterations": spec.max_iterations,
+            }
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    render_loop_sql(LOOP_INIT_SQL, self.schema),
+                    row["id"],
+                    spec.budget_s or 0.0,
+                    _json_dumps(init_meta),
+                )
+            meta_doc = init_meta
+        # THE ON-WAKE REMAINING (holds are free — a PG-clock read).
+        if state["budget_deadline"] is not None:
+            async with self.pool.acquire() as conn:
+                remaining = await conn.fetchval(
+                    render_loop_sql(LOOP_REMAINING_SQL, self.schema), row["id"]
+                )
+            logger.debug("loop.wake", loop=row["step_key"], remaining_ms=remaining)
+
+        iteration = int(str(meta_doc.get("iteration", 0)))
+        carry: object = meta_doc.get("carry")
+
+        max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
+        for _ in range(max_wall):
+            # THE UNTIL PREDICATE — awaited (a sync closure returning a
+            # coroutine object is the convicted dragon).
+            if node.loop_until is not None and await node.loop_until():
+                await self._finalize_success(flow_id, row, attempt, node, _encode_result(carry))
+                return
+
+            iter_key = f"{row['step_key']}.iter{iteration}"
+            # FRESH JOBS: the iteration-scoped ledger claim (the
+            # idempotency ledger per-iteration — T05's contract
+            # unchanged); the MEMO: a terminal iteration replays (the
+            # crash recovery reads the row — never a re-run body).
+            async with self.pool.acquire() as memo_conn:
+                memo = await memoized_step_result(
+                    memo_conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    step_key=iter_key,
+                    map_index=None,
+                )
+            if memo is not None and memo.status == "succeeded":
+                # the memo replay's decoded face (the ledger's jsonb)
+                memo_doc = cast(dict[str, object], memo.result)
+                if memo_doc.get("done"):
+                    payload: object = memo_doc.get("payload")
+                    await self._finalize_success(
+                        flow_id, row, attempt, node, _encode_result(payload)
+                    )
+                    return
+                carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+            else:
+                async with self.pool.acquire() as conn:
+                    await claim_step_ledger(
+                        conn,
+                        self.wsql,
+                        flow_id=flow_id,
+                        job_id=JobId(row["id"]),
+                        step_key=iter_key,
+                        map_index=None,
+                        attempt=attempt,
+                    )
+                loop_ctx = StepContext(
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    node_key=row["step_key"],
+                    attempt=attempt,
+                    input=await self._flow_input(flow_id),
+                    _pool=self.pool,
+                    _wsql=self.wsql,
+                )
+                try:
+                    outcome = await node.loop_body(loop_ctx, carry)
+                except Exception as exc:
+                    # THE LADDER-ROUTES-BY-FAILURE-CLASS decision: an INFRA
+                    # fault (reclaim-eligible) records 'crashed' and re-pends
+                    # WITHOUT burning the ladder (the vanilla lease machinery
+                    # re-claims from the ledger); a BODY failure is the
+                    # loop's typed failure (the named class, the flow
+                    # terminalized in the same tx — STRANDED-FLOW's
+                    # body-failure sibling).
+                    if _is_infra_fault(exc):
+                        async with self.pool.acquire() as conn:
+                            await conn.execute(
+                                self.wsql.ledger_terminal,
+                                flow_id,
+                                iter_key,
+                                attempt,
+                                "crashed",
+                                None,
+                                type(exc).__name__,
+                                str(exc)[:500],
+                                None,
+                                None,
+                            )
+                            await conn.execute(
+                                _stmt(_NODE_REPEND_SQL_TEMPLATE, self.schema),
+                                row["id"],
+                                0.05,
+                            )
+                        return  # the reclaim owns it — never a ladder burn
+                    await self._exhaust_loop(
+                        flow_id,
+                        row,
+                        LOOP_ERROR_BODY,
+                        f"the loop body failed: {type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                    return
+                await self._record_iteration_terminal(flow_id, iter_key, attempt, outcome)
+
+                # THE CONTROL UNION (consumed with the residual machinery):
+                if isinstance(outcome, Done):
+                    done_payload = cast(object, outcome.payload)  # the union's boundary
+                    await self._finalize_success(
+                        flow_id, row, attempt, node, _encode_result(done_payload)
+                    )
+                    return
+                assert isinstance(outcome, Refine), (
+                    "the loop body must return Done(...) or Refine(...) — "
+                    "anything else is the shape error (the control union's "
+                    "residual machinery refuses the unconsumed member)"
+                )
+                carry = cast(object, outcome.feedback)  # the walk's boundary
+
+            # THE ADVANCE STATEMENT — the carry + THE CAP GUARD, one
+            # atomic write (a refused advance IS the exhaustion).
+            async with self.pool.acquire() as conn:
+                advanced = await conn.fetchval(
+                    render_loop_sql(LOOP_ADVANCE_SQL, self.schema),
+                    row["id"],
+                    _json_dumps({"carry": _jsonable(carry), "iteration": iteration + 1}),
+                    spec.max_iterations if spec.max_iterations is not None else 2**31 - 1,
+                )
+            if advanced is None:
+                await self._exhaust_loop(flow_id, row, None, None)
+                return
+            iteration += 1
+
+        # the driver's own bound exhausted — the loud refusal (never a
+        # silent wedge)
+        raise WorkflowRunError(
+            f"loop {row['step_key']!r} exceeded the driver's iteration bound "
+            f"({max_wall}) — the walls never fired; a bug, refused loudly"
+        )
+
+    async def _record_iteration_terminal(
+        self, flow_id: JobId, iter_key: str, attempt: int, outcome: object
+    ) -> None:
+        """The iteration's ledger terminal (the §13.3 trace shape: the
+        iteration index + the Done/Refine kind per iteration)."""
+        from taskq.workflows.api._loop import Done, Refine
+
+        kind = (
+            "done"
+            if isinstance(outcome, Done)
+            else "refine"
+            if isinstance(outcome, Refine)
+            else "other"
+        )
+        # The generic wrappers' payloads launder through the declared
+        # object boundary (the walk's cast).
+        payload: dict[str, object]
+        if isinstance(outcome, Done):
+            payload = {"done": True, "payload": _jsonable(cast(object, outcome.payload))}
+        elif isinstance(outcome, Refine):
+            payload = {"done": False, "feedback": _jsonable(cast(object, outcome.feedback))}
+        else:
+            payload = {"done": False, "feedback": _jsonable(outcome)}
+        del kind
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                self.wsql.ledger_terminal,
+                flow_id,
+                iter_key,
+                attempt,
+                "succeeded",
+                _json_dumps(payload),
+                None,
+                None,
+                None,
+                None,
+            )
+
+    async def _exhaust_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        error_class: str | None,
+        message: str | None,
+    ) -> None:
+        """The NAMED exhaustion (the driver's own arms — the cap guard's
+        refusal and the body failure; the SWEEP's arm runs the same
+        statement): the named state + the FLOW TERMINALIZED in the SAME
+        tx (STRANDED-FLOW)."""
+        from taskq.workflows.api._sql_loop import (
+            ITERATION_STATE_CAP_EXHAUSTED,
+            LOOP_ERROR_BODY,
+            LOOP_ERROR_CAP,
+            LOOP_EXHAUST_SQL,
+            render_loop_sql,
+        )
+
+        error_class = error_class or LOOP_ERROR_CAP
+        state_name = (
+            ITERATION_STATE_CAP_EXHAUSTED if error_class != LOOP_ERROR_BODY else "loop_body_failed"
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                render_loop_sql(LOOP_EXHAUST_SQL, self.schema).replace(
+                    "{terminal}", "('{succeeded}','failed','cancelled','crashed','abandoned')"
+                ),
+                row["id"],
+                error_class,
+                f'{{"iteration_state": "{state_name}", "kind": "loop"}}',
+                message or f"the loop's wall fired (the named state: {state_name})",
+            )
+        del flow_id
+
     async def _ladder_or_fail(
         self,
         flow_id: JobId,
@@ -778,6 +1053,38 @@ def _encode_data_arg(value: object) -> object:
             walked_map[str(k)] = _encode_data_arg(v)
         return walked_map
     return value
+
+
+def _json_dumps(value: object) -> str:
+    """The metadata round-trip's write side (the estate's dumps)."""
+    from taskq._json import dumps_jsonb_str
+
+    return dumps_jsonb_str(value)
+
+
+def _jsonable(value: object) -> object:
+    """The carry/feedback's jsonb-safe form (the walk's boundary)."""
+    return _encode_data_arg(value)
+
+
+def _is_infra_fault(exc: BaseException) -> bool:
+    """THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (T19's semantics
+    decision, stated once): a RECLAIM-ELIGIBLE fault (connection loss,
+    admin shutdown, interface failure — the storm's ConnectionDoesNotExist
+    class) routes to RECLAIM and NEVER burns the retry ladder; a body
+    failure is the body's own. The vanilla lease machinery re-claims from
+    the ledger — the ledger row says 'crashed', the ladder counts
+    'failed'."""
+    import asyncpg as _asyncpg
+
+    infra: tuple[type[BaseException], ...] = (
+        _asyncpg.exceptions.ConnectionDoesNotExistError,
+        _asyncpg.exceptions.InterfaceError,
+        _asyncpg.exceptions.AdminShutdownError,
+        _asyncpg.exceptions.CannotConnectNowError,
+        ConnectionError,
+    )
+    return isinstance(exc, infra)
 
 
 def _encode_result(value: object) -> dict[str, object] | None:
