@@ -377,6 +377,25 @@ _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE = (
 _JOBS_COLUMNS_CSV = ", ".join(COPY_FROM_COLUMNS)
 _JOBS_COLUMNS_QUALIFIED_CSV = ", ".join(f"j.{c}" for c in COPY_FROM_COLUMNS)
 
+#: The BUDGET columns (01.00.26's jobs leg / 01.00.30's archive mirror):
+#: the columns the pre-budget estates lack — the archive write's
+#: rolling-deploy tolerance rebuilds the statement without them.
+_BUDGET_COLUMNS: tuple[str, ...] = ("budget_deadline", "budget_paused", "budget_remaining_ms")
+_JOBS_COLUMNS_CSV_LEGACY = ", ".join(c for c in COPY_FROM_COLUMNS if c not in _BUDGET_COLUMNS)
+_JOBS_COLUMNS_QUALIFIED_CSV_LEGACY = ", ".join(
+    f"j.{c}" for c in COPY_FROM_COLUMNS if c not in _BUDGET_COLUMNS
+)
+
+
+def _archive_cte_sql(schema: str, *, legacy: bool = False) -> str:
+    """The archive write, in BOTH column eras: the budget-aware form is
+    the shipped statement; the LEGACY form (the three budget columns
+    cut) is the pre-budget estate's tolerance fallback — semantically
+    exact there (nothing to mirror)."""
+    if not legacy:
+        return _ARCHIVE_CTE_SQL.format(schema=schema)
+    return _ARCHIVE_CTE_SQL_LEGACY.format(schema=schema)
+
 _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
     "job_id",
     "attempt",
@@ -498,6 +517,30 @@ def _log_workflow_guard_fallback_once() -> None:
             "has not applied) — the candidate runs unguarded",
         )
         _workflow_guard_fallback_logged = True
+
+
+#: The rolling-deploy fallback for the BUDGET columns (the mirror law's
+#: own estate edge): logged once per process, never per batch.
+_archive_budget_fallback_logged = False
+
+
+def _log_archive_budget_fallback_once() -> None:
+    """The archive write's column-fallback latch (the same log-once
+    shape as the workflow-guard fallback): a schema the loop-budget
+    round (01.00.26) has not landed on has NO budget columns — the
+    archive mirror (01.00.30) neither — and the explicit-column INSERT
+    reds there. The legacy column set is semantically EXACT on that
+    estate (a pre-budget row has no budget state to mirror)."""
+    global _archive_budget_fallback_logged
+    if not _archive_budget_fallback_logged:
+        log.warning(
+            "prune-archive-budget-fallback",
+            kind="prune_archive_budget_fallback",
+            reason="the budget columns do not exist (the loop-budget "
+            "round 01.00.26 has not applied) — the archive write runs "
+            "the legacy column set",
+        )
+        _archive_budget_fallback_logged = True
 
 
 def _unguarded_candidate_sql(schema: str) -> str:
@@ -681,6 +724,19 @@ _ARCHIVE_CTE_SQL = (
     "  RETURNING id, actor, status"
     ") SELECT actor, status, count(*) AS cnt"
     "  FROM deleted GROUP BY actor, status"
+)
+
+#: The LEGACY archive write (the pre-budget estate's tolerance fallback):
+#: the shipped CTE with the three budget columns cut from BOTH sides of
+#: the mirror (jobs' SELECT leg and jobs_archive's INSERT leg). Built by
+#: template-level replace — the CSVs are deterministic literals of the
+#: shipped constant, so the two substitutions are exact.
+_ARCHIVE_CTE_SQL_LEGACY = _ARCHIVE_CTE_SQL.replace(
+    f"({_JOBS_COLUMNS_CSV}, archived_at, expire_at)",
+    f"({_JOBS_COLUMNS_CSV_LEGACY}, archived_at, expire_at)",
+).replace(
+    f"SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp()",
+    f"SELECT {_JOBS_COLUMNS_QUALIFIED_CSV_LEGACY}, clock_timestamp()",
 )
 
 _DB_NOW_SQL = "SELECT clock_timestamp()"
@@ -966,6 +1022,7 @@ async def prune_terminal_jobs(
         cutoffs[status] = db_now - retention
         candidate_sql = _ARCHIVE_CANDIDATE_SQL.format(schema=schema)
         write_sql = _ARCHIVE_CTE_SQL.format(schema=schema)
+        legacy_write_sql = _ARCHIVE_CTE_SQL_LEGACY.format(schema=schema)
 
         while True:
             if drain_gate is not None and not drain_gate():
@@ -977,6 +1034,31 @@ async def prune_terminal_jobs(
                     conn,
                     candidate_sql=candidate_sql,
                     write_sql=write_sql,
+                    status=status,
+                    retention=retention,
+                    size=size,
+                    archive_interval=archive_interval,
+                    actor=None,
+                    statement_timeout_ms=statement_timeout_ms,
+                    sweep_name="prune",
+                    sizer=sizer,
+                )
+            except asyncpg.UndefinedColumnError:
+                # THE BUDGET-COLUMN TOLERANCE (the mirror law's own estate
+                # edge): a schema the loop-budget round (01.00.26) has not
+                # landed on has NO budget columns — the archive mirror
+                # (01.00.30) neither — and the explicit-column INSERT reds
+                # there. The fallback is the LEGACY column set,
+                # semantically EXACT on that estate (a pre-budget row has
+                # no budget state to mirror); logged once per process,
+                # never per batch — and PER BATCH: the next batch retries
+                # the budget-aware statement first (a migration landed
+                # mid-prune resumes guarded).
+                _log_archive_budget_fallback_once()
+                rows = await _run_prune_archive_batch(
+                    conn,
+                    candidate_sql=candidate_sql,
+                    write_sql=legacy_write_sql,
                     status=status,
                     retention=retention,
                     size=size,
@@ -1004,7 +1086,7 @@ async def prune_terminal_jobs(
                 rows = await _run_prune_archive_batch(
                     conn,
                     candidate_sql=_unguarded_candidate_sql(schema),
-                    write_sql=write_sql,
+                    write_sql=legacy_write_sql,
                     status=status,
                     retention=retention,
                     size=size,
@@ -1035,6 +1117,7 @@ async def prune_terminal_jobs(
         for actor_name, actor_retention in actor_overrides.items():
             candidate_sql = _ARCHIVE_CANDIDATE_ACTOR_SQL.format(schema=schema)
             write_sql = _ARCHIVE_CTE_SQL.format(schema=schema)
+            legacy_write_sql = _ARCHIVE_CTE_SQL_LEGACY.format(schema=schema)
             for status in TERMINAL_STATUSES:
                 if actor_retention >= retention_per_status.get(status, DEFAULT_PRUNE_RETENTION):
                     continue
@@ -1057,6 +1140,26 @@ async def prune_terminal_jobs(
                             sweep_name="prune",
                             sizer=sizer,
                         )
+                    except asyncpg.UndefinedColumnError:
+                        # THE BUDGET-COLUMN TOLERANCE, PER-ACTOR ARM: the
+                        # same legacy-column fallback as the fleet-wide arm
+                        # above (the pre-budget estate has no budget state
+                        # to mirror; the legacy set is exact there). Same
+                        # per-batch retry, same log-once.
+                        _log_archive_budget_fallback_once()
+                        rows = await _run_prune_archive_batch(
+                            conn,
+                            candidate_sql=candidate_sql,
+                            write_sql=legacy_write_sql,
+                            status=status,
+                            retention=actor_retention,
+                            size=size,
+                            archive_interval=archive_interval,
+                            actor=actor_name,
+                            statement_timeout_ms=statement_timeout_ms,
+                            sweep_name="prune",
+                            sizer=sizer,
+                        )
                     except asyncpg.UndefinedTableError:
                         # THE SAME ROLLING-DEPLOY TOLERANCE, PER-ACTOR ARM:
                         # the per-actor candidate composes the SAME
@@ -1068,7 +1171,7 @@ async def prune_terminal_jobs(
                         rows = await _run_prune_archive_batch(
                             conn,
                             candidate_sql=_unguarded_candidate_actor_sql(schema),
-                            write_sql=write_sql,
+                            write_sql=legacy_write_sql,
                             status=status,
                             retention=actor_retention,
                             size=size,
