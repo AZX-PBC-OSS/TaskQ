@@ -1,7 +1,17 @@
 [
   {
-    "pin": "join-failure-policy-timeout-required",
-    "mutation": "the timeout arm wedged: the deadline-failed child leaves the join in join-wait (a join with no timer of its own, waiting on a child that can never terminalize)",
-    "red": "{\"swept\": 1, \"blocked_required\": 1, \"fires\": 0}"
+    "pin": "map-retry-barrier-(a)-early-fire",
+    "mutation": "the attempt-counting join \u2014 fires on the first-success-count mismatch (counting ATTEMPTS instead of CHILDREN)",
+    "red": "{\"status\": \"pending\", \"deps_pending\": 8, \"metadata\": {\"flow_id\": \"01a11937-39b0-71f3-874b-049395da4412\", \"blocking_reason\": \"join\"}, \"result\": null}"
+  },
+  {
+    "pin": "map-retry-barrier-(c)-contagion",
+    "mutation": "the retry-storm contagion \u2014 a child's retry re-triggers the map body for the WHOLE list",
+    "red": "{\"before\": {\"status\": \"running\", \"deps_pending\": 0, \"metadata\": {\"flow_id\": \"01a11937-39b0-71f3-874b-049395da4412\"}, \"result\": null}, \"after\": {\"status\": \"running\", \"deps_pending\": 0, \"metadata\": {\"flow_id\": \"01a11937-39b0-71f3-874b-049395da4412\"}, \"result\": null}}"
+  },
+  {
+    "pin": "map-retry-barrier-(e)-errors-in-collect",
+    "mutation": "the failed attempts' errors leaking into the join's result",
+    "red": "{\"failures\": null}"
   }
 ]

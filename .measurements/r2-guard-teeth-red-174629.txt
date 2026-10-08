@@ -1,0 +1,2 @@
+E           AssertionError: taskq.backend._sweeps:_TEETH_PROBE_UNREGISTERED carries SQL keywords but is not a self-contained statement and is not registered - register it in _COVERED_BY (with the rendered product that validates it), _PREFIX_COMPLETIONS (with its call-site completion), or _NOT_PG_SQL (with the reason PostgreSQL validation does not apply)
+1 failed in 0.28s

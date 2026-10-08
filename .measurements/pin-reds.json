@@ -1,7 +1,7 @@
 [
   {
-    "pin": "pin16-body-from-definition",
-    "mutation": "per-call body map (the D1 hazard: the CAS loser runs the wrong body)",
-    "red": "{\"loser_body\": \"MUTATED\", \"shipped\": \"the registered definition's body\"}"
+    "pin": "r2-2-body-unavailable",
+    "mutation": "the silent fire (no stamp, no warn) \u2014 the pre-cure shipped shape",
+    "red": "{\"blocking_reason\": \"body_unavailable\", \"warn_emitted\": true}"
   }
 ]
