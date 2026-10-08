@@ -72,3 +72,19 @@ CAS + the node's held-representation clear) — single-digit
 milliseconds at the pin shape; 50 ms gives the fleet-lane headroom
 (the load-sensitive marker applies — the pin runs in the default lane,
 the band is wide enough to be deterministic-by-construction).
+
+## The workflow progress bands (T21)
+
+The two-channel persistence's bands, re-proven on the BUILT code
+(`.measurements/t21-numbers.json`; the pins:
+`tests/test_wf_progress_persistence.py`, `tests/test_wf_progress_emission.py`,
+`tests/test_wf_progress_faces.py`):
+
+| band | value | source |
+| --- | --- | --- |
+| the STATE channel's row count under 10,000 emissions | **2 rows** (nodes × channels — CONSTANT; the convicted every-emission-a-row variant: 2,000 rows for 2,000 emissions, kept red) | `test_chatty_body_coalesce_cadence_and_constant_rows` + the numbers run |
+| the occurrence counter under 10,000 emissions | **== 10,000 exactly** (the coalescing is honest) | the same |
+| the ring's drop accounting | **appended == retained + dropped** exactly (the bound honored; the counter on the record) | `test_stream_ring_bound_and_drop_counter_honest` |
+| the read-side aggregate's fn time (200 children, mid-flight-capable) | **0.009 ms** (the PoC's 0.22 ms shape; the read writes nothing) | the numbers run |
+| the finalize's blindness to emission (structural) | the terminal-mark statement touches NO progress table (the zero-finalize-changes probe); a 10k-emission node finalizes normally | `test_zero_finalize_changes_probe` |
+| the crash window | freshness-only loss: the display's STATE ledger-derived at every sample; the terminal heals | `test_crash_window_freshness_only_loss_then_the_terminal_heals` |
