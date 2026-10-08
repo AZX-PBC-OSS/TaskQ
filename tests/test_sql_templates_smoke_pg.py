@@ -313,6 +313,17 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "{worker_crashed_class} holes; _SWEEP_1_SQL is the rendered statement "
         "production sends",
     ),
+    "taskq.backend._sweeps:_SWEEP_RESULT_TTL_GUARD_SQL": (
+        ("taskq.backend._sweeps:_SWEEP_RESULT_TTL_SQL",),
+        None,
+        "the T18 expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
+        "carrying {schema} holes), never a standalone statement; spliced at "
+        "the window's LIMIT into _SWEEP_RESULT_TTL_BASE_SQL to make "
+        "_SWEEP_RESULT_TTL_SQL — the rolling-deploy tolerance's fallback runs "
+        "the unguarded base — so the composed product's prepare validates the "
+        "guard's text (the containment needle is the fragment body itself: "
+        "marker None, the strongest tripwire this table has)",
+    ),
     "taskq.worker._leader_shared:_WORKFLOW_LIVENESS_GUARD_SQL": (
         (
             "taskq.worker._leader_shared:_ARCHIVE_CANDIDATE_SQL",
