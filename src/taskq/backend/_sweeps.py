@@ -108,7 +108,6 @@ from functools import lru_cache
 from typing import NamedTuple
 from uuid import UUID
 
-import asyncpg
 import structlog
 
 from taskq.backend._protocol import ConnLike, JobId
@@ -2059,6 +2058,13 @@ async def sweep_expired_results(
 
     Returns the count of results expired by this call.
     """
+    # Function-local, never module level: this module sits on taskq.actor's
+    # import path through ratelimit.registry, and the testing/memory-jobs
+    # surfaces' import law (import taskq.testing must not load the PG
+    # driver) reds a module-level asyncpg import. The name is needed only
+    # here, at the tolerance's except.
+    import asyncpg
+
     try:
         return await _run_single_statement_sweep(
             conn,
