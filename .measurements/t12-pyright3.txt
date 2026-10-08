@@ -1,0 +1,7 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py:4120:16 - error: Argument type is partially unknown
+    Argument corresponds to parameter "reason" in function "__init__"
+    Argument type is "Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py:4374:32 - error: Argument of type "UUID" cannot be assigned to parameter "hold_id" of type "str" in function "_echo_delivery"
+    "UUID" is not assignable to "str" (reportArgumentType)
+2 errors, 0 warnings, 0 informations

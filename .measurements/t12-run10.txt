@@ -1,0 +1,90 @@
+.......F.F....F.                                                         [100%]
+=================================== FAILURES ===================================
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_1b18d169b0', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1b18d169b07b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8cec3e9480>
+wf_schema = 'tq_1b18d169b0'
+wf_conn = <asyncpg.connection.Connection object at 0x7f8cec2f35c0>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+        hold_id = _hold_id_of(holds.output)
+        result = await to_thread(
+            runner.invoke,
+            app,
+            [
+                "flows", "resolve", hold_id, '{"verdict":"approve","note":"ship it"}',
+                "--app", f"{MODULE_NAME}:app", "--reason", "editor approved",
+            ],
+        )
+>       assert result.exit_code == 0, result.output
+E       AssertionError: node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it
+E         
+E       assert 1 == 0
+E        +  where 1 = <Result SystemExit(1)>.exit_code
+
+tests/test_wf_cli_pins.py:194: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:11:37 [info     ] node.held                      hold_id=01a11947-c80c-7623-9991-f4a4e2d1b11d node=review run_id=01a11947-c7ee-7ff3-9344-51d19776131f signals=['Approval']
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_1b18d169b0', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1b18d169b07b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8cec3e9d80>
+wf_schema = 'tq_1b18d169b0', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+        hold_id = _hold_id_of(holds.output)
+        result = await to_thread(
+            runner.invoke,
+            app,
+            ["flows", "resolve", hold_id, '{"verdict": 42}', "--app", f"{MODULE_NAME}:app"],
+        )
+        assert result.exit_code == 1
+>       assert "pydantic refused the payload" in plain_cli_output(result.output)
+E       assert 'pydantic refused the payload' in "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it"
+E        +  where "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it" = plain_cli_output("node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it\n")
+E        +    where "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it\n" = <Result SystemExit(1)>.output
+
+tests/test_wf_cli_pins.py:227: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:11:37 [info     ] node.held                      hold_id=01a11947-cac4-7c82-8705-0c0b8c1f6796 node=review run_id=01a11947-caa7-7cb3-9e81-071cfa1cc61d signals=['Approval']
+______________ test_status_reports_the_blocked_run_and_the_remedy ______________
+
+cli_settings = ModulePgSchema(schema_name='tq_1b18d169b0', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1b18d169b07b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f8cec3e9e40>
+wf_schema = 'tq_1b18d169b0', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_status_reports_the_blocked_run_and_the_remedy(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        run_id = await _held_run(wf_pool, wf_schema)
+        result = await to_thread(runner.invoke, app, ["flows", "status", run_id])
+>       assert result.exit_code == 0, result.output
+E       AssertionError: 
+E       assert 1 == 0
+E        +  where 1 = <Result KeyError('payload')>.exit_code
+
+tests/test_wf_cli_pins.py:170: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:11:38 [info     ] node.held                      hold_id=01a11947-cc43-7730-99a0-0901a95494aa node=review run_id=01a11947-cc28-7e50-a254-e249e6692739 signals=['Approval']
+============================= slowest 4 durations ==============================
+0.47s setup    tests/test_wf_cli_pins.py::test_list_on_an_empty_schema_is_the_honest_zero
+0.20s call     tests/test_wf_cli_pins.py::test_retry_reopens_the_failed_closure_and_the_run_completes
+0.19s setup    tests/test_wf_cli_pins.py::test_retry_reopens_the_failed_closure_and_the_run_completes
+0.17s setup    tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+3 failed, 13 passed in 2.40s

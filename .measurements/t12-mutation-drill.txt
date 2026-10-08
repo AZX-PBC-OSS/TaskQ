@@ -1,0 +1,43 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_retry_reopens_the_failed_closure_and_the_run_completes __________
+
+cli_settings = ModulePgSchema(schema_name='tq_11be3dd83d', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_11be3dd83d2c')
+wf_pool = <asyncpg.pool.Pool object at 0x7fa1b11aff40>
+wf_schema = 'tq_11be3dd83d'
+wf_conn = <asyncpg.connection.Connection object at 0x7fa1ab4be5d0>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_retry_reopens_the_failed_closure_and_the_run_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
+        completes after the operator's retry (§22.6's manual leg)."""
+        compiled = sys.modules[MODULE_NAME].app.get("fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+        await flow_runner.drive(flow_id)
+    
+        status = await to_thread(runner.invoke, app, ["flows", "status", str(flow_id)])
+        assert "FAILED" in plain_cli_output(status.output)
+        assert "remedy: taskq flows retry" in plain_cli_output(status.output)
+    
+        retried = await to_thread(
+            runner.invoke,
+            app, ["flows", "retry", str(flow_id), "doomed", "--reason", "the enricher is back"],
+        )
+        assert retried.exit_code == 0, retried.output
+        assert "re-opened" in retried.output
+    
+        # THE AUDIT (G4): the manual resume is a row.
+        audit = await wf_conn.fetchrow(
+            f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+            "WHERE action = 'workflow.retry_node'",
+        )
+>       assert audit is not None
+E       assert None is not None
+
+tests/test_wf_cli_pins.py:261: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_retry_reopens_the_failed_closure_and_the_run_completes
+1 failed in 1.26s

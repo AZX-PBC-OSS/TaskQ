@@ -1,0 +1,37 @@
+.F
+=================================== FAILURES ===================================
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_c42ad190fd', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c42ad190fdaa')
+wf_pool = <asyncpg.pool.Pool object at 0x7fab67634e80>
+wf_schema = 'tq_c42ad190fd', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+>       hold_id = _hold_id_of(holds.output)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:219: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+holds_output = ''
+
+    def _hold_id_of(holds_output: str) -> str:
+        """The reply handle from the holds listing (the id IS the handle —
+        the parse mirrors the operator's copy-paste)."""
+>       return holds_output.split("hold ")[1].split(" ")[0]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: list index out of range
+
+tests/test_wf_cli_pins.py:110: IndexError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:52:21 [info     ] node.held                      hold_id=01a11936-2507-7af3-8f80-6925386f7dc4 node=review run_id=01a11936-24e7-7cf0-86ce-1b8a996ba4ac signals=['Approval']
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 122.90s (0:02:02)
