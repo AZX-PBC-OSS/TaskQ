@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import Promise, WorkflowApp, build, step
+from taskq.workflows import WorkflowApp, step
 
 
 class Ingest(BaseModel):
