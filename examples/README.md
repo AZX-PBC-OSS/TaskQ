@@ -50,7 +50,7 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 | File | What it demonstrates |
 |---|---|
 | `actors/` | The toy actor fleet, organized by feature domain (one module per domain: basic, failure, ratelimit, chained, DI, batch, advanced, cron, progress, tags, sync, real-world). See the [actors package README](actors/README.md). |
-| `admin_app.py` | The admin UI as a **separate process** (the decoupled deployment shape from Deployment Shapes below). Run with `TASKQ_PG_DSN=... TASKQ_ENVIRONMENT=dev uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001` (`TASKQ_PG_DSN` at the stack's Postgres; without the dev label the admin UI fails closed on the missing auth dependency) — the compose stack's `admin` service does exactly this; the sidecar then serves `/admin` on port 8001. |
+| `admin_app.py` | The admin UI as a **separate process** (the decoupled deployment shape from Deployment Shapes below). Run with `TASKQ_PG_DSN=... TASKQ_ENVIRONMENT=dev uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001` (`TASKQ_PG_DSN` at the stack's Postgres; without the dev label the admin UI fails closed on the missing auth dependency) — the compose stack's `admin` service does exactly this; the sidecar then serves `/admin` on port 8001. The demo's workflow definitions mount in the sidecar (`workflow_app=...`) so the run page's Resolve form delivers the typed payload here too — without a mounted WorkflowApp the resolve endpoints answer `501` (the typed door refuses to deliver untyped). |
 | `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python -m examples.client_script [--backfill N \| --cancel ID \| --list \| --realworld]` (module form: the script imports `examples.actors`, which needs the repo root on the import path). |
 | `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
 | `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup start examples/workgroup.toml` (or `taskq workgroup validate examples/workgroup.toml` to check the config without starting). Serves the DI-free actor subset — workgroup children are plain `taskq worker` subprocesses and cannot register DI providers. |
@@ -124,21 +124,33 @@ behind HTTP, with the admin's run explorer attached.
 ### Run it
 
 ```bash
-docker compose up -d                 # PG + Redis
-TASKQ_PG_DSN=... TASKQ_SCHEMA_NAME=demo \
-TASKQ_MIGRATE_ON_START=true \
-TASKQ_ADMIN_ACTIONS_ENABLED=true \
-uvicorn examples.app:app --port 8000
+cd examples
+docker compose up -d --build        # or just `docker compose up -d` — the
+                                    # default pull policy is `build`, so a
+                                    # cold start always rebuilds THIS tree
+                                    # (a stale image from another checkout
+                                    # can never serve silently)
 ```
 
-| Env var | Meaning |
-|---------|---------|
-| `TASKQ_PG_DSN` | the Postgres DSN (the compose stack's `postgres:5432`) |
-| `TASKQ_SCHEMA_NAME` | the schema (fresh is fine — the app migrates on start) |
-| `TASKQ_REDIS_URL` | optional (the progress fanout; the workflow demo needs none) |
-| `TASKQ_MIGRATE_ON_START` | the app applies the migrations (pre AND post — a fresh schema has no old workers to protect) |
-| `TASKQ_ADMIN_ACTIONS_ENABLED` | **must be `true` for the demo's Resolve** (the destructive-action opt-in) |
-| `TASKQ_ENVIRONMENT` | `dev` for the local demo (the admin's auth posture follows it) |
+Every taskq-example service also runs pre-built, content-hashed: set
+`TASKQ_EXAMPLE_IMAGE` to the hash tag and `TASKQ_EXAMPLE_PULL_POLICY=missing`
+(see `benchmarks/example_image_spec.py` — the fast path above).
+
+Without compose, run the app directly (the env vars it needs: `TASKQ_PG_DSN`
+at the stack's Postgres, `TASKQ_SCHEMA_NAME` (fresh is fine — the app
+migrates on start), `TASKQ_MIGRATE_ON_START=true`, and
+`TASKQ_ADMIN_ACTIONS_ENABLED=true` — **must be `true` for the demo's
+Resolve**, the destructive-action opt-in; `TASKQ_ENVIRONMENT=dev` for the
+local demo). The compose `app` service sets exactly these.
+
+| Surface | URL | The prefix |
+|---|---|---|
+| the trigger UI + the run page (the Resolve form lives here) | <http://localhost:8000> | `/taskq/...` — the trigger's 202 envelope's url resolves HERE |
+| the admin sidecar (the decoupled shape) | <http://localhost:8001/admin> | `/admin/...` — its own run page resolves too (the demo's workflow definitions mount in the sidecar for the typed door) |
+
+The two prefixes are each surface's OWN base path — the run page's
+Resolve form posts a RELATIVE url, so it works on either surface; the
+trigger's envelope names the app's `/taskq/...` path.
 
 ### Trigger + watch
 
@@ -147,8 +159,8 @@ curl -X POST http://localhost:8000/workflows/doc_ingest/run
 # → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the F3 envelope)
 ```
 
-Open the returned URL — the admin's run page renders the run's graph and
-patches it LIVE over SSE.
+Open the returned URL ON THE APP (:8000) — the run page renders the
+run's graph and patches it LIVE over SSE.
 
 ### The three demonstrable properties
 

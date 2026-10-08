@@ -1,9 +1,15 @@
 """Admin sidecar FastAPI app - mounts the TaskQ admin router at ``/admin``.
 
 Demonstrates the "separate process" deployment shape: the admin UI is
-completely decoupled from the user's trigger app.  No trigger UI routes,
-no actor imports, no ``examples.app`` dependency.  All configuration is
-loaded through :meth:`TaskQSettings.load`; no raw ``os.environ`` access.
+completely decoupled from the user's trigger routes.  No trigger UI
+routes, no ``examples.app`` dependency — but the workflow DEFINITIONS
+module (``examples.workflows``) mounts so the typed resolve door
+delivers: the door validates every payload against the declared gate
+models (``workflow_app=...``), and without a mounted WorkflowApp the
+resolve endpoints answer ``501`` (the typed door refuses to deliver
+untyped — a resolve that only answers 403/501 is a demo that cannot
+perform its own central action).  All configuration is loaded through
+:meth:`TaskQSettings.load`; no raw ``os.environ`` access.
 
 Set ``TASKQ_MIGRATE_ON_START=true`` to apply pending migrations before
 the first request.  The process exits if migrations fail.
@@ -17,6 +23,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
 
+from examples.workflows import wf_app
 from taskq import TaskQ
 from taskq.migrate import apply_pending_locked
 from taskq.settings import TaskQSettings
@@ -67,6 +74,13 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             auth_dependency=None,
             base_path="/admin",
             backend=tq.backend,
+            # THE TYPED DOOR'S WITNESS (attack-4 F-P4-DEMO-DEAD-RESOLVE's
+            # cure): the demo's workflow definitions mount so the run
+            # page's Resolve form DELIVERS the typed ReviewDecision.
+            # Without it the resolve endpoints answer 501 — a sidecar
+            # that cannot resolve is a demo that cannot perform its own
+            # central action.
+            workflow_app=wf_app,
         )
         setup_admin_state(application, bundle)
         application.include_router(bundle.router, prefix="/admin")
