@@ -9,12 +9,11 @@ the observed half contradicts it. Captured to .measurements/attack3/.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import asyncpg
 from pydantic import BaseModel
 
-from taskq.workflows import Done, FlowRunner, Refine, WorkflowApp, build, loop, step
+from taskq.workflows import Done, FlowRunner, Refine, StepContext, WorkflowApp, build, loop, step
 
 
 class Counter(BaseModel):
@@ -49,7 +48,7 @@ async def test_a3_driver_exhaustion_never_enqueues_the_escalation(
 ) -> None:
     calls: list[int] = []
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         calls.append(1)
         return Refine(Counter(acc=len(calls)))
 
@@ -85,7 +84,7 @@ async def test_a3_driver_exhaustion_never_enqueues_the_escalation(
 async def test_a3_fail_policy_escalates_anyway(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         return Refine(Counter(acc=1))
 
     app = WorkflowApp()
@@ -134,7 +133,7 @@ async def test_a3_poison_body_escapes_both_walls(
 ) -> None:
     calls: list[int] = []
 
-    async def poison(ctx: Any, carry: object) -> Done[Counter]:
+    async def poison(ctx: StepContext, carry: object) -> Done[Counter]:
         calls.append(1)
         raise ConnectionError("the body's own network flake — deterministically")
 
@@ -176,7 +175,7 @@ async def test_a3_cursor_replay_through_a_retry(
     seen: list[str] = []
     fail_once = {"n": 0}
 
-    async def body(ctx: Any, params: Ingest) -> Ingest:
+    async def body(ctx: StepContext, params: Ingest) -> Ingest:
         answer = await ctx.wait_signal(Approval, timeout_s=30.0)
         seen.append(answer.verdict)
         fail_once["n"] += 1
@@ -234,7 +233,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     resurrect the flow."""
     fail = {"n": 0}
 
-    async def fails_once(ctx: Any, carry: object) -> Done[Counter]:
+    async def fails_once(ctx: StepContext, carry: object) -> Done[Counter]:
         fail["n"] += 1
         raise RuntimeError("the body's own bug")
 
@@ -275,7 +274,7 @@ async def test_a3_cap_bounds_spawns_through_the_memo_replay(
 ) -> None:
     calls: list[int] = []
 
-    async def counting(ctx: Any, carry: object) -> Refine[Counter]:
+    async def counting(ctx: StepContext, carry: object) -> Refine[Counter]:
         calls.append(1)
         return Refine(Counter(acc=len(calls)))
 

@@ -32,6 +32,7 @@ from taskq.workflows import (
     Exit,
     FlowRunner,
     Refine,
+    StepContext,
     WorkflowApp,
     build,
     loop,
@@ -96,7 +97,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
 
     received: list[Any] = []
 
-    async def discriminated_body(ctx: Any, params: Ingest) -> Any:
+    async def discriminated_body(ctx: StepContext, params: Ingest) -> Any:
         answer = await ctx.wait_signal(
             (Alpha, Beta),
             timeout_s=120.0,
@@ -140,7 +141,7 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
     class Beta(BaseModel):
         y: int = 2
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal((Alpha, Beta), timeout_s=120.0)
 
     app = WorkflowApp()
@@ -192,7 +193,7 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
     letters."""
     calls: list[int] = []
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         calls.append(1)
         return Refine(Counter(acc=len(calls)))
 
@@ -244,7 +245,7 @@ async def test_driver_fail_policy_enqueues_nothing(
     vocabulary is read by the driver, not decorative)."""
     calls: list[int] = []
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         calls.append(1)
         return Refine(Counter(acc=len(calls)))
 
@@ -274,11 +275,11 @@ async def test_escalates_to_registers_a_custom_body(
     the definition registry (D1) and RUNS it."""
     escalated: list[dict[str, object]] = []
 
-    async def page_operator(ctx: Any, escalation: dict[str, object]) -> dict[str, object]:
+    async def page_operator(ctx: StepContext, escalation: dict[str, object]) -> dict[str, object]:
         escalated.append(escalation)
         return escalation
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         return Refine(Counter(acc=1))
 
     app = WorkflowApp()
@@ -318,7 +319,7 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
     advance) leaves on a RUNNING row."""
     calls: list[int] = []
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[Counter]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
         calls.append(1)
         return Refine(Counter(acc=len(calls)))
 
@@ -365,13 +366,13 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     didn't get to run), and the flow derives COMPLETE."""
     ran: list[str] = []
 
-    async def head(ctx: Any, params: Ingest) -> Report:
+    async def head(ctx: StepContext, params: Ingest) -> Report:
         return Report(n=1)
 
-    async def early_exit(ctx: Any, report: Report) -> Exit[Report]:
+    async def early_exit(ctx: StepContext, report: Report) -> Exit[Report]:
         return Exit(Report(n=42))
 
-    async def tail(ctx: Any, report: Report) -> Report:
+    async def tail(ctx: StepContext, report: Report) -> Report:
         ran.append("tail")
         return report
 
@@ -431,7 +432,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     is the count)."""
     attempts: list[int] = []
 
-    async def fails_always(ctx: Any, params: Ingest) -> Report:
+    async def fails_always(ctx: StepContext, params: Ingest) -> Report:
         attempts.append(1)
         raise RuntimeError("the node's own bug — the operator will retry")
 
@@ -494,7 +495,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
 # ── E8: the CARRIER-TYPE declaration enforced (T19's pin 5) ────────────
 
 
-async def _refines_wrong(ctx: Any, carry: object) -> Refine[Other]:
+async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
     return Refine(Other(unrelated="drift"))
 
 
@@ -521,7 +522,7 @@ def test_carrier_type_match_is_clean() -> None:
     (and the undeclared-carry loop — the unenforceable shape — is never
     convicted on a guess)."""
 
-    async def refines_right(ctx: Any, carry: object) -> Done[Counter] | Refine[Counter]:
+    async def refines_right(ctx: StepContext, carry: object) -> Done[Counter] | Refine[Counter]:
         return Done(Counter(acc=1))
 
     app = WorkflowApp()
@@ -537,15 +538,15 @@ def test_carrier_type_match_is_clean() -> None:
 # ── the MAP-JOIN consumption contract (the ecosystem mapper's defect) ──
 
 
-async def _map_items_source(ctx: Any, params: Ingest) -> list[Report]:
+async def _map_items_source(ctx: StepContext, params: Ingest) -> list[Report]:
     return [Report(n=i) for i in range(3)]
 
 
-async def _map_per_item(ctx: Any, item: Report) -> dict[str, int]:
+async def _map_per_item(ctx: StepContext, item: Report) -> dict[str, int]:
     return {"n": item.n * 10}
 
 
-async def _map_tail(ctx: Any, items: list[dict[str, int]]) -> dict[str, int]:
+async def _map_tail(ctx: StepContext, items: list[dict[str, int]]) -> dict[str, int]:
     return {"sum": sum(i["n"] for i in items)}
 
 
@@ -566,7 +567,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     same way."""
     ran: list[str] = []
 
-    async def tail_tail(ctx: Any, summed: dict[str, int]) -> dict[str, int]:
+    async def tail_tail(ctx: StepContext, summed: dict[str, int]) -> dict[str, int]:
         ran.append("tail_tail")
         return {"double": summed["sum"] * 2}
 
@@ -629,7 +630,7 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
     def make_local() -> Local:
         return Local(n=1)
 
-    async def annotated_body(ctx: Any, params: Ingest) -> Local:
+    async def annotated_body(ctx: StepContext, params: Ingest) -> Local:
         return make_local()  # the body's code never names Local — no closure cell
 
     app = WorkflowApp()
@@ -647,7 +648,7 @@ def test_e4_still_convicts_the_genuinely_unannotated() -> None:
     annotation at all is the same conviction as before."""
     from taskq.workflows.api._validate import WorkflowValidationError
 
-    async def unannotated(ctx: Any, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: THE PROBE — the genuinely unannotated body is the mutation under test.
+    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: THE PROBE — the genuinely unannotated body is the mutation under test.
         return params
 
     app = WorkflowApp()
@@ -749,16 +750,16 @@ def test_default_escalation_body_is_registered_once_per_workflow() -> None:
     from taskq.workflows.api._loop import ESCALATION_STEP_KEY
     from taskq.workflows.definitions import DuplicateStepBodyError, get_registry
 
-    async def body_one(ctx: Any, carry: object) -> Done[Counter]:
+    async def body_one(ctx: StepContext, carry: object) -> Done[Counter]:
         return Done(Counter(acc=1))
 
-    async def body_two(ctx: Any, carry: object) -> Done[Counter]:
+    async def body_two(ctx: StepContext, carry: object) -> Done[Counter]:
         return Done(Counter(acc=2))
 
-    async def esc_a(ctx: Any, escalation: dict[str, object]) -> dict[str, object]:
+    async def esc_a(ctx: StepContext, escalation: dict[str, object]) -> dict[str, object]:
         return escalation
 
-    async def esc_b(ctx: Any, escalation: dict[str, object]) -> dict[str, object]:
+    async def esc_b(ctx: StepContext, escalation: dict[str, object]) -> dict[str, object]:
         return escalation
 
     app = WorkflowApp()

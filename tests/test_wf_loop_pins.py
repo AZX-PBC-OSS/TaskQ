@@ -32,15 +32,16 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows._sweep import sweep_loop_budget
 from taskq.workflows import (
     Done,
     FlowRunner,
     Refine,
+    StepContext,
     WorkflowApp,
     build,
     loop,
 )
+from taskq.workflows._sweep import sweep_loop_budget
 
 
 class Counter(BaseModel):
@@ -89,7 +90,7 @@ async def test_carry_advanced_exactly_once_per_iteration(
     consecutive."""
     iterations: list[int] = []
 
-    async def counting_body(ctx: Any, carry: object) -> object:
+    async def counting_body(ctx: StepContext, carry: object) -> object:
         acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
         iterations.append(acc)
         if acc >= 3:
@@ -130,7 +131,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
     TERMINAL in the same tx (never wedged running)."""
     spawns: list[int] = []
 
-    async def refine_forever(ctx: Any, carry: object) -> Refine[dict[str, int]]:
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[dict[str, int]]:
         spawns.append(1)
         return Refine({"acc": len(spawns)})
 
@@ -273,7 +274,7 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     ladder untouched, the lease machinery re-claims)."""
     kills2: dict[str, int] = {"n": 0}
 
-    async def body_failure(ctx: Any, carry: object) -> Done[dict[str, int]]:
+    async def body_failure(ctx: StepContext, carry: object) -> Done[dict[str, int]]:
         kills2["n"] += 1
         raise ConnectionError("the body's own network flake — deterministically")
 
@@ -313,7 +314,7 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
             raise asyncpg.exceptions.ConnectionDoesNotExistError("the machinery's storm kill")
         return await real(*a, **kw)
 
-    async def done_at_two(ctx: Any, carry: object) -> Done[Counter] | Refine[Counter]:
+    async def done_at_two(ctx: StepContext, carry: object) -> Done[Counter] | Refine[Counter]:
         acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
         return Done(Counter(acc=acc)) if acc >= 2 else Refine(Counter(acc=acc))
 
@@ -517,7 +518,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
         render_loop_sql,
     )
 
-    async def hold_then_done(ctx: Any, carry: object) -> object:
+    async def hold_then_done(ctx: StepContext, carry: object) -> object:
         if ctx.attempt == 1:
             # THE HOLD (attempt 1 only — the re-execution doctrine: the
             # answer replays from the ledger on the resume).

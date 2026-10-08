@@ -10,7 +10,7 @@ extra carries no requirements of its own.
 
 ```python
 from pydantic import BaseModel
-from taskq.workflows import WorkflowApp, build, gather, sink, step
+from taskq.workflows import StepContext, WorkflowApp, build, gather, sink, step
 
 app = WorkflowApp()
 
@@ -24,12 +24,12 @@ class Report(BaseModel):
 
 
 @app.actor(queue="cpu")  # the workflow decorator — NOT taskq.actor
-async def fetch(ctx, params: Ingest) -> Report:
+async def fetch(ctx: StepContext, params: Ingest) -> Report:
     return Report(ref=f"r-{params.doc_id}")
 
 
 @app.actor(queue="cpu")
-async def summarize(ctx, reports: list[Report]) -> dict[str, int]:
+async def summarize(ctx: StepContext, reports: list[Report]) -> dict[str, int]:
     return {"count": len(reports)}
 
 

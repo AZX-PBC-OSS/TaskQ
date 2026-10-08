@@ -10,12 +10,19 @@ back from the captured run (BUILD-PROTOCOL §2/§3).
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import Promise, WorkflowApp, WorkflowBuildError, build, gather, sink, step
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    WorkflowApp,
+    WorkflowBuildError,
+    build,
+    gather,
+    sink,
+    step,
+)
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._validate import WorkflowValidationError
 
@@ -30,11 +37,11 @@ class Report(BaseModel):
     ref: str
 
 
-async def _annotated_body(ctx: Any, params: Ingest) -> Report:
+async def _annotated_body(ctx: StepContext, params: Ingest) -> Report:
     return Report(ref=params.doc_id)
 
 
-async def _consumer_body(ctx: Any, report: Report) -> dict[str, int]:
+async def _consumer_body(ctx: StepContext, report: Report) -> dict[str, int]:
     return {"n": 1}
 
 
@@ -131,7 +138,7 @@ def test_unannotated_step_mutation() -> None:
     """E4: the return annotation IS the wiring — an unannotated body
     reds."""
 
-    async def unannotated(ctx: Any, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: THE PROBE — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
+    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: THE PROBE — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
         return params
 
     app = WorkflowApp()
@@ -153,7 +160,7 @@ class Unrelated(BaseModel):
     other: str
 
 
-async def _unrelated_consumer(ctx: Any, u: Unrelated) -> dict[str, int]:
+async def _unrelated_consumer(ctx: StepContext, u: Unrelated) -> dict[str, int]:
     return {"n": 1}
 
 
@@ -196,7 +203,7 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     valid graphs is the compile's over-rejection)."""
     from taskq.workflows.api._graph import GateDecl
 
-    async def gated_body(ctx: Any, params: Ingest) -> Report:
+    async def gated_body(ctx: StepContext, params: Ingest) -> Report:
         return Report(ref=params.doc_id)
 
     app = WorkflowApp()
@@ -246,7 +253,7 @@ def test_differing_redefinition_refused() -> None:
     app, name = _clean_app()
     _compiled(name, app)  # recompile — identical, idempotent
 
-    async def shadow_body(ctx: Any, params: Ingest) -> Report:
+    async def shadow_body(ctx: StepContext, params: Ingest) -> Report:
         return Report(ref="shadow")
 
     app2 = WorkflowApp()

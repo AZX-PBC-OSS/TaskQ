@@ -29,6 +29,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.workflows import StepContext
 from taskq.workflows.chain import (
     DONE,
     Chain,
@@ -505,7 +506,7 @@ _T20_PAGE = [
 ]
 
 
-async def t20_source(ctx: Any) -> None:
+async def t20_source(ctx: StepContext) -> None:
     """The paged source: ONE page, emitted while the source is running
     (each yield = ONE emit tx — the children + edges + the cursor)."""
     await ctx.emit_batch(
@@ -592,7 +593,7 @@ T20_LYING_CHAIN = Chain(
 )
 
 
-async def t20_lying_source(ctx: Any) -> None:
+async def t20_lying_source(ctx: StepContext) -> None:
     await ctx.emit_batch(
         [chain_start(T20_LYING_CHAIN, {"app_id": 1}, map_index=1, trace_id="app-1")],
         cursor={"page": 0},

@@ -470,7 +470,7 @@ cascade downstream — is spelled (never glued):
 ```python
 from pydantic import BaseModel
 
-from taskq.workflows import WorkflowApp, build, step
+from taskq.workflows import StepContext, WorkflowApp, build, step
 
 app = WorkflowApp()
 
@@ -484,22 +484,22 @@ class Stats(BaseModel):
 
 
 @app.actor(queue="cpu")
-async def stage_a(ctx, params: Ingest) -> Stats:
+async def stage_a(ctx: StepContext, params: Ingest) -> Stats:
     return Stats(n=1)
 
 
 @app.actor(queue="cpu")
-async def stage_b(ctx, params: Ingest) -> Stats:
+async def stage_b(ctx: StepContext, params: Ingest) -> Stats:
     return Stats(n=2)
 
 
 @app.actor(queue="cpu")
-async def reduce(ctx, a: Stats, b: Stats) -> Stats:  # the join's user body — the DECODED parents
+async def reduce(ctx: StepContext, a: Stats, b: Stats) -> Stats:  # the join's user body — the DECODED parents
     return Stats(n=a.n + b.n)
 
 
 @app.actor(queue="cpu")
-async def tail(ctx, total: Stats) -> Stats:
+async def tail(ctx: StepContext, total: Stats) -> Stats:
     return total
 
 
@@ -712,7 +712,7 @@ def application_sync() -> object:
 ```
 
 The bodies are ordinary typed-outcome coroutines
-(`async def screen_app(ctx, item) -> ScreenOutcome`); the router's
+(`async def screen_app(ctx: StepContext, item) -> ScreenOutcome`); the router's
 decision is the body's return. Totality is the fence, at two doors:
 
 1. **Declaration time** — `Chain` refuses a route that is not total
@@ -729,6 +729,24 @@ The chain is declared ONCE and instantiates per record through the
 certified fork-at-finalize machinery: each chain step's finalize forks
 AT MOST ONE child (the route's arm — no fan-in, no join), the record's
 payload, `map_index` and trace riding forward.
+
+### Chain or DAG? (the one-paragraph decision guide)
+
+**The chain is the per-record stream** — a route arm per outcome, at
+most one child per step, no fan-in, no join; pick it when every record
+flows ALONG ONE PATH and the arms are the branching. **The DAG is the
+shared shape** — `step`/`gather`/`map_source` wiring (§3) with real
+fan-in joins: pick it when independent results CONVERGE (a reducer
+consuming two parents, a `gather`'s all-upstream join, a map's
+collected join). The wrong guess costs a restructuring, not a
+migration: a fan-in spelled as a chain has NOWHERE to put the second
+parent (the chain's finalize forks at most one child — the convergence
+is unwritable), and a route spelled as a DAG arm drags the whole graph
+into the per-record stream where the shared joins never fire. The two
+compose — the chain's records fan OUT of a `chain_source` (§10's emit
+tx) into any downstream DAG node, and a chain step's body can be the
+consumer of an upstream `gather`: the stream is the row source, the
+graph is the convergence.
 
 ### The partial-success run (the envelope must not lie)
 

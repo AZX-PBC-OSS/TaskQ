@@ -18,7 +18,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
     HitlClient,
@@ -85,7 +85,7 @@ async def _held_flow(
 async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=0.3)
 
     flow_id, runner, _node = await _held_flow(
@@ -121,7 +121,7 @@ async def test_a3_expired_hold_reholds_forever_no_timeout_face(
 async def test_a3_double_resolve_audit_not_exactly_once(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
@@ -169,7 +169,7 @@ async def test_a3_hold_context_canary_leaks_through_list_by_default(
 ) -> None:
     canary = "sk-canary-a3-4f9d"
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(
             Approval,
             timeout_s=120.0,
@@ -204,7 +204,7 @@ async def test_a3_knock_is_pointer_only(
     wf_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
@@ -260,7 +260,7 @@ async def test_a3_knock_is_pointer_only(
 async def test_a3_wrong_model_payload_not_refused_at_boundary(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
@@ -290,7 +290,7 @@ async def test_a3_union_wait_narrows_to_the_first_model(
 ) -> None:
     received: list[Any] = []
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         answer = await ctx.wait_signal((Lenient, Strict), timeout_s=120.0)
         received.append(answer)
         return answer
@@ -323,7 +323,7 @@ async def test_a3_union_wait_narrows_to_the_first_model(
 async def test_a3_drive_held_misses_the_eternal_hold(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=None)
 
     flow_id, runner, node = await _held_flow(
@@ -351,7 +351,7 @@ async def test_a3_drive_held_misses_the_eternal_hold(
 async def test_a3_retried_hold_site_reuses_the_standing_hold(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, runner, _node = await _held_flow(

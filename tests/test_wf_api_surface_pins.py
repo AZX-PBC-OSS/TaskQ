@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import WorkflowApp, build, sink, step
+from taskq.workflows import StepContext, WorkflowApp, build, sink, step
 from taskq.workflows.api._graph import GateDecl
 
 
@@ -35,7 +35,7 @@ class Escalate(BaseModel):
     reason: str
 
 
-async def _body(ctx: Any, params: Ingest) -> Report:
+async def _body(ctx: StepContext, params: Ingest) -> Report:
     """The report body (the direct-call form's probe)."""
     return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
 
@@ -144,7 +144,7 @@ def test_gate_declaration_rides_the_compile() -> None:
     read them from here)."""
     from taskq.workflows import gather
 
-    async def gated(ctx: Any, params: Ingest) -> Report:
+    async def gated(ctx: StepContext, params: Ingest) -> Report:
         return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
 
     app = WorkflowApp()
@@ -176,7 +176,7 @@ def test_mermaid_shape_vocabulary() -> None:
     label fallback for an unresolvable type."""
     from taskq.workflows import gather, map_source
 
-    async def map_item(ctx: Any, report: Report) -> dict[str, int]:
+    async def map_item(ctx: StepContext, report: Report) -> dict[str, int]:
         return {"n": 1}  # pragma: no cover - the runner drives real bodies
 
     app = WorkflowApp()

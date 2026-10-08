@@ -17,11 +17,11 @@ from __future__ import annotations
 import inspect
 import subprocess  # Why: the abstraction check IS a grep over the tree; fixed argv, no user input.
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel
 
 from taskq.workflows import (
+    StepContext,
     WorkflowApp,
     build,
     gather,
@@ -101,43 +101,43 @@ class Vec(BaseModel):
     v: list[float]
 
 
-async def _fetch(ctx: Any, params: DocIngest) -> Report:
+async def _fetch(ctx: StepContext, params: DocIngest) -> Report:
     return Report(ref=f"report-{params.doc_id}")
 
 
-async def _embed(ctx: Any, report: Report) -> Vec:
+async def _embed(ctx: StepContext, report: Report) -> Vec:
     return Vec(v=[1.0])
 
 
-async def _summarize(ctx: Any, reports: list[Report]) -> dict[str, int]:
+async def _summarize(ctx: StepContext, reports: list[Report]) -> dict[str, int]:
     return {"count": len(reports)}
 
 
-async def _reduce_join(ctx: Any, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
+async def _reduce_join(ctx: StepContext, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
     return {"total": a["n"] + b["n"]}
 
 
-async def _stage_a(ctx: Any, params: DocIngest) -> dict[str, int]:
+async def _stage_a(ctx: StepContext, params: DocIngest) -> dict[str, int]:
     return {"n": 1}
 
 
-async def _stage_b(ctx: Any, params: DocIngest) -> dict[str, int]:
+async def _stage_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
     return {"n": 2}
 
 
-async def _tail(ctx: Any, total: dict[str, int]) -> dict[str, int]:
+async def _tail(ctx: StepContext, total: dict[str, int]) -> dict[str, int]:
     return total
 
 
-async def _chooser(ctx: Any, params: DocIngest) -> dict[str, str]:
+async def _chooser(ctx: StepContext, params: DocIngest) -> dict[str, str]:
     return {"pick": "b"}
 
 
-async def _branch_a(ctx: Any, params: DocIngest) -> dict[str, int]:
+async def _branch_a(ctx: StepContext, params: DocIngest) -> dict[str, int]:
     return {}
 
 
-async def _branch_b(ctx: Any, params: DocIngest) -> dict[str, int]:
+async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
     return {}
 
 

@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
+    StepContext,
     WorkflowApp,
     build,
     map_source,
@@ -54,34 +55,34 @@ async def _echo(value: dict[str, object]) -> dict[str, object]:
     return value
 
 
-async def _prepare(ctx: Any, params: Ingest) -> Report:
+async def _prepare(ctx: StepContext, params: Ingest) -> Report:
     report = await ctx.step("prepare.inner", _echo, {"ref": params.doc_id})
     return Report(ref=report["ref"])
 
 
-async def _double(ctx: Any, report: Report) -> dict[str, int]:
+async def _double(ctx: StepContext, report: Report) -> dict[str, int]:
     return {"n": len(report.ref) * 2}
 
 
-async def _total(ctx: Any, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
+async def _total(ctx: StepContext, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
     """THE JOIN'S USER BODY (cut #1's cure): receives the DECODED parent
     results — its result cascades downstream."""
     return {"total": a["n"] + b["n"]}
 
 
-async def _tail(ctx: Any, t: dict[str, int]) -> dict[str, int]:
+async def _tail(ctx: StepContext, t: dict[str, int]) -> dict[str, int]:
     return t
 
 
-async def _items_source(ctx: Any, params: Ingest) -> list[Item]:
+async def _items_source(ctx: StepContext, params: Ingest) -> list[Item]:
     return [Item(n=1), Item(n=2), Item(n=3)]
 
 
-async def _per_item(ctx: Any, item: Item) -> dict[str, int]:
+async def _per_item(ctx: StepContext, item: Item) -> dict[str, int]:
     return {"n": item.n * 10}
 
 
-async def _map_tail(ctx: Any, items: list[dict[str, int]]) -> dict[str, object]:
+async def _map_tail(ctx: StepContext, items: list[dict[str, int]]) -> dict[str, object]:
     return {"sum": sum(i["n"] for i in items)}
 
 
@@ -178,10 +179,10 @@ async def test_skip_predicate_decided_at_dispatch(
     promise, so its dispatch strictly follows the chooser's terminal)."""
     app = WorkflowApp()
 
-    async def chooser(ctx: Any, params: Ingest) -> dict[str, str]:
+    async def chooser(ctx: StepContext, params: Ingest) -> dict[str, str]:
         return {"pick": "skip_me"}
 
-    async def guarded(ctx: Any, choice: dict[str, str]) -> dict[str, int]:
+    async def guarded(ctx: StepContext, choice: dict[str, str]) -> dict[str, int]:
         return {"n": 1}
 
     @app.workflow("guard_flow")
@@ -220,7 +221,7 @@ async def test_retry_classifier_routes_by_kind(
     body failure takes NO ladder (one terminal, immediately)."""
     app = WorkflowApp()
 
-    async def always_fails(ctx: Any, params: Ingest) -> dict[str, int]:
+    async def always_fails(ctx: StepContext, params: Ingest) -> dict[str, int]:
         raise ValueError("boom")
 
     @app.workflow("retry_flow")
@@ -260,7 +261,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
     failures emit NO terminal — the node re-pends until max_attempts."""
     app = WorkflowApp()
 
-    async def always_fails_transient(ctx: Any, params: Ingest) -> dict[str, int]:
+    async def always_fails_transient(ctx: StepContext, params: Ingest) -> dict[str, int]:
         raise ValueError("transient boom")
 
     @app.workflow("ladder_flow")
@@ -349,7 +350,7 @@ async def test_map_children_ledger_identity_and_max_attempts(
     row."""
     app = WorkflowApp()
 
-    async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+    async def flaky_child(ctx: StepContext, item: Item) -> dict[str, int]:
         if item.n == 2 and ctx.attempt == 1:
             raise ValueError("child 2 first try")
         return {"n": item.n}
