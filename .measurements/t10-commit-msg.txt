@@ -1,0 +1,52 @@
+feat(flows): T10 — HITL as rows: wf_signals, the deliver CAS, the timers, the cancel cascade
+
+Human-in-the-loop as ROWS: the hold identity (workflow_id, node_key,
+signal_name, hold_epoch — partial-unique over UNRESOLVED holds), the
+hold id = THE REPLY HANDLE (uuid7 via the seam), the payload RIDES THE
+ROW (deliver-no-drop — cut #3's cure).
+
+- migration 01.00.27_01_pre_wf_signals.sql: the wf_signals table (the
+  column set enumerated per the ticket: id/workflow_id/node_key/
+  signal_name/hold_epoch/call_id/payload/payload_schema/status/
+  created_at/expires_at/resolved_at) + the PARTIAL unique index (the
+  MULTI-HOLD, cut #3b: a second hold mints a NEW epoch — the
+  (flow,name) PK variant UniqueViolations AND wedges the run; that
+  variant stays red forever) + the enumeration/reply-handle indexes.
+- exceptions.py: SignalTimeoutError + SignalAbandonedError (the
+  glossary shape — the Signal prefix on TaskQError; NOT
+  TaskQSignalTimeout, which would break the one-prefix rule).
+- api/_hitl.py: the hold registration (the held representation:
+  pending + the deadline + the row as truth — the worker releases, no
+  slot held; a LOOP node's budget PAUSES), the DELIVER CAS
+  (exactly-once: two concurrent delivers → ONE delivered + one resume;
+  the typed DeliveryResult refused — never a silent drop; the hold
+  SURVIVES a refusal), the EXPIRY SWEEP ARM (the DB-clock deadline →
+  the DEFINED abandoned state), cancel_run_signals (the cancel
+  cascade's signal leg), HitlClient (list/get/resolve — the round-8
+  surface: the FULL context contract + THE REDACT LAW EXTENDS
+  (chain-then-hook before ANY surface) + the reply handle + the
+  idempotent resolve + THE AUDIT ROW (G4 — who resolved this is a ROW)
+  + the pg_notify KNOB (the pointer, never the sole copy — the row is
+  the truth; a lost knock converges by polling list())).
+- api/_runner.py: ctx.wait_signal (the TUPLE FORM via overloads' face —
+  the typed wait; the resume contract DOCUMENTED ON THE METHOD — cut
+  #18's disposition) + ctx.signal (the payload read — cut #3's cure) +
+  the ANSWER QUEUE (the delivered holds consumed IN EPOCH ORDER by
+  each attempt's per-attempt cursor: a RETRY replays the answers — the
+  operator never re-answers; a wait past the queue's end registers a
+  NEW hold — the stale-payload dragon's two structural kill sites) +
+  RESUME-NOT-RETRY (the ladder counts the ledger's 'failed' rows —
+  holds' resumes never burn it; the shared-counter variant is red
+  forever) + cancel_workflow (ONE tx — the flip is the linearization;
+  idempotent; the audit rides the same tx).
+- _leader_sweeps.py: the wf_signal_sweep arm registered (the expiry
+  arm — the ONLY live timer on a held row).
+
+Pins: 9/9 green (the late-deliver refusal/no-zombie-wake, the
+double-send no-op, the resume-not-retry matrix awaited→awaited→
+failed→succeeded, the multi-hold's new-epoch + the zero ladder burns,
+the reply handle (uuid7) + the context contract + the redact law's
+canary, the knock + the convergence-by-polling, the DB-clock timeout,
+the cancel cascade's idempotence + the audit ROW, the hold→resume
+band measured + pinned ≤ 50 ms in perf-evidence-workflows.md). The
+full local battery green (205 passed, t10-commit-battery.txt).

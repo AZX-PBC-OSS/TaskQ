@@ -1,0 +1,44 @@
+F
+=================================== FAILURES ===================================
+_______________________ test_hold_to_resume_latency_band _______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f3595861130>
+wf_schema = 'tq_c2110eb88a'
+wf_pool = <asyncpg.pool.Pool object at 0x7f35959525c0>
+
+    async def test_hold_to_resume_latency_band(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G11c (the third unpinned workflow band — the band is SET from this
+        measurement, then pinned in perf-evidence-workflows.md): send_signal
+        commit → the row claimable."""
+        import time
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+        hold_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+        )
+        start = time.perf_counter()
+        result = await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(hold_id),
+            payload={"verdict": "approve"},
+            payload_json=json.dumps({"verdict": "approve"}),
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+>       assert result.status == "delivered"
+E       AssertionError: assert 'refused' == 'delivered'
+E         
+E         - delivered
+E         + refused
+
+tests/test_wf_hitl_pins.py:474: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_hold_to_resume_latency_band - Asserti...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.58s

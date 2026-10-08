@@ -1,0 +1,5 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:650:39 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "dict[Unknown, Unknown] | list[Unknown] | str | int | float | bool" (reportUnknownArgumentType)
+1 error, 0 warnings, 0 informations

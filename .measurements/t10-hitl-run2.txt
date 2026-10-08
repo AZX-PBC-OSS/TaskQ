@@ -1,0 +1,51 @@
+F
+=================================== FAILURES ===================================
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fba659ed040>
+wf_schema = 'tq_d63868203b'
+wf_pool = <asyncpg.pool.Pool object at 0x7fba65ace680>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+        holds = {"n": 0}
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            holds["n"] += 1
+            decision = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if holds["n"] == 1:
+                # the SECOND hold (the same signal name — the new epoch)
+                second = await ctx.wait_signal(Approval, timeout_s=120.0)
+                return {"verdict": second.verdict, "note": "second"}
+            return {"verdict": decision.verdict, "note": "first"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+E       assert (0 == 1)
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:273: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.41s

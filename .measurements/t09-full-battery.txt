@@ -1,0 +1,9 @@
+........................................................................ [ 67%]
+................................../tmp/opencode/wt-taskqflow-p3/.venv/lib/python3.13/site-packages/pytest_cov/plugin.py:366: CovReportWarning: Failed to generate report: No data to report.
+
+  warnings.warn(CovReportWarning(message), stacklevel=1)
+
+WARNING: Failed to generate report: No data to report.
+
+                                                                         [100%]
+106 passed in 58.73s

@@ -1,0 +1,50 @@
+..F........                                                              [100%]
+=================================== FAILURES ===================================
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdbe5eaaf30>
+wf_schema = 'tq_f98177cd2c'
+wf_pool = <asyncpg.pool.Pool object at 0x7fdbd7a4f400>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+            return build(mapped)
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        ledger = await wf_conn.fetch(
+            f'SELECT map_index, attempt, status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'src.item' "
+            "ORDER BY map_index, attempt",
+            flow_id,
+        )
+        # Child 2 laddered (2 attempts); the others succeeded first try —
+        # PER-CHILD identity (the ledger-PK attack's shape, through the API).
+        child2 = [(r["attempt"], r["status"]) for r in ledger if r["map_index"] == 2]
+>       assert child2 == [(1, "failed"), (2, "succeeded")]
+E       AssertionError: assert [] == [(1, 'failed'... 'succeeded')]
+E         
+E         Right contains 2 more items, first extra item: (1, 'failed')
+E         Use -v to get more diff
+
+tests/test_wf_runner_pins.py:377: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+1 failed, 10 passed in 6.58s

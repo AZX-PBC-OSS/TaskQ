@@ -1,0 +1,79 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:651:25 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_json_dumps"
+    Argument type is "dict[str, str | int | dict[Unknown, Unknown] | list[Unknown] | float | bool | Any | None]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:663:25 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_json_dumps"
+    Argument type is "dict[Any | str, Any | int | dict[Unknown, Unknown] | list[Unknown] | str | bool | float | None]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:694:94 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_encode_result"
+    Argument type is "object | Unknown | str | int | float | bool | list[str | int | float | bool | ... | tuple[JSONValue, ...] | dict[str | int | float | bool | None, JSONValue] | None] | tuple[str | int | float | bool | list[JSONValue] | ... | dict[str | int | float | bool | None, JSONValue] | None, ...] | dict[str | int | float | bool | None, str | int | float | bool | list[JSONValue] | tuple[JSONValue, ...] | ... | None] | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:703:17 - error: Argument of type "Pool[Record]" cannot be assigned to parameter "conn" of type "ConnLike" in function "memoized_step_result"
+    Type "Pool[Record]" is not assignable to type "ConnLike"
+      "Pool[Record]" is not assignable to "Connection[Record]"
+      "Pool[Record]" is not assignable to "PoolConnectionProxy[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:771:40 - error: "Done" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:65 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_encode_result"
+    Argument type is "Unknown | Any" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "str"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "int"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "float"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "bool"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: "payload" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "list[JSONValue]"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "tuple[JSONValue, ...]"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:77 - error: Cannot access attribute "payload" for class "dict[str | int | float | bool | None, JSONValue]"
+    Attribute "payload" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:779:65 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_encode_result"
+    Argument type is "str | int | float | bool | list[str | int | float | bool | ... | tuple[JSONValue, ...] | dict[str | int | float | bool | None, JSONValue] | None] | tuple[str | int | float | bool | list[JSONValue] | ... | dict[str | int | float | bool | None, JSONValue] | None, ...] | dict[str | int | float | bool | None, str | int | float | bool | list[JSONValue] | tuple[JSONValue, ...] | ... | None] | Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:785:13 - error: Type of "feedback" is partially unknown
+    Type of "feedback" is "Unknown | Any | str | int | float | bool | list[JSONValue] | tuple[JSONValue, ...] | dict[str | int | float | bool | None, JSONValue] | None | None" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "str"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "int"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "float"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "bool"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: "feedback" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "list[JSONValue]"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "tuple[JSONValue, ...]"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "dict[str | int | float | bool | None, JSONValue]"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:786:29 - error: Cannot access attribute "feedback" for class "dict[Unknown, Unknown]"
+    Attribute "feedback" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:787:44 - error: "Refine" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "str"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "int"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "float"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "bool"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: "get" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "list[JSONValue]"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:788:34 - error: Cannot access attribute "get" for class "tuple[JSONValue, ...]"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:794:53 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "Unknown | Any | str | int | float | bool | list[str | int | float | bool | ... | tuple[JSONValue, ...] | dict[str | int | float | bool | None, JSONValue] | None] | tuple[str | int | float | bool | list[JSONValue] | ... | dict[str | int | float | bool | None, JSONValue] | None, ...] | dict[str | int | float | bool | None, str | int | float | bool | list[JSONValue] | tuple[JSONValue, ...] | ... | None] | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:803:13 - error: Type of "carry" is partially unknown
+    Type of "carry" is "Unknown | Any | str | int | float | bool | list[JSONValue] | tuple[JSONValue, ...] | dict[str | int | float | bool | None, JSONValue] | None | None" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:827:49 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:829:56 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+37 errors, 0 warnings, 0 informations

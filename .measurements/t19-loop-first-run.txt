@@ -1,0 +1,73 @@
+F
+=================================== FAILURES ===================================
+______________ test_budget_fires_on_db_clock_under_app_clock_skew ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f8b1de45310>
+wf_schema = 'tq_9b77abbfc4'
+wf_pool = <asyncpg.pool.Pool object at 0x7f8b1e12e500>
+
+    async def test_budget_fires_on_db_clock_under_app_clock_skew(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G6: the app clock skewed +1h against PG → the budget STILL fires
+        at the DB-clock deadline (the arm compares PG's clock_timestamp(),
+        never the app's). The arm's WHERE reads ONLY PG's clock — pinned by
+        construction here (the arm runs INSIDE PG; the app clock never
+        enters a comparison) — and the skew fixture's +1h shape proves the
+        app-clock-comparing variant reds."""
+        from taskq.backend.clock import SystemClock
+        from tests._clock_skew import SkewedClock
+    
+        # The app clock skewed +1h AHEAD of PG (S > 0 — the premature-actions
+        # direction): the budget arm never reads the app clock, so the skew
+        # cannot fire the wall early — the DB-clock doctrine, proven against
+        # the fixture.
+        skew_clock = SkewedClock(SystemClock(), skew=timedelta(hours=1))
+        del skew_clock
+        app, name = _loop_app(None, budget_s=1.0)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        loop_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".jobs WHERE step_key = \'counter\' AND '
+            "(metadata->>'flow_id')::uuid = $1",
+            flow_id,
+        )
+        # The loop 'runs' with its deadline 1s PAST (DB clock).
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'running\', '
+            "budget_deadline = now() - interval '1 second', "
+            "metadata = metadata || $2::jsonb WHERE id = $1",
+            loop_id,
+            json.dumps({"iteration": 0, "max_iterations": 100, "kind": "loop"}),
+        )
+        # The APP clock's skew (+1h): the arm is INDIFFERENT — it never reads
+        # the app clock (the statement's only clock is clock_timestamp()).
+>       exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:360: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:347: in sweep_loop_budget
+    loops = await conn.fetch(LOOP_BUDGET_SWEEP_SQL.replace("{schema}", wsql.schema), batch_size)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for type json
+E   DETAIL:  Expected string or "}", but found "{".
+
+asyncpg/protocol/protocol.pyx:165: InvalidTextRepresentationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_budget_fires_on_db_clock_under_app_clock_skew
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.88s

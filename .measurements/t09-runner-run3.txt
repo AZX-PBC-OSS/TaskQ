@@ -1,0 +1,438 @@
+F..F...F..F                                                              [100%]
+=================================== FAILURES ===================================
+___________________ test_skip_predicate_decided_at_dispatch ____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f88998248c0>
+wf_schema = 'tq_c8b2c86952'
+wf_pool = <asyncpg.pool.Pool object at 0x7f88998ca5c0>
+
+    async def test_skip_predicate_decided_at_dispatch(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #4's cure: the guard reads the flow's state AT DISPATCH — a
+        sibling's output decides it (inexpressible in the spike)."""
+        app = WorkflowApp()
+    
+        async def chooser(ctx: Any, params: Ingest) -> dict[str, str]:
+            return {"pick": "skip_me"}
+    
+        async def guarded(ctx: Any, params: Ingest) -> dict[str, int]:
+            return {"n": 1}
+    
+        @app.workflow("guard_flow")
+        def guard_flow() -> object:
+            sink(step(chooser, Ingest(doc_id="d"), key="pick"))
+            return build(
+                step(
+                    guarded,
+                    Ingest(doc_id="d"),
+                    key="guarded",
+                    # THE DISPATCH-TIME PREDICATE: reads the sibling's result.
+                    skip=lambda state: (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
+                    == "skip_me",
+                )
+            )
+    
+        runner = FlowRunner(app.get("guard_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        row = await wf_conn.fetchrow(
+            f'SELECT status, result FROM "{wf_schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'guarded'",
+            flow_id,
+        )
+        assert row is not None
+        assert row["status"] == "succeeded"  # the v1 skip semantics: succeed WITH the record
+>       assert "skipped" in (row["result"] or "")
+E       assert 'skipped' in (('{"value": {"n": 1}}'))
+
+tests/test_wf_runner_pins.py:198: AssertionError
+___________ test_transient_ladder_emits_no_terminal_until_exhaustion ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f8899827f20>
+wf_schema = 'tq_c8b2c86952'
+wf_pool = <asyncpg.pool.Pool object at 0x7f88998ca8c0>
+
+    async def test_transient_ladder_emits_no_terminal_until_exhaustion(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 7 through the public API: the transient ladder's attempt
+        failures emit NO terminal — the node re-pends until max_attempts."""
+        app = WorkflowApp()
+    
+        async def always_fails_transient(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("transient boom")
+    
+        @app.workflow("ladder_flow")
+        def ladder_flow() -> object:
+            node = step(always_fails_transient, Ingest(doc_id="d"), key="lad", max_attempts=3)
+            return build(node)
+    
+        runner = FlowRunner(app.get("ladder_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+E       AssertionError: assert 'max_ticks' == 'terminal'
+E         
+E         - terminal
+E         + max_ticks
+
+tests/test_wf_runner_pins.py:258: AssertionError
+_____________________ test_sequenced_maps_depth3_one_flow ______________________
+
+obj = Item(n=1)
+
+    def _orjson_fallback(obj: Any) -> Any:
+        """Convert types orjson can't serialize natively to a JSON-safe form.
+    
+        Only reached when *obj* is not a type orjson handles (UUID, datetime,
+        str, int, float, bool, None, list, dict).  Kept fast-path: the vast
+        majority of values never hit this function.
+        """
+        cls: type[Any] = type(obj)  # pyright: ignore[reportUnknownVariableType]  # Why: obj is Any from orjson's default function; type() always returns a valid type object.
+        mod = cls.__module__
+        name = cls.__qualname__
+    
+        # asyncpg protocol-level UUID, raw record access can leak these into
+        # structlog event dicts; convert to standard UUID string form.
+        if mod.startswith("asyncpg") and "UUID" in name:
+            return str(obj)
+    
+        # bytes in a log event dict, decode with replacement.
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="replace")
+    
+>       raise TypeError(f"Type is not JSON serializable: {mod}.{name}")
+E       TypeError: Type is not JSON serializable: tests.test_wf_runner_pins.Item
+
+src/taskq/_json.py:74: TypeError
+
+The above exception was the direct cause of the following exception:
+
+value = {'value': [Item(n=1), Item(n=2), Item(n=3)]}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+>           return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+E           TypeError: Type is not JSON serializable: Item
+
+src/taskq/_json.py:110: TypeError
+
+The above exception was the direct cause of the following exception:
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f88997046e0>
+wf_schema = 'tq_c8b2c86952'
+wf_pool = <asyncpg.pool.Pool object at 0x7f88996b10c0>
+
+    async def test_sequenced_maps_depth3_one_flow(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #2's cure (the BLOCKER): sequencing — a map whose source is a
+        step's promise, in ONE flow (the spike needed three flows + glue)."""
+        app = WorkflowApp()
+    
+        @app.workflow("seq_flow")
+        def seq_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d1"), key="src")
+            return build(step(_per_item, source, key="child"))
+    
+        runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:150: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:332: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:344: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:404: in _run_node
+    await self._finalize_success(flow_id, row, attempt, node, result)
+src/taskq/workflows/api/_runner.py:495: in _finalize_success
+    await finalize_node(
+src/taskq/workflows/engine.py:691: in finalize_node
+    applied = await _deadlock_retry(_tx1)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:203: in _deadlock_retry
+    return await coro_factory()
+           ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:671: in _tx1
+    return await _run_tx1(
+src/taskq/workflows/engine.py:259: in _run_tx1
+    _jsonb(result),
+    ^^^^^^^^^^^^^^
+src/taskq/workflows/_types.py:276: in _jsonb
+    return dumps_jsonb_str(value)
+           ^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/_json.py:202: in dumps_jsonb_str
+    data = dumps(value)
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+value = {'value': [Item(n=1), Item(n=2), Item(n=3)]}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+            return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+        except TypeError as exc:
+>           raise UnencodableValue(str(exc)) from exc
+E           taskq.exceptions.UnencodableValue: Type is not JSON serializable: Item
+
+src/taskq/_json.py:116: UnencodableValue
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+obj = Item(n=1)
+
+    def _orjson_fallback(obj: Any) -> Any:
+        """Convert types orjson can't serialize natively to a JSON-safe form.
+    
+        Only reached when *obj* is not a type orjson handles (UUID, datetime,
+        str, int, float, bool, None, list, dict).  Kept fast-path: the vast
+        majority of values never hit this function.
+        """
+        cls: type[Any] = type(obj)  # pyright: ignore[reportUnknownVariableType]  # Why: obj is Any from orjson's default function; type() always returns a valid type object.
+        mod = cls.__module__
+        name = cls.__qualname__
+    
+        # asyncpg protocol-level UUID, raw record access can leak these into
+        # structlog event dicts; convert to standard UUID string form.
+        if mod.startswith("asyncpg") and "UUID" in name:
+            return str(obj)
+    
+        # bytes in a log event dict, decode with replacement.
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="replace")
+    
+>       raise TypeError(f"Type is not JSON serializable: {mod}.{name}")
+E       TypeError: Type is not JSON serializable: tests.test_wf_runner_pins.Item
+
+src/taskq/_json.py:74: TypeError
+
+The above exception was the direct cause of the following exception:
+
+value = {'value': [Item(n=1), Item(n=2), Item(n=3)]}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+>           return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+E           TypeError: Type is not JSON serializable: Item
+
+src/taskq/_json.py:110: TypeError
+
+The above exception was the direct cause of the following exception:
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f889971b980>
+wf_schema = 'tq_c8b2c86952'
+wf_pool = <asyncpg.pool.Pool object at 0x7f88996b2d40>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            return build(step(flaky_child, source, key="child", max_attempts=3))
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:351: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:332: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:344: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:404: in _run_node
+    await self._finalize_success(flow_id, row, attempt, node, result)
+src/taskq/workflows/api/_runner.py:495: in _finalize_success
+    await finalize_node(
+src/taskq/workflows/engine.py:691: in finalize_node
+    applied = await _deadlock_retry(_tx1)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:203: in _deadlock_retry
+    return await coro_factory()
+           ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:671: in _tx1
+    return await _run_tx1(
+src/taskq/workflows/engine.py:259: in _run_tx1
+    _jsonb(result),
+    ^^^^^^^^^^^^^^
+src/taskq/workflows/_types.py:276: in _jsonb
+    return dumps_jsonb_str(value)
+           ^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/_json.py:202: in dumps_jsonb_str
+    data = dumps(value)
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+value = {'value': [Item(n=1), Item(n=2), Item(n=3)]}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+            return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+        except TypeError as exc:
+>           raise UnencodableValue(str(exc)) from exc
+E           taskq.exceptions.UnencodableValue: Type is not JSON serializable: Item
+
+src/taskq/_json.py:116: UnencodableValue
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_skip_predicate_decided_at_dispatch
+FAILED tests/test_wf_runner_pins.py::test_transient_ladder_emits_no_terminal_until_exhaustion
+FAILED tests/test_wf_runner_pins.py::test_sequenced_maps_depth3_one_flow - ta...
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+4 failed, 7 passed in 20.51s

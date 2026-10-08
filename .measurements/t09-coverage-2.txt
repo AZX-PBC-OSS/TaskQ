@@ -1,0 +1,58 @@
+...........F........................                                     [100%]
+=================================== FAILURES ===================================
+________________________ test_mermaid_shape_vocabulary _________________________
+
+    def test_mermaid_shape_vocabulary() -> None:
+        """The emission's grammar: rectangle = plain actor, ``[[...]]`` =
+        the gather join, ``{{...}}`` = the collapsed map's join, ``([(...)])``
+        = the HOLD node (its gate + timeout policy ON the node), and the
+        label fallback for an unresolvable type."""
+        from taskq.workflows import gather, map_source
+    
+        async def map_item(ctx: Any, report: Report) -> dict[str, int]:
+            return {"n": 1}  # pragma: no cover - the runner drives real bodies
+    
+        app = WorkflowApp()
+    
+        @app.workflow("shapes")
+        def shapes() -> object:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
+            plain = step(_body, Ingest(doc_id="d"), key="plain")
+            sink(plain)
+            joined = gather([plain])
+            sink(joined)
+            mapped = map_source(plain, map_item)
+            sink(mapped)
+            return build(
+                step(
+                    _body,
+                    Ingest(doc_id="d"),
+                    key="hold",
+                    gates=(gate,),
+                )
+            )
+    
+        text = app.get("shapes").mermaid()
+        assert 'plain["plain"]' in text  # the rectangle
+>       assert "joined[[" in text  # the gather join
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       assert 'joined[[' in 'flowchart TD\n    gather[["gather"]]\n    hold([("hold ⇅ ⏳Approval/∞")])\n    plain["plain"]\n    plain.join{{"plain.join"}}\n    plain -->|Report| gather\n    plain -->|Report| plain.join\n'
+
+tests/test_wf_api_surface_pins.py:202: AssertionError
+================================ tests coverage ================================
+___________________________________ coverage ___________________________________
+
+Name                                   Stmts   Miss Branch BrPart  Cover
+------------------------------------------------------------------------
+src/taskq/workflows/api/__init__.py        3      0      0      0   100%
+src/taskq/workflows/api/_app.py           81      2     18      2    96%
+src/taskq/workflows/api/_graph.py         99      4     10      4    93%
+src/taskq/workflows/api/_hints.py          4      0      0      0   100%
+src/taskq/workflows/api/_mermaid.py       42      4     22      4    88%
+src/taskq/workflows/api/_runner.py       276     14     74     16    91%
+src/taskq/workflows/api/_validate.py      86      0     46      3    98%
+------------------------------------------------------------------------
+TOTAL                                    591     24    170     29    93%
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_surface_pins.py::test_mermaid_shape_vocabulary - ass...
+1 failed, 35 passed in 5.30s

@@ -1,0 +1,9 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:645:44 - error: Argument type is partially unknown
+    Argument corresponds to parameter "map" in function "__init__"
+    Argument type is "dict[Unknown, Unknown]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:653:36 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "dict[Unknown, Unknown] | list[Unknown] | str | int | float | bool" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:810:53 - error: Import "LoopSpec" is not accessed (reportUnusedImport)
+3 errors, 0 warnings, 0 informations
