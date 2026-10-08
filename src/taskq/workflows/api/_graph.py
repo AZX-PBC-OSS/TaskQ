@@ -27,6 +27,8 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from taskq.workflows.chain import Chain
+
 __all__ = [
     "Exit",
     "GateDecl",
@@ -155,6 +157,11 @@ class NodeDecl:
     loop_spec: object | None = None
     loop_body: BodyFn | None = None
     loop_until: Callable[[], Awaitable[bool]] | None = None
+    # THE CHAIN ATTACHMENT (T20): a chain SOURCE node owns its declared
+    # Chain — the chain's step rows exist only from the emit onward
+    # (no NodeDecl); the runner resolves their routes from the compiled
+    # workflow's chains. ``chain is not None`` IS the source marker.
+    chain: object | None = None
 
 
 class Promise[T_co]:
@@ -202,6 +209,7 @@ class BuildGraph:
         self.nodes: dict[str, NodeDecl] = {}
         self.sunk: tuple[str, ...] = ()
         self.terminal: str | None = None
+        self.chains: list[object] = []
         self._auto_counter: dict[str, int] = {}
         #: The CROSS-GRAPH SMUGGLES recorded by the wiring verbs
         #: (attack-3 M3's cure): ``(consumer_key, parent_key)`` pairs
@@ -423,6 +431,54 @@ def gather(promises: list[Promise[Any]], *, on_failure: str = "fail_closed") -> 
         )
     )
     return Promise(node_key, list[object], graph)
+
+
+def chain_source(
+    chain: Chain,
+    source_body: BodyFn,
+    *args: object,
+    key: str | None = None,
+    actor: str = "wf",
+    queue: str = "default",
+) -> Promise[Any]:
+    """Wire a CHAIN SOURCE node (T20): *source_body* is the paged
+    generator (each ``ctx.emit_batch`` yield = ONE page's emit tx — the
+    children + edges + the cursor checkpoint while the source stays
+    running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
+    the source instantiates per record. The chain's step rows exist only
+    from the emit onward — they are NOT graph nodes; the runner resolves
+    their bodies (registry, D1) and routes (the compiled chain). A chain
+    step key that collides with a wired node or another chain's step is
+    refused at declaration (a coding error)."""
+    graph = active_graph()
+    step_keys = set(chain.steps)
+    clashes = (step_keys & set(graph.nodes)) | (
+        step_keys & {k for c in graph.chains for k in c.steps}  # type: ignore[attr-defined]
+    )
+    if clashes:
+        raise WorkflowBuildError(
+            f"chain {chain.name!r}'s step keys {sorted(clashes)} collide "
+            "with wired nodes or another chain's steps — a step key is the "
+            "ledger's identity, never a shadow"
+        )
+    graph.chains.append(chain)
+    node_key = key or chain.name
+    sources: list[tuple[str, object]] = []
+    for arg in args:
+        sources.append(("p", arg.key) if isinstance(arg, Promise) else ("d", arg))
+    graph.add(
+        NodeDecl(
+            key=node_key,
+            actor=actor,
+            queue=queue,
+            body=source_body,
+            parents=tuple(k for k, _ in sources if k == "p"),
+            args=tuple(sources),
+            kind="chain_source",
+            chain=chain,
+        )
+    )
+    return Promise(node_key, object, graph)
 
 
 def sink(*dropped: Promise[object]) -> None:

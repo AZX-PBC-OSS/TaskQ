@@ -506,7 +506,7 @@ UPDATE {schema}.jobs SET deps_pending = deps_pending + 1 WHERE id = $1
 """
 
 _CLAIMABLE_NODES_SQL_TEMPLATE = """
-SELECT id, step_key, map_index, attempt, payload FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
@@ -641,6 +641,13 @@ class FlowRunner:
         self.wsql: WorkflowSql = WorkflowSql.build(schema)
         self.schema = schema
         self._worker_id = JobId(new_uuid())
+        # THE ROUTER'S RESOLUTION (T20): the workflow's declared chains —
+        # a chain STEP row (fork-spawned or emitted) has no compiled
+        # NodeDecl; its route resolves from HERE (the compiled chain),
+        # its body from the registry (D1).
+        self._chain_steps: dict[str, Any] = {
+            step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
+        }
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -883,6 +890,17 @@ class FlowRunner:
                 result: dict[str, object] | None = {"value": [r for _key, r in parents_ordered]}
             else:
                 outcome_value = await body(ctx, *args)
+                chain = self._chain_steps.get(node_key)
+                if chain is not None:
+                    # THE CHAIN STEP (T20): the body's typed outcome IS
+                    # the router's decision — the finalize routes it (at
+                    # most one forked child, no join). The engine's
+                    # fork-at-finalize machinery owns the child row; the
+                    # ROUTE is this runner's decision.
+                    await self._finalize_chain_step(
+                        flow_id, row, attempt, node_key, chain, outcome_value, payload_doc
+                    )
+                    return
                 if isinstance(outcome_value, Exit):
                     # THE TYPED EARLY-EXIT (§17.1): the sentinel ends the
                     # node NOW — terminal-succeed with the typed payload,
@@ -1070,6 +1088,78 @@ class FlowRunner:
                 detail={"held_signals_cancelled": held},
             )
         return held + 1
+
+    async def _finalize_chain_step(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        step_key: str,
+        chain: Any,
+        outcome: object,
+        payload_doc: dict[str, object],
+    ) -> None:
+        """THE CHAIN STEP'S ROUTED FINALIZE (T20): the body's typed
+        outcome is the router's decision —
+
+        * an arm to a step key → the certified fork-at-finalize carries
+          AT MOST ONE child (no fan-in, no join): the record's payload
+          rides the row's own (verbatim), its identity (``map_index``)
+          and trace ride forward (the refuted-claim discipline);
+        * DONE → no fork (the chain ends here);
+        * an outcome with no arm → the LOUD refusal: the step
+          terminal-FAILS with ``error_class='RouterNotTotal'`` — the
+          record names the defect, the chain visibly dies, never
+          silently drops (the declaration-time totality check makes this
+          door unreachable for a truth-telling body; it exists for the
+          body that lied about its type)."""
+        from taskq.workflows.chain import RouterNotTotal, chain_fork
+
+        try:
+            child = chain.next_child(
+                step_key,
+                outcome,
+                payload=payload_doc,
+                map_index=row["map_index"],
+                trace_id=row.get("trace_id"),
+            )
+        except RouterNotTotal as exc:
+            logger.warning(
+                "node.router_not_total",
+                run_id=str(flow_id),
+                node=step_key,
+                outcome=repr(outcome),
+            )
+            await finalize_node(
+                self.pool,
+                self.wsql,
+                flow_id=flow_id,
+                job_id=JobId(row["id"]),
+                step_key=step_key,
+                worker_id=self._worker_id,
+                attempt=attempt,
+                claim_epoch=0,
+                outcome="failed",
+                error_class="RouterNotTotal",
+                error_message=str(exc)[:500],
+                map_index=row["map_index"],
+            )
+            return
+        fork = chain_fork(child, trace_id=row.get("trace_id"))
+        await finalize_node(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            step_key=step_key,
+            worker_id=self._worker_id,
+            attempt=attempt,
+            claim_epoch=0,
+            outcome="succeeded",
+            result=_encode_result(outcome),
+            fork=fork,
+            map_index=row["map_index"],
+        )
 
     async def _finalize_success(
         self,
