@@ -1,0 +1,150 @@
+F.FF                                                                     [100%]
+=================================== FAILURES ===================================
+______________________ test_leg3_the_live_wf_gauge_scrape ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f6a2667e2c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_866034ffe6', pg_dsn='postgresql://taskq:taskq@localhost:44991/tq_db_866034ffe69f')
+wf_pool = <asyncpg.pool.Pool object at 0x7f6a240bbac0>
+wf_conn = <asyncpg.connection.Connection object at 0x7f6a17e96210>
+
+    async def test_leg3_the_live_wf_gauge_scrape(
+        module_pg_pool: Any, module_pg_schema: Any, wf_pool: Any, wf_conn: Any
+    ) -> None:
+        """A LIVE Prometheus scrape of a real wf run: the maintenance
+        leader's sampler feeds ``taskq.wf_progress_nodes_total{workflow,
+        state}``; the scrape output captured verbatim (the docs' evidence)."""
+        schema = module_pg_schema.schema_name
+        from examples.workflows import trigger_run
+    
+        run_id = await trigger_run(module_pg_pool, schema)
+        run_id_uuid = __import__("uuid").UUID(run_id)
+        # Drive the run to its hold (a real mid-flight state for the gauge).
+        from taskq.workflows import FlowRunner
+    
+        runner = FlowRunner(module_pg_pool and wf_app_fixture().get("doc_ingest"), module_pg_pool, schema)
+        await runner.drive(run_id_uuid, until="held", max_ticks=300)
+    
+        # THE LEADER'S SAMPLER: one tick reads the rollup + updates the cache
+        # (the maintenance leader's wf-progress sampler's own read).
+        from taskq.obs import update_wf_progress_cache
+    
+>       rows = await wf_conn.fetch(
+            f"""
+            SELECT COALESCE(j2.metadata->>'workflow', 'doc_ingest') AS workflow,
+                   j.status::text AS state, count(*) AS count
+            FROM "{schema}".jobs j2
+            WHERE (j2.metadata->>'flow_id')::uuid = $1 AND j2.metadata ? 'flow_id'
+            GROUP BY 1, 2
+            """,
+            run_id_uuid,
+        )
+
+tests/test_wf_demo_legs.py:260: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: missing FROM-clause entry for table "j"
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=1f7cbeed9a07 redis=f23718b72cc0 state_dir=/tmp/pytest-of-rich/pytest-18604
+_____________________ test_leg2_the_kill_and_resume_drill ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f6a2667e2c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_866034ffe6', pg_dsn='postgresql://taskq:taskq@localhost:44991/tq_db_866034ffe69f')
+wf_pool = <asyncpg.pool.Pool object at 0x7f6a25ef3040>
+wf_conn = <asyncpg.connection.Connection object at 0x7f6a287be210>
+
+    async def test_leg2_the_kill_and_resume_drill(
+        module_pg_pool: Any, module_pg_schema: Any, wf_pool: Any, wf_conn: Any
+    ) -> None:
+        """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
+        fresh worker re-claims it (the lease expiry + the reclaim) and the
+        run COMPLETES. The operator's resilience story, runnable."""
+        schema = module_pg_schema.schema_name
+        # The trigger: the demo run's rows (the worker executes them through
+        # the intercept).
+        from examples.workflows import trigger_run
+    
+        run_id = await trigger_run(module_pg_pool, schema)
+        run_id_uuid = __import__("uuid").UUID(run_id)
+    
+        # The kill-and-resume: the demo's own worker processes.
+        demo_wd = Path(__file__).parent.parent
+        worker_env = {
+            **os.environ,
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_ENVIRONMENT": "dev",
+            "TASKQ_ADMIN_ACTIONS_ENABLED": "true",
+            "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
+        }
+        worker_argv = [
+            sys.executable, "-m", "taskq", "worker",
+            "--actors", "examples.workflows:ACTORS",
+        ]
+    
+        def spawn(tag: str) -> subprocess.Popen[bytes]:
+            return subprocess.Popen(  # noqa: S603  # Why: fixed argv, this interpreter, the project's own module.
+                worker_argv, env=worker_env, cwd=str(demo_wd),
+                stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),  # noqa: SIM115
+                stderr=subprocess.STDOUT,
+            )
+    
+        # WORKER 1: runs the flow's nodes.
+        killed = spawn("killed")
+        killed_deadline = time.time() + 90
+        saw_running = False
+        while time.time() < killed_deadline:
+            state = await wf_conn.fetchval(
+>               f'SELECT count(*) FROM "{wf_schema}".jobs '
+                                         ^^^^^^^^^
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
+                run_id_uuid,
+            )
+E           NameError: name 'wf_schema' is not defined
+
+tests/test_wf_demo_legs.py:180: NameError
+_________________ test_leg4_the_conditional_router_routes_live _________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f6a2667e2c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_866034ffe6', pg_dsn='postgresql://taskq:taskq@localhost:44991/tq_db_866034ffe69f')
+wf_pool = <asyncpg.pool.Pool object at 0x7f6a17e8b400>
+wf_conn = <asyncpg.connection.Connection object at 0x7f6a288317c0>
+
+    async def test_leg4_the_conditional_router_routes_live(
+        module_pg_pool: Any, module_pg_schema: Any, wf_pool: Any, wf_conn: Any
+    ) -> None:
+        """The T20 router LIVE: the chain's SCREEN step routes each record —
+        READABLE → index, UNREADABLE → dead_letter; the totals are the
+        fence. THE RUNNABLE PATH: the demo's ``doc_screen_router`` run."""
+        from examples.workflows import SCREEN_CHAIN, _DOC_SOURCE
+        from taskq.workflows import FlowRunner
+    
+        # The demo's corpus: a doc MISSING from the source = the UNREADABLE arm.
+        assert "doc-doomed" in _DOC_SOURCE  # the demo's corpus is intact
+        compiled = wf_app_fixture().get("doc_screen_router")
+>       runner = FlowRunner(compiled, wf_pool, wf_schema)
+                                               ^^^^^^^^^
+E       NameError: name 'wf_schema' is not defined
+
+tests/test_wf_demo_legs.py:304: NameError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=1f7cbeed9a07 redis=f23718b72cc0
+=========================== short test summary info ============================
+FAILED tests/test_wf_demo_legs.py::test_leg3_the_live_wf_gauge_scrape - async...
+FAILED tests/test_wf_demo_legs.py::test_leg2_the_kill_and_resume_drill - Name...
+FAILED tests/test_wf_demo_legs.py::test_leg4_the_conditional_router_routes_live
+3 failed, 1 passed in 3.82s

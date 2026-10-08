@@ -1,0 +1,209 @@
+ Image taskq-example:dev Building 
+ Image taskq-example:dev Building 
+ Image taskq-example:dev Building 
+ Image taskq-example:dev Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.83kB done
+#1 DONE 0.0s
+
+#2 [app internal] load build definition from Dockerfile
+#2 transferring dockerfile: 2.30kB done
+#2 DONE 0.0s
+
+#3 [worker-1 internal] load metadata for docker.io/library/python:3.14-slim-trixie
+#3 DONE 0.7s
+
+#4 [worker-1 internal] load .dockerignore
+#4 transferring context: 364B done
+#4 DONE 0.0s
+
+#5 [app 1/6] FROM docker.io/library/python:3.14-slim-trixie@sha256:f85c5697265c178cc6887276c55fe16cf3d14ca35c3df6a5eab3b360534a55d2
+#5 resolve docker.io/library/python:3.14-slim-trixie@sha256:f85c5697265c178cc6887276c55fe16cf3d14ca35c3df6a5eab3b360534a55d2 0.0s done
+#5 DONE 0.0s
+
+#6 [worker-1 internal] load build context
+#6 transferring context: 1.84MB 0.0s done
+#6 transferring context: 1.84MB 0.0s done
+#6 DONE 0.0s
+
+#7 [worker-2 2/6] RUN pip install --no-cache-dir uv==0.12.21
+#7 CACHED
+
+#8 [app 3/6] WORKDIR /app
+#8 CACHED
+
+#9 [app 4/6] COPY . /app
+#9 DONE 0.4s
+
+#10 [worker-2 5/6] RUN uv sync --locked --no-dev --extra fastapi --extra redis     && rm -rf /root/.cache/uv
+#10 0.212 Using CPython 3.14.8 interpreter at: /usr/local/bin/python3.14
+#10 0.212 Creating virtual environment at: .venv
+#10 0.217 Resolved 160 packages in 2ms
+#10 0.222    Building taskq-py @ file:///app
+#10 0.355 Downloading pygments (1.2MiB)
+#10 0.355 Downloading pydantic-core (2.0MiB)
+#10 0.355 Downloading asyncpg (3.3MiB)
+#10 0.355 Downloading tors (3.6MiB)
+#10 0.425  Downloaded pygments
+#10 0.433  Downloaded pydantic-core
+#10 0.442  Downloaded asyncpg
+#10 0.447  Downloaded tors
+#10 0.743       Built taskq-py @ file:///app
+#10 0.744 Prepared 37 packages in 525ms
+#10 0.842 Installed 37 packages in 98ms
+#10 0.842  + annotated-doc==0.0.5
+#10 0.842  + annotated-types==0.8.0
+#10 0.842  + anyio==4.15.1
+#10 0.842  + asyncpg==0.31.0
+#10 0.842  + click==8.5.0
+#10 0.842  + croniter==6.2.4
+#10 0.842  + dotenvmodel==1.1.0
+#10 0.842  + fastapi==0.141.1
+#10 0.842  + h11==0.16.0
+#10 0.842  + humanize==4.16.0
+#10 0.842  + idna==3.19
+#10 0.842  + jinja2==3.1.6
+#10 0.842  + markdown-it-py==4.2.0
+#10 0.842  + markupsafe==3.0.3
+#10 0.842  + mdurl==0.1.2
+#10 0.842  + opentelemetry-api==1.45.0
+#10 0.842  + orjson==3.12.0
+#10 0.842  + pydantic==2.13.5
+#10 0.842  + pydantic-core==2.46.5
+#10 0.842  + pygments==2.21.0
+#10 0.842  + python-dateutil==2.9.0.post0
+#10 0.842  + python-dotenv==1.2.3
+#10 0.842  + python-multipart==0.0.32
+#10 0.842  + redis==8.1.0
+#10 0.842  + rich==15.0.0
+#10 0.842  + shellingham==1.5.4
+#10 0.842  + six==1.17.0
+#10 0.842  + sse-starlette==3.5.0
+#10 0.842  + starlette==1.7.0
+#10 0.842  + structlog==26.1.0
+#10 0.842  + taskq-py==0.2.2 (from file:///app)
+#10 0.842  + tors==0.15.1
+#10 0.842  + typer==0.27.2
+#10 0.842  + typing-extensions==4.16.0
+#10 0.842  + typing-inspection==0.4.4
+#10 0.842  + uuid-utils==1.0.0
+#10 0.842  + uvicorn==0.54.0
+#10 DONE 1.0s
+
+#11 [worker-1 6/6] RUN pip uninstall --no-cache-dir -y pip     && groupadd --system taskq     && useradd --system --gid taskq --home-dir /app --no-create-home --shell /usr/sbin/nologin taskq     && chown -R taskq:taskq /app
+#11 0.340 Found existing installation: pip 26.2.1
+#11 0.353 Uninstalling pip-26.2.1:
+#11 0.437   Successfully uninstalled pip-26.2.1
+#11 0.463 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#11 DONE 0.8s
+
+#12 [worker-2] exporting to image
+#12 exporting layers
+#12 exporting layers 1.1s done
+#12 exporting manifest sha256:683903c01e45d433283cb609558778ca784368510cb71c39972260a30d3b97a4 0.1s done
+#12 exporting config sha256:09bd0b75f7fa359954562e422f0d9b76887378609cc2c54a6235a51a7e60b9e6
+#12 exporting config sha256:09bd0b75f7fa359954562e422f0d9b76887378609cc2c54a6235a51a7e60b9e6 0.1s done
+#12 exporting attestation manifest sha256:4a442f3e662f47424effcceb43d6b6ad1387254b2d33af941ba661107b070b6a
+#12 exporting attestation manifest sha256:4a442f3e662f47424effcceb43d6b6ad1387254b2d33af941ba661107b070b6a 0.1s done
+#12 exporting manifest list sha256:9725eea7b515d74ba767fe37edfa0fa068c337dbf3ff29a9422d779a1d778d1a 0.1s done
+#12 naming to docker.io/library/taskq-example:dev 0.0s done
+#12 unpacking to docker.io/library/taskq-example:dev
+#12 ...
+
+#13 [admin] exporting to image
+#13 exporting layers 1.1s done
+#13 exporting manifest sha256:ba188e53127331851ed793c8e0198486bb06c68b7ea21eb84c3fd488ee6c2b12 0.1s done
+#13 exporting config sha256:69d33fbcc466e7971b6bcc00ee4e1b284d63a676d38001774d541b393c2831b6 0.1s done
+#13 exporting attestation manifest sha256:1b3907e6d4e344b3419a8d80711e6e0f676d11ba27b0340371ae39f4f4141eb2 0.1s done
+#13 exporting manifest list sha256:ab9d234fe221493d4c32f7eaf9c7ee7cf369b308c679cf54b8112bc2074722e2 0.1s done
+#13 naming to docker.io/library/taskq-example:dev 0.0s done
+#13 unpacking to docker.io/library/taskq-example:dev 1.5s done
+#13 DONE 3.2s
+
+#14 [app] exporting to image
+#14 exporting layers 1.1s done
+#14 exporting manifest sha256:e69f984699fc04c2d2fb35cc6e0464194d9a480e99ff5543559c05486220f72c 0.1s done
+#14 exporting config sha256:96e8745322dcace6277af7af79e71a06dd35d5596d939881fe7e95c01049601c 0.1s done
+#14 exporting attestation manifest sha256:cebf04c6605b598bec4e97de1dde48c7d299e5bd685312acdaa045984b5e2a18 0.1s done
+#14 exporting manifest list sha256:5ce32b3e47e3c2663907ef9e8ebecac55e49e31de386174aa0e2a6f41782dcfa 0.1s done
+#14 naming to docker.io/library/taskq-example:dev 0.0s done
+#14 unpacking to docker.io/library/taskq-example:dev 1.8s done
+#14 DONE 3.3s
+
+#15 [worker-1] exporting to image
+#15 exporting layers 1.1s done
+#15 exporting manifest sha256:ff0163e3e8addfe687ea75d88d566689fbe9fe3318a5156d6f980da53ece22b7 0.1s done
+#15 exporting config sha256:152d59c305e674573aeb3b8c7be9bb01833b02d5138c0b76d62ba507be242c84 0.1s done
+#15 exporting attestation manifest sha256:de3a14a4787e8e46f594a44ccd321a0dd5b14481700630e6159ba6cefa901de2 0.1s done
+#15 exporting manifest list sha256:3403163c9da06c7a18032c132f12cee30a7f189640cb869ac33877d765caf2e3 0.1s done
+#15 naming to docker.io/library/taskq-example:dev 0.0s done
+#15 unpacking to docker.io/library/taskq-example:dev 1.8s done
+#15 DONE 3.3s
+
+#12 [worker-2] exporting to image
+#12 unpacking to docker.io/library/taskq-example:dev 1.8s done
+#12 DONE 3.3s
+
+#16 [admin] resolving provenance for metadata file
+#16 DONE 0.1s
+
+#17 [worker-1] resolving provenance for metadata file
+#17 DONE 0.1s
+
+#18 [app] resolving provenance for metadata file
+#18 DONE 0.1s
+
+#19 [worker-2] resolving provenance for metadata file
+#19 DONE 0.0s
+ Image taskq-example:dev Built 
+ Image taskq-example:dev Built 
+ Image taskq-example:dev Built 
+ Image taskq-example:dev Built 
+ Volume examples_pgdata Creating 
+ Volume examples_pgdata Creating 
+ Network examples_default Creating 
+ Network examples_default Creating 
+ Volume examples_pgdata Created 
+ Volume examples_pgdata Created 
+ Network examples_default Created 
+ Network examples_default Created 
+ Container examples-postgres-1 Creating 
+ Container examples-redis-1 Creating 
+ Container examples-redis-1 Created 
+ Container examples-postgres-1 Created 
+ Container examples-worker-2-1 Creating 
+ Container examples-admin-1 Creating 
+ Container examples-app-1 Creating 
+ Container examples-worker-1-1 Creating 
+ Container examples-admin-1 Created 
+ Container examples-app-1 Created 
+ Container examples-worker-2-1 Created 
+ Container examples-worker-1-1 Created 
+ Container examples-redis-1 Starting 
+ Container examples-postgres-1 Starting 
+ Container examples-redis-1 Started 
+ Container examples-postgres-1 Started 
+ Container examples-postgres-1 Waiting 
+ Container examples-redis-1 Waiting 
+ Container examples-postgres-1 Waiting 
+ Container examples-redis-1 Waiting 
+ Container examples-postgres-1 Waiting 
+ Container examples-redis-1 Waiting 
+ Container examples-redis-1 Waiting 
+ Container examples-postgres-1 Waiting 
+ Container examples-redis-1 Healthy 
+ Container examples-redis-1 Healthy 
+ Container examples-redis-1 Healthy 
+ Container examples-redis-1 Healthy 
+ Container examples-postgres-1 Healthy 
+ Container examples-postgres-1 Healthy 
+ Container examples-worker-2-1 Starting 
+ Container examples-app-1 Starting 
+ Container examples-postgres-1 Healthy 
+ Container examples-postgres-1 Healthy 
+ Container examples-admin-1 Starting 
+ Container examples-worker-1-1 Starting 
+ Container examples-worker-2-1 Started 
+ Container examples-app-1 Started 
+ Container examples-admin-1 Started 
+ Container examples-worker-1-1 Started 

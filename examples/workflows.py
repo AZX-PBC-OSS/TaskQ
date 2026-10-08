@@ -27,18 +27,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
 from pydantic import BaseModel
 
+from taskq import ActorRef
+from taskq import actor as vanilla_actor
 from taskq.workflows import (
     Done,
     FlowRunner,
     Refine,
     WorkflowApp,
     build,
+    chain_source,
     gather,
     loop,
     map_source,
@@ -46,6 +50,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api import GateDecl
+from taskq.workflows.chain import DONE, Chain, Route, Step
 
 #: The demo's batch: one doc is ARMED to fail its first enrichment
 #: attempt (the failing child + collect's demonstration; the retry takes
@@ -124,6 +129,96 @@ async def _route_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[st
     return _readable(enriched)
 
 
+async def _screen_step_body(ctx: Any, item: Any) -> ScreenOutcome:
+    """The SCREEN step's body: the record's text present → READABLE,
+    else UNREADABLE. The typed outcome IS the router's decision."""
+    text = _DOC_SOURCE.get(str(item))
+    return ScreenOutcome.READABLE if text else ScreenOutcome.UNREADABLE
+
+
+async def _index_step_body(ctx: Any, item: Any) -> IndexOutcome:
+    return IndexOutcome.OK
+
+
+async def _dead_step_body(ctx: Any, item: Any) -> DeadOutcome:
+    return DeadOutcome.FILED
+
+
+async def _screen_source_body(ctx: Any) -> None:
+    """The chain source's paged generator: ONE yield = ONE page's emit
+    tx (the children + the edges + the cursor checkpoint). The demo's
+    page: every doc id, one record each (the corpus is the module's own
+    constant — the source body reads the CLOSURE, not a params arg)."""
+    for doc_id in DEMO_DOCS:
+        from taskq.workflows.chain import chain_start
+
+        child = chain_start(
+            SCREEN_CHAIN, doc_id, map_index=abs(hash(doc_id)) % 32000, trace_id=doc_id
+        )
+        # THE CURSOR IS THE BODY'S OWN BOOKKEEPING: the emit's tx
+        # checkpoints it (the resume continues from the last COMMITTED
+        # page — the crash-recovery contract).
+        await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})
+
+
+
+
+
+wf_app = WorkflowApp()
+
+# ── DEMO LEG 4 — THE CONDITIONAL ROUTER (T20's chain, live) ─────────────
+#
+# The chain declared ONCE; each step's body returns its typed OUTCOME and
+# the Route sends the record to the next step (or DONE). The
+# doc-ingest's conditional: a SCREEN step sorts each document — the
+# READABLE ones enrich, the unreadable ones dead-letter, the total route
+# is the fence (an outcome with no arm is the loud RouterNotTotal).
+
+
+
+class ScreenOutcome(enum.Enum):
+    READABLE = "readable"
+    UNREADABLE = "unreadable"
+
+
+class IndexOutcome(enum.Enum):
+    OK = "ok"
+
+
+class DeadOutcome(enum.Enum):
+    FILED = "filed"
+
+
+SCREEN_CHAIN = Chain(
+    name="doc-screen-chain",
+    start="screen",
+    actor="wf-demo-screen",
+    queue="demo-screen",
+    steps={
+        "screen": Step(
+            body=_screen_step_body,
+            outcomes=ScreenOutcome,
+            route=Route(
+                {
+                    ScreenOutcome.READABLE: "index",
+                    ScreenOutcome.UNREADABLE: "dead_letter",
+                }
+            ),
+        ),
+        "index": Step(
+            body=_index_step_body,
+            outcomes=IndexOutcome,
+            route=Route({IndexOutcome.OK: DONE}),
+        ),
+        "dead_letter": Step(
+            body=_dead_step_body,
+            outcomes=DeadOutcome,
+            route=Route({DeadOutcome.FILED: DONE}),
+        ),
+    },
+)
+
+
 async def summarize_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[str]:
     return _readable(enriched)
 
@@ -153,7 +248,33 @@ async def publish_body(
     return PublishReport(published=ready, failed=[], review_note=review_note)
 
 
-wf_app = WorkflowApp()
+
+@wf_app.workflow("doc_screen_router")
+def doc_screen_router() -> object:
+    """LEG 4's workflow: the chain source fans each record's chain; the
+    ROUTE (the conditional edge map) sends the readable docs to index,
+    the unreadable to the dead-letter — the conditional routing LIVE."""
+    return build(chain_source(SCREEN_CHAIN, _screen_source_body, key="screen_source"))
+
+
+
+class DemoHeartbeat(BaseModel):
+    seq: int = 0
+
+
+@vanilla_actor
+async def demo_heartbeat(payload: DemoHeartbeat) -> DemoHeartbeat:
+    """The workers' registry face: the fleet's vanilla actor the demo's
+    worker processes subscribe with (the WORKFLOW definitions ride the
+    app's import — the D1 registry — and the boot projection reads the
+    app from `iter_imported_apps`; the registry needs one REAL actor to
+    boot)."""
+    return payload
+
+
+ACTORS: dict[str, ActorRef[Any, Any]] = {"demo_heartbeat": demo_heartbeat}
+"""The worker's `--actors` registry (the demo's vanilla-actor face)."""
+
 
 REVIEW_GATE = GateDecl(
     name="ReviewDecision", payload_models=(ReviewDecision,), timeout_s=7 * 24 * 3600.0
@@ -162,13 +283,16 @@ REVIEW_GATE = GateDecl(
 
 @wf_app.workflow("doc_ingest")
 def doc_ingest() -> object:
-    ingested = step(ingest_body, IngestBatch(doc_ids=list(DEMO_DOCS)), key="ingest")
+    # THE SPLIT PLACEMENT: the map's children inherit the SOURCE's actor —
+    # the enrich queue's actor rides the ingest step (one actor, one queue).
+    ingested = step(ingest_body, IngestBatch(doc_ids=list(DEMO_DOCS)), key="ingest",
+                    actor="wf-demo-enrich", queue="demo-enrich")
     enriched = map_source(ingested, enrich_item, key="enrich", queue="demo-enrich")
-    routed = step(_route_body, enriched, key="route", queue="demo-cpu")
+    routed = step(_route_body, enriched, key="route", actor="wf-demo-cpu", queue="demo-cpu")
 
-    summaries = step(summarize_body, enriched, key="summarize", queue="demo-cpu")
-    entities = step(extract_entities_body, enriched, key="extract_entities", queue="demo-io")
-    labels = step(classify_body, enriched, key="classify", queue="demo-classify")
+    summaries = step(summarize_body, enriched, key="summarize", actor="wf-demo-cpu", queue="demo-cpu")
+    entities = step(extract_entities_body, enriched, key="extract_entities", actor="wf-demo-io", queue="demo-io")
+    labels = step(classify_body, enriched, key="classify", actor="wf-demo-classify", queue="demo-classify")
 
     barrier = gather([summaries, entities], on_failure="fail_closed")
     maybe_labels = gather([labels], on_failure="maybe")
@@ -185,7 +309,7 @@ def doc_ingest() -> object:
         # the mid-loop hold is resolvable by the admin's resolve door.
         gates=(REVIEW_GATE,),
     )
-    published = step(publish_body, review, barrier, maybe_labels, key="publish")
+    published = step(publish_body, review, barrier, maybe_labels, key="publish", actor="wf-demo-publish", queue="demo-publish")
     return build(published)
 
 

@@ -279,3 +279,23 @@ admin's run explorer — see the demo's README. **The verify loop**: the
 example's fence executes in CI (`make test-docs-examples`), the fast tier
 runs its `build()` + `validate()` without containers, and the compiled
 Mermaid is byte-pinned.
+
+---
+
+## The four demonstrations (the capabilities, live)
+
+Each leg is a RUNNABLE path in the demo (`tests/test_wf_demo_legs.py` —
+the evidence-matrix's demo work order; every run's output is captured
+verbatim under `.measurements/demo-legs/`):
+
+| # | Capability | The runnable path | The captured evidence |
+|---|-----------|-------------------|-----------------------|
+| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | `.measurements/demo-legs/leg1-cancellation.json` |
+| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | `.measurements/demo-legs/leg2-kill-resume.json` |
+| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the PROMETHEUS TEXT captured | `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` |
+| 4 | **The conditional router (the T20 chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | `.measurements/demo-legs/leg4-router.json` |
+
+The demo's worker subscription: the workers must SUBSCRIBE to the
+workflow cohorts' queues (`TASKQ_QUEUES=demo-screen,demo-cpu,...` — the
+boot projection declares the cohorts in `actor_config`; the
+subscription is the operator's deployment knob).

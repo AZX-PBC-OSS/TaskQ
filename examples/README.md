@@ -179,3 +179,12 @@ run's graph and patches it LIVE over SSE.
 3. **The admin graph view live** — the collapsed map hexagon (the
    done/total counter), the taken paths, the failure badge, the SSE
    patches: all demonstrated on a real run.
+
+### The four demonstrations (the capabilities, live)
+
+| Leg | What shows | How to run |
+|-----|-----------|------------|
+| **Cancellation** | a run cancelled mid-flight: the named states + the audit row in the explorer | `taskq flows cancel <run_id> --reason ...` while the run is mid-flight; watch the run page |
+| **Resumability** | a worker SIGKILLed mid-node; a fresh worker re-claims; the run COMPLETES | start `taskq worker --actors examples.workflows:ACTORS --queues demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default`, trigger, `kill -9` the worker mid-run, start a fresh one |
+| **Observability** | the wf gauge's live Prometheus scrape (`taskq.wf_progress_nodes_total{workflow,state}`) | the worker's `/metrics` (the maintenance leader's sampler feeds it) |
+| **The conditional router** | the T20 chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow) |

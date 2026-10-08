@@ -1,0 +1,31 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_no_handler_takes_the_raw_pool_dependency _________________
+
+    def test_no_handler_takes_the_raw_pool_dependency() -> None:
+        """``Depends(get_pg_pool)`` on a handler parameter hands it the raw pool;
+        only the stream resolvers (which take a Request) may use it."""
+        offenders: list[str] = []
+        for path in _HANDLER_MODULES:
+            if path.name == "_factory.py":
+                continue
+            tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for arg, default in zip(
+                    reversed(fn.args.args), reversed(fn.args.defaults), strict=False
+                ):
+                    if "get_pg_pool" in ast.unparse(default):
+                        offenders.append(f"{path.name}:{fn.lineno} {fn.name}({arg.arg})")
+>       assert offenders == [], offenders
+E       AssertionError: ['jobs.py:1038 flow_progress_stream(pg_pool)']
+E       assert ['jobs.py:103...eam(pg_pool)'] == []
+E         
+E         Left contains one more item: 'jobs.py:1038 flow_progress_stream(pg_pool)'
+E         Use -v to get more diff
+
+tests/web_admin/test_bounded_pool.py:114: AssertionError
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_bounded_pool.py::test_no_handler_takes_the_raw_pool_dependency
+1 failed in 0.36s

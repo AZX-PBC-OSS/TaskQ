@@ -1,0 +1,43 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_jobs_archive_columns_match_jobs_plus_archive_fields ___________
+
+pg_conn = <asyncpg.connection.Connection object at 0x7f56cd775a90>
+settings = TaskQSettings(pg_dsn='postgresql://rich@localhost:5713/tq_db_3403900e7f5b', pg_is_pooled=False, schema_name='tq_340390...imeout_ms=5000.0, unique_for_lock_timeout_ms=5000.0, idempotency_lock_timeout_ms=5000.0, timescaledb_hypertables=False)
+
+    async def test_jobs_archive_columns_match_jobs_plus_archive_fields(
+        pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+    
+        jobs_cols = await pg_conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'jobs'
+            ORDER BY ordinal_position
+            """,
+            settings.schema_name,
+        )
+        archive_cols = await pg_conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'jobs_archive'
+            ORDER BY ordinal_position
+            """,
+            settings.schema_name,
+        )
+    
+        jobs_col_map = {r["column_name"]: r for r in jobs_cols}
+        archive_col_map = {r["column_name"]: r for r in archive_cols}
+    
+        for name in jobs_col_map:
+>           assert name in archive_col_map, f"jobs column {name!r} missing from jobs_archive"
+E           AssertionError: jobs column 'budget_deadline' missing from jobs_archive
+E           assert 'budget_deadline' in {'id': <Record column_name='id' data_type='uuid' is_nullable='NO' column_default=None>, 'actor': <Record column_name='...None>, 'identity_key': <Record column_name='identity_key' data_type='text' is_nullable='YES' column_default=None>, ...}
+
+tests/test_migrations.py:201: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_migrations.py::test_jobs_archive_columns_match_jobs_plus_archive_fields
+1 failed in 0.80s

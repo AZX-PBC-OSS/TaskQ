@@ -1,0 +1,29 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________________ test_no_uncapped_sse_endpoint_remains _____________________
+
+    def test_no_uncapped_sse_endpoint_remains() -> None:
+        """Inventory guard over every streaming response in the web package."""
+        from pathlib import Path
+    
+        web = Path(__file__).resolve().parent.parent / "src" / "taskq" / "web"
+        offenders: list[str] = []
+        for path in web.rglob("*.py"):
+            text = path.read_text()
+            streams = "EventSourceResponse(" in text or "StreamingResponse(" in text
+            if not streams or path.name == "_sse_limit.py":
+                continue
+            capped = "acquire_sse_slot" in text or "_get_semaphore" in text
+            if not capped:
+                offenders.append(path.relative_to(web).as_posix())
+>       assert offenders == [], f"uncapped SSE endpoints: {offenders}"
+E       AssertionError: uncapped SSE endpoints: ['admin/_wf_actions.py', 'admin/jobs.py']
+E       assert ['admin/_wf_a...dmin/jobs.py'] == []
+E         
+E         Left contains 2 more items, first extra item: 'admin/_wf_actions.py'
+E         Use -v to get more diff
+
+tests/test_sse_connection_caps.py:239: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains
+1 failed in 0.26s

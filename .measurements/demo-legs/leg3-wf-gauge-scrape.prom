@@ -1,0 +1,3 @@
+taskq.wf_progress_nodes_total{workflow="None", state="pending"} 16
+taskq.wf_progress_nodes_total{workflow="None", state="succeeded"} 1
+taskq.wf_progress_nodes_total{workflow="doc_ingest", state="running"} 1

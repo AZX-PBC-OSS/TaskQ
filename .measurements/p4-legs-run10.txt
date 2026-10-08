@@ -1,0 +1,97 @@
+...F                                                                     [100%]
+=================================== FAILURES ===================================
+_____________________ test_leg2_the_kill_and_resume_drill ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f0a7d8c3580>
+module_pg_schema = ModulePgSchema(schema_name='tq_d660acde73', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_d660acde7340')
+wf_schema = 'tq_d660acde73'
+wf_conn = <asyncpg.connection.Connection object at 0x7f0a7727e120>
+
+    async def test_leg2_the_kill_and_resume_drill(
+        module_pg_pool: Any, module_pg_schema: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
+        fresh worker re-claims it (the lease expiry + the reclaim) and the
+        run COMPLETES. The operator's resilience story, runnable."""
+        schema = module_pg_schema.schema_name
+        # THE TRIGGER: the ROUTER flow (hold-free — the drill's run must be
+        # completable by the WORKERS alone; the doc_ingest's review hold
+        # needs a human, and the drill's operator is the lease clock).
+        from examples.workflows import wf_app
+        from taskq.workflows import FlowRunner
+    
+        compiled = wf_app.get("doc_screen_router")
+        drill_runner = FlowRunner(compiled, module_pg_pool, schema)
+        run_id = str(await drill_runner.create_flow())
+        run_id_uuid = __import__("uuid").UUID(run_id)
+    
+        # The kill-and-resume: the demo's own worker processes.
+        demo_wd = Path(__file__).parent.parent
+        worker_env = {
+            **os.environ,
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_ENVIRONMENT": "dev",
+            "TASKQ_ADMIN_ACTIONS_ENABLED": "true",
+            "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
+        }
+        worker_argv = [
+            sys.executable, "-m", "taskq", "worker",
+            "--actors", "examples.workflows:ACTORS",
+        ]
+    
+        def spawn(tag: str) -> subprocess.Popen[bytes]:
+            return subprocess.Popen(  # noqa: S603  # Why: fixed argv, this interpreter, the project's own module.
+                worker_argv, env=worker_env, cwd=str(demo_wd),
+                stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),  # noqa: SIM115
+                stderr=subprocess.STDOUT,
+            )
+    
+        # WORKER 1: runs the flow's nodes.
+        killed = spawn("killed")
+        killed_deadline = time.time() + 90
+        saw_running = False
+        while time.time() < killed_deadline:
+            state = await wf_conn.fetchval(
+                f'SELECT count(*) FROM "{wf_schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
+                run_id_uuid,
+            )
+            if state:
+                saw_running = True
+                break
+            await asyncio.sleep(0.3)
+        assert saw_running, "the worker never claimed the flow's nodes"
+    
+        # THE KILL (SIGKILL — the operator's drill's teeth: no shutdown, no
+        # cleanup; the lease expires on the row).
+        killed.send_signal(signal.SIGKILL)
+        await asyncio.to_thread(killed.wait)
+    
+        # WORKER 2: the fresh worker re-claims (the lease expiry + the
+        # reclaim) and the run completes.
+        fresh = spawn("fresh")
+        try:
+            done_deadline = time.time() + 240
+            root_status = None
+            while time.time() < done_deadline:
+                root_status = await wf_conn.fetchval(
+                    f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id_uuid
+                )
+                if root_status in ("succeeded", "failed", "cancelled"):
+                    break
+                await asyncio.sleep(1.0)
+>           assert root_status == "succeeded", (
+                f"the killed run never resumed: {root_status} — the reclaim's "
+                "resilience story broke"
+            )
+E           AssertionError: the killed run never resumed: failed — the reclaim's resilience story broke
+E           assert 'failed' == 'succeeded'
+E             
+E             - succeeded
+E             + failed
+
+tests/test_wf_demo_legs.py:213: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_demo_legs.py::test_leg2_the_kill_and_resume_drill - Asse...
+1 failed, 3 passed in 43.11s
