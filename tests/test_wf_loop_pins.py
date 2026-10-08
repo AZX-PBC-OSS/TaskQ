@@ -28,10 +28,10 @@ from datetime import timedelta
 from typing import Any
 
 import asyncpg
-import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobId
 from taskq.workflows import (
     Done,
     FlowRunner,
@@ -41,7 +41,6 @@ from taskq.workflows import (
     loop,
     sweep_loop_budget,
 )
-from tests._wf_fixtures import RedLog
 
 
 class Counter(BaseModel):
@@ -51,10 +50,10 @@ class Counter(BaseModel):
     acc: int = 0
 
 
-@pytest.fixture
-def loop_redlog() -> Any:
-    """The red sink (the mutation drills' captured reds)."""
-    return RedLog("t19-pin-reds.json")
+class Approval(BaseModel):
+    """The composition pin's gate payload (the hold inside the loop)."""
+
+    verdict: str
 
 
 def _loop_app(
@@ -470,3 +469,93 @@ async def test_consume_budget_dragon_red_forever(
     await sweep_loop_budget(wf_pool, runner.wsql)
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
     assert status == "running", "the held loop was killed — the dragon is loose"
+
+
+# ── THE COMPOSITION PIN: a hold INSIDE a loop (T10 reads T19's arm) ─────
+
+
+async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """Spike1's subject at the composition (T19 × T10): a loop iteration
+    that HOLDS — the loop node's budget PAUSES (the wall is blind), the
+    operator's approval RESUMES (the pause lifts, the remaining is the
+    on-wake read), the loop COMPLETES — zero budget_exhausted events,
+    zero ladder burns. The P3 1a GREEN matrix, 6 checks."""
+    from taskq.workflows.api._hitl import deliver_payload
+    from taskq.workflows.api._sql_loop import (
+        ITERATION_STATE_BUDGET_EXHAUSTED,
+        LOOP_REMAINING_SQL,
+        render_loop_sql,
+    )
+
+    async def hold_then_done(ctx: Any, carry: object) -> object:
+        if ctx.attempt == 1:
+            # THE HOLD (attempt 1 only — the re-execution doctrine: the
+            # answer replays from the ledger on the resume).
+            await ctx.wait_signal(Approval, timeout_s=120.0)
+            return Done({"acc": 1})
+        return Done({"acc": 1})
+
+    app2 = WorkflowApp()
+
+    @app2.workflow("hold_loop_flow")
+    def hold_loop_flow() -> object:
+        return build(loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0))
+
+    runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
+    flow_id = await runner.create_flow()
+    # (1) the loop RUNS and HOLDS.
+    verdict = await runner.drive(flow_id, until="held")
+    assert verdict == "held", verdict
+    loop_row = await wf_conn.fetchrow(
+        f"SELECT id, status, budget_paused, budget_deadline IS NOT NULL AS walled, "
+        f"metadata->>'iteration' AS iteration FROM \"{wf_schema}\".jobs "
+        "WHERE step_key = 'holdloop' AND (metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    assert loop_row is not None
+    # (2) the budget wall EXISTS (the deadline set from PG's clock).
+    assert loop_row["walled"]
+    # (3) the hold PAUSED it.
+    assert loop_row["budget_paused"] is True
+    # (4) THE SWEEP: the paused row + a FORCED-PAST deadline → invisible.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET budget_deadline = now() - interval '1 hour' "
+        "WHERE id = $1",
+        loop_row["id"],
+    )
+    exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
+    assert exhausted == 0, "the held loop's budget fired — the CONSUME-BUDGET dragon is loose"
+    # (5) THE OPERATOR'S APPROVAL: the deliver resumes the iteration (the
+    # pause lifts — the wall is visible again).
+    held = await wf_conn.fetchval(
+        f"SELECT id FROM \"{wf_schema}\".wf_signals WHERE workflow_id = $1 AND status = 'held'",
+        flow_id,
+    )
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(held),
+        payload={"verdict": "approve"},
+        payload_json=json.dumps({"verdict": "approve"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # (6) THE LOOP COMPLETES — zero exhaustion events, zero ladder burns.
+    assert await runner.drive(flow_id) == "terminal"
+    final = await wf_conn.fetchrow(
+        f"SELECT status, budget_paused, metadata->>'iteration_state' AS state "
+        f'FROM "{wf_schema}".jobs WHERE id = $1',
+        loop_row["id"],
+    )
+    assert final is not None
+    assert final["status"] == "succeeded"
+    assert final["state"] != ITERATION_STATE_BUDGET_EXHAUSTED
+    ladder_burns = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND status = 'failed'",
+        flow_id,
+    )
+    assert ladder_burns == 0
+    _ = render_loop_sql, LOOP_REMAINING_SQL  # the clock seam's imports (the on-wake read)
