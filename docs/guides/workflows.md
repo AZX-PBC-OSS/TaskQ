@@ -276,3 +276,38 @@ History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in
 `tests/test_wf_schema_migration.py` (the schema/lock-class/import families)
 and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
+
+## The ergonomic contract (T17 — the authoring session's paper cuts)
+
+The API's bar is **"first-try correct, no boilerplate, IDE
+autocompletion resolves the wiring."** The authoring session's 20 paper
+cuts (2 BLOCKER / 5 CRITICAL / 6 friction / 7 nit) are standing law; each
+cure's CONTRACT, and where to read it:
+
+| Paper cut (the stumble) | The cure's contract | Landed in |
+| --- | --- | --- |
+| "Nothing runs after the join" | A join's user reducer body is spelled **in the wiring** — the fan-in node IS the reducer; its consumers dispatch as normal steps | flow API (T09) |
+| "No sequencing — a depth-3 DAG didn't fit one flow" | Sequencing is dataflow: consume a node's promise downstream and it dispatches strictly after; nested maps compile | flow API (T09) |
+| "`deliver()` dropped my payload" | The signal row CARRIES the payload; the resumed body reads it | HITL (T10) |
+| "A second hold on the same name exploded" | A new hold mints a NEW epoch — the identity is the hold epoch, not the name; the same signal can hold again | HITL (T10) |
+| "The guard was decided at create time" | Skip guards are evaluated **at dispatch**, against the flow's state | flow API (T09) |
+| "My holds ate the retry budget" | RESUME-NOT-RETRY: a hold's resume consumes NO ladder attempts — the ladder counts failures only | HITL (T10) |
+| "The parent came from splitting a string" | The parent is a COLUMN; bad node-key spelling is refused at compile, never mis-derived (this engine — verified) | core (T03/T04) |
+| "`create_flow` took no input" | The run carries its input; bodies read `ctx.input` | flow API (T09) |
+| "Everything was a dict at the boundary" | Bodies are annotated; the compile reads the annotations; an unannotated actor is a compile error | flow API (T09) |
+| "The collect result was raw rows" | Fan-in bodies receive DECODED results; a skipped child arrives as a typed absorbed item — never silently missing | flow API (T09) |
+| "No `drive(until=…)`" | The driver takes `until="held" \| "terminal"` — no hand-rolled dispatch-poll loops | loops (T19) |
+| "The ladder laddered everything" | Each node takes `retry=` (the transient/permanent classifier) + `max_attempts` | flow API (T09) |
+| "jsonb decoded differently on every path" | Read paths decode once, through the estate's JSON seam | flow API (T09) |
+| "No way to read the flow's answer" | The flow result surface: by id, decoded | flow API (T09) |
+
+The two spike-hygiene nits (a vestigial join arg; a module-constant
+SCHEMA) have no repo counterpart — the engine carries the parent as a
+column, the registry is instance-owned, and the schema is
+settings-driven (`TaskQSettings.schema_name`, validated at render).
+
+The full disposition ledger — every cut, its confirmed severity, its
+disposition (applied 15 / declined-with-reason 1 / recorded 2 /
+verify-absent 2 / deferred 1), and the re-test that proves it closed —
+is `.measurements/t17-dispositions.md`; the session's own ledger
+(append-only) carries the same table.
