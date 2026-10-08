@@ -37,6 +37,33 @@ from taskq.workflows.engine import render_workflow_sql
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
 
+
+def write_band_artifact(name: str, payload: object) -> Path:
+    """THE APPEND-ONLY CONVERSION (the receipts law): a band artifact is
+    a RUN-SCOPED file, never a write_text-in-place name. The convicted
+    defect: every run rewrote the SAME file whole — two concurrent runs'
+    writes tore each other (the 11 torn rows the ledgers' union found),
+    and a partial run's numbers falsified the recorded band (the newest
+    subset is not the newest measurement). Each run writes
+    ``runs/{stem}-{timestamp}-{token}.json``; the newest CITED
+    (:func:`latest_band_artifact`) is the record the report reads."""
+    runs = MEASUREMENTS / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    stem = name.removesuffix(".json")
+    path = runs / f"{stem}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:4]}.json"
+    path.write_text(json.dumps(payload, indent=2, default=str))
+    return path
+
+
+def latest_band_artifact(stem: str) -> Path | None:
+    """The newest CITED: the newest run-scoped capture for *stem* (the
+    chronological union's tail — the record a report cites)."""
+    runs = MEASUREMENTS / "runs"
+    if not runs.is_dir():
+        return None
+    matches = sorted(runs.glob(f"{stem}-*.json"))
+    return matches[-1] if matches else None
+
 #: The terminal-status SQL set — the statement-side literal the engine's
 #: guards spell (the twin of statemachine.TERMINAL_STATUSES); the pins'
 #: convicted variants re-spell it.

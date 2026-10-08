@@ -11,7 +11,7 @@ CODE (the spike's §7 protocol, the shipped surfaces):
 5. THE CHAIN-STEP FORK tx (the routed finalize: the fenced terminal mark
    + ONE child + its edge — ``finalize_node`` with the chain's ForkSpec).
 
-Raw output: ``.measurements/t20-streaming-bands.json`` (the capture law:
+Raw output: ``.measurements/t20-streaming-bands-{stamp}.json`` (the capture law:
 every run lands a timestamped file beside it). The script is self-contained:
 apply-migrate a scratch schema, measure, drop.
 
@@ -308,11 +308,13 @@ async def main() -> int:
         fork_latencies.append((time.perf_counter() - t0) * 1000)
     results["chain_fork_tx"] = band(fork_latencies) if fork_latencies else "not measured"
 
-    out = MEASUREMENTS / "t20-streaming-bands.json"
     MEASUREMENTS.mkdir(exist_ok=True)
-    out.write_text(json.dumps(results, indent=2))
+    # THE APPEND-ONLY CONVERSION: the run-scoped file IS the record (the
+    # in-place t20-streaming-bands.json rewrite is the torn-write race;
+    # the newest CITED = the newest stamp).
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    (MEASUREMENTS / f"t20-streaming-bands-{stamp}.json").write_text(json.dumps(results, indent=2))
+    out = MEASUREMENTS / f"t20-streaming-bands-{stamp}.json"
+    out.write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
 
     await pool.close()
