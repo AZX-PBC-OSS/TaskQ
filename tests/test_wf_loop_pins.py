@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.workflows._sweep import sweep_loop_budget
 from taskq.workflows import (
     Done,
     FlowRunner,
@@ -39,7 +40,6 @@ from taskq.workflows import (
     WorkflowApp,
     build,
     loop,
-    sweep_loop_budget,
 )
 
 

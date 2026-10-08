@@ -515,7 +515,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # taskq.workflows._sweep; this is their REGISTRATION), so each
         # call imports lazily. The arms take the dispatcher pool and
         # manage their own bounded transactions; each returns a count.
-        from taskq.workflows import sweep_join_rederive
+        from taskq.workflows._sweep import sweep_join_rederive
         from taskq.workflows.engine import render_workflow_sql
 
         wsql = render_workflow_sql(ctx.deps.settings.schema_name)
@@ -533,7 +533,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_outbox_drain_call() -> int:
-        from taskq.workflows import drain_outbox
+        from taskq.workflows._sweep import drain_outbox
         from taskq.workflows.engine import render_workflow_sql
 
         return await drain_outbox(
@@ -560,7 +560,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # held-loop inertness); the exhaustion is the NAMED state and the
         # flow terminalizes in the same tx. The lazy import keeps the
         # §16.1 import law.
-        from taskq.workflows import sweep_loop_budget
+        from taskq.workflows._sweep import sweep_loop_budget
         from taskq.workflows.engine import render_workflow_sql
 
         return await sweep_loop_budget(
@@ -569,7 +569,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_phantom_reap_call() -> int:
-        from taskq.workflows import reap_phantom_ledger
+        from taskq.workflows._sweep import reap_phantom_ledger
         from taskq.workflows.engine import render_workflow_sql
 
         return await reap_phantom_ledger(
@@ -583,7 +583,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # append-trim could hold, any future writer bug's unpruned shape)
         # are trimmed back to the ring bound, rank-based per node. The
         # lazy import keeps the §16.1 import law.
-        from taskq.workflows import sweep_progress_ring_prune
+        from taskq.workflows._sweep import sweep_progress_ring_prune
         from taskq.workflows.engine import render_workflow_sql
 
         return await sweep_progress_ring_prune(

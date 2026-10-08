@@ -33,13 +33,12 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.migrate import apply_pending
+from taskq.workflows._progress_read import map_progress_line, read_map_aggregate
 from taskq.workflows import (
     FlowRunner,
     WorkflowApp,
     build,
-    map_progress_line,
     map_source,
-    read_map_aggregate,
     step,
 )
 from taskq.workflows.engine import render_workflow_sql

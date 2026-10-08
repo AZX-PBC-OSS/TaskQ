@@ -305,7 +305,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     head_before = await wf_conn.fetchval(
         f'SELECT max(seq) FROM "{wf_schema}".wf_node_stream WHERE node_id = $1', node
     )
-    from taskq.workflows import sweep_progress_ring_prune
+    from taskq.workflows._sweep import sweep_progress_ring_prune
 
     n = await sweep_progress_ring_prune(wf_pool, wf_sql)
     after = await wf_conn.fetchval(

@@ -23,7 +23,8 @@ from __future__ import annotations
 import asyncio
 
 from taskq.backend._protocol import ConnLike, ErrorInfo, JobId
-from taskq.workflows import MAX_FAN_IN_PER_JOIN, fan_in_skip
+from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
+from taskq.workflows.engine import fan_in_skip
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import (
     NodeView,

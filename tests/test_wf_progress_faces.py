@@ -23,17 +23,13 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
+from taskq.workflows._progress import ProgressEmitter
+from taskq.workflows._progress_read import map_progress_line, progress_sse_face, read_map_aggregate, rebuild_display, run_display
 from taskq.workflows import (
     FlowRunner,
-    ProgressEmitter,
     WorkflowApp,
     build,
-    map_progress_line,
     map_source,
-    progress_sse_face,
-    read_map_aggregate,
-    rebuild_display,
-    run_display,
     sink,
     step,
 )

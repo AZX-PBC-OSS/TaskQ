@@ -34,7 +34,7 @@ import uuid
 import asyncpg
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import WorkflowSteps
+from taskq.workflows.context import WorkflowSteps
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import finalize_node, render_workflow_sql
 from taskq.workflows.ledger import insert_flow_run

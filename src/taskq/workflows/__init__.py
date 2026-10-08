@@ -10,60 +10,30 @@ The engine is core-deps-only (tors, asyncpg, uuid_utils — all base
 dependencies); the ``flows`` extra carries no requirements of its own and
 exists as the operator-facing opt-in marker.
 
-Module homes (concerns separate): ``engine`` owns the finalize mechanics
-(tx1/tx2, the dispatch exclusion, the deadlock retry); ``_fork`` owns the
-fork's atomic write set; ``_sweep`` owns the sweep arms (the lock-first
-re-derive + fire, the outbox drain, the phantom reaper); ``_sql`` owns the
-named statement constants; ``_types`` owns the specs/results and the
-metadata wire shapes; ``ledger`` owns the step-ledger claim + the run-key
-arbiter; ``context`` owns ``ctx.step``; ``definitions`` owns the
-registered-definition registry; ``_capture`` owns the failure IO-capture
-writer; ``_version`` owns the canonical code-version hash.
+THE PUBLIC SURFACE IS SMALL ON PURPOSE (§7b's cut): the root re-exports
+the AUTHORING verbs + the RUNNER + the USER TYPES — twenty-four names, the
+``doc_ingest`` example's imports plus the typed surfaces. Everything else
+(SWEEP internals, the finalize mechanics, the SQL statements, the wire
+specs, the ledger claims, the progress plumbing) is an ENGINE INTERNAL:
+import it from its submodule — the documented path — never from here.
+Every root name is a protocol-pin tax paid forever; the internals keep
+their homes WITHOUT the tax:
+
+* ``api._graph`` owns the recorder + the wiring verbs; ``api._app`` the
+  app/decorators/compiled-workflow/channel; ``api._validate`` owns
+  ``validate()``; ``api._mermaid`` owns the emission; ``api._runner`` +
+  its concern modules (``_sql_runner``/``_runner_codec``/
+  ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
+  ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
+  own create/drive/result; ``api._loop`` owns the loop verbs.
+* ``chain`` owns the chain surface; ``context`` owns ``ctx.step``;
+  ``definitions`` owns the registered-definition registry;
+  ``ledger`` the step-ledger claim + the run-key arbiter; ``engine`` the
+  finalize mechanics; ``_sweep`` the sweep arms; ``_types`` the wire
+  specs; ``_progress``/``_progress_read``/``_emit`` the streaming +
+  progress plumbing; ``_status`` the derivation.
 """
 
-from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, emit_batch
-from taskq.workflows._progress import (
-    CLASS_AUTO,
-    CLASS_USER,
-    KIND_NODE_STARTED,
-    KIND_NODE_TERMINAL,
-    KIND_PROGRESS,
-    KIND_VOCABULARY,
-    PROGRESS_RING_BOUND,
-    ProgressEmitter,
-    ProgressRefusedError,
-    project_auto_event,
-)
-from taskq.workflows._progress_read import (
-    AggregateRead,
-    map_progress_line,
-    progress_sse_face,
-    read_map_aggregate,
-    rebuild_display,
-    run_display,
-)
-from taskq.workflows._sweep import (
-    SweepResult,
-    drain_outbox,
-    reap_phantom_ledger,
-    sweep_join_rederive,
-    sweep_loop_budget,
-    sweep_progress_ring_prune,
-)
-from taskq.workflows._types import (
-    AbsorbingPolicy,
-    ChildSpec,
-    ConsumerBinding,
-    DecrementHit,
-    EmitChild,
-    FailureInfo,
-    FailurePolicy,
-    FinalizeResult,
-    FiredJoin,
-    ForkSpec,
-    JoinSpec,
-    NodeSpec,
-)
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
@@ -88,127 +58,30 @@ from taskq.workflows.chain import (
     chain_fork,
     chain_start,
 )
-from taskq.workflows.context import WorkflowSteps
-from taskq.workflows.definitions import (
-    FAILURE_POLICIES,
-    MAX_FAN_IN_PER_JOIN,
-    AggregateFn,
-    DuplicateStepBodyError,
-    DuplicateWorkflowError,
-    StepBody,
-    WorkflowDef,
-    WorkflowRegistry,
-    get_registry,
-    resolve_step_body,
-    validate_fork,
-    validate_join_spec,
-)
-from taskq.workflows.engine import (
-    DISPATCH_EXCLUSION_CLAUSE,
-    DeadlockRetriesExhaustedError,
-    fan_in_skip,
-    finalize_node,
-    insert_node,
-    render_workflow_sql,
-)
-from taskq.workflows.ledger import (
-    LedgerClaim,
-    RunClaim,
-    claim_step_ledger,
-    insert_flow_run,
-    memoized_step_result,
-    run_idempotency_scope,
-    step_idempotency_key,
-    step_idempotency_scope,
-)
 
 __all__ = [
-    "CLASS_AUTO",
-    "CLASS_USER",
-    "DISPATCH_EXCLUSION_CLAUSE",
     "DONE",
-    "EMIT_CURSOR_KEY",
-    "FAILURE_POLICIES",
-    "KIND_NODE_STARTED",
-    "KIND_NODE_TERMINAL",
-    "KIND_PROGRESS",
-    "KIND_VOCABULARY",
-    "MAX_FAN_IN_PER_JOIN",
-    "PROGRESS_RING_BOUND",
-    "AbsorbingPolicy",
-    "AggregateFn",
-    "AggregateRead",
     "Chain",
-    "ChildSpec",
     "CompiledWorkflow",
-    "ConsumerBinding",
-    "DeadlockRetriesExhaustedError",
-    "DecrementHit",
     "Done",
-    "DuplicateStepBodyError",
-    "DuplicateWorkflowError",
-    "EmitChild",
-    "EmitFencedError",
     "Exit",
-    "FailureInfo",
-    "FailurePolicy",
-    "FinalizeResult",
-    "FiredJoin",
     "FlowRunner",
-    "ForkSpec",
-    "JoinSpec",
-    "LedgerClaim",
-    "NodeSpec",
-    "ProgressEmitter",
-    "ProgressRefusedError",
     "Promise",
     "Refine",
     "Route",
     "RouterNotTotal",
-    "RunClaim",
     "Step",
-    "StepBody",
     "StepContext",
-    "SweepResult",
     "WorkflowApp",
     "WorkflowBuildError",
-    "WorkflowDef",
-    "WorkflowRegistry",
     "WorkflowRunError",
-    "WorkflowSteps",
     "build",
     "chain_fork",
     "chain_source",
     "chain_start",
-    "claim_step_ledger",
-    "drain_outbox",
-    "emit_batch",
-    "fan_in_skip",
-    "finalize_node",
     "gather",
-    "get_registry",
-    "insert_flow_run",
-    "insert_node",
     "loop",
-    "map_progress_line",
     "map_source",
-    "memoized_step_result",
-    "progress_sse_face",
-    "project_auto_event",
-    "read_map_aggregate",
-    "reap_phantom_ledger",
-    "rebuild_display",
-    "render_workflow_sql",
-    "resolve_step_body",
-    "run_display",
-    "run_idempotency_scope",
     "sink",
     "step",
-    "step_idempotency_key",
-    "step_idempotency_scope",
-    "sweep_join_rederive",
-    "sweep_loop_budget",
-    "sweep_progress_ring_prune",
-    "validate_fork",
-    "validate_join_spec",
 ]

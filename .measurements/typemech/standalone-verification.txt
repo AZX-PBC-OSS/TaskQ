@@ -1,0 +1,24 @@
+THE STANDALONE VERIFICATION — the type-mechanism commit chain verified
+AWAY from the contested worktree (the phase-4 builder's writes kept
+landing in this worktree mid-session against the single-writer brief —
+their in-progress _runner.py v2 carries its own NameError; the 57
+failures on the contaminated tree are THEIRS, none of this round's).
+
+The chain fd0a06b8 + {086edf86 fix, 0210dc7b test, 7859aa96 docs,
+aefeee13 measurements} checked out in the quiet worktree
+(/tmp/opencode/wt-taskqflow-base):
+
+  wf family + attacks + t21:  231 passed, 1 warning
+  pyright FULL tree:          0 errors, 0 warnings, 0 informations
+  the type-probe gate:        13 markers green (rule-ids asserted, both
+                              checkers, no unmarked errors)
+  ruff check / format:        green / 1574 files formatted
+  mkdocs --strict:            clean
+  docs examples (TASKQ_DOCS_EXAMPLES=1): 87 passed
+  the estate slice x3:        26 / 26 / 26 passed
+  the E2E stranger sanity:    THE COMPOSED SYSTEM WORKS
+
+ty on the full tree (the honest state): 4546 diagnostics on this chain
+vs 4896 on the base fd0a06b8 — the fix REMOVES 350 (the erased
+Promise[Any]s and the decorator's Awaitable lie gone); ty 0.0.85 is the
+corpus's probe checker, not a full-tree gate — no regression.

@@ -33,7 +33,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows import finalize_node
+from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import RedLog, seed_flow
 from tests.test_wf_t20_emit_pins import (
     _LEASE,

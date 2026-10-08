@@ -29,7 +29,7 @@ from taskq.backend.statemachine import (
     assert_valid_transition,
 )
 from taskq.exceptions import IllegalStateTransition
-from taskq.workflows import finalize_node
+from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
 from tests._wf_fixtures import claim_view, seed_flow
 
