@@ -971,7 +971,19 @@ async def module_pg_schema(
 
     yield ModulePgSchema(schema_name=schema_name, pg_dsn=pg_dsn)
 
-    conn = await asyncpg.connect(pg_dsn)
+    # THE TEARDOWN TOLERANCE (the split-drop class's residue): the module
+    # database's lifecycle belongs to ``pg_dsn`` (tests/conftest.py), whose
+    # teardown may already have dropped it when this finalizer runs —
+    # pytest-asyncio defers async-module-fixture finalization to the module
+    # loop's teardown, which can land AFTER the sync pg_dsn teardown. A
+    # vanished database means the cleanup is already COMPLETE (the schema
+    # lived in the database); re-raising would only stain the worker's
+    # summary with an error that names no defect. Connect failures of any
+    # OTHER shape (the cluster is down, credentials rotated) still raise.
+    try:
+        conn = await asyncpg.connect(pg_dsn)
+    except asyncpg.InvalidCatalogNameError:
+        return
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
     finally:
