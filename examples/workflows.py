@@ -161,9 +161,6 @@ async def _screen_source_body(ctx: Any) -> None:
         await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})
 
 
-
-
-
 wf_app = WorkflowApp()
 
 # ── DEMO LEG 4 — THE CONDITIONAL ROUTER (T20's chain, live) ─────────────
@@ -173,7 +170,6 @@ wf_app = WorkflowApp()
 # doc-ingest's conditional: a SCREEN step sorts each document — the
 # READABLE ones enrich, the unreadable ones dead-letter, the total route
 # is the fence (an outcome with no arm is the loud RouterNotTotal).
-
 
 
 class ScreenOutcome(enum.Enum):
@@ -248,14 +244,12 @@ async def publish_body(
     return PublishReport(published=ready, failed=[], review_note=review_note)
 
 
-
 @wf_app.workflow("doc_screen_router")
 def doc_screen_router() -> object:
     """LEG 4's workflow: the chain source fans each record's chain; the
     ROUTE (the conditional edge map) sends the readable docs to index,
     the unreadable to the dead-letter — the conditional routing LIVE."""
     return build(chain_source(SCREEN_CHAIN, _screen_source_body, key="screen_source"))
-
 
 
 class DemoHeartbeat(BaseModel):
@@ -285,14 +279,25 @@ REVIEW_GATE = GateDecl(
 def doc_ingest() -> object:
     # THE SPLIT PLACEMENT: the map's children inherit the SOURCE's actor —
     # the enrich queue's actor rides the ingest step (one actor, one queue).
-    ingested = step(ingest_body, IngestBatch(doc_ids=list(DEMO_DOCS)), key="ingest",
-                    actor="wf-demo-enrich", queue="demo-enrich")
+    ingested = step(
+        ingest_body,
+        IngestBatch(doc_ids=list(DEMO_DOCS)),
+        key="ingest",
+        actor="wf-demo-enrich",
+        queue="demo-enrich",
+    )
     enriched = map_source(ingested, enrich_item, key="enrich", queue="demo-enrich")
     routed = step(_route_body, enriched, key="route", actor="wf-demo-cpu", queue="demo-cpu")
 
-    summaries = step(summarize_body, enriched, key="summarize", actor="wf-demo-cpu", queue="demo-cpu")
-    entities = step(extract_entities_body, enriched, key="extract_entities", actor="wf-demo-io", queue="demo-io")
-    labels = step(classify_body, enriched, key="classify", actor="wf-demo-classify", queue="demo-classify")
+    summaries = step(
+        summarize_body, enriched, key="summarize", actor="wf-demo-cpu", queue="demo-cpu"
+    )
+    entities = step(
+        extract_entities_body, enriched, key="extract_entities", actor="wf-demo-io", queue="demo-io"
+    )
+    labels = step(
+        classify_body, enriched, key="classify", actor="wf-demo-classify", queue="demo-classify"
+    )
 
     barrier = gather([summaries, entities], on_failure="fail_closed")
     maybe_labels = gather([labels], on_failure="maybe")
@@ -309,7 +314,15 @@ def doc_ingest() -> object:
         # the mid-loop hold is resolvable by the admin's resolve door.
         gates=(REVIEW_GATE,),
     )
-    published = step(publish_body, review, barrier, maybe_labels, key="publish", actor="wf-demo-publish", queue="demo-publish")
+    published = step(
+        publish_body,
+        review,
+        barrier,
+        maybe_labels,
+        key="publish",
+        actor="wf-demo-publish",
+        queue="demo-publish",
+    )
     return build(published)
 
 

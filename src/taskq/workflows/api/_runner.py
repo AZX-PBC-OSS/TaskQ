@@ -524,8 +524,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 # Edge order (map children distinct, the gather's wiring
                 # order).
                 parents_values = [r for _key, r in parents_ordered]
-                if node is not None and node.kind == "gather" and parents_values and all(
-                    isinstance(v, list) for v in parents_values
+                if (
+                    node is not None
+                    and node.kind == "gather"
+                    and parents_values
+                    and all(isinstance(v, list) for v in parents_values)
                 ):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)

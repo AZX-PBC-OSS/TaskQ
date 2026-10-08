@@ -130,7 +130,9 @@ def test_surface_walk_one_question_one_command() -> None:
 async def test_status_of_an_unknown_run_is_the_honest_error(cli_settings: Any) -> None:
     """An unknown run id is 'no run', named + remedied — exit 1, never a
     blank report that reads as a healthy zero."""
-    result = await to_thread(runner.invoke, app, ["flows", "status", "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"])
+    result = await to_thread(
+        runner.invoke, app, ["flows", "status", "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"]
+    )
     assert result.exit_code == 1
     out = plain_cli_output(result.output)
     assert "no run" in out
@@ -190,8 +192,14 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
         runner.invoke,
         app,
         [
-            "flows", "resolve", hold_id, '{"verdict":"approve","note":"ship it"}',
-            "--app", f"{MODULE_NAME}:app", "--reason", "editor approved",
+            "flows",
+            "resolve",
+            hold_id,
+            '{"verdict":"approve","note":"ship it"}',
+            "--app",
+            f"{MODULE_NAME}:app",
+            "--reason",
+            "editor approved",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -249,7 +257,8 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
 
     retried = await to_thread(
         runner.invoke,
-        app, ["flows", "retry", str(flow_id), "doomed", "--reason", "the enricher is back"],
+        app,
+        ["flows", "retry", str(flow_id), "doomed", "--reason", "the enricher is back"],
     )
     assert retried.exit_code == 0, retried.output
     assert "re-opened" in retried.output
@@ -272,9 +281,18 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
 
 def _held_row(**overrides: Any) -> FlowNodeRow:
     hold = HoldContext(
-        hold_id="h-1", run_id="r-1", node_key="review", signal_name="Approval",
-        hold_epoch=1, call_id="c", payload=None, payload_schema=None,
-        reason="editorial approval", created_at=None, expires_at=None, status="held",
+        hold_id="h-1",
+        run_id="r-1",
+        node_key="review",
+        signal_name="Approval",
+        hold_epoch=1,
+        call_id="c",
+        payload=None,
+        payload_schema=None,
+        reason="editorial approval",
+        created_at=None,
+        expires_at=None,
+        status="held",
     )
     return FlowNodeRow(step_key="review", status="pending", hold=hold, **overrides)
 
@@ -288,8 +306,14 @@ def test_stuck_lines_name_the_remedy_and_the_source() -> None:
     assert any("JOIN-WAIT" in line and "deps_pending" in line for line in join_wait)
 
     failed = stuck_lines(
-        FlowNodeRow(step_key="f", status="failed", error_class="ValueError",
-                    error_message="boom", max_attempts=3, attempt=3),
+        FlowNodeRow(
+            step_key="f",
+            status="failed",
+            error_class="ValueError",
+            error_message="boom",
+            max_attempts=3,
+            attempt=3,
+        ),
         "r-1",
     )
     assert any("EXHAUSTED" in line for line in failed)
@@ -307,10 +331,24 @@ def test_stuck_lines_name_the_remedy_and_the_source() -> None:
 def test_stuck_lines_name_the_undeadlined_hold() -> None:
     """The W1 subject: a hold with NO deadline says so (a workflow that
     waits forever on a human is a support ticket — the operator SEES it)."""
-    row = FlowNodeRow(step_key="review", status="pending", hold=HoldContext(
-        hold_id="h", run_id="r", node_key="review", signal_name="Approval",
-        hold_epoch=1, call_id="c", payload=None, payload_schema=None, reason=None,
-        created_at=None, expires_at=None, status="held"))
+    row = FlowNodeRow(
+        step_key="review",
+        status="pending",
+        hold=HoldContext(
+            hold_id="h",
+            run_id="r",
+            node_key="review",
+            signal_name="Approval",
+            hold_epoch=1,
+            call_id="c",
+            payload=None,
+            payload_schema=None,
+            reason=None,
+            created_at=None,
+            expires_at=None,
+            status="held",
+        ),
+    )
     lines = stuck_lines(row, "r")
     assert any("NO deadline" in line for line in lines)
 
@@ -374,10 +412,19 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     # vocabulary (the CLI never invents a status name; 'skipped' is the
     # workflow-side representation the derivation reads).
     node_vocab = {
-        "pending", "scheduled", "running", "succeeded", "failed",
-        "cancelled", "crashed", "abandoned", "skipped",
+        "pending",
+        "scheduled",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "crashed",
+        "abandoned",
+        "skipped",
     }
-    assert node_vocab - {"skipped"} <= set(VALID_TRANSITIONS), "a node status outside the statemachine"
+    assert node_vocab - {"skipped"} <= set(VALID_TRANSITIONS), (
+        "a node status outside the statemachine"
+    )
     assert node_vocab >= TERMINAL_STATUSES
     engine_redlog.flush()
 

@@ -57,24 +57,28 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict
 
+
 class DocState(TypedDict, total=False):
-    doc_id: str            # DECLARED or the merge drops it on the hop
-    enrichment: dict       # every channel here was added after an incident
+    doc_id: str  # DECLARED or the merge drops it on the hop
+    enrichment: dict  # every channel here was added after an incident
     verdict: str
+
 
 def enrich(state: DocState) -> DocState:
     return {"enrichment": enrich_document(state["doc_id"])}
 
+
 def review(state: DocState) -> DocState:
-    answer = interrupt("awaiting publish approval")   # in-memory: a pod
-    return {"verdict": answer["verdict"]}             # restart loses this
+    answer = interrupt("awaiting publish approval")  # in-memory: a pod
+    return {"verdict": answer["verdict"]}  # restart loses this
+
 
 graph = StateGraph(DocState)
 graph.add_node("enrich", enrich)
 graph.add_node("review", review)
 graph.add_edge("enrich", "review")
 graph.add_edge("review", END)
-checkpointer = MemorySaver()   # per-session; dies with the pod
+checkpointer = MemorySaver()  # per-session; dies with the pod
 app = graph.compile(checkpointer=checkpointer)
 ```
 
@@ -90,14 +94,18 @@ from pydantic import BaseModel
 from taskq.workflows import FlowRunner, WorkflowApp, build, step
 from taskq.workflows.api._hitl import HitlClient
 
+
 class DocIn(BaseModel):
     doc_id: str
 
+
 class PublishApproval(BaseModel):
-    verdict: str          # "approve" | "reject"
+    verdict: str  # "approve" | "reject"
     note: str = ""
 
+
 app = WorkflowApp()
+
 
 @app.workflow("doc_ingest")
 def doc_ingest_build() -> object:
@@ -105,14 +113,17 @@ def doc_ingest_build() -> object:
     reviewed = step(review_body, enriched, key="review")
     return build(reviewed)
 
+
 async def enrich_body(ctx, params: DocIn) -> dict:
     return {"enrichment": enrich_document(params.doc_id)}
+
 
 async def review_body(ctx, enriched: dict) -> dict:
     # The HOLD: the slot releases; a pod restart changes nothing — the
     # approval is a ROW. The resume delivers the TYPED payload.
     decision = await ctx.wait_signal(PublishApproval, timeout_s=86400.0)
     return {"verdict": decision.verdict}
+
 
 # ---- driving it (the client side) ------------------------------------
 # runner = FlowRunner(app.get("doc_ingest"), pool, schema)
@@ -150,11 +161,12 @@ promise arguments; `interrupt` → `wait_signal`; `MemorySaver` → nothing
 # construction (the transactional outbox: at most one fire per join):
 from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
 
+
 @app.workflow("batch_ingest")
 def batch_build() -> object:
     planned = step(plan_body, BatchIn(doc_ids=DOCS), key="plan")
-    enriched = map_source(planned, enrich_one_body)   # the join: <key>.join
-    return build(enriched)   # the join collects list[dict] — ALL children
+    enriched = map_source(planned, enrich_one_body)  # the join: <key>.join
+    return build(enriched)  # the join collects list[dict] — ALL children
 ```
 
 The join fires when ALL children are terminal — **exactly once** — no
@@ -188,7 +200,7 @@ nor fire the join early. (The join node's key is the DERIVED namespace —
   interrupt) behind one CAS'd, idempotent, slot-releasing row — no
   competitor unifies these five into one shape.
 - The exactly-once join (the transactional outbox trio) is
-  **probe-proven at portfolio scale**: 201 join fires across 1002 nodes,
+  **probe-proven at fleet scale**: 201 join fires across 1002 nodes,
   each exactly once, zero stranded joins.
 - The compile-time validator (E1-E6 + W1, one-pass) is stricter than
   anything in Temporal, Airflow, or Argo — and the SAME module compiles

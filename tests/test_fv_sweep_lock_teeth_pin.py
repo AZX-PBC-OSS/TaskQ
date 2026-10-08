@@ -79,8 +79,7 @@ async def test_child_lock_held_across_a_sweep_pass_is_skipped_then_healed(
             meta,
         )
         await c.execute(
-            f'INSERT INTO "{schema}".wf_edge (child_id, parent_id, flow_id) '
-            "VALUES ($1, $2, $3)",
+            f'INSERT INTO "{schema}".wf_edge (child_id, parent_id, flow_id) VALUES ($1, $2, $3)',
             child_id,
             parent_id,
             flow_id,
@@ -89,25 +88,19 @@ async def test_child_lock_held_across_a_sweep_pass_is_skipped_then_healed(
     # THE HELD LOCK: one connection, a tx, the child's row lock held.
     async with module_pg_pool.acquire() as holder:
         await holder.execute("BEGIN")
-        await holder.execute(
-            f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', child_id
-        )
+        await holder.execute(f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', child_id)
 
         # THE PASS ACROSS THE HELD LOCK: a short lock budget — a blocking
         # statement (the mutant) blows it; the shipped SKIP LOCKED never
         # waits at all.
-        sweeper_pool = await asyncpg.create_pool(
-            module_pg_schema.pg_dsn, min_size=1, max_size=1
-        )
+        sweeper_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=1)
         try:
             sweeper = await sweeper_pool.acquire()
             await sweeper.execute("SET lock_timeout = '250ms'")
             await sweeper.execute("SET statement_timeout = '2s'")
             await sweeper_pool.release(sweeper)  # the session settings ride the pooled conn
             started = time.monotonic()
-            result = await asyncio.wait_for(
-                sweep_join_rederive(sweeper_pool, wsql), timeout=10.0
-            )
+            result = await asyncio.wait_for(sweep_join_rederive(sweeper_pool, wsql), timeout=10.0)
             elapsed = time.monotonic() - started
             _ = result
             # The skip, not the block: the pass returned under the budget…

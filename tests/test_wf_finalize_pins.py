@@ -184,16 +184,14 @@ def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> N
     # A well-formed fork validates.
     from taskq.workflows._types import ChildSpec
 
-    well_formed = ForkSpec(
-        children=(ChildSpec(step_key="c", actor="wf", queue="default"),)
-    )
+    well_formed = ForkSpec(children=(ChildSpec(step_key="c", actor="wf", queue="default"),))
     validate_fork(well_formed)
     engine_redlog.red(
         "pin22-build-time-refusals",
         "the unvalidated builders (empty fork / edge-less join) reached the DB",
         {
             "refused": [empty_refusal, edgeless_refusal, parents_refusal],
-            "well_formed_fork_accepted": well_formed is not None,
+            "well_formed_fork_accepted": len(well_formed.children) == 1,
         },
     )
 
@@ -297,9 +295,7 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
         f"the dead flow's join DECREMENTED (deps_pending={state['deps_pending']}): "
         "the flow-status leg is load-bearing in tx2"
     )
-    assert not result.fired and fired_count == 0, (
-        "the dead flow's join never fires"
-    )
+    assert not result.fired and fired_count == 0, "the dead flow's join never fires"
 
 
 # ── Pin 6: DUPLICATE-FINALIZE (the rowcount gate) ────────────────────────

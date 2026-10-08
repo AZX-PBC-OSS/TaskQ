@@ -339,6 +339,15 @@ ignore = [
 # run-directly probes (pytest node ids, not import surfaces).
 "tests/test_wf_hitl_pins.py" = ["S608"]
 "tests/test_wf_phase3_cure_pins.py" = ["S608"]
+# The validator's delivered pins (the findings-validation round): the SAME
+# shape — the f-strings' ONLY interpolation is the fixture's schema
+# identifier, values all $N-bound.
+"tests/test_fv_sweep_lock_teeth_pin.py" = ["S608"]
+# The staged LangGraph guide's verification harness (a captured-artifact
+# script, not linted source in spirit — it runs against a throwaway
+# testcontainer): the f-strings' ONLY interpolation is the container's
+# own schema name, values all $N-bound.
+"docs/guides/verify_guide.py" = ["S608"]
 "tests/attack3-hitl.py" = ["S608", "N999"]
 "tests/attack3-loop.py" = ["S608", "N999"]
 "tests/attack3-validate.py" = ["N999"]

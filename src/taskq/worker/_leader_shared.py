@@ -387,15 +387,6 @@ _JOBS_COLUMNS_QUALIFIED_CSV_LEGACY = ", ".join(
 )
 
 
-def _archive_cte_sql(schema: str, *, legacy: bool = False) -> str:
-    """The archive write, in BOTH column eras: the budget-aware form is
-    the shipped statement; the LEGACY form (the three budget columns
-    cut) is the pre-budget estate's tolerance fallback — semantically
-    exact there (nothing to mirror)."""
-    if not legacy:
-        return _ARCHIVE_CTE_SQL.format(schema=schema)
-    return _ARCHIVE_CTE_SQL_LEGACY.format(schema=schema)
-
 _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
     "job_id",
     "attempt",

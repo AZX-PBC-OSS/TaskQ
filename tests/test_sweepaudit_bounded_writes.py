@@ -102,6 +102,14 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
     ),
+    "_ARCHIVE_CTE_SQL_LEGACY": (
+        "ANY($3::uuid[])",
+        "the archive write's PRE-BUDGET fallback twin (the budget-column "
+        "tolerance): the shipped statement with the three budget columns "
+        "cut from both sides of the mirror — the SAME bound (the write "
+        "set is the candidate ids bound as an array, selected by the "
+        "LIMIT-ed _ARCHIVE_CANDIDATE_SQL window in the same transaction)",
+    ),
     "_SWEEP_2_ATTEMPTS_BATCH_SQL": (
         "FROM unnest($1::uuid[]",
         "sweep 2's batched synthetic attempt insert (01.00.20_04's due_at "

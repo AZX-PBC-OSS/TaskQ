@@ -73,11 +73,11 @@ _STREAM_KEEPALIVE_S = 30.0
 #: monotonic-enough revision facts for the emit decision, and the
 #: frame's own seq carries the ordering): a composite string, one query.
 _RUN_REVISION_SQL = (
-    "SELECT COALESCE((SELECT max(l.updated_at)::text FROM \"{schema}\".wf_step_ledger l "
+    'SELECT COALESCE((SELECT max(l.updated_at)::text FROM "{schema}".wf_step_ledger l '
     "  WHERE l.flow_id = $1), 'none') || ':' || "
-    "COALESCE((SELECT max(s.created_at)::text FROM \"{schema}\".wf_signals s "
+    'COALESCE((SELECT max(s.created_at)::text FROM "{schema}".wf_signals s '
     "  WHERE s.workflow_id = $1), 'none') || ':' || "
-    "COALESCE((SELECT max(n.finished_at)::text FROM \"{schema}\".jobs n "
+    'COALESCE((SELECT max(n.finished_at)::text FROM "{schema}".jobs n '
     "  WHERE (n.metadata->>'flow_id')::uuid = $1 AND n.metadata ? 'flow_id'), 'none') "
     "AS revision"
 )
@@ -100,7 +100,7 @@ _NODE_PARENT_SQL = (
 )
 
 _NODE_LEDGER_SQL = (
-    'SELECT step_key, attempt, status, error_class, error_message, created_at '
+    "SELECT step_key, attempt, status, error_class, error_message, created_at "
     'FROM "{schema}".wf_step_ledger WHERE job_id = $1 ORDER BY id'
 )
 
@@ -142,8 +142,7 @@ def _validate_through_gates(
             errors.append(
                 f"{model.__name__}: "
                 + "; ".join(
-                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"
-                    for e in exc.errors()
+                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
                 )
             )
             continue
@@ -218,8 +217,17 @@ async def _stream_generator(
             # the #673 class).
             seq += 1
             last_revision = revision
-            yield _frame(seq, {"seq": seq, "run_id": str(run_id), "status": "unknown",
-                               "root_status": "unknown", "nodes": [], "holds": []})
+            yield _frame(
+                seq,
+                {
+                    "seq": seq,
+                    "run_id": str(run_id),
+                    "status": "unknown",
+                    "root_status": "unknown",
+                    "nodes": [],
+                    "holds": [],
+                },
+            )
         else:
             since_keepalive += _STREAM_POLL_S
             if since_keepalive >= _STREAM_KEEPALIVE_S:
@@ -287,11 +295,14 @@ def register_actions(router: APIRouter) -> None:
         # the client holds it — the uncapped scan's guard (the SSE-cap
         # law) refuses an endpoint without this, and a burst of open
         # streams would exhaust exactly what the cap bounds.
-        sse_slot = await acquire_sse_slot("wf-run-stream", settings.admin_max_sse_connections,
-                                          surface="admin")
+        sse_slot = await acquire_sse_slot(
+            "wf-run-stream", settings.admin_max_sse_connections, surface="admin"
+        )
         return StreamingResponse(
             release_after(
-                sse_slot, _stream_generator(pool, schema, run_id, cursor), "wf-run-stream",
+                sse_slot,
+                _stream_generator(pool, schema, run_id, cursor),
+                "wf-run-stream",
                 surface="admin",
             ),
             media_type="text/event-stream",

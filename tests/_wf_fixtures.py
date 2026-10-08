@@ -64,6 +64,7 @@ def latest_band_artifact(stem: str) -> Path | None:
     matches = sorted(runs.glob(f"{stem}-*.json"))
     return matches[-1] if matches else None
 
+
 #: The terminal-status SQL set — the statement-side literal the engine's
 #: guards spell (the twin of statemachine.TERMINAL_STATUSES); the pins'
 #: convicted variants re-spell it.
