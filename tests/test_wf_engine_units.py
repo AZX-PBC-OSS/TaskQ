@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from taskq.workflows import StepContext
 from taskq.workflows._capture import build_capture
 from taskq.workflows._version import compute_code_version
 from taskq.workflows.engine import (
@@ -173,10 +174,10 @@ def test_pin_16_body_from_definition(
         resolve_step_body,
     )
 
-    async def defined_body(ctx: Any) -> str:  # pragma: no cover - identity only
+    async def defined_body(ctx: StepContext) -> str:  # pragma: no cover - identity only
         return "defined"
 
-    async def mutated_body(ctx: Any) -> str:  # pragma: no cover - identity only
+    async def mutated_body(ctx: StepContext) -> str:  # pragma: no cover - identity only
         return "MUTATED"
 
     get_registry().register(WorkflowDef(name="pin16-flow", bodies={"step_a": defined_body}))

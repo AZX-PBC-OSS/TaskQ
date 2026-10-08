@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import WorkflowApp, build, gather, step
+from taskq.workflows import StepContext, WorkflowApp, build, gather, step
 from taskq.workflows.api._graph import NodeDecl, Promise
 from taskq.workflows.api._validate import _run_rules
 
@@ -30,11 +30,11 @@ class Unrelated(BaseModel):
     other: str
 
 
-async def _annotated(ctx: Any, params: Ingest) -> Report:
+async def _annotated(ctx: StepContext, params: Ingest) -> Report:
     return Report(n=1)
 
 
-async def _consumer(ctx: Any, r: Report) -> Report:
+async def _consumer(ctx: StepContext, r: Report) -> Report:
     return r
 
 
@@ -175,7 +175,7 @@ def test_a3_actor_on_a_nonexistent_queue_is_not_refused_at_build() -> None:
 # ── A3-V5: the E5 rule's blind spots (the unannotated param + the hook) ─
 
 
-async def _untyped_consumer(ctx: Any, r: Any) -> Unrelated:
+async def _untyped_consumer(ctx: StepContext, r: Any) -> Unrelated:
     return Unrelated(other="x")
 
 

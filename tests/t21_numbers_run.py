@@ -33,14 +33,15 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.migrate import apply_pending
-from taskq.workflows._progress_read import map_progress_line, read_map_aggregate
 from taskq.workflows import (
     FlowRunner,
+    StepContext,
     WorkflowApp,
     build,
     map_source,
     step,
 )
+from taskq.workflows._progress_read import map_progress_line, read_map_aggregate
 from taskq.workflows.engine import render_workflow_sql
 
 DSN = "postgresql://taskq:taskq@localhost:5705/taskq"
@@ -63,14 +64,14 @@ async def main() -> dict[str, Any]:
     # ── 1-5: THE CHATTY NODE (10,000 emissions at the ~1000/s shape) ────
     app = WorkflowApp()
 
-    async def chatty(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def chatty(ctx: StepContext, params: Ingest) -> dict[str, object]:
         for i in range(10_000):
             await ctx.progress(i % 101, f"e{i}", None)
             if i % 1000 == 0:
                 await asyncio.sleep(0.001)  # the ~1000/s emission shape
         return {"ok": True}
 
-    async def quiet(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def quiet(ctx: StepContext, params: Ingest) -> dict[str, object]:
         return {"ok": True}
 
     @app.workflow("t21_chatty_numbers")
@@ -138,10 +139,10 @@ async def main() -> dict[str, Any]:
     # ── 6: THE 200-CHILD MAP + THE READ-SIDE AGGREGATE ──────────────────
     app2 = WorkflowApp()
 
-    async def fetch(ctx: Any, params: Ingest) -> list[int]:
+    async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
         return list(range(200))
 
-    async def item(ctx: Any, value: int) -> dict[str, object]:
+    async def item(ctx: StepContext, value: int) -> dict[str, object]:
         pct = ((value + 1) * 100) // 200
         await ctx.progress(pct, f"child {value}", {"child": value})
         return {"risk": value % 7}

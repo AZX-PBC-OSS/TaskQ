@@ -23,15 +23,22 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows._progress import ProgressEmitter
-from taskq.workflows._progress_read import map_progress_line, progress_sse_face, read_map_aggregate, rebuild_display, run_display
 from taskq.workflows import (
     FlowRunner,
+    StepContext,
     WorkflowApp,
     build,
     map_source,
     sink,
     step,
+)
+from taskq.workflows._progress import ProgressEmitter
+from taskq.workflows._progress_read import (
+    map_progress_line,
+    progress_sse_face,
+    read_map_aggregate,
+    rebuild_display,
+    run_display,
 )
 from taskq.workflows._sql import WorkflowSql
 from tests._wf_fixtures import RedLog, claim_view, seed_flow, seed_running_node
@@ -61,10 +68,10 @@ async def _map_flow(
     caller drives."""
     app = WorkflowApp()
 
-    async def fetch(ctx: Any, params: Ingest) -> list[int]:
+    async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
         return list(range(children))
 
-    async def item(ctx: Any, value: int) -> dict[str, object]:
+    async def item(ctx: StepContext, value: int) -> dict[str, object]:
         pct = ((value + 1) * 100) // children
         await ctx.progress(pct, f"child {value}", {"child": value})
         return {"risk": value}
@@ -230,7 +237,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
     — observed, kept red forever."""
     app = WorkflowApp()
 
-    async def liar(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def liar(ctx: StepContext, params: Ingest) -> dict[str, object]:
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 
@@ -467,10 +474,10 @@ async def test_sunk_join_for_progress_warns_at_validate(
 
     app = WorkflowApp()
 
-    async def fetch(ctx: Any, params: Ingest) -> list[int]:
+    async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
         return [1, 2]
 
-    async def item(ctx: Any, value: int) -> int:
+    async def item(ctx: StepContext, value: int) -> int:
         return value
 
     @app.workflow("t21_w2_flow")
@@ -502,7 +509,7 @@ async def test_http_face_streams_display_then_progress(
     ``id:`` the seq (the browser EventSource reconnect contract)."""
     app = WorkflowApp()
 
-    async def work(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def work(ctx: StepContext, params: Ingest) -> dict[str, object]:
         await ctx.progress(40, "part one", None)
         await ctx.progress(100, "part two", None)
         return {"ok": True}

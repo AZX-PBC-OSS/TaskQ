@@ -23,9 +23,9 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows._progress import ProgressRefusedError
 from taskq.workflows import (
     FlowRunner,
+    StepContext,
     WorkflowApp,
     build,
     step,
@@ -37,6 +37,7 @@ from taskq.workflows._progress import (
     PROGRESS_RING_BOUND,
     STREAM_CHANNEL,
     ProgressEmitter,
+    ProgressRefusedError,
 )
 from tests._wf_fixtures import RedLog
 
@@ -68,7 +69,7 @@ async def test_the_chain_body_emission_lands_in_both_channels(
     app = WorkflowApp()
     seen: dict[str, Any] = {}
 
-    async def work(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def work(ctx: StepContext, params: Ingest) -> dict[str, object]:
         await ctx.progress(10, "starting", None)
         for i in range(5):
             await ctx.progress(20 + i * 10, f"page {i}", {"page": i})
@@ -132,7 +133,7 @@ async def test_declared_schema_door_refuses_wrong_shape(
     body failure (the node's correctness path owns it)."""
     app = WorkflowApp()
 
-    async def lying_body(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def lying_body(ctx: StepContext, params: Ingest) -> dict[str, object]:
         await ctx.progress(50, "m", {"not_a_page": True})
         return {"ok": True}
 
@@ -212,7 +213,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
       — CONSTANT under 10k (DH1's fence, PoC P4/P6)."""
     app = WorkflowApp()
 
-    async def chatty(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def chatty(ctx: StepContext, params: Ingest) -> dict[str, object]:
         for i in range(10_000):
             await ctx.progress(i % 101, f"e{i}", None)
         return {"ok": True}
@@ -359,7 +360,7 @@ async def test_terminal_projection_lands_after_the_finalize(
     from the stream too (the ledger remains the authority)."""
     app = WorkflowApp()
 
-    async def boom(ctx: Any, params: Ingest) -> dict[str, object]:
+    async def boom(ctx: StepContext, params: Ingest) -> dict[str, object]:
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 

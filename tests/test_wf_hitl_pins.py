@@ -24,7 +24,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
     HitlClient,
@@ -84,7 +84,7 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
     typed refusal — no zombie wake, no resume event. The deliver CAS
     requires the unresolved-signal + held-representation predicate."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, node_id = await _held_flow(
@@ -129,7 +129,7 @@ async def test_double_send_is_a_defined_no_op_one_resume(
     """Pin 2: two concurrent delivers → exactly ONE 'delivered' result,
     exactly one resume (the 'held' → 'delivered' CAS is the fence)."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
@@ -169,7 +169,7 @@ async def test_resume_does_not_burn_the_retry_ladder(
     retries) is red forever (the mutation drill)."""
     failures = {"n": 0}
 
-    async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+    async def hold_twice_then_fail(ctx: StepContext, params: Ingest) -> Any:
         # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
         # unconditional — the answers replay per attempt; the operator
         # never re-answers): after both gates, the body fails ONCE (the
@@ -242,7 +242,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
     forever); the stale payload (the wait site answering a call it never
     made) is refused by the epoch + call_id."""
 
-    async def hold_twice(ctx: Any, params: Ingest) -> Any:
+    async def hold_twice(ctx: StepContext, params: Ingest) -> Any:
         # THE CHAINED SHAPE, DOCTRINE-CONFORMANT: the two wait sites are
         # UNCONDITIONAL (the same sequence re-runs from the top on every
         # resume; each attempt's cursor consumes the delivered answers in
@@ -309,7 +309,7 @@ async def test_hold_id_reply_handle_and_context_contract(
     DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
     context reaches NEITHER the list NOR... the list."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(
             (Approval, Escalate),
             timeout_s=120.0,
@@ -378,7 +378,7 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     (pg_notify is per-database — the env DSN's db is not the module's)
     observes the resolved knock's SHAPE."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
@@ -435,7 +435,7 @@ async def test_signal_timeout_fires_on_db_clock(
     terminal-fails, and NO new epoch is ever minted — hold → expire →
     re-hold → ∞ is the convicted dragon, kept red by the attack probe."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=1.0)
 
     flow_id, runner, _node = await _held_flow(
@@ -481,7 +481,7 @@ async def test_cancel_workflow_one_transaction_idempotent(
     the held signals → cancelled; IDEMPOTENT (cancel twice = one
     cancel); the audit row is a ROW (the principal + the reason)."""
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, runner, _node = await _held_flow(
@@ -516,7 +516,7 @@ async def test_hold_to_resume_latency_band(
     commit → the row claimable."""
     import time
 
-    async def hold_body(ctx: Any, params: Ingest) -> Any:
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
