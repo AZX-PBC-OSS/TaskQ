@@ -14,25 +14,30 @@ from taskq.workflows import WorkflowApp, build, gather, sink, step
 
 app = WorkflowApp()
 
-class Ingest(BaseModel):        # plain types for DATA
+
+class Ingest(BaseModel):  # plain types for DATA
     doc_id: str
+
 
 class Report(BaseModel):
     ref: str
 
-@app.actor(queue="cpu")          # the workflow decorator — NOT taskq.actor
+
+@app.actor(queue="cpu")  # the workflow decorator — NOT taskq.actor
 async def fetch(ctx, params: Ingest) -> Report:
     return Report(ref=f"r-{params.doc_id}")
 
-@app.workflow("doc_ingest")      # the per-workflow declaration
-def doc_ingest() -> object:      # SYNC and PURE — the compile-time wiring
-    fetched = step(fetch, Ingest(doc_id="d1"))   # Promise[Report]
-    both = gather([fetched])                      # the ALL-upstream join
-    return build(step(summarize, both))           # the completeness point
+
+@app.workflow("doc_ingest")  # the per-workflow declaration
+def doc_ingest() -> object:  # SYNC and PURE — the compile-time wiring
+    fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
+    both = gather([fetched])  # the ALL-upstream join
+    return build(step(summarize, both))  # the completeness point
+
 
 compiled = app.get("doc_ingest")
-compiled.validate()              # the checker-independent validator
-print(compiled.mermaid())        # the compile-time Mermaid emission
+compiled.validate()  # the checker-independent validator
+print(compiled.mermaid())  # the compile-time Mermaid emission
 ```
 
 `Promise[T]` is the wiring: a promise consumed downstream is an edge; a

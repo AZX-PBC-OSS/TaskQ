@@ -606,19 +606,25 @@ CHAIN = Chain(
     name="application-enrichment",
     start="screen",
     steps={
-        "screen": Step(body=screen_app, outcomes=ScreenOutcome,
-                       route=Route({ScreenOutcome.CLEAN: "enrich",
-                                    ScreenOutcome.FLAGGED: "manual_review"})),
-        "enrich": Step(body=enrich_app, outcomes=EnrichOutcome,
-                       route=Route({EnrichOutcome.OK: "score",
-                                    EnrichOutcome.SPARSE: DONE})),
-        "score": Step(body=score_app, outcomes=ScoreOutcome,
-                      route=Route({ScoreOutcome.OK: DONE})),
-        "manual_review": Step(body=manual_review, outcomes=ReviewOutcome,
-                              route=Route({ReviewOutcome.APPROVE: DONE,
-                                           ReviewOutcome.REJECT: DONE})),
+        "screen": Step(
+            body=screen_app,
+            outcomes=ScreenOutcome,
+            route=Route({ScreenOutcome.CLEAN: "enrich", ScreenOutcome.FLAGGED: "manual_review"}),
+        ),
+        "enrich": Step(
+            body=enrich_app,
+            outcomes=EnrichOutcome,
+            route=Route({EnrichOutcome.OK: "score", EnrichOutcome.SPARSE: DONE}),
+        ),
+        "score": Step(body=score_app, outcomes=ScoreOutcome, route=Route({ScoreOutcome.OK: DONE})),
+        "manual_review": Step(
+            body=manual_review,
+            outcomes=ReviewOutcome,
+            route=Route({ReviewOutcome.APPROVE: DONE, ReviewOutcome.REJECT: DONE}),
+        ),
     },
 )
+
 
 # the SOURCE is the paged generator — each yield = ONE emit tx:
 @app.workflow("application_sync")
