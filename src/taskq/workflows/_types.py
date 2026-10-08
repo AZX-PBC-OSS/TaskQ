@@ -22,6 +22,7 @@ __all__ = [
     "ChildSpec",
     "ConsumerBinding",
     "DecrementHit",
+    "EmitChild",
     "FailureInfo",
     "FailurePolicy",
     "FinalizeResult",
@@ -91,6 +92,33 @@ class ChildSpec:
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmitChild:
+    """One chain-start row a streaming source's emit tx inserts (T20).
+
+    The :class:`ChildSpec` shape PLUS the per-record identity stamps the
+    emit owns — BOTH REQUIRED, not defaulted: the refuted-claim
+    discipline (the spike's 198 UniqueViolations). The certified fork's
+    idempotency key AND the step-ledger's arbiter discriminate siblings
+    by ``map_index``; the per-record ``trace_id`` is the one-query
+    lineage (the drill-down by trace). The fork's ``trace_id`` is
+    per-fork; the emit's is per-child — the stamp-at-emit rule."""
+
+    step_key: str
+    actor: str
+    queue: str
+    payload: dict[str, object] | None
+    #: The record's trace — stamped at emit, carried forward by every
+    #: fork the chain's steps take (the lineage never forks from the
+    #: parent's column).
+    trace_id: str
+    #: THE DISCRIMINATOR (load-bearing): the fork's idempotency key and
+    #: the ledger's claim arbiter both ride it — two records' children of
+    #: one step are two rows, two keys, two claims, only when it is
+    #: stamped per record at emit.
+    map_index: int
 
 
 @dataclass(frozen=True, slots=True)

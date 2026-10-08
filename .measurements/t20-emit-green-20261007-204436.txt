@@ -1,0 +1,6 @@
+src/taskq/workflows/__init__.py:24: in <module>
+    from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, emit_batch
+src/taskq/workflows/_emit.py:60: in <module>
+    WindowHook = Callable[[str, ConnLike], Awaitable[None]]
+                                ^^^^^^^^
+E   NameError: name 'ConnLike' is not defined
