@@ -531,9 +531,7 @@ async def test_http_face_streams_display_then_progress(
         auth_dependency=lambda: None,  # the test mount: no auth
     )
     fast_app = FastAPI()
-    paths = {
-        getattr(r, "path", "") for r in bundle.router.routes
-    }
+    paths = {getattr(r, "path", "") for r in bundle.router.routes}
     assert "/api/flow/{flow_id}/progress/stream" in paths, (
         "the admin router does not carry the workflow progress stream"
     )

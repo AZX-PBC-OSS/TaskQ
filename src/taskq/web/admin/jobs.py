@@ -1034,7 +1034,6 @@ def register(router: APIRouter) -> None:
 
     # ── THE WORKFLOW PROGRESS STREAM (T21 — the SSE face's HTTP mapping) ────
 
-
     @router.get("/api/flow/{flow_id}/progress/stream")
     async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
         flow_id: uuid.UUID,
@@ -1094,9 +1093,7 @@ def register(router: APIRouter) -> None:
             async for frame in progress_stream_generator(
                 pg_pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
             ):
-                yield ServerSentEvent(
-                    event=frame["event"], id=frame["id"], data=frame["data"]
-                )
+                yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
 
         return _EventSourceResponse(
             _frames(), headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}

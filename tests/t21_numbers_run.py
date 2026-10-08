@@ -25,13 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq.migrate import apply_pending
 from taskq.workflows import (
     FlowRunner,
@@ -183,7 +183,7 @@ async def main() -> dict[str, Any]:
     # observed once more on the built substrate's side table)
     await conn.execute(f'CREATE TABLE "{SCHEMA}".wf_progress_log_red (node_id uuid, pct int)')
     t0 = time.perf_counter()
-    red_node = uuid.uuid4()
+    red_node = new_uuid()
     for i in range(2000):
         await conn.execute(
             f'INSERT INTO "{SCHEMA}".wf_progress_log_red VALUES ($1, $2)', red_node, i
