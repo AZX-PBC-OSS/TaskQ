@@ -50,6 +50,7 @@ from taskq.workflows.api import (
     WorkflowApp,
     WorkflowBuildError,
     build,
+    chain_source,
     gather,
     map_source,
     sink,
@@ -57,6 +58,15 @@ from taskq.workflows.api import (
 )
 from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
+from taskq.workflows.chain import (
+    DONE,
+    Chain,
+    Route,
+    RouterNotTotal,
+    Step,
+    chain_fork,
+    chain_start,
+)
 from taskq.workflows.context import WorkflowSteps
 from taskq.workflows.definitions import (
     FAILURE_POLICIES,
@@ -92,10 +102,12 @@ from taskq.workflows.ledger import (
 
 __all__ = [
     "DISPATCH_EXCLUSION_CLAUSE",
+    "DONE",
     "EMIT_CURSOR_KEY",
     "FAILURE_POLICIES",
     "MAX_FAN_IN_PER_JOIN",
     "AbsorbingPolicy",
+    "Chain",
     "ChildSpec",
     "CompiledWorkflow",
     "ConsumerBinding",
@@ -118,7 +130,10 @@ __all__ = [
     "NodeSpec",
     "Promise",
     "Refine",
+    "Route",
+    "RouterNotTotal",
     "RunClaim",
+    "Step",
     "StepBody",
     "StepContext",
     "SweepResult",
@@ -129,6 +144,9 @@ __all__ = [
     "WorkflowRunError",
     "WorkflowSteps",
     "build",
+    "chain_fork",
+    "chain_source",
+    "chain_start",
     "claim_step_ledger",
     "drain_outbox",
     "emit_batch",
