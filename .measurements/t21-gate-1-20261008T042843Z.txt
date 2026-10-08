@@ -1,0 +1,17 @@
+=== THE T21 GATE — round 1 — 20261008T042843Z ===
+--- ruff check (src tests) ---
+
+Found 5 errors.
+--- ruff format --check (the touched files) ---
+36 files already formatted
+--- pyright (the touched surface) ---
+12 errors, 0 warnings, 0 informations
+--- pytest MAIN lane (not slow and not load_sensitive) ---
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+65 failed, 192 passed, 1 deselected, 1 warning in 59.24s
+--- pytest SLOW lane (slow, not load_sensitive) ---
+
+15 deselected in 0.19s
+--- pytest LOAD_SENSITIVE lane (serial; load-fragile by declaration) ---
+...                                                                      [100%]
+3 passed, 2 deselected in 19.02s

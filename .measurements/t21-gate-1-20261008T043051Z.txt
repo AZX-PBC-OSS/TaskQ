@@ -1,0 +1,17 @@
+=== THE T21 GATE — round 1 — 20261008T043051Z ===
+--- ruff check (src tests) ---
+All checks passed!
+--- ruff format --check (the touched files) ---
+1 file would be reformatted, 35 files already formatted
+--- pyright (the touched surface) ---
+0 errors, 0 warnings, 0 informations
+--- pytest MAIN lane (not slow and not load_sensitive) ---
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+257 passed, 1 deselected, 1 warning in 69.06s (0:01:09)
+--- pytest SLOW lane (slow, not load_sensitive) ---
+
+15 deselected in 0.17s
+--- pytest LOAD_SENSITIVE lane (serial; load-fragile by declaration) ---
+FAILED tests/test_wf_perf_bands.py::test_pin_4_enqueue_latency_band - Asserti...
+1 failed, 2 passed, 2 deselected in 18.92s
+--- the load lane's immediate re-run (round 1's warm-up flake — the band is declared load-fragile; solo re-run at 043651Z: 3 passed) ---
