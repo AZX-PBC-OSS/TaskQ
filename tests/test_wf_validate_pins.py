@@ -297,12 +297,14 @@ def test_the_hot_reload_guard_twin_absorbed_shadow_reds() -> None:
 
     source = textwrap.dedent(
         """
-        async def the_body(ctx):
+        async def the_body(ctx: StepContext):
             return "the same content"
         """
     )
-    twin_a_ns: dict[str, object] = {}
-    twin_b_ns: dict[str, object] = {}
+    from taskq.workflows import StepContext as _StepCtx
+
+    twin_a_ns: dict[str, object] = {"StepContext": _StepCtx}
+    twin_b_ns: dict[str, object] = {"StepContext": _StepCtx}
     exec(source, twin_a_ns)  # noqa: S102  # Why: the re-import's own shape — exec IS the fresh module objects.
     exec(source, twin_b_ns)  # noqa: S102
     body_a = twin_a_ns["the_body"]
@@ -317,11 +319,11 @@ def test_the_hot_reload_guard_twin_absorbed_shadow_reds() -> None:
     # THE SHADOW STANDS: differing content under one name is the error
     shadow_source = textwrap.dedent(
         """
-        async def the_body(ctx):
+        async def the_body(ctx: StepContext):
             return "THE EDITED CONTENT"
         """
     )
-    shadow_ns: dict[str, object] = {}
+    shadow_ns: dict[str, object] = {"StepContext": StepContext}
     exec(shadow_source, shadow_ns)  # noqa: S102  # Why: the shadow drill's own shape — exec IS the third re-import.
     with pytest.raises(DuplicateWorkflowError):
         registry.register(
