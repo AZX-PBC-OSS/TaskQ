@@ -1,0 +1,85 @@
+...F....F..                                                              [100%]
+=================================== FAILURES ===================================
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f419e08c8c0>
+wf_schema = 'tq_43e35a3ad0'
+wf_pool = <asyncpg.pool.Pool object at 0x7f419e28f7c0>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+            return build(mapped)
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        ledger = await wf_conn.fetch(
+            f'SELECT map_index, attempt, status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'child.item' "
+            "ORDER BY map_index, attempt",
+            flow_id,
+        )
+        # Child 2 laddered (2 attempts); the others succeeded first try —
+        # PER-CHILD identity (the ledger-PK attack's shape, through the API).
+        child2 = [(r["attempt"], r["status"]) for r in ledger if r["map_index"] == 2]
+>       assert child2 == [(1, "failed"), (2, "succeeded")]
+E       AssertionError: assert [] == [(1, 'failed'... 'succeeded')]
+E         
+E         Right contains 2 more items, first extra item: (1, 'failed')
+E         Use -v to get more diff
+
+tests/test_wf_runner_pins.py:377: AssertionError
+_____________________ test_sequenced_maps_depth3_one_flow ______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f419e08f2f0>
+wf_schema = 'tq_43e35a3ad0'
+wf_pool = <asyncpg.pool.Pool object at 0x7f419dee5840>
+
+    async def test_sequenced_maps_depth3_one_flow(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #2's cure (the BLOCKER): sequencing — a map whose source is a
+        step's promise, in ONE flow (the spike needed three flows + glue)."""
+        app = WorkflowApp()
+    
+        @app.workflow("seq_flow")
+        def seq_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d1"), key="src")
+            mapped = map_source(source, _per_item, key="map1")  # THE MAP: per-item fresh jobs
+            del mapped
+            return build(step(_map_tail, source, key="tail"))
+    
+        runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        # the map's children exist as ROWS with map_index (the fork's
+        # per-item identity — the ledger keys them separately).
+        row = await wf_conn.fetchrow(
+            f'SELECT count(*), array_agg(map_index ORDER BY map_index) FROM "{wf_schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'map1.item'",
+            flow_id,
+        )
+>       assert row is not None and row[0] == 3 and row[1] == [0, 1, 2]
+E       assert (<Record count=0 array_agg=None> is not None and 0 == 3)
+
+tests/test_wf_runner_pins.py:171: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+FAILED tests/test_wf_runner_pins.py::test_sequenced_maps_depth3_one_flow - as...
+2 failed, 9 passed in 3.64s

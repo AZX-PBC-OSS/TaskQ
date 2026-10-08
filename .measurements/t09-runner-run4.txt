@@ -1,0 +1,98 @@
+..F.....FF.                                                              [100%]
+=================================== FAILURES ===================================
+___________ test_transient_ladder_emits_no_terminal_until_exhaustion ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f40ae3c6e40>
+wf_schema = 'tq_7444effeec'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409ff9ea40>
+
+    async def test_transient_ladder_emits_no_terminal_until_exhaustion(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 7 through the public API: the transient ladder's attempt
+        failures emit NO terminal — the node re-pends until max_attempts."""
+        app = WorkflowApp()
+    
+        async def always_fails_transient(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("transient boom")
+    
+        @app.workflow("ladder_flow")
+        def ladder_flow() -> object:
+            node = step(always_fails_transient, Ingest(doc_id="d"), key="lad", max_attempts=3)
+            return build(node)
+    
+        runner = FlowRunner(app.get("ladder_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+E       AssertionError: assert 'max_ticks' == 'terminal'
+E         
+E         - terminal
+E         + max_ticks
+
+tests/test_wf_runner_pins.py:260: AssertionError
+_____________________ test_sequenced_maps_depth3_one_flow ______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409fd79400>
+wf_schema = 'tq_7444effeec'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409fdf04c0>
+
+    async def test_sequenced_maps_depth3_one_flow(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #2's cure (the BLOCKER): sequencing — a map whose source is a
+        step's promise, in ONE flow (the spike needed three flows + glue)."""
+        app = WorkflowApp()
+    
+        @app.workflow("seq_flow")
+        def seq_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d1"), key="src")
+            return build(step(_per_item, source, key="child"))
+    
+        runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+E       AssertionError: assert 'max_ticks' == 'terminal'
+E         
+E         - terminal
+E         + max_ticks
+
+tests/test_wf_runner_pins.py:150: AssertionError
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409ec115e0>
+wf_schema = 'tq_7444effeec'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409fdf01c0>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            return build(step(flaky_child, source, key="child", max_attempts=3))
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+E       AssertionError: assert 'max_ticks' == 'terminal'
+E         
+E         - terminal
+E         + max_ticks
+
+tests/test_wf_runner_pins.py:353: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_transient_ladder_emits_no_terminal_until_exhaustion
+FAILED tests/test_wf_runner_pins.py::test_sequenced_maps_depth3_one_flow - As...
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+3 failed, 8 passed in 53.64s

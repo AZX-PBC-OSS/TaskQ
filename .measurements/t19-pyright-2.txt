@@ -1,0 +1,46 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:651:36 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "dict[Unknown, Unknown] | list[Unknown] | str | int | float | bool" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:671:25 - error: Argument of type "object | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+    Type "object | Unknown" is not assignable to type "ConvertibleToInt"
+      Type "object" is not assignable to type "ConvertibleToInt"
+        "object" is not assignable to "str"
+        "object" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "object" is incompatible with protocol "SupportsInt"
+          "__int__" is not present
+        "object" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:671:25 - error: Argument of type "object | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+    Type "object | Unknown" is not assignable to type "ConvertibleToInt"
+      Type "object" is not assignable to type "ConvertibleToInt"
+        "object" is not assignable to "str"
+        "object" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "object" is incompatible with protocol "SupportsInt"
+          "__int__" is not present
+        "object" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:672:9 - error: Type of "carry" is partially unknown
+    Type of "carry" is "object | Unknown | None" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:680:65 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_encode_result"
+    Argument type is "object | Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:690:17 - error: Argument of type "Pool[Record]" cannot be assigned to parameter "conn" of type "ConnLike" in function "memoized_step_result"
+    Type "Pool[Record]" is not assignable to type "ConnLike"
+      "Pool[Record]" is not assignable to "Connection[Record]"
+      "Pool[Record]" is not assignable to "PoolConnectionProxy[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:762:25 - error: "LOOP_ERROR_BODY" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:762:25 - error: Argument type is unknown
+    Argument corresponds to parameter "error_class" in function "_exhaust_loop" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:773:69 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_encode_result" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:781:17 - error: Type of "carry" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:789:53 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "object | Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:819:49 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:821:56 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+13 errors, 0 warnings, 0 informations

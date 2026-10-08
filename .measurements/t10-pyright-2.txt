@@ -1,0 +1,13 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:484:27 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:146:9 - error: Type of "models" is partially unknown
+    Type of "models" is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:187:17 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "register_hold"
+    "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:204:21 - error: "dumps_jsonb_str" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:204:21 - error: Argument type is unknown
+    Argument corresponds to parameter "args" in function "execute" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:217:16 - error: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+6 errors, 0 warnings, 0 informations

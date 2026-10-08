@@ -1,0 +1,76 @@
+F
+=================================== FAILURES ===================================
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdae210d220>
+wf_schema = 'tq_4aba8fa0e7'
+wf_pool = <asyncpg.pool.Pool object at 0x7fdae21ee440>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds = await client.list(run=flow_id)
+        assert len(holds) == 1
+        hold = holds[0]
+        # THE ID IS THE REPLY HANDLE (uuid7 — time-ordered, NOT random).
+        parsed = uuid_module.UUID(hold.hold_id)
+        assert parsed.version == 7, parsed
+        # THE CONTEXT CONTRACT: the schema reference + the provenance.
+        assert hold.payload_schema is not None
+        assert "Approval" in hold.payload_schema
+        assert hold.signal_name == "Approval|Escalate"  # the tuple form's joined spelling — the canonical row name
+        assert hold.node_key == "review"
+        assert hold.status == "held"
+        # THE REDACT LAW EXTENDS (pin 11): the canary secret in the wait
+        # context must not reach the ENUMERATION surface — the client's
+        # redact hook (the chain-then-hook composition) scrubs it.
+        client_redacted = HitlClient(
+            wf_pool,
+            schema=wf_schema,
+            redact=lambda ctx: {
+                k: ("***" if "canary" in str(v) else v) for k, v in (ctx or {}).items()
+            }
+            if isinstance(ctx, dict)
+            else ctx,
+        )
+        holds_redacted = await client_redacted.list(run=flow_id)
+        assert all(
+            "sk-canary-never-leak" not in str(h.payload) for h in holds_redacted
+        ), "the canary reached the enumeration surface — the redact law is violated"
+        # THE RESOLVE (by id) + THE IDEMPOTENCE (the defined no-op).
+        first = await client.resolve(
+            hold.hold_id, {"verdict": "approve"}, reason="the operator's click", principal="op-1"
+        )
+>       assert first.status == "delivered", first
+E       AssertionError: DeliveryResult(status='no-op', reason='already delivered')
+E       assert 'no-op' == 'delivered'
+E         
+E         - delivered
+E         + no-op
+
+tests/test_wf_hitl_pins.py:359: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:23:38 [info     ] node.held                      hold_id=01a1191b-db5e-74c3-8d98-bd20c8894c4b node=review run_id=01a1191b-dad0-70b2-afc9-df2f2962cd9c signals=['Approval', 'Escalate']
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 2.41s

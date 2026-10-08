@@ -1,0 +1,7 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:38:34 - error: Import "cast" is not accessed (reportUnusedImport)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:485:27 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:221:16 - error: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+3 errors, 0 warnings, 0 informations

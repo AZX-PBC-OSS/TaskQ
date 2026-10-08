@@ -1,0 +1,57 @@
+F
+=================================== FAILURES ===================================
+___________ test_hold_inside_a_loop_pauses_the_budget_and_completes ____________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f72efa19040>
+wf_schema = 'tq_1097e7fb46'
+wf_pool = <asyncpg.pool.Pool object at 0x7f72efcfe200>
+
+    async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Spike1's subject at the composition (T19 × T10): a loop iteration
+        that HOLDS — the loop node's budget PAUSES (the wall is blind), the
+        operator's approval RESUMES (the pause lifts, the remaining is the
+        on-wake read), the loop COMPLETES — zero budget_exhausted events,
+        zero ladder burns. The P3 1a GREEN matrix, 6 checks."""
+        from taskq.workflows.api._hitl import deliver_payload
+        from taskq.workflows.api._sql_loop import (
+            ITERATION_STATE_BUDGET_EXHAUSTED,
+            LOOP_REMAINING_SQL,
+            render_loop_sql,
+        )
+    
+        app = WorkflowApp()
+    
+        async def hold_then_done(ctx: Any, carry: object) -> object:
+            if ctx.attempt == 1:
+                # THE HOLD (attempt 1 only — the re-execution doctrine: the
+                # answer replays from the ledger on the resume).
+                await ctx.wait_signal(Approval, timeout_s=120.0)
+                return Done({"acc": 1})
+            return Done({"acc": 1})
+    
+        app2 = WorkflowApp()
+    
+        @app2.workflow("hold_loop_flow")
+        def hold_loop_flow() -> object:
+            return build(
+                loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0)
+            )
+    
+        runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # (1) the loop RUNS and HOLDS.
+        verdict = await runner.drive(flow_id, until="held")
+>       assert verdict == "held", verdict
+E       AssertionError: terminal
+E       assert 'terminal' == 'held'
+E         
+E         - held
+E         + terminal
+
+tests/test_wf_loop_pins.py:509: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_hold_inside_a_loop_pauses_the_budget_and_completes
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.34s

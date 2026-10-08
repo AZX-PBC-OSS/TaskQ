@@ -1,0 +1,162 @@
+...F..F..                                                                [100%]
+=================================== FAILURES ===================================
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc248fb1c70>
+wf_schema = 'tq_df0a229b97'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc24918b340>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
+            # unconditional — the answers replay per attempt; the operator
+            # never re-answers): after both gates, the body fails ONCE (the
+            # ladder) then succeeds — the holds never touched the ladder.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+        assert statuses.count("awaited") == 2, statuses
+        assert statuses.count("failed") == 1, statuses
+        assert statuses[-1] == "succeeded", statuses
+        root = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+        )
+        assert root == "succeeded"
+>       hitl_redlog.red(
+        ^^^^^^^^^^^
+            "pin7-shared-attempt-counter",
+            "the shared-counter variant (2 holds + max_attempts=3 → terminal with zero retries) — red forever",
+            {"ledger": [(1, "awaited"), (2, "awaited"), (3, "failed")], "retries_taken": 0},
+        )
+E       NameError: name 'hitl_redlog' is not defined
+
+tests/test_wf_hitl_pins.py:230: NameError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:23:20 [info     ] node.held                      hold_id=01a1191b-9464-74e3-bccd-8ecdd742b42e node=review run_id=01a1191b-9443-7602-b074-5f86abd7480e signals=['Approval']
+2026-10-07 18:23:20 [info     ] signal.delivered               hold_id=01a1191b-9464-74e3-bccd-8ecdd742b42e run_id=01a1191b-9443-7602-b074-5f86abd7480e signal=Approval
+2026-10-07 18:23:20 [info     ] node.held                      hold_id=01a1191b-9485-70e0-9d55-18c685344a48 node=review run_id=01a1191b-9443-7602-b074-5f86abd7480e signals=['Approval']
+2026-10-07 18:23:20 [info     ] signal.delivered               hold_id=01a1191b-9485-70e0-9d55-18c685344a48 run_id=01a1191b-9443-7602-b074-5f86abd7480e signal=Approval
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc24866a3f0>
+wf_schema = 'tq_df0a229b97'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc248610400>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds = await client.list(run=flow_id)
+        assert len(holds) == 1
+        hold = holds[0]
+        # THE ID IS THE REPLY HANDLE (uuid7 — time-ordered, NOT random).
+        parsed = uuid_module.UUID(hold.hold_id)
+        assert parsed.version == 7, parsed
+        # THE CONTEXT CONTRACT: the schema reference + the provenance.
+        assert hold.payload_schema is not None
+        assert "Approval" in hold.payload_schema
+        assert hold.signal_name == "Approval|Escalate"  # the tuple form's joined spelling — the canonical row name
+        assert hold.node_key == "review"
+        assert hold.status == "held"
+        # THE REDACT LAW EXTENDS (pin 11): the canary secret in the wait
+        # context must not reach the ENUMERATION surface — the client's
+        # redact hook (the chain-then-hook composition) scrubs it.
+        client_redacted = HitlClient(
+            wf_pool,
+            schema=wf_schema,
+            redact=lambda ctx: {
+                k: ("***" if "canary" in str(v) else v) for k, v in (ctx or {}).items()
+            }
+            if isinstance(ctx, dict)
+            else ctx,
+        )
+        holds_redacted = await client_redacted.list(run=flow_id)
+        assert all(
+            "sk-canary-never-leak" not in str(h.payload) for h in holds_redacted
+        ), "the canary reached the enumeration surface — the redact law is violated"
+        # THE RESOLVE (by id) + THE IDEMPOTENCE (the defined no-op).
+        first = await client.resolve(
+            hold.hold_id, {"verdict": "approve"}, reason="the operator's click", principal="op-1"
+        )
+>       assert first.status == "delivered", first
+E       AssertionError: DeliveryResult(status='no-op', reason='already delivered')
+E       assert 'no-op' == 'delivered'
+E         
+E         - delivered
+E         + no-op
+
+tests/test_wf_hitl_pins.py:359: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:23:22 [info     ] node.held                      hold_id=01a1191b-9c5d-7061-b1ad-da8e0d9372aa node=review run_id=01a1191b-9c3b-7762-8a50-c33e80680288 signals=['Approval', 'Escalate']
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+2 failed, 7 passed in 4.30s
