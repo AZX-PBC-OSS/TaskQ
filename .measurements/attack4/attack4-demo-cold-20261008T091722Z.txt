@@ -1,0 +1,3 @@
+== the cold demo run 20261008T091722Z (the compose stack, README-typed)
+== the trigger:
+{"detail":"Not Found"}

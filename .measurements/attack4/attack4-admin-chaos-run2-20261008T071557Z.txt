@@ -1,0 +1,66 @@
+.......F...                                                              [100%]
+=================================== FAILURES ===================================
+________ test_a_nodes_error_text_carrying_markup_is_escaped_everywhere _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_83bfc4b522', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_83bfc4b5222a')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fbccc029c00>
+demo_env = <module 'attack4_admin_demo_flows'>
+
+    async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
+        module_pg_schema: ModulePgSchema,
+        module_pg_pool: asyncpg.Pool,
+        demo_env: types.ModuleType,
+    ) -> None:
+        """THE XSS PROBE: a node's error text contains <script>, an
+        <img onerror>, and a literal </script> closer (the wf-boot JSON
+        renders INSIDE a <script> tag — an unescaped closer is the injected
+        script's exit). The page must render it ESCAPED (server), and the
+        panel API must carry it as JSON data (never markup)."""
+        schema = module_pg_schema.schema_name
+        evil = '<script>alert(1)</script> <img src=x onerror=alert(2)> </script>'
+        run_uuid = uuid.uuid4()
+        # A run whose node carries the hostile error text (written AS a run's
+        # own row — the error text is job-data, never operator input).
+        await module_pg_pool.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, step_key, status, attempt, max_attempts, payload, metadata, queue, "
+            " error_class, error_message, retry_kind, created_at) "
+            "VALUES ($1, 'attack4', 'evil_step', 'failed', 1, 3, 'null'::jsonb, "
+            " $2::jsonb, 'default', 'EvilError', $3, 'transient', now())",
+            run_uuid,
+            json.dumps({"flow_id": str(run_uuid), "workflow": "attack4_evil"}),
+            evil,
+        )
+>       await module_pg_pool.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, step_key, status, payload, metadata, queue, max_attempts, retry_kind, created_at) "
+            "VALUES ($1, 'attack4', '__flow__', 'failed', 'null'::jsonb, "
+            " $2::jsonb, 'default', 3, 'transient', now())",
+            run_uuid,
+            json.dumps({"flow_id": str(run_uuid), "workflow": "attack4_evil"}),
+        )
+
+tests/attack4-admin-chaos.py:450: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/pool.py:592: in execute
+    return await con.execute(query, *args, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "jobs_pkey"
+E   DETAIL:  Key (id)=(591e9ebd-f90b-4026-a60e-23ec5e13a3c0) already exists.
+
+asyncpg/protocol/protocol.pyx:205: UniqueViolationError
+=========================== short test summary info ============================
+FAILED tests/attack4-admin-chaos.py::test_a_nodes_error_text_carrying_markup_is_escaped_everywhere
+1 failed, 10 passed in 14.20s
