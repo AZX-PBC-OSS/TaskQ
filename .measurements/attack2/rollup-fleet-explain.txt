@@ -1,15 +1,15 @@
 ===== rollup (uuid cast — the shipped shape)
-Aggregate rows=3.0 time=0.610ms
-  Sort rows=500.0 time=0.586ms
-    Seq Scan on jobs rows=500.0 time=0.548ms
+Aggregate rows=3.0 time=0.539ms
+  Sort rows=500.0 time=0.516ms
+    Seq Scan on jobs rows=500.0 time=0.480ms
 
 ===== rollup (text equality — the index's own shape)
-Aggregate rows=3.0 time=0.957ms
-  Sort rows=500.0 time=0.936ms
-    Seq Scan on jobs rows=500.0 time=0.903ms
+Aggregate rows=3.0 time=0.405ms
+  Sort rows=500.0 time=0.382ms
+    Seq Scan on jobs rows=500.0 time=0.346ms
 
 ===== nodes (uuid cast — the shipped shape)
-Seq Scan on jobs rows=500.0 time=0.928ms
+Seq Scan on jobs rows=500.0 time=0.932ms
 
 ===== nodes (text equality — the index's own shape)
-Index Scan on jobs idx=jobs_wf_flow_nodes_idx rows=500.0 time=0.205ms
+Seq Scan on jobs rows=500.0 time=0.641ms

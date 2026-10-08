@@ -1,0 +1,13 @@
+# the integration battery (round 2): the type-probe gate — head d130fca5
+  note: pyright flags attack_wf_negative_types.py:45 (reportUnusedVariable) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:105 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:113 (reportUnusedFunction) — not a MUST_ERROR marker (informational)
+  note: pyright flags attack_wf_negative_types.py:114 (reportUnusedCoroutine) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:48 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:61 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:78 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:99 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:113 (reportAttributeAccessIssue, reportCallIssue, reportUnknownArgumentType, reportUnknownMemberType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:124 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags wf_api_negative_types.py:127 (reportArgumentType) — not a MUST_ERROR marker (informational)
+the type gate holds: every MUST_ERROR marker (10) reds on pyright 1.1.414 AND ty 0.0.85

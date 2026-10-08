@@ -1,0 +1,38 @@
+# THE E2E STRANGER SANITY — the composed doc_ingest run, end-to-end (the documented chain contract: JSON-native records) — head d130fca5, pg :5706, schema int_e2e
+== THE MERMAID RENDER (the compile-time emission)
+flowchart TD
+    doc_source["doc_source"]
+
+== THE FLOW CREATED: 01a119ed-e20d-79d3-b03b-5374186e8327
+== THE DRAIN: 'terminal'
+== THE ROOT (derived from the rows): status=failed error_class=UnabsorbedNodeFailure
+== THE REPORT ENVELOPE: {'failed_chains': 1, 'total': 6}
+   trace doc-1: failed=False steps=2
+   trace doc-2: failed=False steps=2
+   trace doc-3: failed=False steps=2
+   trace doc-4: failed=True steps=2
+   trace doc-5: failed=False steps=2
+   trace doc-6: failed=False steps=2
+== THE POISONED DOC'S ROW: {'status': 'failed', 'error_class': 'ValueError', 'error_message': 'the poisoned doc doc-4 — the partial-failure arm'}
+== FlowRunner.result: {}
+== THE PROGRESS LINE (1 rows):
+   {'step_key': 'screen', 'total': 6, 'done': 6, 'running': 0, 'blocked': 0, 'failed': 0, 'avg_pct': 30, 'freshest': datetime.datetime(2026, 10, 8, 5, 13, 3, 261626, tzinfo=datetime.timezone.utc)}
+== THE EXPLORER READ (13 nodes):
+   01a119ed-e224-7522-a427-2ede639c6d23: {'status': 'succeeded', 'pct': 50, 'message': 'page 1', 'error_class': None}
+   01a119ed-e27b-71b3-959a-498285a3a55d: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-1', 'error_class': None}
+   01a119ed-e27b-71b3-959a-499722a6ffde: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-2', 'error_class': None}
+   01a119ed-e27b-71b3-959a-49a823b8a297: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-3', 'error_class': None}
+   01a119ed-e286-7140-8183-fe8e9629413e: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-4', 'error_class': None}
+   01a119ed-e286-7140-8183-fe9e6c675f44: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-5', 'error_class': None}
+   01a119ed-e286-7140-8183-feaadda83f26: {'status': 'succeeded', 'pct': 30, 'message': 'screening doc-6', 'error_class': None}
+   01a119ed-e2e7-7b81-aa5f-6eb7cf7bb13a: {'status': 'succeeded', 'pct': 70, 'message': 'enriching doc-1', 'error_class': None}
+   01a119ed-e30d-7eb2-a4b8-fa6b44071bf0: {'status': 'succeeded', 'pct': 70, 'message': 'enriching doc-2', 'error_class': None}
+   01a119ed-e324-79d0-b4d7-ba86f4281971: {'status': 'succeeded', 'pct': 70, 'message': 'enriching doc-3', 'error_class': None}
+   01a119ed-e381-7f81-89bd-1ffd06477244: {'status': 'failed', 'pct': None, 'message': None, 'error_class': 'ValueError'}
+   01a119ed-e3d0-7fc2-abe3-6716d4a701ac: {'status': 'succeeded', 'pct': 70, 'message': 'enriching doc-5', 'error_class': None}
+   01a119ed-e3df-7a21-bca3-99ec0fa475f3: {'status': 'succeeded', 'pct': None, 'message': None, 'error_class': None}
+== THE SOURCE'S STREAM RING (3 events, coalesced):
+   auto/wf.node.started: {"attempt": 1, "step_key": "doc_source", "map_index": null}
+   user/progress: {"pct": 50, "data": {"page": 1}, "message": "page 1"}
+   auto/wf.node.terminal: {"outcome": "succeeded", "step_key": "doc_source"}
+== THE E2E VERDICT: THE COMPOSED SYSTEM WORKS

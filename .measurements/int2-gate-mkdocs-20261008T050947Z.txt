@@ -1,0 +1,7 @@
+# the integration battery (round 2): mkdocs build — head d130fca5
+  - design/invariant-corpus.md
+  - design/migration-prose-decision.md
+  - design/oom-419-verdict.md
+  - design/seam-audit-matrix.md
+  - design/tors-adoption-map.md
+INFO    -  Documentation built in 15.56 seconds

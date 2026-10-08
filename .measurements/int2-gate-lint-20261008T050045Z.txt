@@ -1,0 +1,4 @@
+# the integration battery (round 2): ruff + format — head 2e15d991, pg :5706
+All checks passed!
+--- format:
+1573 files already formatted

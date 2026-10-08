@@ -1,0 +1,21 @@
+# the integration battery (round 2): the fleet queries (the rollup's index serviceability at the REAL fleet shape) — head d130fca5, pg :5706 (the lane probe's DSN overridden in a scratch copy — the probe's own DSN is :5691; .measurements/attack2/rollup_fleet_probe.py untouched)
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 1970, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 2013, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 443, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg/protocol/protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedTableError: relation "attack2.jobs" does not exist

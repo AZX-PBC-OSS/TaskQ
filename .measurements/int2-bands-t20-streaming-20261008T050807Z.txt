@@ -1,0 +1,26 @@
+# the integration battery (round 2): the T20 streaming bands (the emit tx, the dispatch band, the plain-jobs baseline, the depth probe, the chain fork tx) — head d130fca5, pg :5706
+  "dispatch_band_200_chain": {
+    "p50_ms": 9.748,
+    "p95_ms": 13.673,
+    "max_ms": 14.39,
+    "rounds": 30
+  },
+  "dispatch_band_200_plain": {
+    "p50_ms": 9.64,
+    "p95_ms": 11.25,
+    "max_ms": 11.41,
+    "rounds": 30
+  },
+  "dispatch_band_800_mixed": {
+    "p50_ms": 10.3,
+    "p95_ms": 12.222,
+    "max_ms": 12.477,
+    "rounds": 30
+  },
+  "chain_fork_tx": {
+    "p50_ms": 3.637,
+    "p95_ms": 5.545,
+    "max_ms": 6.222,
+    "rounds": 50
+  }
+}
