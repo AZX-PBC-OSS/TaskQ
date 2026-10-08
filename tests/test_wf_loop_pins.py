@@ -254,7 +254,11 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     loop_redlog.red(
         "pin2-budget-sweep-vs-hold",
         "the arm WITHOUT 'AND NOT budget_paused' (the mutation drill — the CONSUME-BUDGET dragon, red forever)",
-        {"paused_row_fired": True, "operator_approval_refused": True},
+        {
+            "paused_row_status": by_paused[True]["status"],
+            "paused_row_fired": by_paused[True]["status"] != "running",
+            "unpaused_row_status": by_paused[False]["status"],
+        },
     )
 
 
@@ -459,29 +463,23 @@ async def test_iteration_memo_is_the_one_tx_shape(
 
 
 async def test_consume_budget_dragon_red_forever(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    loop_redlog: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """THE DRAGON, not a bug: the CONSUME variant — the arm that READS
     the budget (consumes it) instead of PAUSING — killed a held loop
     mid-hold and the operator's later approval was REFUSED (deliver →
     False): work silently lost, timer order nondeterministic (P3 1a-prime).
     The shipped arm's PAUSED semantics close it; the variant is kept red
-    by the mutation drill: remove ``AND NOT budget_paused``, watch THIS
-    suite fail, restore. The drill's red is RECORDED here."""
-    # The drill ran (the arm mutated, the paused row fired, the suite
-    # failed, the guard restored); the dragon's red lives in the redlog
-    # + the guide's warning. This pin documents the DRAGON's shape and
-    # keeps its conviction in the suite (a reader who removes the leg
-    # and re-runs sees THIS file's paused-row pin red).
-    loop_redlog.red(
-        "pin1-consume-budget-dragon",
-        "the CONSUME variant (P3 1a') — the arm consumes the budget instead of pausing",
-        {
-            "held_loop_killed_mid_hold": True,
-            "operator_approval_refused": "deliver -> False",
-            "conviction": "the shipped arm carries AND NOT budget_paused; the drill red is in t19-pin-reds.json",
-        },
-    )
+    by the mutation drill RE-ENACTED IN THIS PROCESS (the receipts law —
+    a red is machine-generated or it doesn't exist): the loaded
+    ``LOOP_BUDGET_SWEEP_SQL`` is patched to the consume-shape (the leg
+    cut), the sweep runs, the paused row FIRES — the drill's receipt
+    derives from this very run. A reader who removes the leg and re-runs
+    sees THIS file's paused-row pin red too."""
     # The shipped arm's paused-row refusal (the green side of the drill):
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
@@ -498,6 +496,49 @@ async def test_consume_budget_dragon_red_forever(
     await sweep_loop_budget(wf_pool, runner.wsql)
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
     assert status == "running", "the held loop was killed — the dragon is loose"
+
+    # THE MUTANT, RE-ENACTED: the arm's heart cut from the loaded SQL —
+    # the consume-shape. The sweep runs on a FRESH paused row; the dragon
+    # fires it.
+    import taskq.workflows.api._sql_loop as sql_loop_module
+
+    mutant_sql = sql_loop_module.LOOP_BUDGET_SWEEP_SQL.replace(
+        "  AND NOT j.budget_paused\n", "", 1
+    )
+    assert mutant_sql != sql_loop_module.LOOP_BUDGET_SWEEP_SQL, (
+        "the mutation did not land — the drill's leg is missing from the constant"
+    )
+    monkeypatch.setattr(sql_loop_module, "LOOP_BUDGET_SWEEP_SQL", mutant_sql)
+    dragon_flow = await runner.create_flow()
+    dragon_loop = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+        "$2::jsonb, now() - interval '1 hour', true)",
+        dragon_loop,
+        json.dumps({"flow_id": str(dragon_flow), "kind": "loop", "iteration": 0}),
+    )
+    await sweep_loop_budget(wf_pool, runner.wsql)
+    dragon_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', dragon_loop
+    )
+    monkeypatch.undo()
+    assert dragon_status == "failed", (
+        f"the mutant must fire the paused row (observed {dragon_status!r}) — "
+        "the dragon's re-enactment is broken (the drill proves nothing)"
+    )
+    # THE DRILL'S RECEIPT — derived from this process's own runs: the
+    # shipped arm refused the paused row; the mutant consumed it.
+    loop_redlog.red(
+        "pin1-consume-budget-dragon",
+        "the CONSUME variant (P3 1a') — the arm consumes the budget instead of pausing",
+        {
+            "shipped_paused_row_status": status,
+            "mutant_paused_row_status": dragon_status,
+            "paused_row_fired_by_mutant": dragon_status == "failed",
+        },
+    )
 
 
 # ── THE COMPOSITION PIN: a hold INSIDE a loop (T10 reads T19's arm) ─────

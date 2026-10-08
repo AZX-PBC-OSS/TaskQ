@@ -1,0 +1,19 @@
+F
+=================================== FAILURES ===================================
+________________ test_paused_loop_invisible_to_the_budget_sweep ________________
+tests/test_wf_loop_pins.py:248: in test_paused_loop_invisible_to_the_budget_sweep
+    assert by_paused[True]["status"] == "running", (
+E   AssertionError: the PAUSED loop fired — the arm's heart (AND NOT budget_paused) is missing: the CONSUME-BUDGET dragon is loose
+E   assert 'failed' == 'running'
+E     
+E     - running
+E     + failed
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=35d6f0b07ed2 redis=4bfd2dcc304c state_dir=/tmp/pytest-of-rich/pytest-18644
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=35d6f0b07ed2 redis=4bfd2dcc304c
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_paused_loop_invisible_to_the_budget_sweep
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 3.05s

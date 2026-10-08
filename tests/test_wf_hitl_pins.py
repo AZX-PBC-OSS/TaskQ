@@ -116,10 +116,16 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', node_id
     )
     assert node_status != "running"
+    # the drill's receipt derives from the run: the deliver's own verdict +
+    # the node's post-deliver status (the zombie-wake check)
     hitl_redlog.red(
         "pin1-late-deliver",
         "the deliver WITHOUT the CAS predicate (the mutation drill — the zombie wake)",
-        {"zombie_wake": True, "conviction": "the shipped CAS refuses; the drill red is recorded"},
+        {
+            "deliver_status": result.status,
+            "node_status_after": node_status,
+            "zombie_wake": node_status == "running",
+        },
     )
 
 
@@ -223,10 +229,15 @@ async def test_resume_does_not_burn_the_retry_ladder(
     assert statuses[-1] == "succeeded", statuses
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "succeeded"
+    # the drill's receipt derives from the run: the ledger's actual matrix
     hitl_redlog.red(
         "pin7-shared-attempt-counter",
         "the shared-counter variant (2 holds + max_attempts=3 → terminal with zero retries) — red forever",
-        {"ledger": [(1, "awaited"), (2, "awaited"), (3, "failed")], "retries_taken": 0},
+        {
+            "ledger": statuses,
+            "failed_rows": statuses.count("failed"),
+            "root_status": root,
+        },
     )
 
 

@@ -64,11 +64,11 @@ async def test_pin_18_no_id_collision(
     import taskq.workflows._fork as fork_module
 
     convicted_calls = itertools.count()
-    monkeypatch.setattr(
-        fork_module,
-        "new_uuid",
-        lambda: uuid.UUID(int=next(convicted_calls) % 10),  # 10 distinct ids, no fork discriminator
-    )
+
+    def convicted_mint() -> uuid.UUID:
+        return uuid.UUID(int=next(convicted_calls) % 10)  # 10 distinct ids, no fork discriminator
+
+    monkeypatch.setattr(fork_module, "new_uuid", convicted_mint)
     convicted_fork = ForkSpec(
         children=tuple(
             ChildSpec(step_key="enrich", actor="wf", queue="default", map_index=m)
@@ -77,7 +77,7 @@ async def test_pin_18_no_id_collision(
         join=JoinSpec(step_key="reduce", actor="wf", queue="default"),
     )
     convicted_parent = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="conv")
-    with pytest.raises(asyncpg.exceptions.UniqueViolationError):
+    with pytest.raises(asyncpg.exceptions.UniqueViolationError) as convicted:
         for _ in range(2):
             await fork_module.insert_fork(
                 wf_conn,
@@ -88,12 +88,14 @@ async def test_pin_18_no_id_collision(
                 fork=convicted_fork,
             )
     monkeypatch.undo()
+    # derive the conviction from the drill's own run: how many distinct ids
+    # the convicted mint yields, and what exception stopped the second fork
     engine_redlog.red(
         "pin18-id-collision",
         "the fork's id mint swapped for a string-shape convention (no per-fork discriminator)",
         {
-            "convicted_distinct_ids": 10,
-            "observed": "UniqueViolationError on the second fork (the PK is the only backstop)",
+            "convicted_distinct_ids": len({convicted_mint() for _ in range(20)}),
+            "observed_exception": type(convicted.value).__name__,
         },
     )
 
@@ -174,14 +176,14 @@ async def test_pin_19_fork_atomicity(
     # the children were never inserted.
     await admin.execute(f"SELECT pg_terminate_backend({victim_pid})")
     await victim.close()
-    engine_redlog.red(
-        "pin19-fork-debt",
-        "split-tx fork (terminal commit, child inserts follow) killed in the window",
-        {"terminal_parent_with_fork_debt": True, "children": 0},
-    )
     state = await node_state(wf_conn, wf_schema, split_parent)
     split_children = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1', split_parent
+    )
+    engine_redlog.red(
+        "pin19-fork-debt",
+        "split-tx fork (terminal commit, child inserts follow) killed in the window",
+        {"terminal_parent_status": state["status"], "children": int(split_children)},
     )
     assert state["status"] == "succeeded" and int(split_children) == 0, (
         "the split variant's dragon (terminal parent, fork debt) must be "

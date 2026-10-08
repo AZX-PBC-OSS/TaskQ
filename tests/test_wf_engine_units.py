@@ -200,7 +200,7 @@ def test_pin_16_body_from_definition(
     engine_redlog.red(
         "pin16-body-from-definition",
         "per-call body map (the D1 hazard: the CAS loser runs the wrong body)",
-        {"loser_body": "MUTATED", "shipped": "the registered definition's body"},
+        {"loser_body": loser_mutated.__name__, "shipped": winner.__name__},
     )
     assert loser_mutated is mutated_body, (
         "the per-call-map mutation must hand the dispatch the WRONG body — "
@@ -234,15 +234,21 @@ def test_pin_14_deadlock_retry_budget(engine_redlog: RedLog) -> None:
                 raise asyncpg.exceptions.DeadlockDetectedError("40P01", "deadlock detected")
             return "landed"
 
-        with pytest.raises(DeadlockRetriesExhaustedError):
+        with pytest.raises(DeadlockRetriesExhaustedError) as exhausted:
             await _deadlock_retry(always_deadlocks)
-        assert attempts == 5, attempts  # 1 + _DEADLOCK_RETRIES
+        exhausted_attempts = attempts  # the run's own count: 1 + _DEADLOCK_RETRIES aborts
+        assert exhausted_attempts == 5, exhausted_attempts
         attempts = 0
         assert await _deadlock_retry(recovers_on_third) == "landed"
         engine_redlog.red(
             "pin14-deadlock-retry",
             "no retry (the single-shot operator under storm contention)",
-            {"aborted_with_DeadlockDetectedError": True, "retries": 0},
+            {
+                "aborted_with_DeadlockDetectedError": isinstance(
+                    exhausted.value, DeadlockRetriesExhaustedError
+                ),
+                "retries": exhausted_attempts,
+            },
         )
 
     asyncio.run(run())

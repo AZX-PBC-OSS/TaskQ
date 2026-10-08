@@ -204,6 +204,7 @@ async def test_silent_gap_variant_is_structurally_impossible(
     # the consumer's cursor INSIDE the window (the second event's seq) → full
     face = await progress_sse_face(wf_pool, wf_sql, node_id=node, last_event_id=seqs[1][0])
     assert face.mode == "full"
+    full_mode = face.mode
     # the pruned-past cursor → partial, NAMED (the silent gap cannot exist)
     await wf_conn.execute(
         f'DELETE FROM "{wf_schema}".wf_node_stream WHERE node_id = $1 AND seq <= $2',
@@ -212,11 +213,17 @@ async def test_silent_gap_variant_is_structurally_impossible(
     )
     face = await progress_sse_face(wf_pool, wf_sql, node_id=node, last_event_id=seqs[1][0])
     assert face.mode == "partial"
+    # the drill's receipt derives from the run: the mode the BUILT face
+    # reports over the pruned window (the variant's claim is mode='full')
     progress_redlog.red(
         "silent_gap_variant_structurally_impossible",
         "the convicted variant: a face that replays nothing over a pruned "
         "window while claiming mode=full — the stale display forever",
-        {"observed": "mode='partial' + the state re-sync; the variant cannot be built"},
+        {
+            "cursor_inside_window_mode": full_mode,
+            "pruned_window_mode": face.mode,
+            "variant_constructible": face.mode == "full",
+        },
     )
 
 
