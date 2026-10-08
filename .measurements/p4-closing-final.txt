@@ -1,0 +1,57 @@
+......F......                                                            [100%]
+=================================== FAILURES ===================================
+__________ test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths __________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f3bf8cad180>
+wf_schema = 'tq_be0c3a5f10'
+
+    async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The runtime fields' CONSTRUCTION paths: the step ctx (the queue +
+        the claim ts + the flow name) and the loop ctx (the budget's
+        remaining read — the first-claim arm's own value)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def step_body(ctx: Any, params: Ingest) -> list[str]:
+            seen["step_ctx"] = (ctx.flow_name, ctx.queue, ctx.claimed_at is not None)
+            return ["a", "b"]
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["loop_ctx"] = (ctx.flow_name, ctx.budget_remaining_ms)
+            return Done("x")
+    
+        @app.workflow("ctx_runtime_fields")
+        def ctx_runtime_fields() -> object:
+            first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
+            the_loop = loop("the_loop", loop_body, carry=0, budget_s=1800.0)
+            return build(the_loop, first)
+    
+>       runner = FlowRunner(app.get("ctx_runtime_fields"), wf_pool, wf_schema)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_coverage_closing.py:306: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:318: in get
+    returned = record_under(graph, build_fn)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_graph.py:301: in record_under
+    return build_fn()
+           ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @app.workflow("ctx_runtime_fields")
+    def ctx_runtime_fields() -> object:
+        first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
+>       the_loop = loop("the_loop", loop_body, carry=0, budget_s=1800.0)
+                   ^^^^
+E       NameError: name 'loop' is not defined
+
+tests/test_wf_coverage_closing.py:303: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing.py::test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths
+1 failed, 12 passed in 3.37s

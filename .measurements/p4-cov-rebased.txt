@@ -1,0 +1,12 @@
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+..........................................................               [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+202 passed, 1 warning in 71.61s (0:01:11)
