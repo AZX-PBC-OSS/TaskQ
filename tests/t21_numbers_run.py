@@ -103,6 +103,11 @@ async def main() -> dict[str, Any]:
             WHERE node_id = $1 AND channel = '__stream__'""",
         node,
     )
+    # The upsert ALWAYS returned its row (the flush ran — occurrences ==
+    # 10,000 asserted below): the assert is the runtime guard behind the
+    # typed door, the engine's own "the statement always returns its
+    # summary row" pattern.
+    assert state is not None
     state_rows = await conn.fetchval(
         f'SELECT count(*) FROM "{SCHEMA}".wf_node_progress WHERE node_id = $1', node
     )
