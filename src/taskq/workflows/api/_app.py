@@ -399,15 +399,14 @@ def _register_bodies(
                         "fold them"
                     )
                 escalation_body = candidate
-    if escalation_body is not None:
-        bodies[ESCALATION_STEP_KEY] = escalation_body
-    if bodies or loop_policies:
         # THE MAP'S DECLARED AGGREGATE (T21): keyed by the SOURCE node's
         # step key — the children's PARENT (the read surfaces resolve by
         # the parent row's own step key; the durable leg is the flow
         # root's stamped workflow name).
         if node.map_aggregate is not None:
             aggregates[node.key] = node.map_aggregate
+    if escalation_body is not None:
+        bodies[ESCALATION_STEP_KEY] = escalation_body
     if bodies or aggregates or loop_policies:
         get_registry().register(
             WorkflowDef(
