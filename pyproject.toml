@@ -427,6 +427,7 @@ ignore = [
 # value uses $N parameter binding — the same rationale as the wf family
 # above.
 "tests/test_wf_t20_maintain_liveness.py" = ["S608"]
+"tests/test_wf_t20_emit_pins.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
 "tests/test_wf_pruner_pins.py" = ["S608"]
 "tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]

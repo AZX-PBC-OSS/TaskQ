@@ -147,6 +147,58 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 """
 
 
+# ── T20: THE EMIT TX — the streaming source's per-page statement group ──
+# The certified fork shapes RE-BOUND (the children INSERT + the edge rows
+# are byte-shape FORK_CHILDREN_SQL / FORK_EDGES_SQL — named separately so
+# the emit's call site and its pins grep THIS concern) + the ONE new leg:
+# the CURSOR CHECKPOINT on the source row's own metadata (no new table,
+# no new column), guarded by the FULL dispatch fence. ONE transaction
+# (the fork-atomicity law at page granularity): a kill at ANY statement
+# window — including AFTER the cursor write but before the commit — rolls
+# the children, the edges AND the cursor back together; the reclaim
+# re-pends the source (it never finalized), the re-claim re-emits exactly
+# the lost page.
+#
+# THE REFUTED-CLAIM DISCIPLINE (the spike's 198 UniqueViolations — the
+# design's proof the discriminator is load-bearing): the children's
+# idempotency keys are PARENT-SCOPED at the EMIT scope
+# (``wf:{flow}:emit:{map_index}:{step}``) and carry the per-child
+# ``map_index`` — the fork key's discipline (pin 18) at chain level, plus
+# the per-child trace_id the drill-down reads.
+EMIT_CHILDREN_SQL = """\
+INSERT INTO {schema}.jobs
+    (id, actor, queue, payload, max_attempts, retry_kind,
+     parent_id, map_index, step_key, trace_id, metadata,
+     idempotency_scope, idempotency_key)
+SELECT * FROM unnest(
+    $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
+    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $11::jsonb[], $12::text[], $13::text[]
+)
+"""
+
+
+EMIT_EDGES_SQL = """\
+INSERT INTO {schema}.wf_edge (child_id, parent_id, flow_id, failure_policy)
+SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
+"""
+
+
+# THE CURSOR CHECKPOINT — the fence carrier. A ZOMBIE source (its claim
+# superseded by the reclaim + re-claim) updates NOTHING → the emit
+# refuses (EmitFencedError) → the children above roll back with the tx.
+EMIT_CURSOR_SQL = """\
+UPDATE {schema}.jobs
+SET metadata = metadata || $2::jsonb
+WHERE id = $1
+  AND status = 'running'
+  AND locked_by_worker = $3
+  AND attempt = $4
+  AND claim_epoch = $5
+RETURNING id
+"""
+
+
 FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,

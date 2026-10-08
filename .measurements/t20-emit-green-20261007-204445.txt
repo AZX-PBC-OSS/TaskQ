@@ -1,0 +1,8 @@
+=========================== short test summary info ============================
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_map_index_discriminates_siblings
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_zero_reemitted_zero_lost_across_pages
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[1]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[3]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_fenced_on_superseded_claim
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[2]
+6 failed in 6.10s

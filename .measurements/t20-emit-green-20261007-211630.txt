@@ -1,0 +1,5 @@
+=========================== short test summary info ============================
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[1]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[3]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[2]
+3 failed, 3 passed in 20.92s

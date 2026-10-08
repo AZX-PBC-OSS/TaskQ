@@ -1,0 +1,6 @@
+    from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, emit_batch
+E   ModuleNotFoundError: No module named 'taskq.workflows._emit'
+=========================== short test summary info ============================
+ERROR tests/test_wf_t20_emit_pins.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.16s

@@ -1,0 +1,4 @@
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[2]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_atomic_at_every_statement_window[3]
+FAILED tests/test_wf_t20_emit_pins.py::test_t20_emit_tx_zero_reemitted_zero_lost_across_pages
+4 failed, 2 passed in 25.53s
