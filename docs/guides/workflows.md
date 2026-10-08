@@ -402,3 +402,70 @@ For a RUNTIME-determined N: `map_source(source, item_body)` — the
 source's body returns the list, the fork spawns one fresh job per item
 (map_index = the item's ledger identity), and the join packs the
 decoded item results for the downstream body.
+
+## §9 — Loops & back-edges (T19)
+
+`wf.loop(name, body, carry, until, max_iterations, budget,
+on_exhausted)` — the loop is v1 (the maintainer's ruling: *"you do not
+cut must haves"*). Each iteration is FRESH jobs: the iteration-scoped
+step keys `(workflow, loop_key, iteration, step)` keep the idempotency
+ledger per-iteration (T05's contract unchanged). The body returns the
+CONTROL UNION:
+
+- `Done(payload)` — the loop stops; the payload is the loop's result.
+- `Refine(feedback)` — the carry threads into the next iteration.
+
+**THE CARRY IS FROZEN AT SPAWN** and advanced EXACTLY ONCE per
+iteration — in the ADVANCE STATEMENT, one atomic write shared with THE
+CAP GUARD (a refused advance IS the exhaustion). A carry advanced at
+hold/retry time is the optimistic-apply dragon (double-apply /
+lost-apply) — the pin keeps it red forever. Crash recovery: a resume
+reads the iteration's LEDGER row (the memo) — the body is not
+re-consulted mid-iteration without the at-least-once boundary being
+stated.
+
+**THE TWO WALLS ARE DIFFERENT** (the spike's cut 4):
+
+- the **iteration cap** (`max_iterations`) bounds TOTAL SPAWNS
+  regardless of time — the only wall left when the budget is paused;
+- the **budget** (`budget_s`) is the TIME wall — and it is BLIND while
+  the loop holds on a human (`budget_paused`): a held loop is invisible
+  to the budget sweep even when its deadline is forced into the past.
+  THE CONSUME-BUDGET DRAGON (the consume alternative — the arm reads
+  the budget instead of pausing) killed a held loop mid-hold and
+  refused the operator's later approval: work silently lost. It is kept
+  RED forever by the mutation drill (`.measurements/t19-pin-reds.json`).
+
+**EXHAUSTION IS NAMED, NEVER SILENT**: the cap or the budget wall
+terminates the loop into the `iteration_cap_exhausted` /
+`budget_exhausted` state — and THE FLOW TERMINALIZES IN THE SAME
+TRANSACTION (STRANDED-FLOW: the spike's `_loop_advance` left the flow
+`running` forever — the worker ticks forever, the admin shows a live
+run; the pin convicts it). `on_exhausted="escalate"` writes the
+escalation enqueue through the SAME outbox the fired joins use.
+
+**THE SEMANTICS DECISION, STATED ONCE: infra fault ≠ body failure.** A
+connection-loss/reclaim-eligible fault routes to RECLAIM (the ledger
+says `crashed`; the ladder does NOT burn — the lease machinery
+re-claims from the ledger); the ladder burns for BODY failures only.
+The test: three storm kills on one iteration → zero ladder attempts
+consumed, the loop completes; a body exception burns its typed failure
+(`LoopBodyFailure`, the flow terminalized).
+
+**`until=` is AWAITED** (`Callable[[], Awaitable[bool]]`): a bare sync
+closure returning a coroutine object is TRUTHY — the spike's cancel
+test cancelled an IDLE flow, proving nothing. The predicate is awaited
+by the driver, per iteration.
+
+**NAIVE-MEMO IS AUTHOR GUIDANCE, PINNED** (the spike's cut 7): the
+durable memo — one model invocation per iteration, never one per
+resume — is the ONE-TX shape (read + write inside one transaction; the
+ledger's claim statements ARE that shape). The engine gives you the
+carry + the TX boundary; the memo shape is author work — the negative
+example (a read-modify-write across transactions: a crash between
+"model ran" and "proposal committed" strands the counter, the re-run
+UniqueViolations, the ladder then fails the loop) is the shape to
+never write.
+
+The driver (`drive(flow_id, until="held" | "terminal")`, cut #10's
+cure) is bounded — `max_ticks` fences the hang.

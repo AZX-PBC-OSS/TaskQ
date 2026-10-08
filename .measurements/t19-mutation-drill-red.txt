@@ -1,0 +1,63 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_paused_loop_invisible_to_the_budget_sweep ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f41c3c19040>
+wf_schema = 'tq_fd797700e2'
+wf_pool = <asyncpg.pool.Pool object at 0x7f41c3d1a080>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f41c3df23c0>
+
+    async def test_paused_loop_invisible_to_the_budget_sweep(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """A PAUSED loop row with its budget_deadline FORCED INTO THE PAST
+        must not fire (holds are free); the UN-paused row at the same
+        deadline DOES. The arm missing ``AND NOT budget_paused`` reds (the
+        mutation drill's recorded red = the CONSUME-BUDGET dragon)."""
+        app, name = _loop_app(None, budget_s=600.0)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Both loop rows: 'running', deadline forced into the past.
+        for paused in (True, False):
+            loop_id = new_uuid()
+            await wf_conn.execute(
+                f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+                "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+                "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+                "$2::jsonb, now() - interval '1 hour', $3)",
+                loop_id,
+                json.dumps(
+                    {
+                        "flow_id": str(flow_id),
+                        "kind": "loop",
+                        "iteration": 0,
+                        "max_iterations": 100,
+                    }
+                ),
+                paused,
+            )
+        # THE ARM: the paused row is invisible; the un-paused row fires.
+        # (Run the arm on a pool — the function manages its own tx.)
+        await sweep_loop_budget(wf_pool, runner.wsql)
+        states = await wf_conn.fetch(
+            f'SELECT budget_paused, status, metadata->>\'iteration_state\' AS state '
+            f'FROM "{wf_schema}".jobs WHERE (metadata->>\'flow_id\')::uuid = $1 '
+            "AND step_key = 'counter' ORDER BY budget_paused",
+            flow_id,
+        )
+        by_paused = {r["budget_paused"]: r for r in states}
+        assert len(by_paused) == 2
+>       assert by_paused[True]["status"] == "running", (
+            "the PAUSED loop fired — the arm's heart (AND NOT budget_paused) "
+            "is missing: the CONSUME-BUDGET dragon is loose"
+        )
+E       AssertionError: the PAUSED loop fired — the arm's heart (AND NOT budget_paused) is missing: the CONSUME-BUDGET dragon is loose
+E       assert 'failed' == 'running'
+E         
+E         - running
+E         + failed
+
+tests/test_wf_loop_pins.py:248: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_paused_loop_invisible_to_the_budget_sweep
+1 failed in 1.95s

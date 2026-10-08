@@ -40,12 +40,15 @@ from taskq.workflows.api._graph import (
     sink,
     step,
 )
+from taskq.workflows.api._loop import Done, Refine, loop
 
 __all__ = [
     "CompiledWorkflow",
+    "Done",
     "GateDecl",
     "NodeDecl",
     "Promise",
+    "Refine",
     "SignalChannel",
     "TypedGate",
     "WorkflowActor",
@@ -53,6 +56,7 @@ __all__ = [
     "WorkflowBuildError",
     "build",
     "gather",
+    "loop",
     "map_source",
     "sink",
     "step",
