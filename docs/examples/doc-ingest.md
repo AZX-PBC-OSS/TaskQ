@@ -3,7 +3,7 @@
 A document-ingestion pipeline: documents arrive, get enriched, pass an
 editorial review, and publish — with the failures REPORTED, never
 swallowed. This page is the minimal copy-paste form; the
-[demo app](https://github.com/#/examples) runs the SAME graph live with
+[demo app](../../../examples/) runs the SAME graph live with
 the admin's run explorer attached.
 
 The example demonstrates the nine load-bearing shapes of the flow API:
@@ -275,7 +275,9 @@ What each shape shows (and where to look):
 | 9 | cron-slot run key | `run_nightly_refresh`'s `run_key=f"doc_ingest:nightly:{slot}"` |
 
 **Run it live**: the demo app wires this same graph behind HTTP with the
-admin's run explorer — see the demo's README. **The verify loop**: the
+admin's run explorer — see `examples/admin_app.py` (the fastapi_app's
+workflow routes) and the admin guide's run-explorer section. **The verify
+loop**: the
 example's fence executes in CI (`make test-docs-examples`), the fast tier
 runs its `build()` + `validate()` without containers, and the compiled
 Mermaid is byte-pinned.

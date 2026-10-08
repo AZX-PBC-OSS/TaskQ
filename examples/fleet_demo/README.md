@@ -14,6 +14,15 @@ schema migrations, runs a real `taskq worker` subprocess, and walks the
 story below. Re-runnable end to end; the final act runs `down -v` so no
 container or volume is left behind.
 
+**If a run dies mid-way** (a crash, a kill, a closed terminal): the
+cleanup lives in the FINAL act, so the demo's containers
+(`taskq-fleet-demo-postgres-1` on :5433, `taskq-fleet-demo-redis-1` on
+:6380) are still up. Recover with
+`docker compose -p taskq-fleet-demo down -v` and re-run — the demo is
+idempotent from a clean slate. Note: on a re-run Act 0 prints
+`migrations applied: 0` — that means "already applied" (the volume
+persists), not a failure.
+
 ---
 
 ## Act 1 — Enqueue → dispatch → succeed

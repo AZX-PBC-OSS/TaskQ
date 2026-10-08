@@ -1,5 +1,21 @@
 # Workflows — the DAG engine (`taskq[flows]`)
 
+> **START HERE, newcomer:** this page is the engine's REFERENCE — it
+> explains the machinery and pins every invariant. If you want the
+> thirty-second tour of how to AUTHOR a flow (the verbs, the wiring, the
+> hold), read **the API reference first** (`docs/api-reference/workflows.md`,
+> §"the thirty-second tour"), then the worked example
+> (`docs/examples/doc-ingest.md`), then come back here for the internals.
+>
+> **The reader's key** (the shorthand this page and the pin inventory
+> use): `T07`/`T10`/`T18`/… are the work-stream's ticket numbers — each
+> names ONE landed subsystem (T06 failed-parent propagation, T07 fan-in
+> bounds, T09 the typed API, T10 holds/HITL, T18 retention coupling, T19
+> loops, T20 the streaming router). `§N` references this page's own
+> sections. `.measurements/…` citations point at files IN THIS REPO
+> (the evidence tier ships with the source). "P3 rule N" is the engine's
+> own rulebook (see the design docs under `docs/design/`).
+
 The workflow engine turns a fan-out/fan-in shape into queue rows with a
 counter and a ledger: fork N children atomically, join when the ledger
 says they are done, fire exactly once, deliver the declared consumers.
@@ -212,11 +228,16 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.step("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
-Run-level idempotency (`workflows.run(flow, input, key=…)`) claims against
+Run-level idempotency claims against
 the same composite arbiter with the scope `workflow-run:<flow name>` — a
 conflict returns the EXISTING run's id + status, never a second silent
 run, and two different flows sharing a naive key never collide (each
-flow's keys namespace its own scope). Cron composition: the cron entry
+flow's keys namespace its own scope). THE RUN KEY'S SURFACE:
+`FlowRunner.create_flow(run_key=…)` — there is no separate
+`workflows.run` one-call spelling (earlier drafts of this page named
+one; the runner's `create_flow` is the only create surface, and the
+docs' claim that a bare `workflows.run` exists was WRONG). Cron
+composition: the cron entry
 fires the slot key as the run key — same slot twice → ONE run.
 
 ## The sweep arms (wired)
@@ -596,10 +617,15 @@ compiled.validate()  # the zero-false-positive bar: this graph is clean
 ```
 
 The fan-in's failure policy is declared ON the join
-(`on_failure="fail_closed" | "collect"` — T06's duality: a failed
+(`on_failure="fail_closed"` — T06's duality: a failed
 parent either fails the join closed (the cascade, the peers
 peer-cancelled) or fans in as a typed `FailureInfo` item and the join
-FIRES with the typed partial). The fan-in bound is 1000 declared
+FIRES with the typed partial). The ABSORBING policy has two accepted
+spellings — `"collect"` (T06's shape: the failures fan in AS PART of the
+typed partial) and `"maybe"` (T07's shape: the branch's contribution may
+be absent) — the engine treats both as the same absorption (the typed
+`FailureInfo` item + the fire with the partials); pick the name that
+reads honestly at the call site. The fan-in bound is 1000 declared
 parents (`MAX_FAN_IN_PER_JOIN`) — past it, partition the map.
 
 For a RUNTIME-determined N: `map_source(source, item_body)` — the
@@ -658,8 +684,10 @@ your `escalates_to=fn`, or the framework default, registered at compile
 by the definition registry — D1), and the escalation consumer job RUNS:
 the drained job resolves the registered body and terminal-succeeds
 carrying the exhaustion record — no dead letter, on EITHER path (the
-live driver's cap check AND the sweep's orphaned-loop arm). DECLARATION
-ORDER DECIDES NOTHING in the payload door — by shape.
+live driver's cap check AND the sweep's orphaned-loop arm). (The
+payload door — the escalation's payload — is matched to the registered
+escalation step's declared shape, never to the loop's argument order:
+the wiring's SHAPE decides, the declaration order decides nothing.)
 `on_exhausted="fail"` terminal-fails the flow and enqueues NOTHING.
 
 **THE CAP LETS THE FINAL ITERATION RUN** (the attack-3 vacuous-pin
@@ -1111,7 +1139,7 @@ The admin UI's **Workflows** tab is the run explorer: the runs list (the invento
 A workflow is stuck. The order of questions:
 
 1. **What is the run's state?** `taskq flows status <run_id>` — the §17.5 derivation over the node rows; every stuck node names its waiting-on state + its remedy. The root row's own status is a CACHE (the rows are the truth — the page says so beside the derived status).
-2. **Is it waiting on a human?** `taskq flows holds <run_id>` — the pending holds with their deadlines. A hold with NO deadline is the W1 warning's subject (a workflow that waits forever on a human is a support ticket — the deadline is `timeout_s=`, explicit).
+2. **Is it waiting on a human?** `taskq flows holds <run_id>` — the pending holds with their deadlines. A hold with NO deadline is the W1 warning's subject (a workflow that waits forever on a human is a support ticket — the deadline is `timeout_s=`, explicit). The operator's reply: `taskq flows resolve <hold_id> '<json>' --app myapp.workflows:app` (the payload validates through the hold's declared models before anything moves; a wrong shape is refused and the hold survives).
 3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
 4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
 5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.

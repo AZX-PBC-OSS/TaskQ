@@ -314,11 +314,16 @@ def act4_cron_budget(log_path: Path) -> None:
     print(f"  digest 'cron fired' events during the crawl: {len(crawl)}")
     import json
 
+    # The listing shows at most SIX lines; a longer crawl says so (the
+    # stranger test's cosmetic finding: the count said 7, the listing
+    # showed 6, nothing named the difference).
     for line in crawl[:6]:
         row = json.loads(line)
         print(
             f"    actor={row['actor']} fired_at={row['timestamp'][11:19]} skipped_slots={row['skipped_slots']}"
         )
+    if len(crawl) > 6:
+        print(f"    ... and {len(crawl) - 6} more")
 
 
 def act5_sigterm_deploy(log_path: Path) -> None:
