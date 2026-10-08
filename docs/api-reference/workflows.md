@@ -28,6 +28,11 @@ async def fetch(ctx, params: Ingest) -> Report:
     return Report(ref=f"r-{params.doc_id}")
 
 
+@app.actor(queue="cpu")
+async def summarize(ctx, reports: list[Report]) -> dict[str, int]:
+    return {"count": len(reports)}
+
+
 @app.workflow("doc_ingest")  # the per-workflow declaration
 def doc_ingest() -> object:  # SYNC and PURE — the compile-time wiring
     fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
@@ -51,10 +56,10 @@ module → same compile, byte-stable).
 | verb | signature | notes |
 | --- | --- | --- |
 | `step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=3, retry_kind=None, skip=None, gates=())` | `→ Promise[R]` where `R` is the body's declared return | promise args become the node's incoming edges (several = the fan-in); plain args are the node's data (in signature order). `skip` is the DISPATCH-TIME predicate (cut #4). |
-| `gather(promises, *, on_failure="fail_closed")` | `list[Promise[A]] → Promise[list]` | the ALL-upstream join, the FLAT shape. `gather([])` is refused at the verb (the stranded invisible join). |
+| `gather(promises, *, on_failure="fail_closed")` | `list[Promise[A]] → Promise[list[A]]` | the ALL-upstream join, the FLAT shape — the ELEMENT TYPE PRESERVED (a homogeneous join over `Promise[Report]`s is a `Promise[list[Report]]`; a heterogeneous join upcasts to `Promise[list[object]]` honestly). `gather([])` is refused at the verb (the stranded invisible join). |
 | `map_source(source, body, *, key=None, queue="default", on_failure="fail_closed", max_attempts=3)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
-| `build(result, *residuals)` | `Promise[R] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual (the `Promise[Never]` typing forces the static side). |
+| `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
 
 The workflow declaration: `@app.workflow(name, *, capture="none" |
 "errors-only" | "all" = "errors-only", redact=None)` — §10.3's policies
