@@ -240,6 +240,9 @@ include = ["src/taskq", "examples", "README.md", "LICENSE", "pyproject.toml"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "examples"]
+# F1 (the certifier's finding): the append-only measurement corpus's probe
+# scripts are captured artifacts, not linted source — they stay out of the gate.
+extend-exclude = [".measurements/**"]
 
 [tool.ruff.lint]
 select = [
