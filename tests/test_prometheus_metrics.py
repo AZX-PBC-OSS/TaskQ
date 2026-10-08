@@ -219,6 +219,14 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ("taskq.claim.latency_p99_seconds", "taskq_claim_latency_p99_seconds", "gauge"),
     ("taskq.claim.claims_per_second", "taskq_claim_claims_per_second", "gauge"),
     ("taskq.claim.degradation_ratio", "taskq_claim_degradation_ratio", "gauge"),
+    # T08's workflow-progress rollup gauge (obs/_otel.py's observable
+    # gauge; the maintenance leader samples it). The name already ends in
+    # the counter suffix "total" but the instrument is a GAUGE: the bridge
+    # renders the bare name, and rules.yaml's TaskQWorkflowBlockedStuck
+    # cites exactly that series (the registered-instrument pin in
+    # test_rt_worker_rule_files builds its allowed set from this map — a
+    # rule file may only cite series a real scrape serves).
+    ("taskq.wf_progress_nodes_total", "taskq_wf_progress_nodes_total", "gauge"),
 ]
 
 _RULES_YAML = (
@@ -258,7 +266,11 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQRunningLeaseExpired",
     "TaskQQueueUnserved",
     "TaskQStrandedJobs",
+<<<<<<< HEAD
     "TaskQClaimLatencyDegraded",
+=======
+    "TaskQWorkflowBlockedStuck",
+>>>>>>> af4d199 (fix(obs): T08's wf-progress gauge joins the metric estate — the pinned counts and the docs citations follow the sanctioned addition)
 }
 
 
@@ -456,6 +468,11 @@ def _populate_all_instruments(meter: Any) -> None:
         "taskq.queue.live_workers",
         unit="1",
         callbacks=[lambda _: [Observation(1, {"queue": "q"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.wf_progress_nodes_total",
+        unit="1",
+        callbacks=[lambda _: [Observation(3, {"workflow": "w", "state": "blocked"})]],
     )
 
 

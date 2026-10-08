@@ -1176,7 +1176,8 @@ Ship-ready alert rules for the metrics above exist in the repo and are ready to 
 jobs, lock TTL, leader split-brain, dispatch latency, claim-latency degradation, progress failures, disabled cron,
 scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded
 tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget
-deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies) and the equivalent PrometheusRule
+deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies, workflow
+blocked-stuck) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough; make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md: Prometheus scrape](deployment.md#observability-setup)): the rules read
