@@ -1166,14 +1166,51 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     ``chaos_ratelimit``, ``chaos_livelock``, ``chaos_health``) while
     everything else gets a safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
+
+    THE SPLIT-DROP CLASS (named and cured 2026-10-08, the recon run's 3
+    failed + 3 errors): grouping IS a correctness requirement for every
+    module-scoped FIXTURE LIFECYCLE, not just its names. A fast-tier module
+    whose tests take the module-scoped PG fixtures (``pg_dsn`` et al.) but
+    carries no ``integration`` mark was NOT grouped — its tests split
+    across THREE workers under load-scheduling, and each worker ran its
+    own module-db lifecycle (create at first use, drop at scope end). The
+    drops land while the module is still mid-flight elsewhere:
+    ``DROP DATABASE ... WITH (FORCE)`` terminated live connections
+    (``terminating connection due to administrator command`` in the PG
+    log) and the stranded tests died on ``InvalidCatalogNameError:
+    database "tq_db_..." does not exist`` — rotating with pytest-randomly's
+    seed, every victim green solo. The cure is the same grouping the
+    integration modules have always had: any item requesting a
+    module-scoped PG/Redis fixture joins its module's own group, so the
+    whole module — one fixture lifecycle, one create/migrate/drop — runs
+    on ONE worker.
     """
+    # The module-scoped fixtures whose LIFECYCLE (not just their names)
+    # assumes the module's tests all land on one worker: the PG database
+    # (``pg_dsn``), the schema/pool/jobs-app stack built on it, and the
+    # per-process Redis DB. ``fixturenames`` is the transitive closure, so
+    # a test requesting ``module_pg_schema`` (which requests ``pg_dsn``)
+    # matches on ``pg_dsn`` alone.
+    _lifecycle_fixtures = ("pg_dsn", "module_redis_url")
     for item in items:
         is_e2e = "e2e" in item.keywords
-        if "integration" not in item.keywords and not is_e2e:
-            continue
         if item.get_closest_marker("xdist_group") is not None:
             continue
-        group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
+        if "integration" not in item.keywords and not is_e2e:
+            # The split-drop cure: a fast-tier item riding a module-scoped
+            # PG/Redis fixture joins its module's group too — same law, the
+            # lifecycle needs the single worker regardless of the tier.
+            # (The Function narrow: ``fixturenames`` — the transitive
+            # fixture closure — is a Function attribute; non-Function
+            # items request no fixtures and have no lifecycle stake.)
+            if not (
+                isinstance(item, pytest.Function)
+                and any(f in item.fixturenames for f in _lifecycle_fixtures)
+            ):
+                continue
+            group = item.path.stem
+        else:
+            group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
     # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
