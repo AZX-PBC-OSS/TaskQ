@@ -1,0 +1,36 @@
+{
+  "measured_at": "2026-10-08T04:41:19.784538+00:00",
+  "dsn_schema": "t20_perf",
+  "page_size": 40,
+  "jit": "off (the container's tuning; fsync/synchronous_commit off)",
+  "emit_tx_per_page": {
+    "p50_ms": 3.171,
+    "p95_ms": 10.357,
+    "max_ms": 10.357,
+    "rounds": 5
+  },
+  "dispatch_band_200_chain": {
+    "p50_ms": 7.499,
+    "p95_ms": 9.087,
+    "max_ms": 19.477,
+    "rounds": 30
+  },
+  "dispatch_band_200_plain": {
+    "p50_ms": 7.36,
+    "p95_ms": 9.08,
+    "max_ms": 9.482,
+    "rounds": 30
+  },
+  "dispatch_band_800_mixed": {
+    "p50_ms": 7.229,
+    "p95_ms": 8.528,
+    "max_ms": 9.695,
+    "rounds": 30
+  },
+  "chain_fork_tx": {
+    "p50_ms": 0.829,
+    "p95_ms": 1.404,
+    "max_ms": 2.539,
+    "rounds": 50
+  }
+}
