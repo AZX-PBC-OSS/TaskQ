@@ -56,6 +56,7 @@ _CORPUS: tuple[str, ...] = (
     "attack_wf_negative_types.py",
     "wf_api_negative_types.py",
     "wf_generic_step_negative_types.py",
+    "wf_router_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
