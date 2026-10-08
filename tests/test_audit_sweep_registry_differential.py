@@ -176,6 +176,13 @@ class ScriptConn:
         return item
 
     async def fetchval(self, sql: str, *args: object) -> int:
+        # The SAME wf_ classification the execute path carries (the ring
+        # prune's owner count is the first wf statement on this channel —
+        # an unclassified fetchval would ride the stale_batches script's
+        # deque and shift a 7 into the wrong arm's verdict).
+        if "wf_" in sql:
+            self.stream.append(("call", "wf_stmt"))
+            return 0
         self.stream.append(("call", "stale_batches"))
         if self._fetchval is None:
             return 0
@@ -639,6 +646,7 @@ _WF_ARMS = (
     "wf_signal_sweep",
     "wf_loop_budget",
     "wf_phantom_reap",
+    "wf_progress_ring_prune",
 )
 
 
