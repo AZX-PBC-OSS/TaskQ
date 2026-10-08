@@ -1290,3 +1290,26 @@ taskq workgroup start workgroup.toml
 The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. With `--until-idle`, `worker_main()` returns `0` (all jobs succeeded), `3` (some jobs failed), or `4` (idle-max-runtime exceeded). A third SIGTERM calls `sys.exit(1)`.
 
 The `taskq workgroup start` command exits 0 on clean shutdown. It exits 1 if the config file is missing, invalid, or if the optional health-check PG pool fails to initialise.
+
+---
+
+## `taskq flows`
+
+The workflow-run surface: **one question, one command** — each verb answers exactly one of the operator's questions, and each number in the output names its evidence source. The write verbs (signal, resolve, cancel, retry) ride the engine's own audit rows ("who did this" is a row, not a log line) with the CLI's principal spelled `cli:<user>`.
+
+| Question | Command |
+|----------|---------|
+| Which runs exist? | `taskq flows list [--limit N]` |
+| What happened / where is it blocked / what happens next? | `taskq flows status <run_id>` |
+| What is this run waiting on? | `taskq flows holds <run_id>` |
+| Deliver a typed signal (by run + node)? | `taskq flows signal <run_id> <node> '<json>' --app myapp.workflows:app` |
+| Reply to a hold BY ID? | `taskq flows resolve <hold_id> '<json>' --app myapp.workflows:app` |
+| Stop the run? | `taskq flows cancel <run_id> [--reason TEXT]` |
+| Re-run a failed node (the manual resume)? | `taskq flows retry <run_id> <node> [--reason TEXT]` |
+
+**The typed door.** `resolve` and `signal` validate the shell's JSON against the bound gate's declared pydantic models BEFORE any row moves: a wrong payload answers the named pydantic error (`pydantic refused the payload: verdict: Input should be 'approve' or 'reject'`) with exit 1, and the hold SURVIVES — nothing is delivered. The `--app` option names the module:attr of the `WorkflowApp` (the bound gates' source); without it the verbs refuse rather than deliver untyped.
+
+**The output contract.** Every report renders an honest degraded state: an unknown run id is `no run <id>` + the remedy (exit 1); a run with no holds prints the healthy-zero line (a blank section never reads as a healthy zero); a stuck finding always names its remedy. Exit codes: 0 = the answer rendered (a no-op resolve is 0 — the idempotence), 1 = the refusal or the failure.
+
+**Read-only.** `list`, `status`, `holds` issue only reads (pinned by a test that walks the fetchers' source) — safe to run against production mid-incident.
+

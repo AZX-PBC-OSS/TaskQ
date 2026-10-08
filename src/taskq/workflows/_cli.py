@@ -112,11 +112,16 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             else " · NO deadline (the W1 warning's subject — a workflow that waits "
             "forever on a human is a support ticket)"
         )
-        return [
+        lines = [
             f"  {node.step_key}: HELD — waiting for: signal '{node.hold.signal_name}'"
             f" · hold {node.hold.hold_id}{deadline}",
             f"       remedy: taskq flows resolve {node.hold.hold_id} '<decision json>'",
         ]
+        if node.hold.reason:
+            # THE WAITING-ON STATE's why (the author's declared reason —
+            # the operator reads it without opening the code).
+            lines.insert(1, f"       reason: {node.hold.reason}")
+        return lines
     if node.view().is_join_wait:
         return [
             f"  {node.step_key}: JOIN-WAIT — waiting on {node.deps_pending} upstream "

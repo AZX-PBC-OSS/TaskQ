@@ -112,3 +112,58 @@ mounts nothing else.
 ## Snooze-Loop Pattern
 
 When `batch_finalizer` runs while child jobs are still in-flight, `wait_for_batch` raises `Snooze(snooze_interval)`. The worker catches this and transitions the finalizer from `running` to `scheduled`, rescheduling it after the snooze interval without consuming retry budget. When children are slow, the `batch_finalizer` job's attempt history in the admin UI shows multiple attempts, each separated by the `snooze_interval` — this is the fan-out-then-finalize snooze-loop pattern in action. Once all children reach a terminal state, the finalizer succeeds on its next attempt and logs the completion summary.
+
+---
+
+## Workflow Demo: the doc-ingest pipeline
+
+`examples/workflows.py` wires the **doc-ingest pipeline** (the same abstract
+graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
+behind HTTP, with the admin's run explorer attached.
+
+### Run it
+
+```bash
+docker compose up -d                 # PG + Redis
+TASKQ_PG_DSN=... TASKQ_SCHEMA_NAME=demo \
+TASKQ_MIGRATE_ON_START=true \
+TASKQ_ADMIN_ACTIONS_ENABLED=true \
+uvicorn examples.app:app --port 8000
+```
+
+| Env var | Meaning |
+|---------|---------|
+| `TASKQ_PG_DSN` | the Postgres DSN (the compose stack's `postgres:5432`) |
+| `TASKQ_SCHEMA_NAME` | the schema (fresh is fine — the app migrates on start) |
+| `TASKQ_REDIS_URL` | optional (the progress fanout; the workflow demo needs none) |
+| `TASKQ_MIGRATE_ON_START` | the app applies the migrations (pre AND post — a fresh schema has no old workers to protect) |
+| `TASKQ_ADMIN_ACTIONS_ENABLED` | **must be `true` for the demo's Resolve** (the destructive-action opt-in) |
+| `TASKQ_ENVIRONMENT` | `dev` for the local demo (the admin's auth posture follows it) |
+
+### Trigger + watch
+
+```bash
+curl -X POST http://localhost:8000/workflows/doc_ingest/run
+# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the F3 envelope)
+```
+
+Open the returned URL — the admin's run page renders the run's graph and
+patches it LIVE over SSE.
+
+### The three demonstrable properties
+
+1. **A map with a failing child + collect** — `doc-doomed`'s first
+   enrichment fails through its ladder; the run NEVER re-runs the
+   succeeded siblings; the failure surfaces in the typed report (the
+   demo's report carries `failed: []` because the ladder HEALS the armed
+   child — watch the item's attempt go 1 → 2 in the node panel).
+2. **The budget-capped loop with the held approval** — the run HOLDS at
+   the review (the held node renders AMBER with its countdown); the
+   Resolve form (on the run page) delivers the typed `ReviewDecision`;
+   the loop resumes toward publish. A `reject` refines the loop (the
+   budget was PAUSED while the hold waited — the hold counts for
+   nothing on wake); three rejects exhaust the cap into the NAMED
+   escalation.
+3. **The admin graph view live** — the collapsed map hexagon (the
+   done/total counter), the taken paths, the failure badge, the SSE
+   patches: all demonstrated on a real run.

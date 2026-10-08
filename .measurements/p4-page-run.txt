@@ -1,0 +1,51 @@
+................F..                                                      [100%]
+=================================== FAILURES ===================================
+____ test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped _____
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f4997c013c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_73ea2ae321', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_73ea2ae32165')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
+        module_pg_pool: Any, module_pg_schema: Any, demo_app_module: Any
+    ) -> None:
+        """THE DEGRADE's real path: a run EXISTS (the root row) + the
+        workflow tables dropped mid-flight — the fetch's edge read raises,
+        the page renders the NOTICE (never a 500)."""
+        import httpx as _httpx
+    
+        from taskq.migrate import apply_pending
+    
+        schema = module_pg_schema.schema_name + "_nowf2"
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        bare = await asyncpg.connect(module_pg_schema.pg_dsn)
+        await apply_pending(bare, schema=schema)
+        await bare.close()
+    
+        # A REAL run (the root + the nodes exist), then the workflow tables drop.
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
+        compiled = sys.modules[MODULE_NAME].app.get("admin_hold_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        await pool.close()
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+>       await conn.execute(f'DROP TABLE "{schema}".wf_edge')
+
+tests/web_admin/test_workflows_page.py:652: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:354: in execute
+    result = await self._protocol.query(query, timeout)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.InvalidSchemaNameError: schema "tq_73ea2ae321_nowf2" does not exist
+
+asyncpg/protocol/protocol.pyx:369: InvalidSchemaNameError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 21:19:10 [info     ] node.held                      hold_id=01a119bc-8ee9-7691-b235-606cb2edf7ed node=review run_id=01a119bc-8ec9-7262-878e-d26aea5ea509 signals=['Approval']
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped
+1 failed, 18 passed in 6.32s

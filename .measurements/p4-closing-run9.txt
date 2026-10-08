@@ -1,0 +1,51 @@
+.F.................................                                      [100%]
+=================================== FAILURES ===================================
+__________ test_the_pages_degrade_when_the_workflow_tables_are_absent __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f1220a06bc0>
+module_pg_schema = ModulePgSchema(schema_name='tq_eea546a15e', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_eea546a15e48')
+
+    async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
+        module_pg_pool: Any, module_pg_schema: Any
+    ) -> None:
+        """THE UNINSTALLED DEGRADE: a schema with ONLY the vanilla tables (a
+        pre-workflow migration state) renders the NOTICE (both pages), never
+        a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
+        per module — the drop here would break the family; the fresh schema
+        applies the migrations then drops the workflow series' two tables."""
+        import httpx as _httpx
+    
+        schema = module_pg_schema.schema_name + "_nowf"
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+        from taskq.migrate import apply_pending
+    
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        bare = await asyncpg.connect(module_pg_schema.pg_dsn)
+        await apply_pending(bare, schema=schema)
+        await bare.execute(f'DROP TABLE "{schema}".wf_signals')
+        await bare.execute(f'DROP TABLE "{schema}".wf_edge')
+        await bare.close()
+        app = _make_admin_app(module_pg_pool, schema)
+        # THE DETAIL PAGE is the degrade's real surface (its reads touch the
+        # workflow tables); the LIST page reads only jobs (the roots live
+        # there) — its uninstalled branch is the pre-vanilla state, unreachable
+        # once jobs exists.
+        async with _httpx.AsyncClient(
+            transport=_httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            listed = await client.get("/workflows")
+            assert listed.status_code == 200  # jobs exists: the list renders (empty)
+            detail = await client.get(
+                "/workflows/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
+            )
+>           assert detail.status_code == 200
+E           assert 404 == 200
+E            +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/web_admin/test_workflows_page.py:621: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 21:16:33 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 21:16:33 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+1 failed, 34 passed in 6.71s

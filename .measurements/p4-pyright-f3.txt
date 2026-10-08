@@ -1,0 +1,10 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:29:36 - error: Import "field" is not accessed (reportUnusedImport)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:121:5 - error: Type of "_runtime" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:121:32 - error: "dataclasses_field" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:393:9 - error: Type of "built" is partially unknown
+    Type of "built" is "TypeAdapter[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_runner.py:931:42 - error: Argument type is partially unknown
+    Argument corresponds to parameter "param" in function "_type_adapter_for"
+    Argument type is "object | type[Unknown]" (reportUnknownArgumentType)
+5 errors, 0 warnings, 0 informations

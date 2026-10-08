@@ -1,4 +1,4 @@
-# ruff: noqa: S608,S603,S607  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
+# ruff: noqa: S608, S603  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
 """T13 — THE EXAMPLES' PINS: the doc-ingest example (docs/examples/
 doc-ingest.md's fence) is CODE THAT RUNS, not decoration.
 
