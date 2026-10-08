@@ -21,6 +21,7 @@ from taskq.obs import get_logger
 from taskq.workflows._types import _jsonb
 from taskq.workflows.api._graph import Exit
 from taskq.workflows.api._runner_codec import jsonable
+from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import (
     EXIT_SKIP_SQL_TEMPLATE,
     RETRY_FLOW_REOPEN_SQL_TEMPLATE,
@@ -195,3 +196,143 @@ class ExitOps(_ExitHost):
                 detail={"node_key": node_key, "closure_reopened": len(descendants)},
             )
         return True
+
+
+_EXIT_CANCEL_ROOT_SQL_TEMPLATE = """
+UPDATE {schema}.jobs SET status = 'cancelled',
+    error_class = 'WorkflowCancelled',
+    error_message = $2,
+    finished_at = clock_timestamp()
+WHERE id = $1
+  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+RETURNING id
+"""
+
+_EXIT_CANCEL_NODES_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
+    finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
+    error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
+    metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+"""
+
+
+# ── the run-operator verbs (the id-addressed forms — T12) ───────────────
+#
+# The runner's methods own the rows work for a COMPILED flow; the CLI's
+# ``flows cancel`` / ``flows retry`` address a RUN BY ID (no compiled
+# definition to import) — these forms carry the SAME statements for the
+# id-addressed caller. One engine, two surfaces: the rows work lives
+# once per shape.
+
+
+async def cancel_workflow_run(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    flow_id: JobId,
+    reason: str | None = None,
+    principal: Any = None,
+) -> int:
+    """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
+    the linearization point; every non-terminal node + held signal
+    resolves in the same snapshot; running children take the
+    existing two-phase cooperative cancel; terminal rows untouched;
+    IDEMPOTENT (cancel twice = one cancel — a terminal root updates
+    nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
+    log line."""
+    from taskq.workflows.api._hitl import cancel_run_signals
+
+    async with pool.acquire() as conn, conn.transaction():
+        flipped = await conn.fetchval(
+            render_sql(_EXIT_CANCEL_ROOT_SQL_TEMPLATE, schema),
+            flow_id,
+            (reason or "cancel_workflow")[:500],
+        )
+        if flipped is None:
+            return 0  # already terminal — idempotent
+        await conn.execute(render_sql(_EXIT_CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
+        held = await cancel_run_signals(pool, schema=schema, workflow_id=flow_id)
+        # THE AUDIT ROW (the caller owns the tx — the same-tx
+        # guarantee; the lazy import keeps the layering).
+        from taskq.web.admin._audit import record_admin_action
+
+        await record_admin_action(
+            conn,
+            schema=schema,
+            principal=principal,
+            action="workflow.cancel",
+            target_type="workflow_run",
+            target_id=str(flow_id),
+            reason=reason,
+            detail={"held_signals_cancelled": held},
+        )
+    return held + 1
+
+
+async def retry_workflow_node(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    flow_id: JobId,
+    node_key: str,
+    reason: str | None = None,
+    principal: Any = None,
+) -> int:
+    """THE MANUAL RESUME (T12), id-addressed: the ExitOps' own CAS
+    statements for the caller that addresses the run BY ID (no compiled
+    definition to import). A cancelled run REFUSES (the cancel was
+    deliberate — re-opening it is a second decision, not a resume).
+    THE AUDIT (G4): the row.
+
+    Returns 1 when the CAS granted the re-arm, 0 when nothing was
+    resumable (the node is live, unknown, or not terminal-failed)."""
+    async with pool.acquire() as conn, conn.transaction():
+        root = await conn.fetchval(
+            render_sql("SELECT status FROM {schema}.jobs WHERE id = $1", schema),
+            flow_id,
+        )
+        if root == "cancelled":
+            raise WorkflowRunError(
+                f"run {flow_id} is cancelled — re-opening it is a second decision, "
+                "not a resume (create a new run, or un-cancel deliberately)"
+            )
+        node_id = await conn.fetchval(
+            render_sql(RETRY_NODE_CAS_SQL_TEMPLATE, schema), flow_id, node_key
+        )
+        if node_id is None:
+            return 0
+        descendants = await conn.fetch(
+            render_sql(_DESCENDANTS_SQL, schema), flow_id, [node_key]
+        )
+        keys = [r["step_key"] for r in descendants]
+        if keys:
+            await conn.execute(
+                render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys
+            )
+        await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, schema), flow_id)
+        # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee).
+        from taskq.web.admin._audit import record_admin_action
+
+        await record_admin_action(
+            conn,
+            schema=schema,
+            principal=principal,
+            action="workflow.retry_node",
+            target_type="workflow_node",
+            target_id=f"{flow_id}:{node_key}",
+            reason=reason,
+            detail={"run_id": str(flow_id), "node_key": node_key},
+        )
+    return 1
+
+_DESCENDANTS_SQL = """
+SELECT DISTINCT c.step_key
+FROM {schema}.wf_edge e
+JOIN {schema}.jobs c ON c.id = e.child_id
+JOIN {schema}.jobs p ON p.id = e.parent_id
+WHERE (p.metadata->>'flow_id')::uuid = $1 AND p.step_key = ANY($2)
+"""
+

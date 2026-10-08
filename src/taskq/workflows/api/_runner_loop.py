@@ -12,6 +12,7 @@ driver here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import asyncpg
@@ -177,8 +178,15 @@ class LoopOps(_LoopHost):
                     dumps_jsonb_str(init_meta),
                 )
             meta_doc = init_meta
-        # THE ON-WAKE REMAINING (holds are free — a PG-clock read).
-        if state["budget_deadline"] is not None:
+        # THE ON-WAKE REMAINING (holds are free — a PG-clock read): the
+        # number the loop ctx carries (the context contract's
+        # budget_remaining_ms). The FIRST claim's init (above) just set
+        # the deadline — the remaining is the budget's own value (the
+        # clock hasn't spent anything).
+        remaining: int | None = None
+        if "iteration" not in meta and spec.budget_s is not None:
+            remaining = int(spec.budget_s * 1000)
+        elif state["budget_deadline"] is not None:
             async with self.pool.acquire() as conn:
                 remaining = await conn.fetchval(
                     render_loop_sql(LOOP_REMAINING_SQL, self.schema), row["id"]
@@ -269,6 +277,13 @@ class LoopOps(_LoopHost):
                     workflow_name=self.compiled.name,
                     redact=self._redact_hook(),
                     progress=emitter,
+                    # THE RUNTIME INFO: the loop ctx carries the wall's
+                    # remaining read (the budget PAUSES while held — the
+                    # number is the on-wake read).
+                    flow_name=self.compiled.name,
+                    queue=node.queue,
+                    claimed_at=datetime.now(UTC),
+                    budget_remaining_ms=remaining,
                 )
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)

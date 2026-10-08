@@ -12,7 +12,8 @@ the claim seam (``_runner``).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, cast
 
 import asyncpg
@@ -47,6 +48,10 @@ def build_step_context(
     worker_id: JobId | None = None,
     progress: ProgressEmitter | None = None,
     claim_epoch: int = 0,
+    flow_name: str | None = None,
+    queue: str | None = None,
+    claimed_at: datetime | None = None,
+    budget_remaining_ms: int | None = None,
 ) -> StepContext:
     """The ONE context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -66,7 +71,11 @@ def build_step_context(
         _redact=redact,
         _worker_id=worker_id,
         _progress=progress,
-        _claim_epoch=claim_epoch,
+        claim_epoch=claim_epoch,
+        flow_name=flow_name,
+        queue=queue,
+        claimed_at=claimed_at,
+        budget_remaining_ms=budget_remaining_ms,
     )
 
 
@@ -101,19 +110,42 @@ class StepContext(CtxWaitOps):
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
-    #: The claim view's FENCE EPOCH: the in-process driver's own claim
-    #: stamps 0 (NODE_CLAIM_SQL_TEMPLATE); a fleet-claimed row carries
-    #: its dispatch claim's epoch — the emit's cursor checkpoint fences
-    #: on the epoch beside the worker and the attempt (the fence must
-    #: match the row, or the checkpoint updates nothing and the emit
-    #: refuses).
-    _claim_epoch: int = 0
     # THE EMISSION OP's buffer (T21): the attempt's own ProgressEmitter —
     # the runner wires it at the claim seam. None when unwired (direct
     # testing): ctx.progress then VALIDATES the shape (the typed door is
     # the authoring contract) and drops the emission (the deliberate
     # no-op — the jobs ctx's unwired pattern), never a crash.
     _progress: ProgressEmitter | None = None
+    #: This attempt's claim epoch (the emit's cursor-fence's value — the
+    #: runner's claim wrote it; the emit's checkpoint fences on the pair).
+    #: The in-process driver's own claim stamps 0
+    #: (NODE_CLAIM_SQL_TEMPLATE); a fleet-claimed row carries its
+    #: dispatch claim's epoch — the emit's cursor checkpoint fences on
+    #: the epoch beside the worker and the attempt (the fence must match
+    #: the row, or the checkpoint updates nothing and the emit refuses).
+    claim_epoch: int = 0
+    # ── the runtime info (the context contract — the observability
+    # primitive for body authors) ────────────────────────────────────
+    flow_name: str | None = None
+    queue: str | None = None
+    claimed_at: datetime | None = None
+    budget_remaining_ms: int | None = None
+    _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
+
+    @property
+    def map_index(self) -> int | None:
+        """The map item's index (the contract's public name; the private
+        field is the runner's wiring)."""
+        return self._map_index
+
+    @property
+    def hold_epoch(self) -> int | None:
+        """The LAST CONSUMED hold's epoch (a resumed body's answer
+        identity; None until a wait consumed an answer). The FROZEN
+        ctx's mutable escape: the answer queue's consumption records it
+        in the runtime dict (the identity never changes; the answer
+        ledger does)."""
+        return self._runtime.get("hold_epoch")
 
     async def cursor(self) -> dict[str, object]:
         """THE STREAMING SOURCE'S CHECKPOINTED CURSOR (T20): read from
@@ -162,7 +194,7 @@ class StepContext(CtxWaitOps):
             source_id=self.job_id,
             worker_id=self._worker_id,
             attempt=self.attempt,
-            claim_epoch=self._claim_epoch,  # the claim view's fence epoch
+            claim_epoch=self.claim_epoch,  # the claim view's fence epoch
             children=children,
             cursor=cursor,
         )

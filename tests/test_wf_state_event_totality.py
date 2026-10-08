@@ -29,8 +29,8 @@ from taskq.backend.statemachine import (
     assert_valid_transition,
 )
 from taskq.exceptions import IllegalStateTransition
-from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import claim_view, seed_flow
 
 #: THE REPO MACHINE'S VOCABULARY (the count re-derived — F9): the 8

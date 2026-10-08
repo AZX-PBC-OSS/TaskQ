@@ -166,8 +166,8 @@ def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> N
     validators are the door the declarative API composes, and the public
     ``insert_node`` path writes declared edges via the bundle's exported
     edge writer in the same call."""
-    from taskq.workflows.definitions import validate_fork, validate_join_spec
     from taskq.workflows._types import ForkSpec
+    from taskq.workflows.definitions import validate_fork, validate_join_spec
 
     empty = ForkSpec(children=())
     with pytest.raises(ValueError, match="empty fork"):

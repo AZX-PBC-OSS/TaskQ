@@ -30,7 +30,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
 ) -> None:
     app = WorkflowApp()
 
-    async def asserting_body(ctx: Any, params: Ingest) -> str:
+    async def asserting_body(ctx: Any, params: Ingest) -> list[str]:
         # THE BODY IS THE PIN: every field the contract names, asserted
         # on the LIVE surface. The failures are RECORDED (the body's
         # exception feeds the ladder; the record is what the test
@@ -72,8 +72,11 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
     @app_obj.workflow("context_contract")
     def context_contract() -> object:
         first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+        async def tail(ctx: Any, items: list[str]) -> int:
+            return len(items)
+
         mapped = map_source(first, map_item, key="enrich")
-        return build(mapped)
+        return build(step(tail, mapped, key="tail"))
 
     runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
     flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))

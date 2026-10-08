@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 import asyncpg
@@ -176,7 +177,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
     async def _insert_root(self, input: object, run_key: str | None) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
-        entry_payload: dict[str, object] = {INPUT_KEY: input}
+        entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
         async with self.pool.acquire() as conn:
             return await insert_flow_run(
                 conn,
@@ -200,7 +201,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             # resolution with no result to read, and a transitive
             # downstream that the side-channel never creates at all.)
             data_args = [v for kind, v in node.args if kind == "d"]
-            payload: dict[str, object] = {INPUT_KEY: input} if not node.parents else {}
+            payload: dict[str, object] = (
+                {INPUT_KEY: encode_data_arg(input)} if not node.parents else {}
+            )
             if data_args:
                 payload[WF_ARGS_KEY] = [encode_data_arg(v) for v in data_args]
             spec = NodeSpec(
@@ -502,15 +505,31 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
+            # THE RUNTIME INFO (the context contract — the observability
+            # primitive the body asserts on).
+            flow_name=self.compiled.name,
+            queue=node.queue if node is not None else None,
+            claimed_at=datetime.now(UTC),
         )
         try:
             if body is None:
                 # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
-                # join's result IS the decoded parents' list — the flat
-                # shape the downstream body's list param declares; the
-                # EDGE ORDER (map children distinct, the gather's wiring
+                # join's result IS the decoded parents' list — the FLAT
+                # shape the downstream body's list param declares (the
+                # gather's contract): a GATHER whose every parent returned
+                # a list flattens one level (the barrier over per-stage
+                # lists); the MAP join packs the items as-is (a map over
+                # list items is a collect of lists — never flattened).
+                # Edge order (map children distinct, the gather's wiring
                 # order).
-                result: dict[str, object] | None = {"value": [r for _key, r in parents_ordered]}
+                parents_values = [r for _key, r in parents_ordered]
+                if node is not None and node.kind == "gather" and parents_values and all(
+                    isinstance(v, list) for v in parents_values
+                ):
+                    parents_values = [
+                        item for v in parents_values for item in cast(list[object], v)
+                    ]
+                result: dict[str, object] | None = {"value": parents_values}
             else:
                 outcome_value = await body(ctx, *args)
                 chain = self._chain_steps.get(row["step_key"])
@@ -681,24 +700,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         return tuple(parts)
 
     def _coerce(self, raw: object, node: Any, body: Any, position: int) -> object:
-        """The payload codec hook: the body's declared param annotation —
-        a pydantic model — re-validates the jsonb round-trip's dict (the
-        decode once, typed end to end)."""
+        """The payload codec hook: the body's declared param annotation
+        re-validates the jsonb round-trip's value (the decode once, typed
+        end to end). The walk lives in the CODEC module
+        (``_runner_codec.coerce_arg`` — bare models fast-path, lists/
+        unions/generics walk the TypeAdapter)."""
         if body is None:
             return raw
-        if not isinstance(raw, dict):
-            return raw  # the non-dict JSON values need no codec
         from taskq.workflows.api._hints import body_hints
+        from taskq.workflows.api._runner_codec import coerce_arg
 
         hints = body_hints(body)
         params = [v for k, v in hints.items() if k not in ("return", "ctx")]
         if position >= len(params):
-            return cast(object, raw)  # the narrowing's laundering — the declared return is object
+            return raw
         param = params[position]
-        raw_doc = cast(dict[str, object], raw)  # the codec's declared input
-        if isinstance(param, type) and issubclass(param, BaseModel):
-            return param.model_validate(raw_doc)
-        return cast(object, raw)  # the narrowing's laundering
+        return coerce_arg(raw, param=param, position=position, params=params)
 
     async def cancel_workflow(
         self,

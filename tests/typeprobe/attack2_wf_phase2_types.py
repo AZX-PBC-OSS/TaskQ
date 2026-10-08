@@ -23,8 +23,6 @@ from __future__ import annotations
 import asyncio
 
 from taskq.backend._protocol import ConnLike, ErrorInfo, JobId
-from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
-from taskq.workflows.engine import fan_in_skip
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import (
     NodeView,
@@ -33,6 +31,8 @@ from taskq.workflows._status import (
     reconstruct_workflow_status,
 )
 from taskq.workflows._types import FailureInfo
+from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
+from taskq.workflows.engine import fan_in_skip
 
 
 def probe_failure_info_envelope() -> None:

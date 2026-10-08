@@ -37,11 +37,10 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import reconstruct_workflow_status
 from taskq.workflows._sweep import sweep_join_rederive
-from taskq.workflows.engine import render_workflow_sql
+from taskq.workflows.engine import fan_in_skip, finalize_node, render_workflow_sql
 from tests._wf_fixtures import (
     RedLog,
     claim_view,

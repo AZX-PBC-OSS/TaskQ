@@ -74,6 +74,7 @@ class _LadderHost(Protocol):
     pool: asyncpg.Pool
     wsql: WorkflowSql
     schema: str
+    compiled: Any  # the compiled workflow (the declared capture's source)
     _worker_id: JobId
 
     async def _project_auto(
@@ -158,6 +159,7 @@ class LadderOps(_LadderHost):
             outcome="failed",
             error_class=type(exc).__name__,
             error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
+            capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the COMPILE (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
         )
         if final.applied:

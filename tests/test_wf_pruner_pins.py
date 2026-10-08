@@ -29,10 +29,10 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend._sweeps import sweep_expired_results
-from taskq.workflows.engine import finalize_node
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import sweep_join_rederive
 from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
+from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
     RedLog,
     claim_view,

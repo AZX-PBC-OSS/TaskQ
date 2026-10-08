@@ -28,7 +28,6 @@ from typing import Any, Final
 
 from taskq.backend._protocol import ConnLike
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sql_status import WORKFLOW_NODES_SQL
 from taskq.workflows._status import NodeView, derive_workflow_status
 
 __all__ = [

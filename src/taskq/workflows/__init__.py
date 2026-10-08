@@ -49,6 +49,7 @@ from taskq.workflows.api import (
 )
 from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
+from taskq.workflows.api._runner_exit import cancel_workflow_run, retry_workflow_node
 from taskq.workflows.chain import (
     DONE,
     Chain,
@@ -76,12 +77,14 @@ __all__ = [
     "WorkflowBuildError",
     "WorkflowRunError",
     "build",
+    "cancel_workflow_run",
     "chain_fork",
     "chain_source",
     "chain_start",
     "gather",
     "loop",
     "map_source",
+    "retry_workflow_node",
     "sink",
     "step",
 ]
