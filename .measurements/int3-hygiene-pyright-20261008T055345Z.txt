@@ -1,0 +1,5 @@
+# pyright FULL tree — head 223a09b1
+15 errors, 0 warnings, 0 informations
+# attribution: at capture time every error sat in the co-tenant's three in-flight files (worker/run.py, workflows/_worker_execution.py, api/_runner.py's _execute_claimed tail — their execution-fence leg, mid-edit in this shared worktree); the hygiene round's modules + the rewired tests pyright 0/0/0 scoped:
+# (the scoped capture)
+0 errors, 0 warnings, 0 informations

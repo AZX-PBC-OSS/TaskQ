@@ -1,0 +1,10 @@
+# the hygiene round's final battery: the wf pin suite + the attack rounds — head 223a09b1, pg :5709
+# the superset tree (the co-tenant's execution-fence leg converged mid-round; the suite includes their grown pins)
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+246 passed, 1 warning in 147.16s (0:02:27)

@@ -1,0 +1,3 @@
+# pyright scoped to the hygiene round's touched package (src/taskq/workflows) — head 59c7b188
+# the FULL-tree run reds 13, ALL in the co-tenant's in-flight files (src/taskq/worker/run.py, src/taskq/workflows/_worker_execution.py — the phase-4 builder's execution-fence leg, mid-edit in this shared worktree); none in the split's modules
+13 errors, 0 warnings, 0 informations
