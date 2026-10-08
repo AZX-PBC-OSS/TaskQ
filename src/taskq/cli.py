@@ -4081,6 +4081,12 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             absorbed=row["absorbed"],
             error_class=row["error_class"],
             error_message=row["error_message"],
+            # THE ATTEMPT COUNTERS RIDE THE READ (attack-4
+            # F-P4-WHYSTUCK-LADDER-LIE's cure): the dataclass defaults
+            # (0 / 3) made every failed row report "ladder headroom 3" —
+            # the read must carry the row's own counters.
+            max_attempts=row["max_attempts"],
+            attempt=row["attempt"],
             hold=(
                 _held_context(run_id, holds_by_key[row["step_key"]])
                 if row["step_key"] in holds_by_key

@@ -79,7 +79,20 @@ VALUES ($1, $2, $3, $4)
 """
 
 INCREMENT_DEPS_SQL_TEMPLATE = """
-UPDATE {schema}.jobs SET deps_pending = deps_pending + 1 WHERE id = $1
+UPDATE {schema}.jobs
+SET deps_pending = deps_pending + 1,
+    -- THE JOIN-WAIT MARK (the engine's own law, obeyed on the static
+    -- create path too — attack-4 F-P4-WHYSTUCK-FALSE-REMEDY's root):
+    -- "a JOINED node is born in join-wait: metadata carries
+    -- blocking_reason='join'" (insert_node's contract). The static
+    -- node pass inserted bare metadata and bumped the counter without
+    -- the stamp, so the failed-parent cascade AND the sweep's re-derive
+    -- (both keyed on the stamp) never saw the row — it stranded in
+    -- deps_pending=1 with NO reason: the join never fired, the flow
+    -- never terminalized, and the status read told the operator the
+    -- join was waiting on parents that had ALREADY finalized.
+    metadata = metadata || '{"blocking_reason": "join"}'::jsonb
+WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = """
