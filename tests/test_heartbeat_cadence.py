@@ -61,6 +61,7 @@ from pydantic import BaseModel
 
 from taskq.actor import actor
 from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker import heartbeat as hb_mod
 from taskq.worker._bootstrap import _main
 
@@ -76,7 +77,7 @@ _INJECTED_BLOCK_SECS = 1.0
 
 
 async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
-    pg_dsn: str, module_pg_schema
+    pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """THE CADENCE BOUND + THE NO-DRIFT LAW, measured on the real loop.
 
@@ -95,13 +96,13 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
     schema = module_pg_schema.schema_name
 
     hb_beat_times: list[float] = []
-    real_record = hb_mod.record_lock_expires_in_seconds
+    real_record = hb_mod.record_lock_expires_in_seconds  # pyright: ignore[reportPrivateImportUsage]  # Why: the tap patches the heartbeat module's own binding of the obs instrument - the call site's name, the seam the HB deltas flow through.
 
     def _tap(worker_id: str, remaining: float) -> None:
         hb_beat_times.append(time.monotonic())
         real_record(worker_id, remaining)
 
-    hb_mod.record_lock_expires_in_seconds = _tap
+    hb_mod.record_lock_expires_in_seconds = _tap  # pyright: ignore[reportPrivateImportUsage]
     try:
 
         class _Idle(BaseModel):
@@ -157,7 +158,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
         with contextlib.suppress(asyncio.CancelledError):
             await worker_task
     finally:
-        hb_mod.record_lock_expires_in_seconds = real_record
+        hb_mod.record_lock_expires_in_seconds = real_record  # pyright: ignore[reportPrivateImportUsage]
 
     deltas = [hb_beat_times[i + 1] - hb_beat_times[i] for i in range(len(hb_beat_times) - 1)]
     assert len(deltas) >= 8, (
