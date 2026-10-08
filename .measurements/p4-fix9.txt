@@ -1,0 +1,142 @@
+.............F..                                                         [100%]
+=================================== FAILURES ===================================
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_2ea46c993f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2ea46c993fee')
+wf_pool = <asyncpg.pool.Pool object at 0x7f3b2a039fc0>
+wf_conn = <asyncpg.connection.Connection object at 0x7f3b2c6b5040>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+            held = await runner.drive(run_id, until="held")
+            assert held == "held", f"round {round_no}: the run never held (the review gate)"
+            client = HitlClient(wf_pool, schema=schema)
+            (hold,) = await client.list(run_id)
+            result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+            assert result.status == "delivered"
+>           outcome = await runner.drive(run_id)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_doc_ingest_example.py:190: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:299: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:311: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:361: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+src/taskq/workflows/api/_runner.py:484: in _execute_claimed
+    args = self._resolve_args(node, body, parents_by_key, payload_doc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:669: in _resolve_args
+    parts.append(self._coerce(parent_result, node, body, position))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:690: in _coerce
+    return coerce_arg(raw, param=param, position=position, params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner_codec.py:136: in coerce_arg
+    validated = adapter.validate_python(raw)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = TypeAdapter(list[str])
+object = [['doc-000', 'doc-001', 'doc-002', 'doc-003', 'doc-004', 'doc-005', ...], ['doc-000', 'doc-001', 'doc-002', 'doc-003', 'doc-004', 'doc-005', ...]]
+strict = None, extra = None, from_attributes = None, context = None
+experimental_allow_partial = False, by_alias = None, by_name = None
+
+    def validate_python(
+        self,
+        object: Any,
+        /,
+        *,
+        strict: bool | None = None,
+        extra: ExtraValues | None = None,
+        from_attributes: bool | None = None,
+        context: Any | None = None,
+        experimental_allow_partial: bool | Literal['off', 'on', 'trailing-strings'] = False,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> T:
+        """Validate a Python object against the model.
+    
+        Args:
+            object: The Python object to validate against the model.
+            strict: Whether to strictly check types.
+            extra: Whether to ignore, allow, or forbid extra data during model validation.
+                See the [`extra` configuration value][pydantic.ConfigDict.extra] for details.
+            from_attributes: Whether to extract data from object attributes.
+            context: Additional context to pass to the validator.
+            experimental_allow_partial: **Experimental** whether to enable
+                [partial validation](../concepts/experimental.md#partial-validation), e.g. to process streams.
+                * False / 'off': Default behavior, no partial validation.
+                * True / 'on': Enable partial validation.
+                * 'trailing-strings': Enable partial validation and allow trailing strings in the input.
+            by_alias: Whether to use the field's alias when validating against the provided input data.
+            by_name: Whether to use the field's name when validating against the provided input data.
+    
+        !!! note
+            When using `TypeAdapter` with a Pydantic `dataclass`, the use of the `from_attributes`
+            argument is not supported.
+    
+        Returns:
+            The validated object.
+        """
+        if by_alias is False and by_name is not True:
+            raise PydanticUserError(
+                'At least one of `by_alias` or `by_name` must be set to True.',
+                code='validate-by-alias-and-name-false',
+            )
+    
+>       return self.validator.validate_python(
+            object,
+            strict=strict,
+            extra=extra,
+            from_attributes=from_attributes,
+            context=context,
+            allow_partial=experimental_allow_partial,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+E       pydantic_core._pydantic_core.ValidationError: 2 validation errors for list[str]
+E       0
+E         Input should be a valid string [type=string_type, input_value=['doc-000', 'doc-001', 'd...', 'doc-010', 'doc-011'], input_type=list]
+E           For further information visit https://errors.pydantic.dev/2.13/v/string_type
+E       1
+E         Input should be a valid string [type=string_type, input_value=['doc-000', 'doc-001', 'd...', 'doc-010', 'doc-011'], input_type=list]
+E           For further information visit https://errors.pydantic.dev/2.13/v/string_type
+
+.venv/lib/python3.13/site-packages/pydantic/type_adapter.py:441: ValidationError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 23:15:42 [info     ] signal.resolved                hold_id=01a11a27-3f81-77e1-941a-9217ef0f2704 run_id=01a11a27-3e82-7ca1-8f31-591c0bcf6a41 signal=ReviewDecision
+2026-10-07 23:15:42 [debug    ] loop.wake                      loop=review remaining_ms=3599918
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+1 failed, 15 passed in 8.99s

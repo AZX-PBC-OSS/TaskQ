@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, WorkflowApp, build, loop, step
 
 
 class Ingest(BaseModel):
@@ -229,3 +229,100 @@ def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None
     joined = "\n".join(lines)
     assert "waiting for the editor" in joined
     assert "deadline soon" in joined
+
+
+# ── the split's modules' remaining branches (my surfaces' homes) ─────────
+
+
+def test_the_version_module_is_importable() -> None:
+    """The version module (the version constants' home): the import is
+    the pin (the module rides the package's metadata surface)."""
+    from taskq.workflows import _version
+
+    assert hasattr(_version, "__doc__")
+
+
+def test_capture_the_halving_loop_floors_at_one_char() -> None:
+    """The truncation's floor branch: a cap so small even ONE character
+    overflows — the loop bottoms at chars==1 and returns (the cut
+    recorded), never an infinite loop."""
+    from taskq.workflows._capture import build_capture, utf8_byte_len
+
+    capture = build_capture(
+        policy="errors-only",
+        node_input="冰" * 50,
+        error="e" * 10,
+        max_bytes=8,
+        redact=lambda text: text,
+    )
+    assert capture is not None
+    for key in ("input", "error"):
+        if key in capture:
+            assert utf8_byte_len(str(capture[key])) <= max(8, 4), key
+
+
+def test_capture_the_marker_survives_the_truncation() -> None:
+    """The truncation marker (the dropped-char count) rides the row
+    when the cut happened — the record never lies silently."""
+    from taskq.workflows._capture import TRUNCATED_MARKER, build_capture
+
+    capture = build_capture(
+        policy="errors-only",
+        node_input="x" * 2000,
+        error="the error text",
+        max_bytes=64,
+        redact=lambda text: text,
+    )
+    assert capture is not None
+    assert TRUNCATED_MARKER in capture, "the truncation was silent (the record lies)"
+
+
+async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
+    wf_pool: Any, wf_schema: str
+) -> None:
+    """The runtime fields' CONSTRUCTION paths: the step ctx (the queue +
+    the claim ts + the flow name) and the loop ctx (the budget's
+    remaining read — the first-claim arm's own value)."""
+    from taskq.workflows import Done
+
+    seen: dict[str, Any] = {}
+
+    app = WorkflowApp()
+
+    async def step_body(ctx: Any, params: Ingest) -> list[str]:
+        seen["step_ctx"] = (ctx.flow_name, ctx.queue, ctx.claimed_at is not None)
+        return ["a", "b"]
+
+    async def loop_body(ctx: Any, carry: int) -> Done[str]:
+        seen["loop_ctx"] = (ctx.flow_name, ctx.budget_remaining_ms)
+        return Done("x")
+
+    @app.workflow("ctx_runtime_fields")
+    def ctx_runtime_fields() -> object:
+        first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
+        the_loop = loop("the_loop", loop_body, carry=0, budget_s=1800.0)
+        return build(the_loop, first)
+
+    runner = FlowRunner(app.get("ctx_runtime_fields"), wf_pool, wf_schema)
+    flow_id = await runner.create_flow()
+    await runner.drive(flow_id)
+    assert seen["step_ctx"] == ("ctx_runtime_fields", "q1", True), seen
+    assert seen["loop_ctx"] == ("ctx_runtime_fields", 1_800_000), seen
+
+
+def test_cli_the_gate_models_the_empty_gates_path() -> None:
+    """gate_models_for on a node with NO declared gates → the empty
+    tuple (the typed door's 422 names it)."""
+    from taskq.workflows import WorkflowApp, build, step
+    from taskq.workflows._cli import gate_models_for
+
+    app = WorkflowApp()
+
+    async def body(ctx: Any, params: Ingest) -> str:
+        return "ok"
+
+    @app.workflow("gate_empty")
+    def gate_empty() -> object:
+        return build(step(body, Ingest(doc_id="d"), key="solo"))
+
+    assert gate_models_for(app, "gate_empty", "solo") == ()

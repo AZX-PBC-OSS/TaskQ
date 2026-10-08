@@ -1,0 +1,87 @@
+........................................................................ [ 41%]
+...........................................F............................ [ 82%]
+..............................                                           [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fa0589325c0>
+wf_schema = 'tq_9dae54cc38'
+wf_conn = <asyncpg.connection.Connection object at 0x7fa05af3dd60>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return "a|b|c"
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            if ctx.node_key != "asserting.item":
+                SEEN.setdefault("child_keys", []).append(ctx.node_key)
+                SEEN["child_failed"] = ctx.node_key
+            else:
+                SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(step(lambda ctx, items: len(items), mapped, key="tail"))
+    
+>       runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_context_contract.py:78: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:134: in __init__
+    validate_compiled(compiled)  # a graph with errors does not run
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='context_contract', nodes={'asserting': NodeDecl(key='asserting', actor='wf', queue='contract-q'...470>, input_type=None, chains=(), smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E4-unannotated-step: node 'tail''s body ('<lambda>') has no return annotation — @wf.actor requires one: it IS the wiring (the promise's data type comes from it)
+
+src/taskq/workflows/api/_validate.py:87: WorkflowValidationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+1 failed, 173 passed in 63.25s (0:01:03)
