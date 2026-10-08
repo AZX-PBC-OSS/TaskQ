@@ -299,6 +299,17 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         "jobs_wf_join_wait_idx",
         "jobs_wf_join_fire_probe_idx",
         "jobs_wf_children_idx",
+        # 01.00.25_02 (pre): the flow-link index REBUILT on the read shape —
+        # the expression carries the same uuid cast every flow-scoped read
+        # carries, and the partial names the index's true population
+        # (workflow rows only: metadata ? 'flow_id'). Measured at the 220k-row
+        # fleet (40 runs x 500 nodes, VACUUMed): the grouped rollup read one
+        # 500-node run in 21.2 ms on 01.00.25_01's raw-text shape (linear in
+        # the fleet table), 0.12 ms on this one — O(the run's node count).
+        # The pin's update IS the commit that changed the index estate;
+        # the lock-scope discipline itself stays proven below (the dead
+        # probe index absent, the marker predicates named, both paths).
+        "jobs_wf_flow_nodes_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
