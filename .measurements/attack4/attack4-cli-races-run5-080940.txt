@@ -1,0 +1,207 @@
+.F.FF.                                                                   [100%]
+=================================== FAILURES ===================================
+_________ test_the_resolve_racing_the_cancel_one_outcome_honest_codes __________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fef5510abc0>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """A resolve and a cancel land CONCURRENTLY on one held run (two real
+        CLI processes): each exits with an honest code, the run ends in ONE
+        named terminal, and the audit rows tell the same story the outputs
+        did — no silent loser."""
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        run_id = await _held_run(module_pg_pool, module_pg_schema)
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+    
+        app_ref = f"{MODULE_NAME}:app"
+        resolve_proc = subprocess.Popen(
+            [sys.executable, "-m", "taskq", "flows", "resolve", hold.hold_id,
+             '{"verdict": "approve", "note": ""}', "--app", app_ref],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+                 "TASKQ_SCHEMA_NAME": schema},
+        )
+        cancel_proc = subprocess.Popen(
+            [sys.executable, "-m", "taskq", "flows", "cancel", run_id, "--reason", "the race"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+                 "TASKQ_SCHEMA_NAME": schema},
+        )
+        r_out, r_err = resolve_proc.communicate(timeout=60)
+        c_out, c_err = cancel_proc.communicate(timeout=60)
+    
+        # NEITHER process crashed with a traceback — whatever the overlap,
+        # the verbs answer in their own voices.
+        assert "Traceback" not in r_err, f"the resolve crashed: {r_err}"
+        assert "Traceback" not in c_err, f"the cancel crashed: {c_err}"
+        # The outcomes agree with the ROWS: the hold is delivered-or-cancelled,
+        # never both, and the run is terminal.
+        row = await module_pg_pool.fetchrow(
+            f'SELECT status, resolved_at FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        )
+        assert row is not None
+        assert row["status"] in ("delivered", "cancelled"), f"a zombie hold: {row['status']}"
+        root = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+        )
+        assert root in ("succeeded", "failed", "cancelled"), f"the run is not terminal: {root}"
+        # THE HONESTY: if the hold was delivered, the resolve said so (exit 0);
+        # if it was cancelled first, the resolve's output says refused/no-op —
+        # never a delivered-sounding line over a cancelled row.
+        if row["status"] == "cancelled":
+            assert "delivered" not in r_out.lower(), (
+                f"the resolve CLAIMED delivery over a cancelled hold: {r_out!r}"
+            )
+        # The audit rows tell the same story (at least one of the two actions
+        # landed; the winner's row exists).
+        actions = {
+>           r["action"] for r in await module_pg_pool.fetch(
+                f"SELECT action FROM \"{schema}\".admin_audit "
+                "WHERE target_id = ANY($1::text[]) OR detail->>'run_id' = $2",
+                [str(hold.hold_id), run_id],
+            )
+        }
+
+tests/attack4-cli-races.py:227: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/pool.py:629: in fetch
+    return await con.fetch(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncpg/protocol/protocol.pyx:184: in bind_execute
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions._base.InterfaceError: the server expects 2 arguments for this query, 1 was passed
+E   HINT:  Check the query against the passed list of arguments.
+
+asyncpg/protocol/prepared_stmt.pyx:149: InterfaceError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 01:09:41 [info     ] node.held                      hold_id=01a11a8f-9c54-76a3-952f-6a0a09bbc8c7 node=review run_id=01a11a8f-9c31-7e31-b930-15f36ecfa54a signals=['Approval']
+________________ test_the_why_stuck_arm_names_the_TRUE_blocker _________________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fef5510abc0>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_why_stuck_arm_names_the_TRUE_blocker(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """A deliberately stuck run: 'doomed' fails permanently; 'downstream'
+        is BLOCKED by it. ``flows status`` must name the FAILED row as the
+        thing to retry (with its remedy) and the blocked row as the
+        consequence — the operator's next action is the answer, not a
+        symptom hunt."""
+        schema = module_pg_schema.schema_name
+        compiled = sys.modules[MODULE_NAME].app.get("attack4_stuck_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        # A BOUNDED drive: the run's root does not flip while the blocked
+        # closure stands (the derivation says 'blocked', not terminal) — an
+        # unbounded drive would spend its max_ticks sleeping. The rows are
+        # what the why-stuck arm reads; 10 ticks seed them.
+        await runner.drive(flow_id, max_ticks=10)
+    
+        proc = _cli(module_pg_schema, "status", str(flow_id), demo_env=demo_env)
+        out, err, code = proc.stdout, proc.stderr, proc.returncode
+        assert code == 0, f"the status of a stuck run is not an error: {code} {err}"
+        # THE TRUE BLOCKER: the FAILED row named with its class + remedy.
+        assert "doomed: FAILED" in out, f"the failed row is not named: {out!r}"
+        assert "the upstream blew up" in out, "the error message did not ride the why-stuck line"
+        assert "taskq flows retry" in out, "the remedy is missing"
+        # THE CONSEQUENCE: the blocked closure is visible, not silent.
+>       assert "downstream: BLOCKED" in out, f"the blocked row is not named: {out!r}"
+E       AssertionError: the blocked row is not named: "run 01a11a8f-ac6d-79f0-b1f6-bf5017c88c46\nworkflow: attack4_stuck_flow\nstatus: failed  (derived from the node rows — §17.5; the root row caches 'running')\nnodes: 2 — 1 failed, 1 pending (source: jobs rows by metadata.flow_id)\n  doomed: FAILED — RuntimeError: the upstream blew up · ladder headroom 3 attempt(s) left (source: the jobs row's error columns + attempt counters)\n       remedy: taskq flows retry 01a11a8f-ac6d-79f0-b1f6-bf5017c88c46 doomed  (re-pends the node and re-opens its blocked closure)\n  downstream: JOIN-WAIT — waiting on 1 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)\n       remedy: none — the join fires when its parents finalize\n"
+E       assert 'downstream: BLOCKED' in "run 01a11a8f-ac6d-79f0-b1f6-bf5017c88c46\nworkflow: attack4_stuck_flow\nstatus: failed  (derived from the node rows —...: the row's deps_pending counter, jobs.deps_pending)\n       remedy: none — the join fires when its parents finalize\n"
+
+tests/attack4-cli-races.py:309: AssertionError
+________ test_the_torn_cancel_the_signal_leg_rides_a_second_connection _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fef5510abc0>
+demo_env = <module 'attack4_cli_demo_flows'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fef4f392490>
+
+    async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any, monkeypatch: Any
+    ) -> None:
+        """THE STRUCTURAL PROBE: ``cancel_workflow_run`` opens ONE
+        transaction, but its held-signal leg (``cancel_run_signals``) runs on
+        a SECOND pool connection OUTSIDE that transaction. If the outer tx
+        rolls back after the signal leg ran, the signals stay 'cancelled'
+        while the run is NOT cancelled — the torn cancel. This probe forces
+        the rollback (the audit write raises) and asserts the damage is
+        VISIBLE (a red here is the finding; the fixer owns the cure)."""
+        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows.api._runner_exit import cancel_workflow_run
+    
+        schema = module_pg_schema.schema_name
+        run_id = await _held_run(module_pg_pool, module_pg_schema)
+        hc = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await hc.list(run_id)
+        assert await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        ) == "held"
+    
+        # Force the OUTER tx to fail after the signal leg ran: the audit
+        # writer raises (the admin_audit write is the last statement before
+        # the tx's end). The exit arms import the writer lazily from the
+        # audit module — the patch target is the SOURCE module.
+        import taskq.web.admin._audit as audit_mod
+    
+        real_record = audit_mod.record_admin_action
+    
+        async def exploding_record(*a: Any, **k: Any) -> None:
+            raise RuntimeError("the audit write fails — the tx rolls back")
+    
+        monkeypatch.setattr(audit_mod, "record_admin_action", exploding_record)
+        try:
+            with pytest.raises(RuntimeError):
+                await cancel_workflow_run(
+                    module_pg_pool, schema=schema, flow_id=JobId(run_id)
+                )
+        finally:
+            monkeypatch.setattr(audit_mod, "record_admin_action", real_record)
+    
+        # THE TORN STATE: what did the rows land in?
+        root = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+        )
+        signal = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        )
+        # THE INVARIANT (the atomic cancel's contract): the run flip and the
+        # signal leg land TOGETHER or NOT AT ALL. The second connection breaks
+        # it: expect the signal 'cancelled' while the root is NOT cancelled.
+        if signal == "cancelled" and root != "cancelled":
+>           pytest.fail(
+                "THE TORN CANCEL, OBSERVED: the signal leg ran on its own "
+                f"connection and SURVIVED the outer rollback (signal={signal!r}, "
+                f"root={root!r}) — a held operator's decision is gone on a run "
+                "that never cancelled"
+            )
+E           Failed: THE TORN CANCEL, OBSERVED: the signal leg ran on its own connection and SURVIVED the outer rollback (signal='cancelled', root='running') — a held operator's decision is gone on a run that never cancelled
+
+tests/attack4-cli-races.py:446: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 01:09:46 [info     ] node.held                      hold_id=01a11a8f-af75-74a1-b0e3-0de2ad78737b node=review run_id=01a11a8f-af51-7b41-b573-28b89bd45880 signals=['Approval']
+=========================== short test summary info ============================
+FAILED tests/attack4-cli-races.py::test_the_resolve_racing_the_cancel_one_outcome_honest_codes
+FAILED tests/attack4-cli-races.py::test_the_why_stuck_arm_names_the_TRUE_blocker
+FAILED tests/attack4-cli-races.py::test_the_torn_cancel_the_signal_leg_rides_a_second_connection
+3 failed, 3 passed in 8.82s

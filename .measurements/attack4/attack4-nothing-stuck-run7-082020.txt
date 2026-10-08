@@ -1,0 +1,123 @@
+...F                                                                     [100%]
+=================================== FAILURES ===================================
+___________ test_the_lost_job_probe_with_the_db_restarted_mid_round ____________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_29d10bad32', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_29d10bad3295')
+
+    @pytest.mark.timeout(600)
+    @pytest.mark.skipif(
+        not os.environ.get("ATTACK4_PG_DATA"),
+        reason="needs a restartable cluster (ATTACK4_PG_DATA + the port; the "
+        "capture ran with the attacker's own PG on :5711)",
+    )
+    async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """THE RESTART ROUNDS: five rounds; each seeds a 2-node run, drives
+        one tick (the parent mid-flight), RESTARTS the database, reconnects,
+        and drives to terminal. Every node lands terminal with its ledger
+        row — a job lost across the restart is the defect; the claim's lease
+        + the crash-window heal own the recovery."""
+        import subprocess as sp
+    
+        pg_data = os.environ["ATTACK4_PG_DATA"]
+        pg_port = os.environ.get("ATTACK4_PG_PORT", "5711")
+    
+        # The cluster's own conf carries the port + the socket dir (so a
+        # plain pg_ctl restart re-binds the same way the capture's boot did).
+        conf = os.path.join(pg_data, "postgresql.conf")
+        with open(conf) as f:
+            existing = "\n".join(
+                line for line in f.read().splitlines() if not line.lstrip().startswith("#")
+            )
+        needed = [
+            f"port = {pg_port}",
+            f"unix_socket_directories = '{os.path.dirname(pg_data.rstrip('/'))}'",
+            "listen_addresses = '127.0.0.1'",
+        ]
+        add = [line for line in needed if line.split(" = ")[0] + " = " not in existing]
+        if add:
+            with open(conf, "a") as f:
+                f.write("\n# attack4's restart-round pins\n" + "\n".join(add) + "\n")
+    
+        def restart_pg() -> None:
+            """The crash world: `-m immediate` (no graceful drain — the
+            postmaster is killed, every backend dies mid-write), then the
+            start (the WAL recovery), with a bounded retry (a stale socket
+            lock from the kill can cost one beat)."""
+            r = sp.run(["pg_ctl", "-D", pg_data, "stop", "-m", "immediate"],
+                       capture_output=True, text=True, timeout=120)
+            assert r.returncode == 0, f"the kill failed: {r.stderr}"
+            for attempt in range(3):
+                r = sp.run(["pg_ctl", "-D", pg_data, "start", "-w"],
+                           capture_output=True, text=True, timeout=300)
+                if r.returncode == 0:
+                    return
+                import time as _t
+                _t.sleep(1.0 * (attempt + 1))
+            raise AssertionError(f"the restart failed after 3 attempts: {r.stderr}")
+    
+        dsn = module_pg_schema.pg_dsn
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+    
+        async def _parent(ctx: Any, params: Ingest) -> str:
+            return "up"
+    
+        async def _child(ctx: Any, up: str) -> str:
+            return up + "!"
+    
+        @app.workflow("attack4_restart_round")
+        def restart_round() -> object:
+            return build(step(_child, step(_parent, Ingest(doc_id="d1"), key="up"), key="down"))
+    
+        compiled = app.get("attack4_restart_round")
+        for round_no in range(3):
+            pool = await asyncpg.create_pool(dsn, min_size=1)
+            runner = FlowRunner(compiled, pool, schema)
+            flow_id = await runner.create_flow()
+            await runner.tick(flow_id)  # the parent claims + finalizes mid-round
+            mid = await pool.fetchval(
+                f'SELECT status FROM "{schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'up'",
+                flow_id,
+            )
+            await pool.close()
+            # THE RESTART (mid-round — the child has never run).
+>           restart_pg()
+
+tests/attack4-nothing-stuck-probes.py:316: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/attack4-nothing-stuck-probes.py:281: in restart_pg
+    r = sp.run(["pg_ctl", "-D", pg_data, "start", "-w"],
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:556: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:1222: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:2155: in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: 0 args: ['pg_ctl', '-D', '/home/rich/.attack4-pg/data', ...>
+endtime = 1864038.394203706, orig_timeout = 300
+stdout_seq = [b'waiting for server to start....', b'2026-10-08 01:20:22.709 PDT [2649892] LOG:  starting PostgreSQL 18.6 on x86_64-...08 01:20:22.782 PDT [2649904] LOG:  database system was not properly shut down; automatic recovery in progress\n', ...]
+stderr_seq = [b''], skip_check_and_raise = False
+
+    def _check_timeout(self, endtime, orig_timeout, stdout_seq, stderr_seq,
+                       skip_check_and_raise=False):
+        """Convenience for checking if a timeout has expired."""
+        if endtime is None:
+            return
+        if skip_check_and_raise or _time() > endtime:
+>           raise TimeoutExpired(
+                    self.args, orig_timeout,
+                    output=b''.join(stdout_seq) if stdout_seq else None,
+                    stderr=b''.join(stderr_seq) if stderr_seq else None)
+E           subprocess.TimeoutExpired: Command '['pg_ctl', '-D', '/home/rich/.attack4-pg/data', 'start', '-w']' timed out after 300 seconds
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:1269: TimeoutExpired
+=========================== short test summary info ============================
+FAILED tests/attack4-nothing-stuck-probes.py::test_the_lost_job_probe_with_the_db_restarted_mid_round
+1 failed, 3 passed in 301.62s (0:05:01)

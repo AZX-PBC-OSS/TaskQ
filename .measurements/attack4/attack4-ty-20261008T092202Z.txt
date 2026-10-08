@@ -1,0 +1,46 @@
+error[unknown-argument]: Argument `nonexistant_field` does not match any known parameter
+  --> attack4_new_surfaces_negative_types.py:36:9
+   |
+36 |         nonexistant_field=1,
+   |         ^^^^^^^^^^^^^^^^^^^
+
+error[invalid-argument-type]: Argument to function `format_flow_status` is incorrect
+  --> attack4_new_surfaces_negative_types.py:46:9
+   |
+46 |         cancel_in_flight="yes-not-a-bool",
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Expected `bool`, found `Literal["yes-not-a-bool"]`
+info: Function defined here
+   --> /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_cli.py:163:5
+    |
+163 | def format_flow_status(
+    |     ^^^^^^^^^^^^^^^^^^
+    |
+   ::: /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_cli.py:169:5
+    |
+169 |     cancel_in_flight: bool = False,
+    |     ------------------------------ Parameter declared here
+
+error[invalid-argument-type]: Argument to function `format_flow_list` is incorrect
+  --> attack4_new_surfaces_negative_types.py:51:22
+   |
+51 |     format_flow_list([None])  # MUST_ERROR(reportArgumentType, invalid-argument-type)
+   |                      ^^^^^^ Expected `Sequence[FlowListRow]`, found `list[None]`
+info: Function defined here
+   --> /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_cli.py:237:5
+    |
+237 | def format_flow_list(rows: Sequence[FlowListRow]) -> list[str]:
+    |     ^^^^^^^^^^^^^^^^ --------------------------- Parameter declared here
+
+error[invalid-argument-type]: Method `__getitem__` of type `bound method dict[str, object].__getitem__(key: str, /) -> object` cannot be called with key of type `Literal[0]` on object of type `dict[str, object]`
+  --> attack4_new_surfaces_negative_types.py:57:13
+   |
+57 |     first = parsed[0]  # MUST_ERROR(reportIndexIssue, unsupported-operator, invalid-assignment-target)
+   |             ^^^^^^
+
+error[unknown-argument]: Argument `nonexistent_kwarg` does not match any known parameter
+  --> attack4_new_surfaces_negative_types.py:67:9
+   |
+67 |         nonexistent_kwarg=True,
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+
+Found 5 diagnostics

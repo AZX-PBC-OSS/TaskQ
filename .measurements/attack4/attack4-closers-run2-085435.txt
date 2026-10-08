@@ -1,0 +1,166 @@
+...F.....F..E....                                                        [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_the_deliver_cas_the_noop_and_the_resume_refused_arms __
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdfb5b404c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    @pytest.fixture
+    async def held_app(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> Any:
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the closers' hold")
+            return "done"
+    
+        @app.workflow("attack4_closer_hold")
+        def closer_hold() -> object:
+            return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+>       runner = FlowRunner(app.get("attack4_closer_hold"), module_pg_pool, schema := module_pg_schema.schema_name)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-coverage-closers.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:341: in get
+    _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+src/taskq/workflows/api/_app.py:438: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7fdfb5f28830>
+definition = WorkflowDef(name='attack4_closer_hold', bodies={'review': <function held_app.<locals>.holds at 0x7fdfb4ad6660>}, actor...t', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None, loop_policies={}, aggregates={})
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'attack4_closer_hold' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:105: DuplicateWorkflowError
+=================================== FAILURES ===================================
+________ test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt ________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdfb5b404c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fdfb4baf200>
+
+    async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
+    ) -> None:
+        """The FENCED-OUT finalize: a stale claim's finalize writes the
+        ledger's fence row (by the ledger id when the attempt carries one, by
+        the attempt key when it does not) and tx2 never runs — the row's
+        state never moves."""
+        from taskq.workflows._sql import WorkflowSql
+        from taskq.workflows.engine import finalize_node
+        from tests._wf_fixtures import seed_flow, seed_running_node
+    
+        schema = module_pg_schema.schema_name
+        wsql = WorkflowSql.build(schema)
+        flow_id = await seed_flow(clean_pg_conn, schema)
+        node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced")
+    
+        # THE FENCE: a WRONG worker presents the finalize.
+        from tests._wf_fixtures import claim_view
+    
+        worker, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+        # The LEDGER row the claim arbiter would have written at claim (the
+        # fence write targets it by (flow, step, attempt, map_index)).
+        await clean_pg_conn.execute(
+            f'INSERT INTO "{schema}".wf_step_ledger '
+            "(id, flow_id, job_id, step_key, attempt, status) "
+            "VALUES ($1, $2, $3, 'fenced', $4, 'claimed')",
+            uuid.uuid4(), flow_id, node_id, attempt,
+        )
+        wrong_worker = type(worker)("018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4a")
+        res = await finalize_node(
+            module_pg_pool, wsql, flow_id=flow_id, job_id=node_id, step_key="fenced",
+            worker_id=wrong_worker, attempt=attempt, claim_epoch=epoch,
+            outcome="succeeded", result={"n": 1},
+        )
+        assert res.applied is False, "a wrong worker's finalize must be fenced out"
+        state = await clean_pg_conn.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', node_id
+        )
+        assert state == "running", "the fenced finalize moved the row"
+        fence = await clean_pg_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".wf_step_ledger '
+            "WHERE job_id = $1 AND status = 'fenced'",
+            node_id,
+        )
+>       assert fence >= 1, "the fenced finalize wrote no ledger fence row"
+E       AssertionError: the fenced finalize wrote no ledger fence row
+E       assert 0 >= 1
+
+tests/attack4-coverage-closers.py:586: AssertionError
+__________ test_signal_reads_a_delivered_payload_and_refuses_the_rest __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdfb5b404c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """``ctx.signal(name)``: the DELIVERED payload rides the row; a
+        non-delivered (or absent) signal is the named SignalUnavailableError
+        with the row's actual status."""
+        from taskq.workflows.api._ctx_wait import SignalUnavailableError
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds_and_reads(ctx: Any, params: Ingest) -> dict[str, Any]:
+            decision = await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            after = await ctx.signal("Approval")
+            return {"via_wait": getattr(decision, "verdict", None), "via_signal": after}
+    
+        async def _wait(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            return str(await ctx.signal("Approval"))
+    
+        @app.workflow("attack4_signal_reader")
+        def signal_reader() -> object:
+            return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+        runner = FlowRunner(app.get("attack4_signal_reader"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(str(flow_id))
+        await client.resolve(hold.hold_id, {"verdict": "approve", "note": "shipped"})
+        await runner.drive(flow_id)
+        result = await runner.result(flow_id)
+>       assert result == "{'verdict': 'approve', 'note': 'shipped'}" or result == {
+            "verdict": "approve", "note": "shipped",
+        }, f"the delivered payload did not ride the row: {result!r}"
+E       AssertionError: the delivered payload did not ride the row: "{'note': 'shipped', 'verdict': 'approve'}"
+E       assert ("{'note': 'sh...': 'approve'}" == "{'verdict': ...': 'shipped'}"
+E         
+E         - {'verdict': 'approve', 'note': 'shipped'}
+E         + {'note': 'shipped', 'verdict': 'approve'} or "{'note': 'shipped', 'verdict': 'approve'}" == {'verdict': 'approve', 'note': 'shipped'})
+
+tests/attack4-coverage-closers.py:521: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 01:54:36 [info     ] node.held                      hold_id=01a11ab8-bc09-79b2-b568-5fc4862ce883 node=review run_id=01a11ab8-bbf3-7ba0-b5f1-896eda4de99b signals=['Approval']
+2026-10-08 01:54:36 [info     ] signal.resolved                hold_id=01a11ab8-bc09-79b2-b568-5fc4862ce883 run_id=01a11ab8-bbf3-7ba0-b5f1-896eda4de99b signal=Approval
+=========================== short test summary info ============================
+ERROR tests/attack4-coverage-closers.py::test_the_deliver_cas_the_noop_and_the_resume_refused_arms
+FAILED tests/attack4-coverage-closers.py::test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt
+FAILED tests/attack4-coverage-closers.py::test_signal_reads_a_delivered_payload_and_refuses_the_rest
+2 failed, 14 passed, 1 error in 1.46s

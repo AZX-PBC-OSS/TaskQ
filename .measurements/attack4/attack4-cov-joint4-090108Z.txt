@@ -1,0 +1,465 @@
+......................................F......................sF......... [ 23%]
+...........s............................................................ [ 46%]
+........................................................................ [ 69%]
+.................................................FFFF.x................. [ 92%]
+.........................                                                [100%]
+=================================== FAILURES ===================================
+__________ test_the_pages_degrade_when_the_workflow_tables_are_absent __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab01c4f40>
+module_pg_schema = ModulePgSchema(schema_name='tq_ebdfbd00b3', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_ebdfbd00b396')
+
+    async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
+        module_pg_pool: Any, module_pg_schema: Any
+    ) -> None:
+        """THE UNINSTALLED DEGRADE: a schema with ONLY the vanilla tables (a
+        pre-workflow migration state) renders the NOTICE (both pages), never
+        a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
+        per module — the drop here would break the family; the fresh schema
+        applies the migrations then drops the workflow series' two tables."""
+        import httpx as _httpx
+    
+        schema = module_pg_schema.schema_name + "_nowf"
+>       conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:599: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py:1054: in _connect_addr
+    return await __connect_addr(params, True, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password=None, database='taskq', ssl=<ssl.SSLContext object at 0x7f9ab0234cd0>, ...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = True, addr = ('127.0.0.1', 5711)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=100, max_cached_statement_lifetime=300, max_cacheable_statement_size=15360)
+connection_class = <class 'asyncpg.connection.Connection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=None, database='taskq', ssl=<ssl.SSLContext object at 0x7f9ab0234cd0>, ...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidCatalogNameError: database "taskq" does not exist
+
+.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py:1102: InvalidCatalogNameError
+___________ test_a_hold_without_payload_schema_meets_the_typed_door ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab1aeed40>
+module_pg_schema = ModulePgSchema(schema_name='tq_29d10bad32', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_29d10bad3295')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f9ab4c2d8b0>
+
+    async def test_a_hold_without_payload_schema_meets_the_typed_door(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
+    ) -> None:
+        """THE UPGRADE WORLD, COLD PROCESS: a hold row written WITHOUT a
+        payload_schema (a row from before the typed door, or a hand-migrated
+        one) meets a resolve from a process that NEVER RAN THE WAIT SITE
+        (the real cold process — a subprocess; this process ran the drive,
+        so its model catalog cannot witness this probe). The cold fallback's
+        ``no declared models on the row`` arm must not fit ANYTHING."""
+        import subprocess as sp
+        import sys
+        import textwrap
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the cold gate")
+            return "done"
+    
+        @app.workflow("attack4_cold_gate")
+        def cold_gate() -> object:
+            return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+        runner = FlowRunner(app.get("attack4_cold_gate"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+    
+        # THE REGISTRATION IS GONE: the row's payload_schema erased — the
+        # ROW is the cold process's only witness, and it now witnesses
+        # NOTHING.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".wf_signals SET payload_schema = NULL '
+            "WHERE workflow_id = $1 AND status = 'held'",
+            flow_id,
+        )
+        # THE COLD RESOLVER: a fresh process, the garbage payload, the raw
+        # HitlClient (no mounted definitions to lean on).
+        probe = textwrap.dedent(f"""
+            import asyncio, json, sys
+            import asyncpg
+            from taskq.workflows.api._hitl import HitlClient
+    
+            async def main() -> None:
+                pool = await asyncpg.create_pool({module_pg_schema.pg_dsn!r})
+                client = HitlClient(pool, schema={schema!r})
+                (hold,) = await client.list({str(flow_id)!r})
+                result = await client.resolve(
+                    hold.hold_id,
+                    {{"totally": "undeclared", "verdict": {{"nested": True}}}},
+                )
+                print("RESULT:", result.status, "|", result.reason)
+                await pool.close()
+    
+            asyncio.run(main())
+        """)
+        proc = sp.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
+        print(f"\n[attack4 cold-gate] rc={proc.returncode} out={proc.stdout.strip()!r}")
+        if "RESULT: delivered" in proc.stdout:
+>           pytest.fail(
+                "THE UNTYPED DOOR'S HOLE, OBSERVED (cold process): a hold with NO "
+                f"payload_schema accepted a payload nothing declared — {proc.stdout.strip()!r} "
+                "(the cold fallback's 'legacy hold' arm fits anything)"
+            )
+E           Failed: THE UNTYPED DOOR'S HOLE, OBSERVED (cold process): a hold with NO payload_schema accepted a payload nothing declared — 'RESULT: delivered | None' (the cold fallback's 'legacy hold' arm fits anything)
+
+tests/attack4-nothing-stuck-probes.py:237: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 02:01:26 [info     ] node.held                      hold_id=01a11abe-fb97-7b73-a89d-ea1f67167799 node=review run_id=01a11abe-fb7f-7bd3-86de-e26b35cb7f48 signals=['Approval']
+
+[attack4 cold-gate] rc=0 out='RESULT: delivered | None'
+_________ test_the_resolve_racing_the_cancel_one_outcome_honest_codes __________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab170f580>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """A resolve and a cancel land CONCURRENTLY on one held run (two real
+        CLI processes): each exits with an honest code, the run ends in ONE
+        named terminal, and the audit rows tell the same story the outputs
+        did — no silent loser."""
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+>       run_id = await _held_run(module_pg_pool, module_pg_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-cli-races.py:181: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/attack4-cli-races.py:161: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get("attack4_hold_flow")  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:341: in get
+    _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+src/taskq/workflows/api/_app.py:438: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f9ab32b8980>
+definition = WorkflowDef(name='attack4_hold_flow', bodies={'review': <function _module.<locals>._wait at 0x7f9ab43580e0>}, actor='w...t', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None, loop_policies={}, aggregates={})
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'attack4_hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:105: DuplicateWorkflowError
+_________ test_the_cancel_of_an_already_terminal_run_is_the_named_noop _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab170f580>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_cancel_of_an_already_terminal_run_is_the_named_noop(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """The cancel against a TERMINAL run: exit 0 with the no-op line (an
+        honest 'nothing cancelled'), the audit trail untouched by the
+        no-op."""
+        schema = module_pg_schema.schema_name
+>       compiled = sys.modules[MODULE_NAME].app.get("attack4_hold_flow")  # type: ignore[attr-defined]
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-cli-races.py:402: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:341: in get
+    _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+src/taskq/workflows/api/_app.py:438: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f9ab32b8980>
+definition = WorkflowDef(name='attack4_hold_flow', bodies={'review': <function _module.<locals>._wait at 0x7f9ab43580e0>}, actor='w...t', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None, loop_policies={}, aggregates={})
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'attack4_hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:105: DuplicateWorkflowError
+_____ test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab170f580>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """The typed door's refusal: a WRONG-SHAPED payload → the NAMED
+        pydantic error (the model's own fields named, not a bare 'error'),
+        exit 1, and the hold SURVIVES (the reply handle still lists)."""
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+>       run_id = await _held_run(module_pg_pool, module_pg_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-cli-races.py:258: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/attack4-cli-races.py:161: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get("attack4_hold_flow")  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:341: in get
+    _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+src/taskq/workflows/api/_app.py:438: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f9ab32b8980>
+definition = WorkflowDef(name='attack4_hold_flow', bodies={'review': <function _module.<locals>._wait at 0x7f9ab43580e0>}, actor='w...t', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None, loop_policies={}, aggregates={})
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'attack4_hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:105: DuplicateWorkflowError
+________ test_the_torn_cancel_the_signal_leg_rides_a_second_connection _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f9ab170f580>
+demo_env = <module 'attack4_cli_demo_flows'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9ab292e740>
+
+    async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any, monkeypatch: Any
+    ) -> None:
+        """THE STRUCTURAL PROBE: ``cancel_workflow_run`` opens ONE
+        transaction, but its held-signal leg (``cancel_run_signals``) runs on
+        a SECOND pool connection OUTSIDE that transaction. If the outer tx
+        rolls back after the signal leg ran, the signals stay 'cancelled'
+        while the run is NOT cancelled — the torn cancel. This probe forces
+        the rollback (the audit write raises) and asserts the damage is
+        VISIBLE (a red here is the finding; the fixer owns the cure)."""
+        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows.api._runner_exit import cancel_workflow_run
+    
+        schema = module_pg_schema.schema_name
+>       run_id = await _held_run(module_pg_pool, module_pg_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-cli-races.py:441: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/attack4-cli-races.py:161: in _held_run
+    compiled = sys.modules[MODULE_NAME].app.get("attack4_hold_flow")  # type: ignore[attr-defined]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:341: in get
+    _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+src/taskq/workflows/api/_app.py:438: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f9ab32b8980>
+definition = WorkflowDef(name='attack4_hold_flow', bodies={'review': <function _module.<locals>._wait at 0x7f9ab43580e0>}, actor='w...t', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None, loop_policies={}, aggregates={})
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if (
+                existing.bodies == definition.bodies
+                and existing.aggregates == definition.aggregates
+            ):
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'attack4_hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:105: DuplicateWorkflowError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+___________________________________ coverage ___________________________________
+
+Name                                        Stmts   Miss Branch BrPart  Cover   Missing
+---------------------------------------------------------------------------------------
+src/taskq/web/admin/__init__.py                 2      0      0      0   100%
+src/taskq/web/admin/_actor_stats.py            28     15      6      0    38%   135, 154-159, 183-191
+src/taskq/web/admin/_audit.py                  64     18     10      3    69%   133, 153-154, 239-240, 243, 306-320, 359-368
+src/taskq/web/admin/_constants.py              67     46     26      1    24%   70-84, 99-105, 126-137, 154-173, 189
+src/taskq/web/admin/_factory.py               269     78     62     12    65%   54-59, 115-126, 139, 149-166, 171-177, 212-225, 264, 293, 304-305, 318, 348-349, 385, 392, 396, 398, 424, 492, 495-496, 681, 698-704, 707-727, 733-735, 750-763, 780
+src/taskq/web/admin/_jsonb.py                  13     10      6      0    16%   19-28
+src/taskq/web/admin/_listen.py                 62     49     12      0    18%   32-50, 86-94, 122-164
+src/taskq/web/admin/_static.py                 15      8      4      0    37%   15-25
+src/taskq/web/admin/_wf_actions.py            165     39     38      7    72%   126, 166-167, 191->204, 193-203, 220-223, 310, 312, 322, 345-384, 414
+src/taskq/web/admin/_wf_rows.py               109      2     26      3    96%   193->190, 214->219, 248, 300
+src/taskq/web/admin/actors.py                  71     50      8      0    27%   60-99, 104-106, 125-148, 166-211
+src/taskq/web/admin/auth/__init__.py            5      0      0      0   100%
+src/taskq/web/admin/auth/_session.py          105     59     24      0    36%   80, 93-100, 112-114, 185-197, 201-206, 210-243, 252, 264, 274-275, 280-285, 320-329
+src/taskq/web/admin/auth/oidc.py              210    160     42      0    20%   85-87, 92-106, 111-123, 126-132, 135-138, 196-198, 211, 223-241, 247, 253, 257-261, 266-460
+src/taskq/web/admin/auth/saml.py              260    184     62      0    24%   89-100, 117-128, 132, 136-138, 155, 161, 173-184, 188, 213-214, 217-221, 224-225, 228, 231-233, 276-277, 281-283, 286, 289, 345-347, 352, 356-365, 368-369, 372-379, 382, 394-398, 448, 451, 455-458, 470, 475-722
+src/taskq/web/admin/auth/token.py               7      0      0      0   100%
+src/taskq/web/admin/batches.py                 73     47      8      0    32%   83-88, 104-128, 139-192
+src/taskq/web/admin/history.py                121     88     26      0    22%   184-205, 230-233, 253-416, 426-431
+src/taskq/web/admin/insights.py                63     46     16      0    22%   87-90, 100-104, 127-297
+src/taskq/web/admin/jobs.py                   296    237     84      0    16%   219-258, 268, 280-282, 331, 353-412, 432, 455-458, 487-491, 495-503, 514, 518-524, 537-539, 564-597, 636-800, 827-845, 862-956, 970-1033, 1059-1098
+src/taskq/web/admin/ops.py                    388    326    126      0    12%   159, 198-243, 260-286, 298-325, 337-361, 373-442, 456-648, 661-702, 715-896, 910-1047, 1058-1177
+src/taskq/web/admin/queues.py                 117     61     28      1    41%   214, 236-349
+src/taskq/web/admin/sse.py                     96     68     18      0    25%   64-67, 89-236, 260-261, 273-305
+src/taskq/web/admin/workers.py                 71     51     18      0    22%   75-103, 116-145, 155-183
+src/taskq/web/admin/workflows.py               81      8     10      2    89%   92, 101, 126-128, 198-213
+src/taskq/workflows/__init__.py                 6      0      0      0   100%
+src/taskq/workflows/_capture.py                75      6     36      5    88%   82, 91, 153->168, 161->163, 222-228
+src/taskq/workflows/_cli.py                   101      5     30      2    93%   232, 246-252
+src/taskq/workflows/_emit.py                   11      0      0      0   100%
+src/taskq/workflows/_fork.py                   31      1     10      1    95%   105
+src/taskq/workflows/_progress.py              133     12     30      2    91%   158, 337, 355, 371-374, 384-388
+src/taskq/workflows/_progress_read.py         128      4     44      8    93%   159->152, 169->173, 184->183, 259->261, 264->268, 288, 296-297, 354, 368->370
+src/taskq/workflows/_reducers.py               21      0      4      0   100%
+src/taskq/workflows/_sql.py                    76      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py           22      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py              9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py           12      0      0      0   100%
+src/taskq/workflows/_sql_status.py              7      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py               8      0      0      0   100%
+src/taskq/workflows/_status.py                 52      0     16      0   100%
+src/taskq/workflows/_sweep.py                  89      4     20      4    93%   158, 418, 437, 446
+src/taskq/workflows/_types.py                 105      3      6      2    95%   257-258, 310
+src/taskq/workflows/_version.py                10      0      0      0   100%
+src/taskq/workflows/api/__init__.py             4      0      0      0   100%
+src/taskq/workflows/api/_app.py               123      2     36      3    97%   304, 321, 435->434, 437->exit
+src/taskq/workflows/api/_ctx.py                66      4      4      1    93%   143, 161-163
+src/taskq/workflows/api/_ctx_wait.py           76      0     14      1    99%   259->278
+src/taskq/workflows/api/_graph.py             118      6     18      6    91%   273, 287, 495, 535, 544, 587
+src/taskq/workflows/api/_hints.py               4      0      0      0   100%
+src/taskq/workflows/api/_hitl.py              231     16     78     12    89%   130, 162->166, 169, 172, 514-532, 557, 583->596, 636->622, 782->797, 793->797, 801, 826->833
+src/taskq/workflows/api/_loop.py               53      0      8      0   100%
+src/taskq/workflows/api/_mermaid.py            42      1     22      1    97%   76
+src/taskq/workflows/api/_runner.py            276     20     70     12    91%   175, 256, 258->269, 337->350, 351, 393-408, 522, 582-583, 594, 612, 692, 777->exit, 795-798, 901, 922
+src/taskq/workflows/api/_runner_chain.py       26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py       63      3     22      3    93%   85, 135, 139
+src/taskq/workflows/api/_runner_errors.py       3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py        85      5     24      7    89%   101->exit, 122->121, 178, 253, 296, 304, 310
+src/taskq/workflows/api/_runner_ladder.py      34      0      4      1    97%   163->exit
+src/taskq/workflows/api/_runner_loop.py       140     16     36     10    84%   107, 196-199, 228-235, 325-326, 331, 358, 439->443, 441->443, 452, 463-471
+src/taskq/workflows/api/_sql_loop.py           25      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py         33      0      0      0   100%
+src/taskq/workflows/api/_validate.py          141      6     76      6    94%   133->132, 177, 250-262, 337, 382, 388
+src/taskq/workflows/chain.py                   63      2     20      3    94%   154->153, 184, 187
+src/taskq/workflows/context.py                 42      2     10      2    92%   95, 143
+src/taskq/workflows/definitions.py             66      2     14      1    96%   112, 140
+src/taskq/workflows/engine.py                 109      2     34      3    97%   272, 285, 346->353
+src/taskq/workflows/ledger.py                  68      4     10      3    91%   104, 260->262, 281-283
+---------------------------------------------------------------------------------------
+TOTAL                                        5545   1776   1358    128    64%
+=========================== short test summary info ============================
+SKIPPED [1] tests/attack4-nothing-stuck-probes.py:280: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the attacker's own PG on :5711)
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+XFAIL tests/attack4-cli-races.py::test_the_why_stuck_arm_names_the_TRUE_blocker - F-P4-WHYSTUCK-LADDER-LIE: the status read drops the attempt counters — every failed row reads 'ladder headroom 3 attempt(s) left'
+FAILED tests/web_admin/test_workflows_page.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+FAILED tests/attack4-nothing-stuck-probes.py::test_a_hold_without_payload_schema_meets_the_typed_door
+FAILED tests/attack4-cli-races.py::test_the_resolve_racing_the_cancel_one_outcome_honest_codes
+FAILED tests/attack4-cli-races.py::test_the_cancel_of_an_already_terminal_run_is_the_named_noop
+FAILED tests/attack4-cli-races.py::test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives
+FAILED tests/attack4-cli-races.py::test_the_torn_cancel_the_signal_leg_rides_a_second_connection
+6 failed, 304 passed, 2 skipped, 1 xfailed, 1 warning in 122.44s (0:02:02)
