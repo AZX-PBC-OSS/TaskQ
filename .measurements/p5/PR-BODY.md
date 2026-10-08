@@ -49,3 +49,11 @@ The fresh reviewers + ZEAZX26; the merge ONLY on the fresh approval + the green 
 - The flagship demo runs NO workflows (the demo act is its own rev) — the workflow demonstration lives in the marches + `docs/examples/doc-ingest.md`.
 - The workflows guide's §-renumbering is NOT done (the anchors are load-bearing); the reader's key + the start-here pointer mitigate.
 - The body-must-be-atomic sentence: `run_migrations`' loop… nothing half-stated — the honest list is maintained in `STRANGER-DISPOSITION.md`.
+
+## The gate's final numbers (updated)
+
+| Gate | The number |
+|---|---|
+| THE FULL DEFAULT BATTERY (serial, the merged head) | **13,073 passed / 69 failed / 9 skipped** (1:06:37) — the 69 are the rotating co-tenancy class: every sampled victim green solo (`test_worker_di_bootstrap` 35/35, `test_worker_main`, `test_batch_fast` (cured), `test_doc_ingest_example`, `test_cron_ownership_model`, `test_grace_boundary_timeline`, `test_rt_conservation_chaos` 49/49 together) — WITHIN the phase-4 clean-base control's own band (59–74 failures on a CLEAN base, `.measurements/PHASE4*`/the phase-4 fixer's report) |
+| THE BATCH COPY'S ARITY (the gate's REAL catch) | the loop-budget trio rode the COPY's column list but not the record — 43 vs 40, every fast-path batch dead by `IndexError`; cured (omit-list exact membership); **54 passed** |
+| pyright + ruff | 0 errors / all checks passed |
