@@ -255,15 +255,24 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     # THE EXECUTION LEG (the execution verdict's fence): the SAME live
     # child is UNCLAIMABLE by a worker that cannot execute it — an
     # unregistered worker id (the COALESCE-safe default) and a registered
-    # NON-capable worker both refuse. The vanilla rows of the fleet are
-    # untouched (the leg short-circuits on the step_key probe).
+    # NON-capable worker both refuse. THE VACUITY LAW (F-R2, the fresh
+    # reviewer's mutation drill): each leg asserts on a pending flow row
+    # INSERTED WITHIN THE LEG — the row the dead fence leaks must be the
+    # row the pin observes. The unregistered leg's row (``live2``) was
+    # once passed to the INSERT inline and never re-observed: the earlier
+    # legs had already made every asserted row unclaimable (running /
+    # flow-fenced), so flipping the capability CTE's safe default to
+    # ``true`` let an UNREGISTERED worker claim ``live2`` with the pin
+    # green — the data leg unpinned. The row's id is now held and the
+    # refusal asserted on IT.
     other_id = new_uuid()
+    live2_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, step_key, metadata, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live2', "
         "$2::jsonb, now() - interval '1 hour')",
-        new_uuid(),
+        live2_id,
         json.dumps({"flow_id": str(live_flow)}),
     )
     unregistered_worker = new_uuid()
@@ -276,10 +285,15 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         lock_lease=timedelta(seconds=30),
     )
     claimed = {str(r["id"]) for r in dispatched}
-    assert str(live_child) not in claimed and str(child) not in claimed, (
-        f"the execution fence's capability leg is absent: an unregistered "
-        f"worker claimed flow rows (claimed={sorted(claimed)})"
+    assert str(live2_id) not in claimed, (
+        f"the execution fence's capability leg is absent: an UNREGISTERED "
+        f"worker claimed the leg's own pending flow row {live2_id} "
+        f"(claimed={sorted(claimed)})"
     )
+    live2_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', live2_id
+    )
+    assert live2_status == "pending", "the refusal leaves the row untouched (the sweep re-derives)"
     plain = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -309,10 +323,75 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         f"the execution leg taxes the vanilla path: a NON-capable worker's "
         f"plain row {plain} was not claimed (claimed={sorted(claimed)})"
     )
+    # The NON-CAPABLE leg's own row (the vacuity law again): a pending
+    # flow child inserted within THIS leg — the registered worker's
+    # missing ``workflow_execution`` stamp must refuse IT, not merely
+    # fail to re-claim the earlier legs' rows (a row an earlier leg's
+    # dispatch already consumed proves nothing about this leg).
+    live3_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live3', "
+        "$2::jsonb, now() - interval '1 hour')",
+        live3_id,
+        json.dumps({"flow_id": str(live_flow)}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=other_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(live3_id) not in claimed, (
+        f"the execution fence's capability leg is absent: a registered "
+        f"NON-capable worker claimed the leg's own pending flow row "
+        f"{live3_id} (claimed={sorted(claimed)})"
+    )
     flow_rows = {str(r["id"]) for r in dispatched if r["step_key"] is not None}
     assert not flow_rows, (
         f"the execution fence's capability leg is absent: a NON-capable "
         f"worker claimed flow rows (claimed flow rows={sorted(flow_rows)})"
+    )
+
+    # THE CONVICTED TWIN (the comparator, kept forever as pin 2's flow leg
+    # keeps its unfenced twin): the capability CTE's SAFE DEFAULT flipped
+    # — ``COALESCE(…, false)`` → ``true`` — the F-R2 mutation, composed on
+    # the RENDERED statement (the same shape the production dispatch
+    # runs). The unregistered worker then CLAIMS the still-pending
+    # ``live2`` row: the leg is load-bearing, the damage observed and
+    # recorded to the red sink. (The external source-level drill — the
+    # mutation in ``_WF_EXEC_CAPABLE_CTE`` itself, this pin RED at the
+    # refusal above — is captured in
+    # ``.measurements/attack/R2-red-exec-capable-leg.txt``.)
+    mutated_sql = DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema).replace(
+        "           false\n         ) AS capable",
+        "           true\n         ) AS capable",
+    )
+    assert mutated_sql != DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema), (
+        "the capability-default mutation drill did not arm"
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=mutated_sql,
+        queues=["default"],
+        limit_n=5,
+        worker_id=new_uuid(),  # unregistered again — the COALESCE edge
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r["id"]) for r in dispatched}
+    assert str(live2_id) in claimed, (
+        f"the capability-default comparator did not red: the mutated claim "
+        f"still refused the unregistered worker (claimed={sorted(claimed)})"
+    )
+    engine_redlog.red(
+        "pin2-exec-capable-leg-dropped",
+        "the capability CTE's safe default COALESCE(false)→true — an "
+        "UNREGISTERED worker claims the pending flow row (F-R2's damage)",
+        {"claimed": sorted(claimed), "leaked_flow_row": str(live2_id)},
     )
 
     # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides
