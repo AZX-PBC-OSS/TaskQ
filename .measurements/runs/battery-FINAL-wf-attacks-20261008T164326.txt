@@ -1,0 +1,5 @@
+-----------------------------------------------------------------------------
+TOTAL                                        2957    215    764    110    90%
+=========================== short test summary info ============================
+SKIPPED [1] tests/attack4-nothing-stuck-probes.py:281: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the attacker's own PG on :5711)
+297 passed, 1 skipped, 1 warning in 50.38s

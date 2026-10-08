@@ -153,20 +153,23 @@ class WorkflowRegistry:
             ) from None
 
     @staticmethod
-    def _fingerprint(fn: object) -> tuple[str, str, bytes, str]:
+    def _fingerprint(fn: object) -> tuple[str, bytes, str]:
         """The body's CONTENT fingerprint (the hot-reload guard's
-        comparator): module + qualname + bytecode + the constants —
-        identity-independent, content-exact for functions (every shipped
+        comparator): qualname + bytecode + the constants — identity-
+        independent, content-exact for functions (every shipped
         definition's shape). The constants ride the fingerprint because
         3.11+'s bytecode indexes ``co_consts`` instead of embedding
         literals — a content edit that changes ONLY a constant must
-        still read as the shadow it is."""
-        module = getattr(fn, "__module__", "")
+        still read as the shadow it is. The DEFINING MODULE is
+        deliberately NOT in the fingerprint: the same fence source exec'd
+        under two namespaces (the docs lane's bench vs the live example
+        module) is ONE body seen twice — the module tag is where the
+        body LIVES, never what it DOES."""
         qualname = getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn)))
         code = getattr(fn, "__code__", None)
         if code is None:
-            return (module, qualname, b"", "")
-        return (module, qualname, code.co_code, repr(code.co_consts))
+            return (qualname, b"", "")
+        return (qualname, code.co_code, repr(code.co_consts))
 
     @classmethod
     def _same_content(cls, existing: WorkflowDef, definition: WorkflowDef) -> bool:
