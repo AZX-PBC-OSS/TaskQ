@@ -414,3 +414,41 @@ Without the `redis` extra:
 - `ctx.progress()` still coalesces and flushes to Postgres but does **not** publish to Redis.
 - `JobHandle.progress_stream()` falls back to 500 ms Postgres polling.
 - The HTTP SSE endpoint returns HTTP 503.
+
+---
+
+## Workflow node progress (T21)
+
+ACTOR progress (above) is the JOB's surface. WORKFLOW nodes have their
+own, per-NODE — the two-channel persistence:
+
+- **the STATE channel** (`wf_node_progress`): one row per
+  `(node_id, channel)`, upserted latest-wins + the occurrence counter —
+  the row count is nodes × channels, CONSTANT whatever the emission
+  rate. Keeps NO history: the "at 14:32" question is answered by the
+  STREAM channel only where the author streams to it.
+- **the STREAM channel** (`wf_node_stream`): append rows in a bounded
+  per-node ring (64, drop-oldest, the dropped count on the record; the
+  retention sweep's prune arm is the backstop). THE seq is the ONE
+  cursor space: the body's emissions (`class='user'`) and the engine's
+  node-start/terminal projections (`class='auto'`) interleave in one
+  range — one cursor serves both classes.
+
+The body calls `await ctx.progress(pct, message, data)` (the emission
+op — typed, bounded, best-effort; the coalesce + the asymmetry are the
+workflows guide's §5). The faces: the admin's
+`/api/flow/{flow_id}/progress/stream` SSE (the seq-cursor replay + the
+named partial mode on a pruned window), and
+`taskq.workflows.run_display` (the ledger-derived display — the progress
+is ADVISORY: a node that reported 99% and failed shows **failed with
+pct=99 inside**, never 99%-running).
+
+**The migration shims** (the fleet's two SSE vocabularies → the ONE
+vocabulary): each old vocabulary is a documented MAPPING over the one
+stream's rows — vocabulary A
+(`{"type": "progress", "job", "pct", "note"}`) reads the
+`class='user'/kind='progress'` rows; vocabulary B
+(`{"event": "update"|"lifecycle", "id", "percent", "detail", "phase"}`)
+reads the same rows for updates and the auto-terminal rows for
+lifecycles. The mapping is a pure function per old vocabulary — the shim
+is a MAPPING, not a state conversion; no old stream is re-state'd.

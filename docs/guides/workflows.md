@@ -432,8 +432,8 @@ cascade downstream — is spelled (never glued):
 def doc_ingest() -> object:
     a = step(stage_a, Ingest(doc_id="d1"), key="a")
     b = step(stage_b, Ingest(doc_id="d1"), key="b")
-    reducer = step(reduce, a, b, key="reducer")   # the fan-in: TWO parents
-    return build(step(tail, reducer, key="tail")) # the cascade: a NORMAL step
+    reducer = step(reduce, a, b, key="reducer")  # the fan-in: TWO parents
+    return build(step(tail, reducer, key="tail"))  # the cascade: a NORMAL step
 ```
 
 The fan-in's failure policy is declared ON the join
@@ -791,3 +791,102 @@ max_attempts=3 = terminal failure with zero retries) is red forever.
 The hold→resume latency band (G11c) is measured and pinned in
 `perf-evidence-workflows.md` (the band from
 `.measurements/t10-hold-resume-band.json`).
+
+## §5 — Progress: the nodes report (T21)
+
+A workflow body reports its own progress: `await ctx.progress(75, "page
+3/4", {"page": 3})` — `pct` (int 0..100 or None), `message` (chars-capped
+at 1024), `data` (jsonb, capped at 8 KiB). All optional; call it as often
+as you like.
+
+**THE EMISSION IS BEST-EFFORT, AND THAT IS THE DESIGN** (decision e — the
+law: observability degrades FIRST, never correctness). The call updates
+an in-memory buffer latest-wins and arms a cadence flush (~20 writes/s at
+the 50 ms cadence — a 1000-emissions/s body coalesces to the same write
+rate); it NEVER awaits the network and NEVER touches the finalize path.
+The coalescing is HONEST: the node's `occurrences` counter counts every
+emission that coalesced into the row, so the record shows both the
+delivered state and the emission rate. A flush that fails is counted and
+warned once (`progress_flush_lost`); a node whose every flush fails still
+terminalizes normally. A lost emission costs freshness; a blocked node
+costs correctness.
+
+**THE TWO CHANNELS** (decision d — both bounded by construction):
+
+| channel | table | shape | bound |
+| --- | --- | --- | --- |
+| the STATE channel | `wf_node_progress` | one row per `(node_id, channel)`, upserted latest-wins + the occurrence counter + the dropped counter | nodes × channels — CONSTANT under any emission rate |
+| the STREAM channel | `wf_node_stream` | append rows in a per-node ring, drop-oldest with the dropped count ON THE RECORD | the ring bound (64/node; the retention sweep's prune arm is the backstop) |
+
+The state channel answers "where is this node NOW" (a gauge). The stream
+channel answers "what did it report along the way" (a replay). **The
+state channel keeps NO history**: "what did the body report at 14:32" is
+answerable only where the author streamed it (the stream) — the honest
+boundary, stated in the progress guide.
+
+**THE DECLARED SCHEMA** (the TypedGate-door pattern): `step(body, ...,
+progress_schema=Page)` declares the shape of the node's `data`
+emissions — a wrong-shaped emission is refused with
+`ProgressRefusedError` (raised INTO the body: an authoring error is the
+body's problem). The declaration is what makes a separate UI render the
+emission — the context-contract law applied to progress. On a MAP SOURCE
+the declaration reaches the children (`<source>.item`).
+
+**AUTO-PROGRESS IS A PROJECTION, NOT A SECOND STREAM** (decision b): the
+engine's node-start/terminal events project into the SAME stream with
+`class='auto'` (the body's emissions are `class='user'`); the kind
+vocabulary is CLOSED (`progress`, `wf.node.started`, `wf.node.terminal` —
+validated at emit AND by the storage CHECK), and ONE seq generator backs
+the table. ONE stream, ONE cursor serves both classes — a second
+seq-cursor space would re-create the fleet's SSE-vocabulary
+fragmentation. The projection is additive best-effort writes at the
+claim/finalize seams: the finalize's own transactions are untouched (the
+zero-finalize-changes probe is a shipped pin).
+
+**THE PROGRESS-LIE FENCE** (decision b's display law): the node's STATUS
+derives from the LEDGER; the progress renders INSIDE the terminal state,
+never over it. A body that reports 99% "almost done" and then FAILS
+shows **failed with pct=99 inside** — never 99%-running. A crash window
+(the worker died mid-emission) leaves the display STALE — freshness
+only — and the terminal heals it. The progress row is ADVISORY, always.
+
+**THE AGGREGATION IS DERIVED AT READ** (decision c): a map's progress is
+its children's grouped read (`"120/200 · 0 running · avg pct 62"` — one
+query, LEFT JOINed to the state channel); a fan-in's is the edge ledger.
+The user's aggregate of intermediate results WITHOUT a join node: declare
+`map_source(source, item, aggregate=fn)` — a PURE, read-side fn evaluated
+AT READ TIME over the children's decoded result rows (mid-flight,
+unblocked, writing nothing). **The join node is for DATAFLOW; progress
+aggregation is OBSERVABILITY** — a join whose only reader is the display
+is the W2 validate warning (the join-for-progress anti-pattern: the DAG
+would block on a display question).
+
+**THE FACES** (decision f — every face a view over the same rows):
+
+- the SSE stream: `GET /api/flow/{flow_id}/progress/stream` on the admin
+  router — a `display` frame first (ledger + state), `progress` frames in
+  seq order (`id:` the seq — the browser EventSource reconnect
+  contract), and — when the ring pruned past a reconnecting cursor — a
+  NAMED `resync` frame (the partial mode + the state payload): the
+  display converges, never a silent empty-success.
+- the run display: `taskq.workflows.run_display(pool, wsql, flow_id)` —
+  the ledger-derived states with the progress inside (the explorer's
+  data contract).
+- the gauge: workflow-dimensioned ONLY (the `_other_` collapse) —
+  **per-child progress is NEVER a metric label series**; it lives in the
+  rows (the map line / the display), read on demand.
+
+**THE VOCABULARY SHIMS** (the migration win, documented): the fleet's two
+live SSE vocabularies are MAPPED, not converted — each is a pure function
+over the one stream's rows:
+
+| fleet vocabulary A | the stream | fleet vocabulary B |
+| --- | --- | --- |
+| `{"type": "progress", "job": <node>, "pct": <pct>, "note": <message>}` | `class='user'`, `kind='progress'` | `{"event": "update", "id": <node>, "percent": <pct>, "detail": <message>}` |
+| — | `class='auto'`, `kind='wf.node.started'` | `{"event": "lifecycle", "id": <node>, "phase": "started"}` |
+| — | `class='auto'`, `kind='wf.node.terminal'` | `{"event": "lifecycle", "id": <node>, "phase": "done"}` |
+
+A consumer of either old vocabulary is served by the ONE stream through
+its shim unchanged — the consolidation is the migration win (the third
+vocabulary cannot sprout: the kind set is closed at the emit path and by
+the storage CHECK).
