@@ -1,0 +1,259 @@
+I001 [*] Import block is un-sorted or un-formatted
+    --> src/taskq/cli.py:3975:5
+     |
+3974 |   async def _flows_list(settings: TaskQSettings, limit: int) -> None:
+3975 | /     from taskq.workflows._cli import FLOW_ROOT_STEP_KEY, FlowListRow, FlowNodeRow, format_flow_list
+3976 | |     from taskq.workflows._cli import derive_flow_status
+     | |_______________________________________________________^
+3977 |
+3978 |       conn = await asyncpg.connect(_dsn_of(settings))
+     |
+help: Organize imports
+     |
+3974 | async def _flows_list(settings: TaskQSettings, limit: int) -> None:
+     -     from taskq.workflows._cli import FLOW_ROOT_STEP_KEY, FlowListRow, FlowNodeRow, format_flow_list
+     -     from taskq.workflows._cli import derive_flow_status
+3975 +     from taskq.workflows._cli import (
+3976 +         FLOW_ROOT_STEP_KEY,
+3977 +         FlowListRow,
+3978 +         FlowNodeRow,
+3979 +         derive_flow_status,
+3980 +         format_flow_list,
+3981 +     )
+3982 |
+     |
+
+I001 [*] Import block is un-sorted or un-formatted
+    --> src/taskq/cli.py:4139:5
+     |
+4137 |   ) -> None:
+4138 |       """What is this run waiting on (the pending HITL holds)."""
+4139 | /     from taskq.workflows.api._hitl import HitlClient
+4140 | |     from taskq.workflows._cli import format_holds
+     | |_________________________________________________^
+4141 |
+4142 |       settings = TaskQSettings.load()
+     |
+help: Organize imports
+     |
+4138 |     """What is this run waiting on (the pending HITL holds)."""
+4139 +     from taskq.workflows._cli import format_holds
+4140 |     from taskq.workflows.api._hitl import HitlClient
+     -     from taskq.workflows._cli import format_holds
+4141 |
+     |
+
+RUF022 [*] `__all__` is not sorted
+   --> src/taskq/workflows/__init__.py:96:11
+    |
+ 94 |   )
+ 95 |
+ 96 |   __all__ = [
+    |  ___________^
+ 97 | |     "DISPATCH_EXCLUSION_CLAUSE",
+ 98 | |     "FAILURE_POLICIES",
+ 99 | |     "MAX_FAN_IN_PER_JOIN",
+100 | |     "AbsorbingPolicy",
+101 | |     "ChildSpec",
+102 | |     "CompiledWorkflow",
+103 | |     "ConsumerBinding",
+104 | |     "DeadlockRetriesExhaustedError",
+105 | |     "DecrementHit",
+106 | |     "Done",
+107 | |     "DuplicateStepBodyError",
+108 | |     "DuplicateWorkflowError",
+109 | |     "FailureInfo",
+110 | |     "FailurePolicy",
+111 | |     "FinalizeResult",
+112 | |     "FiredJoin",
+113 | |     "FlowRunner",
+114 | |     "ForkSpec",
+115 | |     "JoinSpec",
+116 | |     "LedgerClaim",
+117 | |     "NodeSpec",
+118 | |     "Promise",
+119 | |     "Refine",
+120 | |     "RunClaim",
+121 | |     "StepBody",
+122 | |     "StepContext",
+123 | |     "SweepResult",
+124 | |     "WorkflowApp",
+125 | |     "WorkflowBuildError",
+126 | |     "WorkflowDef",
+127 | |     "WorkflowRegistry",
+128 | |     "WorkflowRunError",
+129 | |     "WorkflowSteps",
+130 | |     "cancel_workflow_run",
+131 | |     "retry_workflow_node",
+132 | |     "build",
+133 | |     "claim_step_ledger",
+134 | |     "drain_outbox",
+135 | |     "fan_in_skip",
+136 | |     "finalize_node",
+137 | |     "gather",
+138 | |     "get_registry",
+139 | |     "insert_flow_run",
+140 | |     "insert_node",
+141 | |     "loop",
+142 | |     "map_source",
+143 | |     "memoized_step_result",
+144 | |     "reap_phantom_ledger",
+145 | |     "render_workflow_sql",
+146 | |     "resolve_step_body",
+147 | |     "run_idempotency_scope",
+148 | |     "sink",
+149 | |     "step",
+150 | |     "step_idempotency_key",
+151 | |     "step_idempotency_scope",
+152 | |     "sweep_join_rederive",
+153 | |     "sweep_loop_budget",
+154 | |     "validate_fork",
+155 | |     "validate_join_spec",
+156 | | ]
+    | |_^
+help: Apply an isort-style sorting to `__all__`
+    |
+129 |     "WorkflowSteps",
+130 +     "build",
+131 |     "cancel_workflow_run",
+    -     "retry_workflow_node",
+    -     "build",
+132 |     "claim_step_ledger",
+--------------------------------------------------------------------------------
+145 |     "resolve_step_body",
+146 +     "retry_workflow_node",
+147 |     "run_idempotency_scope",
+    |
+
+N818 Exception name `_NodeHeld` should be named with an Error suffix
+  --> src/taskq/workflows/api/_runner.py:71:7
+   |
+71 | class _NodeHeld(Exception):
+   |       ^^^^^^^^^
+72 |     """The wait site's control-flow unwinding (INTERNAL): the body
+73 |     raised it after registering the hold — the runner catches it, leaves
+   |
+
+RUF003 Comment contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+    --> src/taskq/workflows/api/_runner.py:1083:58
+     |
+1081 |                     outcome = await node.loop_body(loop_ctx, carry)
+1082 |                 except _NodeHeld:
+1083 |                     # THE HOLD INSIDE THE ITERATION (T10 × T19's
+     |                                                          ^
+1084 |                     # composition): the loop node rests in the held
+1085 |                     # representation (the budget PAUSED — register_hold's
+     |
+
+RUF100 [*] Unused `noqa` directive (unused: `S608`)
+ --> tests/attack4_wf_held_drive_livelock.py:1:1
+  |
+1 | # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
+  | ^^^^^^^^^^^^^^^^^^
+2 | """ATTACK4 — the held-drive livelock (F-P4-HELD-DRIVE-NULL-DEADLINE).
+  |
+help: Remove unused `noqa` directive
+  |
+  - # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
+1 + # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
+2 | """ATTACK4 — the held-drive livelock (F-P4-HELD-DRIVE-NULL-DEADLINE).
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/test_wf_cli_pins.py:12:1
+   |
+10 |   """
+11 |
+12 | / from __future__ import annotations
+13 | |
+14 | | import sys
+15 | | import types
+16 | | from collections.abc import Iterator
+17 | | from typing import Any
+18 | |
+19 | | import pytest
+20 | | from pydantic import BaseModel
+21 | | from asyncio import to_thread
+22 | | from typer.testing import CliRunner
+23 | |
+24 | | from taskq.backend._protocol import JobId
+25 | | from taskq.cli import app
+26 | | from taskq.testing.assertions import plain_cli_output
+27 | | from taskq.workflows import FlowRunner, WorkflowApp, build, step
+28 | | from taskq.workflows.api import GateDecl
+29 | | from taskq.workflows._cli import (
+30 | |     FlowNodeRow,
+31 | |     derive_flow_status,
+32 | |     format_flow_list,
+33 | |     format_holds,
+34 | |     parse_decision,
+35 | |     stuck_lines,
+36 | | )
+37 | | from taskq.workflows.api._hitl import HoldContext
+38 | | from tests._wf_fixtures import RedLog
+   | |_____________________________________^
+39 |
+40 |   runner = CliRunner()
+   |
+help: Organize imports
+   |
+15 | import types
+16 + from asyncio import to_thread
+17 | from collections.abc import Iterator
+--------------------------------------------------------------------------------
+21 | from pydantic import BaseModel
+   - from asyncio import to_thread
+22 | from typer.testing import CliRunner
+--------------------------------------------------------------------------------
+27 | from taskq.workflows import FlowRunner, WorkflowApp, build, step
+   - from taskq.workflows.api import GateDecl
+28 | from taskq.workflows._cli import (
+--------------------------------------------------------------------------------
+35 | )
+36 + from taskq.workflows.api import GateDecl
+37 | from taskq.workflows.api._hitl import HoldContext
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> tests/test_wf_cli_pins.py:201:9
+    |
+199 |       # THE AUDIT (G4): "who approved this" is a ROW — principal + reason.
+200 |       audit = await wf_conn.fetchrow(
+201 | /         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+202 | |         "WHERE action = 'hitl.resolve'",
+    | |_______________________________________^
+203 |       )
+204 |       assert audit is not None, "a resolve without an audit row reds"
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> tests/test_wf_cli_pins.py:258:9
+    |
+256 |       # THE AUDIT (G4): the manual resume is a row.
+257 |       audit = await wf_conn.fetchrow(
+258 | /         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+259 | |         "WHERE action = 'workflow.retry_node'",
+    | |______________________________________________^
+260 |       )
+261 |       assert audit is not None
+    |
+
+SIM300 [*] Yoda condition detected
+   --> tests/test_wf_cli_pins.py:380:12
+    |
+378 |     }
+379 |     assert node_vocab - {"skipped"} <= set(VALID_TRANSITIONS), "a node status outside the statemachine"
+380 |     assert TERMINAL_STATUSES <= node_vocab
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+381 |     engine_redlog.flush()
+    |
+help: Rewrite as `node_vocab >= TERMINAL_STATUSES`
+    |
+379 |     assert node_vocab - {"skipped"} <= set(VALID_TRANSITIONS), "a node status outside the statemachine"
+    -     assert TERMINAL_STATUSES <= node_vocab
+380 +     assert node_vocab >= TERMINAL_STATUSES
+381 |     engine_redlog.flush()
+    |
+
+Found 10 errors.
+[*] 6 fixable with the `--fix` option.

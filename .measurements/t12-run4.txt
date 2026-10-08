@@ -1,0 +1,30 @@
+F
+=================================== FAILURES ===================================
+_______________ test_holds_on_a_terminal_run_is_the_healthy_zero _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_6fc5f46fee', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_6fc5f46fee6e')
+wf_pool = <asyncpg.pool.Pool object at 0x7f9b55ce8880>
+wf_schema = 'tq_6fc5f46fee', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_holds_on_a_terminal_run_is_the_healthy_zero(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
+        defined healthy-zero state — the line SAYS the zero is state (a blank
+        section that reads as zero-holds reds)."""
+        compiled = sys.modules[MODULE_NAME].app.get("fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+        await flow_runner.drive(flow_id)
+        result = runner.invoke(app, ["flows", "holds", str(flow_id)])
+>       assert result.exit_code == 0, result.output
+E       AssertionError: 
+E       assert 1 == 0
+E        +  where 1 = <Result RuntimeError('asyncio.run() cannot be called from a running event loop')>.exit_code
+
+tests/test_wf_cli_pins.py:153: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_holds_on_a_terminal_run_is_the_healthy_zero
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.05s
+<sys>:0: RuntimeWarning: coroutine 'flows_holds.<locals>.run' was never awaited
