@@ -634,7 +634,11 @@ def _run_nets_in_scratch(
         **os.environ,
         "PYTHONPATH": str(scratch / "src"),
         "TASKQ_TEST_RUN_TOKEN": (
-            f"scratch_{os.environ.get('PYTEST_XDIST_WORKER', 'main')}_{token_suffix}"
+            # The sanctioned seam (run_isolation_token's own input, NOT the
+            # raw worker id the suite-hygiene pin bans): under xdist this IS
+            # the worker id, so parallel drills on different workers mint
+            # distinct tokens.
+            f"scratch_{os.environ.get('TASKQ_TEST_RUN_TOKEN', 'main')}_{token_suffix}"
         ),
     }
     return subprocess.run(
