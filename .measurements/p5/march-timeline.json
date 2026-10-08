@@ -1,7 +1,7 @@
 [
   {
     "beat": "cron-kickoff",
-    "measured_s": 22.04,
+    "measured_s": 29.05,
     "bound_s": 200.0
   },
   {
@@ -11,7 +11,7 @@
   },
   {
     "beat": "march-terminal",
-    "measured_s": 11.31,
+    "measured_s": 11.06,
     "bound_s": 264.0
   }
 ]

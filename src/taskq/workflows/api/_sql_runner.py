@@ -130,23 +130,50 @@ UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 """
 
 CANCEL_ROOT_SQL_TEMPLATE = """
-UPDATE {schema}.jobs SET status = 'cancelled',
-    error_class = 'WorkflowCancelled',
-    error_message = $2,
-    finished_at = clock_timestamp()
-WHERE id = $1
-  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-RETURNING id
+WITH flipped AS (
+    UPDATE {schema}.jobs SET status = 'cancelled',
+        error_class = 'WorkflowCancelled',
+        error_message = $2,
+        finished_at = clock_timestamp()
+    WHERE id = $1
+      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+    RETURNING id, status::text AS to_state
+), evt AS (
+    -- THE AUDIT LEG (the operator's march's battery finding): the
+    -- cancel's flip IS a mutation — the events reader gets the
+    -- state_change that names it (the shared tier invariant reads a
+    -- terminal row's OWN event here).
+    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+    SELECT f.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
+                              'error_class', 'WorkflowCancelled')
+    FROM flipped f
+)
+SELECT id FROM flipped
 """
 
 CANCEL_NODES_SQL_TEMPLATE = """
-UPDATE {schema}.jobs
-SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
-    finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
-    error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
-    metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
-WHERE (metadata->>'flow_id')::uuid = $1
-  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+WITH flipped AS (
+    UPDATE {schema}.jobs
+    SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
+        finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
+        error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
+        metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
+    WHERE (metadata->>'flow_id')::uuid = $1
+      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+    RETURNING id, (status::text) AS to_state
+), evt AS (
+    -- THE AUDIT LEG: only the rows THIS statement actually
+    -- terminalised (a running row's cooperative phase-1 keeps it
+    -- running — its own terminal write carries its event).
+    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+    SELECT f.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
+                              'error_class', 'WorkflowCancelled')
+    FROM flipped f
+    WHERE f.to_state = 'cancelled'
+)
+SELECT count(*) FROM flipped
 """
 
 TERMINAL_RESULT_SQL_TEMPLATE = """

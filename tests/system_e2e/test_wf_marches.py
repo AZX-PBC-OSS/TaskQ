@@ -144,7 +144,6 @@ async def test_the_deep_research_march_kick_to_explorer(
     the explorer's read. The invariants close the population."""
     from taskq.workflows._progress_read import (
         map_progress_line,
-        read_map_aggregate,
         run_display,
     )
 
@@ -152,7 +151,6 @@ async def test_the_deep_research_march_kick_to_explorer(
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     fleet: dict[str, WorkerProc] = {}
     audited: list[dict[str, Any]] = []
-    killed = False
     try:
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["r1", "r2"])
 
@@ -211,6 +209,7 @@ async def test_the_deep_research_march_kick_to_explorer(
 
         # THE MAP IS LIVE (the kill storm's premise).
         start = time.monotonic()
+        n = 0
         while time.monotonic() - start < MARCH_SETTLE_BOUND_S:
             n = await conn.fetchval(
                 f"""SELECT count(*) FROM "{schema}".jobs
@@ -239,7 +238,6 @@ async def test_the_deep_research_march_kick_to_explorer(
                     pod.proc.send_signal(signal.SIGKILL)
                     reap(pod)
                     del fleet[name]
-                    killed = True
                     print(f"[march] SIGKILL -> {name} (mid-map)")
                     break
         # The storm's single-victim shape: a live pod must survive.
