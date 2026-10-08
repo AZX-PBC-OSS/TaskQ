@@ -1,0 +1,15 @@
+E       assert 'failed' == 'running'
+E         
+E         - running
+E         + failed
+
+tests/test_wf_t20_maintain_liveness.py:144: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=8dbe24d19071 redis=2ffe9b25dcfd state_dir=/tmp/pytest-of-rich/pytest-17631
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=8dbe24d19071 redis=2ffe9b25dcfd
+=========================== short test summary info ============================
+FAILED tests/test_wf_t20_maintain_liveness.py::test_t20_failed_arm_waits_for_live_siblings
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 5.10s

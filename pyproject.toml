@@ -422,6 +422,11 @@ ignore = [
 "tests/test_wf_propagation_pins.py" = ["S608"]
 "tests/test_wf_scenario_pins.py" = ["S608"]
 "tests/test_wf_status_pins.py" = ["S608"]
+# T20's streaming pins: only the schema identifier is interpolated
+# (validated by the test fixtures upstream); every caller-controlled
+# value uses $N parameter binding — the same rationale as the wf family
+# above.
+"tests/test_wf_t20_maintain_liveness.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
 "tests/test_wf_pruner_pins.py" = ["S608"]
 "tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]
