@@ -1,6 +1,7 @@
 [
   {
 <<<<<<< HEAD
+<<<<<<< HEAD
     "pin": "pin2-pin5-unfenced-sweep-fire",
     "mutation": "sweep fire without the flow-status EXISTS leg",
     "red": "{\"fired_post_cancel\": 1}"
@@ -9,6 +10,11 @@
     "mutation": "the fork's id mint swapped for a string-shape convention (no per-fork discriminator)",
     "red": "{\"convicted_distinct_ids\": 10, \"observed\": \"UniqueViolationError on the second fork (the PK is the only backstop)\"}"
 >>>>>>> c33b2f5 (feat(examples): T16 — the demo app's workflow: the doc_ingest graph LIVE + the engine cures the stranger test drove out)
+=======
+    "pin": "pin20-outbox-flush-stranded",
+    "mutation": "crash between fire-commit and consumer-insert (no drain yet)",
+    "red": "{\"fired\": true, \"consumers_dispatched\": 0}"
+>>>>>>> ea01707 (fix(flows): the frozen ctx's runtime record + the remaining tests green)
   }
 ]{"run": "20261007T193407-3269885-a7d13d41", "ts": "2026-10-07T19:34:07", "entries": [{"pin": "pin24-flow-status-leg", "mutation": "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)", "red": "{\"deps_pending_fingerprint\": 0, \"fired_on_cancelled_flow\": true}"}]}
 {"run": "20261007T193407-3269885-c30ec482", "ts": "2026-10-07T19:34:07", "entries": [{"pin": "pin22-build-time-refusals", "mutation": "the unvalidated builders (empty fork / edge-less join) reached the DB", "red": "{\"edgeless_join\": \"stranded invisible in join-wait (pre-hardening: not even diagnosable)\"}"}]}

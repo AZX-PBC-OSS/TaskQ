@@ -1,8 +1,8 @@
 [
   {
-    "pin": "pin1-late-deliver",
-    "mutation": "the deliver WITHOUT the CAS predicate (the mutation drill \u2014 the zombie wake)",
-    "red": "{\"zombie_wake\": true, \"conviction\": \"the shipped CAS refuses; the drill red is recorded\"}"
+    "pin": "pin7-shared-attempt-counter",
+    "mutation": "the shared-counter variant (2 holds + max_attempts=3 \u2192 terminal with zero retries) \u2014 red forever",
+    "red": "{\"ledger\": [[1, \"awaited\"], [2, \"awaited\"], [3, \"failed\"]], \"retries_taken\": 0}"
   }
 ]{"run": "20261007T193739-3269885-fa426ecb", "ts": "2026-10-07T19:37:39", "entries": [{"pin": "pin7-shared-attempt-counter", "mutation": "the shared-counter variant (2 holds + max_attempts=3 \u2192 terminal with zero retries) \u2014 red forever", "red": "{\"ledger\": [[1, \"awaited\"], [2, \"awaited\"], [3, \"failed\"]], \"retries_taken\": 0}"}]}
 {"run": "20261007T193740-3269885-cd1b0b06", "ts": "2026-10-07T19:37:40", "entries": [{"pin": "pin1-late-deliver", "mutation": "the deliver WITHOUT the CAS predicate (the mutation drill \u2014 the zombie wake)", "red": "{\"zombie_wake\": true, \"conviction\": \"the shipped CAS refuses; the drill red is recorded\"}"}]}

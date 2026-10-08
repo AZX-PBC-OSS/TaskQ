@@ -1,0 +1,56 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fddc72265c0>
+wf_schema = 'tq_ca4823332d'
+wf_conn = <asyncpg.connection.Connection object at 0x7fddc71777a0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface.
+            assert ctx.flow_id is not None, "the run id"
+            assert str(ctx.flow_id) == ctx.flow_id or isinstance(ctx.flow_id, uuid_module.UUID)
+            assert ctx.node_key == "asserting", ctx.node_key
+            assert ctx.attempt >= 1, ctx.attempt
+            assert ctx.input == {"doc_id": "d1"}, ctx.input
+            assert ctx.flow_name == "context_contract", ctx.flow_name
+            assert ctx.queue == "contract-q", ctx.queue
+            assert isinstance(ctx.claimed_at, datetime), ctx.claimed_at
+            SEEN["step"] = True
+            return "ok"
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            assert ctx.node_key == "enrich", ctx.node_key
+            SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        outcome = await runner.drive(flow_id)
+        assert outcome == "terminal"
+>       assert SEEN.get("step") is True
+E       AssertionError: assert None is True
+E        +  where None = <built-in method get of dict object at 0x7fddcd430400>('step')
+E        +    where <built-in method get of dict object at 0x7fddcd430400> = {}.get
+
+tests/test_wf_context_contract.py:64: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:42:42 [warning  ] sweep_join_body_unavailable    flow_id=01a1199b-2d29-7b30-a094-1f18e5628957 join_job_id=01a1199b-2d33-7a01-a930-0a582db2deff kind=sweep_join_body_unavailable step_key=asserting.join workflow_name=context_contract
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+1 failed in 1.62s

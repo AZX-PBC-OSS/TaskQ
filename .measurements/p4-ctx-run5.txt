@@ -1,0 +1,95 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f82d6f2b4c0>
+wf_schema = 'tq_dd5fa43355'
+wf_conn = <asyncpg.connection.Connection object at 0x7f82d6b946e0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface.
+            assert ctx.flow_id is not None, "the run id"
+            assert str(ctx.flow_id) == ctx.flow_id or isinstance(ctx.flow_id, uuid_module.UUID)
+            assert ctx.node_key == "asserting", ctx.node_key
+            assert ctx.attempt >= 1, ctx.attempt
+            assert ctx.input == {"doc_id": "d1"}, ctx.input
+            assert ctx.flow_name == "context_contract", ctx.flow_name
+            assert ctx.queue == "contract-q", ctx.queue
+            assert isinstance(ctx.claimed_at, datetime), ctx.claimed_at
+            SEEN["step"] = True
+            return "ok"
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            assert ctx.node_key == "enrich", ctx.node_key
+            SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        outcome = await runner.drive(flow_id)
+        assert outcome == "terminal"
+>       assert SEEN.get("step") is True
+E       AssertionError: assert None is True
+E        +  where None = <built-in method get of dict object at 0x7f82d943c4c0>('step')
+E        +    where <built-in method get of dict object at 0x7f82d943c4c0> = {}.get
+
+tests/test_wf_context_contract.py:64: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=ad4cd0a21034 redis=cc8b9b020689 state_dir=/tmp/pytest-of-rich/pytest-17656
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:43:01 [warning  ] sweep_join_body_unavailable    flow_id=01a1199b-7863-7c73-9419-e2ea9a6a479d join_job_id=01a1199b-7869-73d1-9f26-44a6c3203399 kind=sweep_join_body_unavailable step_key=asserting.join workflow_name=context_contract
+__________________ test_the_loop_ctx_carries_the_budget_wall ___________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f82d6f2b940>
+wf_schema = 'tq_dd5fa43355'
+
+    async def test_the_loop_ctx_carries_the_budget_wall(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
+        number, not None — the wall EXISTS when budget_s is set)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["budget_ms"] = ctx.budget_remaining_ms
+            seen["flow_name"] = ctx.flow_name
+            return Done("finished")
+    
+        @app.workflow("ctx_budget")
+        def ctx_budget() -> object:
+            return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+    
+        runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        assert seen["flow_name"] == "ctx_budget"
+>       assert seen["budget_ms"] is not None
+E       assert None is not None
+
+tests/test_wf_context_contract.py:92: AssertionError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=ad4cd0a21034 redis=cc8b9b020689
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+FAILED tests/test_wf_context_contract.py::test_the_loop_ctx_carries_the_budget_wall
+2 failed in 3.96s

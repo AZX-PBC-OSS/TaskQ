@@ -1,0 +1,72 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7ff80f217400>
+wf_schema = 'tq_c7bb06c296'
+wf_conn = <asyncpg.connection.Connection object at 0x7ff80f1ea300>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return ["a", "b", "c"]  # the map's source returns the LIST (the fork's items)
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            assert ctx.node_key == "ingest.item", ctx.node_key
+            SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+        outcome = await runner.drive(flow_id)
+        root = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+        )
+>       assert root == "succeeded", (root, json.dumps(SEEN.get("fields"), default=str), SEEN.get("checks"))
+E       AssertionError: ('failed', '{"flow_id": "01a1199d-d33f-7a03-b27c-c954defc1b6b", "node_key": "asserting", "attempt": 1, "input": {"doc_...d1"}, "flow_name": "context_contract", "queue": "contract-q", "claimed_at": "2026-10-08 03:45:36.127648+00:00"}', None)
+E       assert 'failed' == 'succeeded'
+E         
+E         - succeeded
+E         + failed
+
+tests/test_wf_context_contract.py:81: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+1 failed, 1 passed in 2.09s

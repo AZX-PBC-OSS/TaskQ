@@ -1,0 +1,81 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f38b7b2d220>
+wf_schema = 'tq_e61c1c60a0'
+wf_pool = <asyncpg.pool.Pool object at 0x7f38b7daac80>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7f38b7cda900>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
+            # unconditional — the answers replay per attempt; the operator
+            # never re-answers): after both gates, the body fails ONCE (the
+            # ladder) then succeeds — the holds never touched the ladder.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+>       assert statuses.count("awaited") == 2, statuses
+E       AssertionError: ['awaited', 'failed', 'failed', 'failed']
+E       assert 1 == 2
+E        +  where 1 = <built-in method count of list object at 0x7f38b7be0d00>('awaited')
+E        +    where <built-in method count of list object at 0x7f38b7be0d00> = ['awaited', 'failed', 'failed', 'failed'].count
+
+tests/test_wf_hitl_pins.py:221: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:49:54 [info     ] node.held                      hold_id=01a119a1-c433-7143-98bf-ef4fbdd116bf node=review run_id=01a119a1-c417-7200-a2b9-42c17d310f99 signals=['Approval']
+2026-10-07 20:49:54 [info     ] signal.delivered               hold_id=01a119a1-c433-7143-98bf-ef4fbdd116bf run_id=01a119a1-c417-7200-a2b9-42c17d310f99 signal=Approval
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+1 failed in 1.12s
