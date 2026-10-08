@@ -1,0 +1,63 @@
+..........Fxx.xx...........                                              [100%]
+=================================== FAILURES ===================================
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f6a77e1d400>
+wf_schema = 'tq_6c8cc78b97'
+wf_pool = <asyncpg.pool.Pool object at 0x7f6a77e628c0>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+            return build(mapped)
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        ledger = await wf_conn.fetch(
+            f'SELECT map_index, attempt, status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'src.item' "
+            "ORDER BY map_index, attempt",
+            flow_id,
+        )
+        # The flaky item (Item(n=2)) sits at map_index 1 — it laddered
+        # (2 attempts); the others succeeded first try — PER-CHILD identity
+        # (the ledger-PK attack's shape, through the API).
+        child1 = [(r["attempt"], r["status"]) for r in ledger if r["map_index"] == 1]
+>       assert child1 == [(1, "failed"), (2, "succeeded")]
+E       AssertionError: assert [(1, 'failed')] == [(1, 'failed'... 'succeeded')]
+E         
+E         Right contains one more item: (2, 'succeeded')
+E         Use -v to get more diff
+
+tests/test_wf_runner_pins.py:378: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_validate_pins.py::test_fan_in_bound_mutation
+  /tmp/opencode/wt-taskqflow-p3/.venv/lib/python3.13/site-packages/pydantic/main.py:263: RuntimeWarning: coroutine 'test_paper_cut_7_create_flow_takes_input.<locals>.input_walk' was never awaited
+    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_7_create_flow_takes_input - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_4_dispatch_time_predicate - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_paper_cut_1_join_user_body - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+XFAIL tests/test_wf_ergonomics_contract.py::test_bar_walk - T17 cut disposition: the cure lands with T09's flow API — the cut IS the red; this marker is removed by the commit that lands the cure
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+1 failed, 22 passed, 4 xfailed, 1 warning in 4.53s

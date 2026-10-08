@@ -1,0 +1,177 @@
+..F.....F.F                                                              [100%]
+=================================== FAILURES ===================================
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f11fa8d6e40>
+wf_schema = 'tq_ddabb16ff4'
+wf_pool = <asyncpg.pool.Pool object at 0x7f11f86fed40>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: Any, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+            return build(mapped)
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:367: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:351: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:363: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:444: in _run_node
+    await self._ladder_or_fail(flow_id, row, attempt, node, exc)
+src/taskq/workflows/api/_runner.py:632: in _ladder_or_fail
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "wf_step_ledger_claim_uniq"
+E   DETAIL:  Key (flow_id, step_key, COALESCE(map_index::integer, '-1'::integer), attempt)=(01a118f8-be77-7633-93d6-77bfaef152e4, src.item, 1, 1) already exists.
+
+asyncpg/protocol/protocol.pyx:205: UniqueViolationError
+___________ test_transient_ladder_emits_no_terminal_until_exhaustion ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f11f85295e0>
+wf_schema = 'tq_ddabb16ff4'
+wf_pool = <asyncpg.pool.Pool object at 0x7f11f836dc00>
+
+    async def test_transient_ladder_emits_no_terminal_until_exhaustion(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 7 through the public API: the transient ladder's attempt
+        failures emit NO terminal — the node re-pends until max_attempts."""
+        app = WorkflowApp()
+    
+        async def always_fails_transient(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("transient boom")
+    
+        @app.workflow("ladder_flow")
+        def ladder_flow() -> object:
+            node = step(always_fails_transient, Ingest(doc_id="d"), key="lad", max_attempts=3)
+            return build(node)
+    
+        runner = FlowRunner(app.get("ladder_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:273: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:351: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:363: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:444: in _run_node
+    await self._ladder_or_fail(flow_id, row, attempt, node, exc)
+src/taskq/workflows/api/_runner.py:632: in _ladder_or_fail
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "wf_step_ledger_claim_uniq"
+E   DETAIL:  Key (flow_id, step_key, COALESCE(map_index::integer, '-1'::integer), attempt)=(01a118f8-c4a6-76b2-aebc-2f7e5b9f11bf, lad, -1, 1) already exists.
+
+asyncpg/protocol/protocol.pyx:205: UniqueViolationError
+_____________________ test_retry_classifier_routes_by_kind _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f11f83f57c0>
+wf_schema = 'tq_ddabb16ff4'
+wf_pool = <asyncpg.pool.Pool object at 0x7f11f836c7c0>
+
+    async def test_retry_classifier_routes_by_kind(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #12's cure: the retry knob routes by kind — a ``permanent``
+        body failure takes NO ladder (one terminal, immediately)."""
+        app = WorkflowApp()
+    
+        async def always_fails(ctx: Any, params: Ingest) -> dict[str, int]:
+            raise ValueError("boom")
+    
+        @app.workflow("retry_flow")
+        def retry_flow() -> object:
+            node = step(
+                always_fails,
+                Ingest(doc_id="d"),
+                key="perm",
+                retry_kind="permanent",
+                max_attempts=3,
+            )
+            return build(node)
+    
+        runner = FlowRunner(app.get("retry_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:239: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:351: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:363: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:444: in _run_node
+    await self._ladder_or_fail(flow_id, row, attempt, node, exc)
+src/taskq/workflows/api/_runner.py:632: in _ladder_or_fail
+    await conn.execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "wf_step_ledger_claim_uniq"
+E   DETAIL:  Key (flow_id, step_key, COALESCE(map_index::integer, '-1'::integer), attempt)=(01a118f8-c67a-7da2-b437-f6e1130c84ed, perm, -1, 1) already exists.
+
+asyncpg/protocol/protocol.pyx:205: UniqueViolationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+FAILED tests/test_wf_runner_pins.py::test_transient_ladder_emits_no_terminal_until_exhaustion
+FAILED tests/test_wf_runner_pins.py::test_retry_classifier_routes_by_kind - a...
+3 failed, 8 passed in 4.21s

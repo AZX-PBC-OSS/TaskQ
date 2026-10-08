@@ -1,0 +1,123 @@
+...FFF..                                                                 [100%]
+=================================== FAILURES ===================================
+________________________ test_mermaid_shape_vocabulary _________________________
+
+    def test_mermaid_shape_vocabulary() -> None:
+        """The emission's grammar: rectangle = plain actor, ``[[...]]`` =
+        the gather join, ``{{...}}`` = the collapsed map's join, ``([(...)])``
+        = the HOLD node (its gate + timeout policy ON the node), and the
+        label fallback for an unresolvable type."""
+        from taskq.workflows import map_source
+    
+        async def source(ctx: Any, params: Ingest) -> list[Report]:
+            return []  # pragma: no cover - the runner drives real bodies
+    
+        app = WorkflowApp()
+    
+        @app.workflow("shapes")
+        def shapes() -> object:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
+            plain = step(_body, Ingest(doc_id="d"), key="plain")
+            sink(plain)
+            joined = gather([plain])
+            sink(joined)
+            mapped = map_source(plain, _body)
+            sink(mapped)
+            return build(
+                step(
+                    _body,
+                    Ingest(doc_id="d"),
+                    key="hold",
+                    gates=(gate,),
+                )
+            )
+    
+>       text = app.get("shapes").mermaid()
+               ^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_surface_pins.py:201: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:262: in get
+    returned = record_under(graph, build_fn)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_graph.py:191: in record_under
+    return build_fn()
+           ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @app.workflow("shapes")
+    def shapes() -> object:
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
+        plain = step(_body, Ingest(doc_id="d"), key="plain")
+>       sink(plain)
+        ^^^^
+E       NameError: name 'sink' is not defined
+
+tests/test_wf_api_surface_pins.py:187: NameError
+____________________ test_non_promise_build_return_refused _____________________
+
+    def test_non_promise_build_return_refused() -> None:
+        """The build function's return IS the terminal promise — a bare dict
+        (the closure-shaped mistake) is the loud build error."""
+        app = WorkflowApp()
+    
+        @app.workflow("bad_return")
+        def bad_return() -> object:
+            step(_body, Ingest(doc_id="d"), key="a")
+            return {"not": "a promise"}
+    
+        with pytest.raises(WorkflowBuildError, match="terminal promise"):
+>           app.get("bad_return")
+
+tests/test_wf_api_surface_pins.py:122: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._app.WorkflowApp object at 0x7f38290e4c30>
+name = 'bad_return'
+
+    def get(self, name: str) -> CompiledWorkflow:
+        """Compile the NAMED workflow: run its build function under a
+        fresh recorder. Same module → same graph, every time.
+    
+        The build function is SYNC and PURE — the wiring is compile-time
+        dataflow spelling (the recorder's verbs); nothing async happens
+        at compile. Its RETURN is the terminal promise (or an explicit
+        ``build(...)`` result)."""
+        build_fn = self._workflows.get(name)
+        if build_fn is None:
+            raise KeyError(f"workflow {name!r} is not declared on this app")
+        graph = BuildGraph()
+        returned = record_under(graph, build_fn)
+        if graph.terminal is None:
+            if isinstance(returned, Promise):
+                graph.terminal = returned.key
+            elif returned is not None:
+>               raise TypeError(
+                    f"workflow {name!r}'s build function returned "
+                    f"{type(returned).__name__!r} — the return IS the "
+                    "terminal promise (wire one, or return build(p))"
+                )
+E               TypeError: workflow 'bad_return''s build function returned 'dict' — the return IS the terminal promise (wire one, or return build(p))
+
+src/taskq/workflows/api/_app.py:267: TypeError
+__________________ test_actor_preserves_the_function_identity __________________
+
+    def test_actor_preserves_the_function_identity() -> None:
+        """The decorator is SUGAR: the handle preserves ``__name__``/
+        ``__doc__`` (attribute reads fall through) and is DIRECTLY callable
+        for unit tests (the body's own signature)."""
+        app = WorkflowApp()
+        handle = app.actor()(_body)
+        assert handle.name == "_body"
+        assert handle.__name__ == "_body"  # type: ignore[attr-defined]  # Why: the fall-through IS the pin (the callable-preserving decorator).
+>       assert "probe" in handle.__doc__  # type: ignore[attr-defined]
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'probe' in 'The workflow actor handle: preserves ``__name__``/``__doc__``, is\nDIRECTLY callable for unit tests (``await fetch(ctx, params)``), and\ncarries the placement + retry + wiring metadata the compile and the\nrunner consume.'
+E        +  where 'The workflow actor handle: preserves ``__name__``/``__doc__``, is\nDIRECTLY callable for unit tests (``await fetch(ctx, params)``), and\ncarries the placement + retry + wiring metadata the compile and the\nrunner consume.' = <taskq.workflows.api._app.WorkflowActor object at 0x7f382905ec10>.__doc__
+
+tests/test_wf_api_surface_pins.py:72: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_surface_pins.py::test_mermaid_shape_vocabulary - Nam...
+FAILED tests/test_wf_api_surface_pins.py::test_non_promise_build_return_refused
+FAILED tests/test_wf_api_surface_pins.py::test_actor_preserves_the_function_identity
+3 failed, 5 passed in 0.53s

@@ -1,0 +1,32 @@
+F
+=================================== FAILURES ===================================
+__________ test_pubsub_knock_is_a_pointer_and_the_consumer_converges ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7ff608781040>
+wf_schema = 'tq_fafdf5d774'
+wf_pool = <asyncpg.pool.Pool object at 0x7ff608862680>
+
+    async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
+        + event) — NEVER the sole copy of the payload; a consumer that
+        MISSES the knock still converges by polling ``client.hitl.list()``
+        (the row is the truth)."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, _runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+        client = HitlClient(wf_pool, schema=wf_schema)
+        # THE KNOB's payload shape: pinned via the notify's content (the
+        # pointer: hold_id + run_id + event) — the row is the truth.
+        holds_before = await client.list(run=flow_id)
+>       assert len(holds_before) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:379: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_pubsub_knock_is_a_pointer_and_the_consumer_converges
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 1.51s

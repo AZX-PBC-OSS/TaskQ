@@ -1,0 +1,496 @@
+FF.FFFFF                                                                 [100%]
+=================================== FAILURES ===================================
+________________ test_carry_advanced_exactly_once_per_iteration ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a75755310>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a75846200>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f4a7592e120>
+
+    async def test_carry_advanced_exactly_once_per_iteration(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """P3 1c's pin at the API: the final acc == the iteration count (no
+        double-apply, no lost apply); the iteration ledger's timeline is
+        consecutive."""
+        iterations: list[int] = []
+    
+        async def counting_body(ctx: Any, carry: Counter | None) -> Done[Counter]:
+            acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
+            iterations.append(acc)
+            return Done(Counter(acc=acc))
+    
+        app, name = _loop_app(counting_body, max_iterations=3)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        # The carry advanced EXACTLY ONCE per iteration: [1, 2, 3].
+>       assert iterations == [1, 2, 3], iterations
+E       AssertionError: [1]
+E       assert [1] == [1, 2, 3]
+E         
+E         Right contains 2 more items, first extra item: 2
+E         Use -v to get more diff
+
+tests/test_wf_loop_pins.py:103: AssertionError
+___________ test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a757ccf50>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a75847c40>
+
+    async def test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """The crash-dead-worker path: a loop node 'running' at/over its cap
+        (the worker died mid-iteration) is terminated BY THE SWEEP — an
+        ``if``-in-the-body implementation reds this (the body never runs)."""
+        app, name = _loop_app(None, max_iterations=3)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # ORPHAN the loop: claim it (running) and force the counter PAST the
+        # cap — no worker will ever advance it.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'running\', '
+            "metadata = metadata || $2::jsonb, "
+            "locked_by_worker = $3, lock_expires_at = now() - interval '1 hour' "
+            "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
+            flow_id,
+            json.dumps({"iteration": 3, "max_iterations": 3, "kind": "loop"}),
+            new_uuid(),
+        )
+>       exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:191: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:348: in sweep_loop_budget
+    loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column j.flow_id does not exist
+E   HINT:  Perhaps you meant to reference the column "l.flow_id".
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+_____________ test_infra_fault_routes_to_reclaim_never_the_ladder ______________
+
+ctx = StepContext(flow_id=UUID('01a11908-e553-7570-9dfe-acabe8fa7cc6'), job_id=UUID('01a11908-e556-7290-8a97-9631d5e7a4c1'),...ive, true)\n      )\n    RETURNING f.id\n)\nSELECT count(*)::int AS roots_updated FROM maintained\n'), _map_index=None)
+carry = None
+
+    async def body_failure(ctx: Any, carry: object) -> Done[dict[str, int]]:
+        kills2["n"] += 1
+>       raise ValueError("the body's own failure")
+E       ValueError: the body's own failure
+
+tests/test_wf_loop_pins.py:305: ValueError
+
+During handling of the above exception, another exception occurred:
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a757cff20>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a75847940>
+
+    async def test_infra_fault_routes_to_reclaim_never_the_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """THE SEMANTICS DECISION, stated once: infra fault ≠ body failure.
+        Three storm kills (ConnectionDoesNotExistError) on one loop: ZERO
+        ladder attempts burned (the ledger says 'crashed', the node
+        re-claims); a BODY exception burns its typed failure (the named
+        class)."""
+        kills = {"n": 0}
+    
+        async def storm_body(ctx: Any, carry: object) -> Done[dict[str, int]]:
+            kills["n"] += 1
+            if kills["n"] <= 3:
+                raise asyncpg.exceptions.ConnectionDoesNotExistError("storm kill")
+            return Done({"ok": True})
+    
+        app, name = _loop_app(storm_body, max_iterations=5)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # drive returns after the third kill re-pends (the reclaim owns it);
+        # the loop node goes back to pending — the NEXT drive re-claims.
+        await runner.drive(flow_id, max_ticks=5)
+        crashed = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND status = 'crashed'",
+            flow_id,
+        )
+        assert crashed >= 1
+        failed_ladder = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND status = 'failed'",
+            flow_id,
+        )
+        assert failed_ladder == 0, (
+            "the infra fault burned the ladder — the semantics decision "
+            "(infra fault ≠ body failure) is violated"
+        )
+        # The BODY failure arm: the same loop, a body ValueError → the typed
+        # LoopBodyFailure + the flow terminal (STRANDED-FLOW).
+        kills2: dict[str, int] = {"n": 0}
+    
+        async def body_failure(ctx: Any, carry: object) -> Done[dict[str, int]]:
+            kills2["n"] += 1
+            raise ValueError("the body's own failure")
+    
+        app2, name2 = _loop_app(body_failure, max_iterations=5)
+        runner2 = await _runner_of(app2, name2, wf_pool, wf_schema)
+        flow_id2 = await runner2.create_flow()
+>       await runner2.drive(flow_id2, max_ticks=3)
+
+tests/test_wf_loop_pins.py:310: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:341: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:353: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:408: in _run_node
+    await self._run_loop_node(flow_id, row, attempt, node)
+src/taskq/workflows/api/_runner.py:769: in _run_loop_node
+    await self._exhaust_loop(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f4a758ff820>
+flow_id = UUID('01a11908-e553-7570-9dfe-acabe8fa7cc6')
+row = {'id': UUID('01a11908-e556-7290-8a97-9631d5e7a4c1'), 'step_key': 'counter', 'map_index': None, 'attempt': 0, ...}
+error_class = 'LoopBodyFailure'
+message = "the loop body failed: ValueError: the body's own failure"
+
+    async def _exhaust_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        error_class: str | None,
+        message: str | None,
+    ) -> None:
+        """The NAMED exhaustion (the driver's own arms — the cap guard's
+        refusal and the body failure; the SWEEP's arm runs the same
+        statement): the named state + the FLOW TERMINALIZED in the SAME
+        tx (STRANDED-FLOW)."""
+        from taskq.workflows.api._sql_loop import (
+            ITERATION_STATE_CAP_EXHAUSTED,
+            LOOP_ERROR_BODY,
+            LOOP_ERROR_CAP,
+            LOOP_EXHAUST_SQL,
+        )
+    
+        error_class = error_class or LOOP_ERROR_CAP
+        state_name = (
+            ITERATION_STATE_CAP_EXHAUSTED if error_class != LOOP_ERROR_BODY else "loop_body_failed"
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+>               render_loop_sql(LOOP_EXHAUST_SQL, self.schema).replace(
+                ^^^^^^^^^^^^^^^
+                    "{terminal}", "('{succeeded}','failed','cancelled','crashed','abandoned')"
+                ),
+                row["id"],
+                error_class,
+                f'{{"iteration_state": "{state_name}", "kind": "loop"}}',
+                message or f"the loop's wall fired (the named state: {state_name})",
+            )
+E           NameError: name 'render_loop_sql' is not defined
+
+src/taskq/workflows/api/_runner.py:875: NameError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:02:55 [debug    ] loop.wake                      loop=counter remaining_ms=0
+______________ test_budget_fires_on_db_clock_under_app_clock_skew ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a756c98b0>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a75847b80>
+
+    async def test_budget_fires_on_db_clock_under_app_clock_skew(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G6: the app clock skewed +1h against PG → the budget STILL fires
+        at the DB-clock deadline (the arm compares PG's clock_timestamp(),
+        never the app's). The arm's WHERE reads ONLY PG's clock — pinned by
+        construction here (the arm runs INSIDE PG; the app clock never
+        enters a comparison) — and the skew fixture's +1h shape proves the
+        app-clock-comparing variant reds."""
+        from taskq.backend.clock import SystemClock
+        from tests._clock_skew import SkewedClock
+    
+        # The app clock skewed +1h AHEAD of PG (S > 0 — the premature-actions
+        # direction): the budget arm never reads the app clock, so the skew
+        # cannot fire the wall early — the DB-clock doctrine, proven against
+        # the fixture.
+        skew_clock = SkewedClock(SystemClock(), skew=timedelta(hours=1))
+        del skew_clock
+        app, name = _loop_app(None, budget_s=1.0)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        loop_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".jobs WHERE step_key = \'counter\' AND '
+            "(metadata->>'flow_id')::uuid = $1",
+            flow_id,
+        )
+        # The loop 'runs' with its deadline 1s PAST (DB clock).
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET status = \'running\', '
+            "budget_deadline = now() - interval '1 second', "
+            "metadata = metadata || $2::jsonb WHERE id = $1",
+            loop_id,
+            json.dumps({"iteration": 0, "max_iterations": 100, "kind": "loop"}),
+        )
+        # The APP clock's skew (+1h): the arm is INDIFFERENT — it never reads
+        # the app clock (the statement's only clock is clock_timestamp()).
+>       exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:360: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:348: in sweep_loop_budget
+    loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column j.flow_id does not exist
+E   HINT:  Perhaps you meant to reference the column "l.flow_id".
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+____________________ test_consume_budget_dragon_red_forever ____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a757294f0>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a758462c0>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f4a75824e10>
+
+    async def test_consume_budget_dragon_red_forever(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """THE DRAGON, not a bug: the CONSUME variant — the arm that READS
+        the budget (consumes it) instead of PAUSING — killed a held loop
+        mid-hold and the operator's later approval was REFUSED (deliver →
+        False): work silently lost, timer order nondeterministic (P3 1a′).
+        The shipped arm's PAUSED semantics close it; the variant is kept red
+        by the mutation drill: remove ``AND NOT budget_paused``, watch THIS
+        suite fail, restore. The drill's red is RECORDED here."""
+        # The drill ran (the arm mutated, the paused row fired, the suite
+        # failed, the guard restored); the dragon's red lives in the redlog
+        # + the guide's warning. This pin documents the DRAGON's shape and
+        # keeps its conviction in the suite (a reader who removes the leg
+        # and re-runs sees THIS file's paused-row pin red).
+        loop_redlog.red(
+            "pin1-consume-budget-dragon",
+            "the CONSUME variant (P3 1a') — the arm consumes the budget instead of pausing",
+            {
+                "held_loop_killed_mid_hold": True,
+                "operator_approval_refused": "deliver -> False",
+                "conviction": "the shipped arm carries AND NOT budget_paused; the drill red is in t19-pin-reds.json",
+            },
+        )
+        # The shipped arm's paused-row refusal (the green side of the drill):
+        app, name = _loop_app(None, budget_s=600.0)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        loop_id = new_uuid()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+            "$2::jsonb, now() - interval '1 hour', true)",
+            loop_id,
+            json.dumps({"flow_id": str(flow_id), "kind": "loop", "iteration": 0}),
+        )
+>       await sweep_loop_budget(wf_pool, runner.wsql)
+
+tests/test_wf_loop_pins.py:468: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:348: in sweep_loop_budget
+    loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column j.flow_id does not exist
+E   HINT:  Perhaps you meant to reference the column "l.flow_id".
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+________ test_iteration_cap_terminated_by_the_advance_guard_named_state ________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a7569c7d0>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a756f5480>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f4a75827750>
+
+    async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """An always-Refine body terminates at max_iterations — the named
+        ``iteration_cap_exhausted`` state on the loop node, the FLOW
+        TERMINAL in the same tx (never wedged running)."""
+        spawns: list[int] = []
+    
+        async def refine_forever(ctx: Any, carry: object) -> Refine[dict[str, int]]:
+            spawns.append(1)
+            return Refine({"acc": len(spawns)})
+    
+        app, name = _loop_app(refine_forever, max_iterations=5)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:139: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:341: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:353: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:408: in _run_node
+    await self._run_loop_node(flow_id, row, attempt, node)
+src/taskq/workflows/api/_runner.py:802: in _run_loop_node
+    await self._exhaust_loop(flow_id, row, None, None)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f4a757d3790>
+flow_id = UUID('01a11908-e7fb-7142-9988-ef5be1337c09')
+row = {'id': UUID('01a11908-e804-7b61-bf89-6cd8d0458020'), 'step_key': 'counter', 'map_index': None, 'attempt': 0, ...}
+error_class = 'IterationCapExhausted', message = None
+
+    async def _exhaust_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        error_class: str | None,
+        message: str | None,
+    ) -> None:
+        """The NAMED exhaustion (the driver's own arms — the cap guard's
+        refusal and the body failure; the SWEEP's arm runs the same
+        statement): the named state + the FLOW TERMINALIZED in the SAME
+        tx (STRANDED-FLOW)."""
+        from taskq.workflows.api._sql_loop import (
+            ITERATION_STATE_CAP_EXHAUSTED,
+            LOOP_ERROR_BODY,
+            LOOP_ERROR_CAP,
+            LOOP_EXHAUST_SQL,
+        )
+    
+        error_class = error_class or LOOP_ERROR_CAP
+        state_name = (
+            ITERATION_STATE_CAP_EXHAUSTED if error_class != LOOP_ERROR_BODY else "loop_body_failed"
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+>               render_loop_sql(LOOP_EXHAUST_SQL, self.schema).replace(
+                ^^^^^^^^^^^^^^^
+                    "{terminal}", "('{succeeded}','failed','cancelled','crashed','abandoned')"
+                ),
+                row["id"],
+                error_class,
+                f'{{"iteration_state": "{state_name}", "kind": "loop"}}',
+                message or f"the loop's wall fired (the named state: {state_name})",
+            )
+E           NameError: name 'render_loop_sql' is not defined
+
+src/taskq/workflows/api/_runner.py:875: NameError
+________________ test_paused_loop_invisible_to_the_budget_sweep ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4a7569fd40>
+wf_schema = 'tq_30ef86d355'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4a756f5b40>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f4a74d91ba0>
+
+    async def test_paused_loop_invisible_to_the_budget_sweep(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """A PAUSED loop row with its budget_deadline FORCED INTO THE PAST
+        must not fire (holds are free); the UN-paused row at the same
+        deadline DOES. The arm missing ``AND NOT budget_paused`` reds (the
+        mutation drill's recorded red = the CONSUME-BUDGET dragon)."""
+        app, name = _loop_app(None, budget_s=600.0)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Both loop rows: 'running', deadline forced into the past.
+        for paused in (True, False):
+            loop_id = new_uuid()
+            await wf_conn.execute(
+                f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+                "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+                "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+                "$2::jsonb, now() - interval '1 hour', $3)",
+                loop_id,
+                json.dumps(
+                    {
+                        "flow_id": str(flow_id),
+                        "kind": "loop",
+                        "iteration": 0,
+                        "max_iterations": 100,
+                    }
+                ),
+                paused,
+            )
+        # THE ARM: the paused row is invisible; the un-paused row fires.
+        # (Run the arm on a pool — the function manages its own tx.)
+>       await sweep_loop_budget(wf_pool, runner.wsql)
+
+tests/test_wf_loop_pins.py:237: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_sweep.py:348: in sweep_loop_budget
+    loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column j.flow_id does not exist
+E   HINT:  Perhaps you meant to reference the column "l.flow_id".
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_carry_advanced_exactly_once_per_iteration
+FAILED tests/test_wf_loop_pins.py::test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop
+FAILED tests/test_wf_loop_pins.py::test_infra_fault_routes_to_reclaim_never_the_ladder
+FAILED tests/test_wf_loop_pins.py::test_budget_fires_on_db_clock_under_app_clock_skew
+FAILED tests/test_wf_loop_pins.py::test_consume_budget_dragon_red_forever - a...
+FAILED tests/test_wf_loop_pins.py::test_iteration_cap_terminated_by_the_advance_guard_named_state
+FAILED tests/test_wf_loop_pins.py::test_paused_loop_invisible_to_the_budget_sweep
+7 failed, 1 passed in 3.15s

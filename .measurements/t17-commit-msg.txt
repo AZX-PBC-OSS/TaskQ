@@ -1,0 +1,8 @@
+[feat/taskqflow-p3 bf65171e] feat(workflows): T17 — the paper-cut dispositions ledger + the ergonomic contract
+ 9 files changed, 288 insertions(+)
+ create mode 100644 .measurements/p3-baseline-wf-1.txt
+ create mode 100644 .measurements/p3-baseline-wf-full.txt
+ create mode 100644 .measurements/p3-pytest-import-verify.txt
+ create mode 100644 .measurements/p3-uv-sync.log
+ create mode 100644 .measurements/t17-contract-first-run.txt
+ create mode 100644 .measurements/t17-dispositions.md

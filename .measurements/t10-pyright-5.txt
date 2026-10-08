@@ -1,0 +1,12 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:238:28 - error: Argument of type "ConnLike" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "_deadline_expr"
+    Type "ConnLike" is not assignable to type "Connection[Record]"
+      "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:246:28 - error: Argument of type "ConnLike" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "_deadline_expr"
+    Type "ConnLike" is not assignable to type "Connection[Record]"
+      "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:485:27 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:221:16 - error: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+4 errors, 0 warnings, 0 informations

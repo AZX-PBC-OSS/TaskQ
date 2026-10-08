@@ -1,0 +1,37 @@
+F
+=================================== FAILURES ===================================
+___________________ test_join_user_body_cascades_downstream ____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fe929f3c8c0>
+wf_schema = 'tq_4bac31a33f'
+wf_pool = <asyncpg.pool.Pool object at 0x7fe92a1de500>
+
+    async def test_join_user_body_cascades_downstream(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #1's cure (the BLOCKER): the fan-in's USER body receives the
+        decoded parents, and its result cascades — the downstream node
+        dispatches as a NORMAL step with the reducer's OUTPUT as its parent
+        result. No out-of-engine decode, no multi-flow glue."""
+        app = WorkflowApp()
+    
+        @app.workflow("cascade_flow")
+        def cascade_flow() -> object:
+            a = step(_double, step(_prepare, Ingest(doc_id="d1"), key="p"), key="a")
+            b = step(_double, step(_prepare, Ingest(doc_id="22"), key="q"), key="b")
+            reducer = step(_total, a, b, key="reducer")
+            return build(step(_tail, reducer, key="tail"))
+    
+        runner = FlowRunner(app.get("cascade_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+E       AssertionError: assert 'max_ticks' == 'terminal'
+E         
+E         - terminal
+E         + max_ticks
+
+tests/test_wf_runner_pins.py:130: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_runner_pins.py::test_join_user_body_cascades_downstream
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 131.48s (0:02:11)

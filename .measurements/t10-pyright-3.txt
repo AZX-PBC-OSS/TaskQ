@@ -1,0 +1,11 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:484:27 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:147:9 - error: Type of "model_tuple" is partially unknown
+    Type of "model_tuple" is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:158:1 - error: Unexpected indentation
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:189:17 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "register_hold"
+    "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:219:16 - error: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+5 errors, 0 warnings, 0 informations
