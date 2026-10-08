@@ -924,16 +924,33 @@ async def test_mid_population_conversion_preserves_every_row_and_index(
                 'succeeded', now())""",
             [(pid,) for pid in parent_ids],
         )
-        # 50k rows spread over 2000 distinct minutes (~34h => >= 2 chunks at
-        # the 1-day clamp) and over the 100 parents: real volume for
-        # migrate_data, still test-fast.
+        # 50k rows spread over 2000 distinct minutes and over the 100
+        # parents: real volume for migrate_data, still test-fast.
+        #
+        # THE WINDOW IS CHUNK-ALIGNED ON PURPOSE, and its NEWEST ROW SITS
+        # INSIDE the last full chunk (the anchor is
+        # date_trunc('day', now()) - 1 minute, never now()): a
+        # now()-anchored window's newest chunk is the current day's
+        # SLIVER — minutes since UTC midnight worth of rows, from 25
+        # (just past midnight) to 36k (late in the day) by wall clock —
+        # and the planner is RIGHT to seq-scan a 25-row chunk (bitmap
+        # ~4.0 vs seq ~1.3), so this pin's own no-Seq-Scan demand failed
+        # on a CORRECT plan when a run landed in the sliver hours (the
+        # captured red planned a 25-row day-chunk with a Seq Scan beside
+        # two bitmap-scanned full chunks). Anchoring at the last chunk
+        # boundary (the extra minute keeps the boundary instant itself —
+        # residue 0 — out of the notional next chunk) makes every
+        # populated chunk a full day (~560 + ~1440 minutes), so the
+        # planner demand is deterministic at every wall clock and still
+        # asserts what it is here for: the conversion's carried indexes
+        # actually serve a selective lookup.
         await conn.execute(
             f"""WITH p AS (
                 SELECT id, row_number() OVER (ORDER BY id) - 1 AS n
                 FROM {ts_schema}.jobs
             )
             INSERT INTO {ts_schema}.job_events (job_id, occurred_at, kind, detail)
-            SELECT p.id, now() - ((g % 2000) || ' minutes')::interval,
+            SELECT p.id, date_trunc('day', now()) - (((g % 2000) + 1) || ' minutes')::interval,
                 'state_change', ('{{"g":' || g || '}}')::jsonb
             FROM generate_series(1, 50000) g
             JOIN p ON p.n = g % 100""",
