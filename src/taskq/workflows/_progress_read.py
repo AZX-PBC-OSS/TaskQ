@@ -31,13 +31,16 @@ per-child-label counterfactual).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
 
+from taskq._json import loads as _loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._progress import CLASS_USER, KIND_PROGRESS
 from taskq.workflows._sql import WorkflowSql
@@ -46,8 +49,10 @@ __all__ = [
     "AggregateRead",
     "map_progress_line",
     "progress_sse_face",
+    "progress_stream_generator",
     "read_map_aggregate",
     "rebuild_display",
+    "run_display",
 ]
 
 
@@ -231,18 +236,28 @@ async def read_map_aggregate(
         rows = await conn.fetch(wsql.progress_child_results, parent_id)
         if fn is None:
             fn = await _resolve_declared_aggregate(conn, wsql, flow_id, parent_id)
+    # THE MAP'S ITEMS ARE THE INPUT, never the map's own auto-join: the
+    # join row rides the same parent and its result IS the collected list
+    # (the items again — doubly counted). The items' step key is the
+    # parent's own ``<parent>.item``; the fork's join is the parent's
+    # ``<parent>.join`` — excluded BY NAME (the runner's fork names them).
+    item_keys = {r["step_key"] for r in rows if r["step_key"].endswith(".item")}
+    parents = {k[: -len(".item")] for k in item_keys}
+    rows = [
+        r for r in rows if r["step_key"].endswith(".item") or r["step_key"] not in {
+            p + ".join" for p in parents
+        }
+    ]
     read_ms = time.perf_counter() * 1000
     results: list[Any] = []
     for r in rows:
         # the runner's own envelope ({"value": …}) unwraps — the fn sees
         # EXACTLY what the body returned, decoded once (cut #14's shape)
-        raw = r["result"]
-        if isinstance(raw, str):
-            import json
-
-            raw = json.loads(raw)
-        if isinstance(raw, dict) and "value" in raw and len(raw) == 1:
-            raw = raw["value"]
+        raw: Any = _loads(r["result"])
+        assert isinstance(raw, dict)  # the Any-contract walk: the envelope's shape
+        envelope: dict[str, Any] = {str(k): v for k, v in raw.items()}  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the parse hands back Unknown members; the assert above is the runtime guard.
+        if "value" in envelope and len(envelope) == 1:
+            raw = envelope["value"]
         results.append(raw)
     value: object = results
     fn_ms = 0.0
@@ -294,3 +309,67 @@ async def map_progress_line(
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.workflow_map_progress, parent_id)
     return [dict(r) for r in rows]
+
+
+# ── THE SSE STREAM GENERATOR (the face's wire shape) ─────────────────────
+
+
+async def progress_stream_generator(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    last_event_id: int = 0,
+    poll_s: float = 1.0,
+    stop: asyncio.Event | None = None,
+) -> AsyncIterator[dict[str, str]]:
+    """The run's progress SSE stream — the frames the HTTP face maps onto
+    ``sse-starlette`` (the route is the thin mapping; this generator is
+    the testable machine, T11's seq-cursor law applied to the progress
+    stream).
+
+    THE CONNECT SHAPE (the DH6 law at EVERY connect): the DISPLAY frame
+    first (the ledger + the state channel — the state is ledger-derived,
+    never stream-derived), then the replayed tail as ``progress`` frames
+    in seq order (``id:`` the seq — the SSE reconnect contract). A cursor
+    the ring pruned past yields the NAMED ``resync`` frame (the partial
+    mode + the state payload) BEFORE the tail — never a silent
+    empty-success. Idle ticks emit nothing (the keepalive is the HTTP
+    layer's)."""
+    import asyncio as _asyncio
+
+    cursor = last_event_id
+    display = await run_display(pool, wsql, flow_id)
+    yield {
+        "event": "display",
+        "id": str(cursor),
+        "data": json.dumps({"nodes": display}, default=str),
+    }
+    while stop is None or not stop.is_set():
+        face = await progress_sse_face(pool, wsql, flow_id=flow_id, last_event_id=cursor)
+        if face.mode == "partial":
+            # THE NAMED PARTIAL: the window was pruned under the cursor —
+            # the re-sync rides BEFORE the tail (the display converges
+            # from the state rows; latest-wins needs no history).
+            yield {
+                "event": "resync",
+                "id": str(cursor),
+                "data": json.dumps(
+                    {
+                        "mode": "partial",
+                        "oldest_retained": face.oldest_retained,
+                        "state_sync": face.state_sync,
+                    },
+                    default=str,
+                ),
+            }
+        for e in face.events:
+            seq = int(e["seq"])
+            if seq > cursor:
+                cursor = seq
+            yield {
+                "event": "progress",
+                "id": str(seq),
+                "data": json.dumps(e, default=str),
+            }
+        await _asyncio.sleep(poll_s)

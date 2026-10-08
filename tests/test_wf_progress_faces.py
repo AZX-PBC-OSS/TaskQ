@@ -14,6 +14,7 @@ inside, never 99%-running. The progress is ADVISORY.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -489,3 +490,69 @@ async def test_sunk_join_for_progress_warns_at_validate(
     assert w2, "the sunk join did not warn"
     assert "aggregate=" in w2[0].message
     _ = wf_pool, wf_schema
+
+
+# ── THE HTTP FACE (the SSE route — the thin mapping) ─────────────────────
+
+
+@pytest.mark.integration
+async def test_http_face_streams_display_then_progress(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """THE HTTP FACE: the route is REGISTERED on the admin router (the
+    thin mapping — the import law's lazy import), and the WIRE SHAPE is
+    the generator's, pinned here on the real pool: the ``display`` frame
+    FIRST (ledger-derived), the ``progress`` frames in seq order with
+    ``id:`` the seq (the browser EventSource reconnect contract)."""
+    app = WorkflowApp()
+
+    async def work(ctx: Any, params: Ingest) -> dict[str, object]:
+        await ctx.progress(40, "part one", None)
+        await ctx.progress(100, "part two", None)
+        return {"ok": True}
+
+    @app.workflow("t21_http_flow")
+    def t21_http_flow() -> object:
+        return build(step(work, Ingest(doc_id="d1"), key="work"))
+
+    runner = FlowRunner(app.get("t21_http_flow"), wf_pool, wf_schema)
+    flow_id = await runner.create_flow()
+    await runner.drive(flow_id)
+
+    # THE ROUTE IS REGISTERED (the thin mapping's existence — the admin
+    # router carries the stream; the mapping is lazy per the import law).
+    from fastapi import FastAPI
+
+    from taskq.web.admin import create_router
+
+    bundle = create_router(
+        wf_pool,
+        schema=wf_schema,
+        auth_dependency=lambda: None,  # the test mount: no auth
+    )
+    fast_app = FastAPI()
+    paths = {
+        getattr(r, "path", "") for r in bundle.router.routes
+    }
+    assert "/api/flow/{flow_id}/progress/stream" in paths, (
+        "the admin router does not carry the workflow progress stream"
+    )
+    _ = fast_app
+
+    # THE WIRE SHAPE: the generator's frames — the connect shape's law.
+    from taskq.workflows._progress_read import progress_stream_generator
+
+    stop = asyncio.Event()
+    frames: list[tuple[str, str]] = []
+    gen = progress_stream_generator(
+        wf_pool, wf_sql, flow_id=flow_id, last_event_id=0, poll_s=0.05, stop=stop
+    )
+    async for frame in gen:
+        frames.append((frame["event"], frame["id"]))
+        if sum(1 for e, _ in frames if e == "progress") >= 2:
+            stop.set()
+    kinds = [e for e, _ in frames]
+    assert kinds[0] == "display", "the connect shape: the display frame FIRST"
+    assert "progress" in kinds, "the replayed tail rides as progress frames"
+    ids = [int(i) for e, i in frames if e == "progress"]
+    assert ids == sorted(ids), "the frames are not in seq order"

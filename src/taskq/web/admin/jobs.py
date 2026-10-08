@@ -5,6 +5,7 @@ to ensure route registration order (static paths before {job_id}).
 """
 
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -41,6 +42,7 @@ from taskq.web.admin._factory import (
     get_backend,
     get_base_path,
     get_csrf_token,
+    get_pg_pool,
     get_principal,
     get_realtime_ctx,
     get_schema,
@@ -1029,3 +1031,73 @@ def register(router: APIRouter) -> None:
         # root, under a host prefix it climbs out of the mount and 404s
         # (or lands in the host's own routes).
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
+
+    # ── THE WORKFLOW PROGRESS STREAM (T21 — the SSE face's HTTP mapping) ────
+
+
+    @router.get("/api/flow/{flow_id}/progress/stream")
+    async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
+        flow_id: uuid.UUID,
+        request: Request,
+        pg_pool: asyncpg.Pool = Depends(get_pg_pool),
+        schema: str = Depends(get_schema),
+        last_event_id: int | None = Query(default=None),
+    ) -> Any:
+        """The run's progress stream (T21): the seq-cursor replay over the ONE
+        workflow stream, mapped onto SSE.
+
+        THE CONNECT SHAPE: a ``display`` frame first (the LEDGER + the state
+        channel — the node states are ledger-derived, never stream-derived:
+        the progress-lie fence), then ``progress`` frames in seq order
+        (``id:`` the seq — the browser ``EventSource``'s reconnect contract),
+        and — when the ring pruned past the reconnecting cursor — the NAMED
+        ``resync`` frame (the partial mode + the state payload) BEFORE the
+        tail, never a silent empty-success.
+
+        THE IMPORT LAW (§16.1): the workflows imports are lazy — this module
+        never imports ``taskq.workflows`` at module scope.
+        """
+        from sse_starlette.event import ServerSentEvent
+        from sse_starlette.sse import EventSourceResponse as _EventSourceResponse
+
+        from taskq.workflows._progress_read import progress_stream_generator
+        from taskq.workflows.engine import render_workflow_sql
+
+        # The cursor: the header wins (WHATWG SSE §9.2.1 — the browser sends
+        # it on reconnect); the query param is the curl/debugging convenience.
+        header_val = request.headers.get("Last-Event-ID")
+        cursor = 0
+        if header_val is not None:
+            try:
+                cursor = int(header_val)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative integer sequence number",
+                ) from None
+            if cursor < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative integer sequence number",
+                )
+        elif last_event_id is not None:
+            if last_event_id < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="last_event_id must be a non-negative integer sequence number",
+                )
+            cursor = last_event_id
+
+        wsql = render_workflow_sql(schema)
+
+        async def _frames() -> AsyncIterator[ServerSentEvent]:
+            async for frame in progress_stream_generator(
+                pg_pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
+            ):
+                yield ServerSentEvent(
+                    event=frame["event"], id=frame["id"], data=frame["data"]
+                )
+
+        return _EventSourceResponse(
+            _frames(), headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        )
