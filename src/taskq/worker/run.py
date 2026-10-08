@@ -34,6 +34,7 @@ import socket
 import time
 from collections.abc import Mapping
 from datetime import timedelta
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
 
@@ -48,7 +49,7 @@ from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import ActorConfigRow
-from taskq.backend._protocol import Backend, JobRow
+from taskq.backend._protocol import Backend, JobId, JobRow
 from taskq.backend._records import jsonb_param
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer, parent_tags
@@ -57,7 +58,12 @@ from taskq.constants import (
 )
 from taskq.context import JobContext
 from taskq.exceptions import MissingProvider
-from taskq.obs import bind_job_context, get_logger
+from taskq.obs import (
+    ConsumedOutcome,
+    bind_job_context,
+    get_logger,
+    record_consumed_message,
+)
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
@@ -637,6 +643,132 @@ async def _stub_terminal_write(
         )
 
 
+#: The workflow execution seam, resolved ONCE (the §16.1 import law: the
+#: worker core never imports the workflows package at module scope; the
+#: intercept's hook seam does, lazily, and remembers — a worker that
+#: never installed ``taskq[flows]`` resolves ``None`` and keeps paying
+#: nothing).
+_workflow_execution_seam_cache: "dict[str, ModuleType] | None" = None
+
+
+def _workflow_execution_seam() -> ModuleType | None:
+    """The lazily-imported ``taskq.workflows._worker_execution`` module,
+    or ``None`` when the workflows extra is absent. Resolved once: the
+    import outcome is process-stable."""
+    global _workflow_execution_seam_cache
+    if _workflow_execution_seam_cache is not None:
+        return _workflow_execution_seam_cache.get("module")
+    try:
+        from taskq.workflows import _worker_execution
+    except ImportError:  # the extra-less deployment — the vanilla shape
+        _workflow_execution_seam_cache = {}
+        return None
+    _workflow_execution_seam_cache = {"module": _worker_execution}
+    return _worker_execution
+
+
+#: The flow attempt's consumed-message outcome map: the execution tail's
+#: own labels onto the consumed-messages vocabulary (a terminalised or
+#: skipped node consumed; a laddered attempt failed; a held node went
+#: back to a wait state).
+_FLOW_OUTCOME_TO_CONSUMED: Final[dict[str, ConsumedOutcome]] = {
+    "succeeded": "succeeded",
+    "skipped": "succeeded",
+    "loop": "succeeded",
+    "held": "scheduled",
+    "laddered": "failed",
+    "cancelled": "cancelled",
+}
+
+
+async def _dispatch_flow_job(
+    *,
+    deps: WorkerDeps,
+    job: JobRow,
+    worker_id: UUID,
+    enqueuer: SubJobEnqueuer,
+    flow_seam: ModuleType,
+) -> str:
+    """ONE claimed workflow row's execution through the workflow
+    machinery (the intercept's engine room).
+
+    The SAME discipline the vanilla path keeps: the attempt runs in a
+    per-job CHILD task, and the child is what ``active_jobs`` registers
+    (so the cancel ladder's escalation scopes to the job, the loop
+    survives, and the lost-claim reconcile sees the registry entry for
+    as long as the body runs); the outcome is the execution tail's own
+    label; the consumption metric records with the vanilla path's
+    vocabulary.
+    """
+    flow_execute = flow_seam.execute_flow_job
+    ctx: JobContext[BaseModel] = JobContext(
+        job_id=job.id,
+        actor=job.actor,
+        queue=job.queue,
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
+        worker_id=worker_id,
+        payload=cast(
+            BaseModel, job.payload
+        ),  # Why: the flow row's payload is the engine's own envelope dict, never the actor model — the generic's runtime face is the raw carrier.
+        jobs=enqueuer,
+        log=_consumer_log.bind(job_id=str(job.id), actor=job.actor, queue=job.queue),
+    )
+
+    async def _run() -> str:
+        return await flow_execute(
+            pool=deps.dispatcher_pool,
+            schema=deps.settings.schema_name,
+            worker_id=JobId(worker_id),
+            job=job,
+        )
+
+    task = asyncio.create_task(_run(), name=f"flow-attempt:{job.id}")
+    entry = await deps.active_jobs.register(job.id, task, ctx)
+    try:
+        outcome = await task
+    except asyncio.CancelledError:
+        # Route by WHO was cancelled (the vanilla dispatch's own split):
+        # this helper's caller cancelling (a shutdown signal's loop
+        # teardown) re-raises — the loop dies with its job. The CHILD
+        # alone being cancelled (an operator cancel's phase-2 escalation,
+        # or a force-cancel) is absorbed: the flow row stays running
+        # under this worker's lock with no terminal, and the same
+        # recovery machinery that owns every interrupted attempt owns it
+        # (the lost-claim reconcile's refund, the reclaim sweep's
+        # re-claim; the ledger's arbiter dedupes the completed
+        # side effects — at-least-once body execution, the ledger's
+        # stated boundary).
+        current = asyncio.current_task()
+        if (
+            (current is not None and current.cancelling() > 0)
+            or deps.producer_stop_event.is_set()
+            or deps.shutdown_phase is not ShutdownPhase.NONE
+        ):
+            raise
+        _consumer_log.info(
+            "flow-force-cancelled-slot-continues",
+            job_id=str(job.id),
+            actor=job.actor,
+        )
+        return "cancelled"
+    finally:
+        await deps.active_jobs.deregister(job.id, entry)
+    consumed = _FLOW_OUTCOME_TO_CONSUMED.get(outcome)
+    if consumed is not None:
+        record_consumed_message(job.actor, job.queue, outcome=consumed)
+    _consumer_log.info(
+        "flow-step-executed",
+        job_id=str(job.id),
+        actor=job.actor,
+        queue=job.queue,
+        step_key=str(job.metadata.get("step_key", "")),
+        flow_id=str(job.metadata.get("flow_id", "")),
+        outcome=outcome,
+    )
+    return outcome
+
+
 async def consumer_loop_stub(
     deps: WorkerDeps,
     local_queue: asyncio.Queue[JobRow],
@@ -914,6 +1046,72 @@ async def di_consumer_loop(
         if slot_freed_event is not None:
             slot_freed_event.set()
 
+        # THE WORKFLOW INTERCEPT (the execution verdict's gap-1 cure): a
+        # claimed row carrying the flow lineage (metadata.flow_id — the
+        # engine's stamp on every node row) executes THROUGH THE WORKFLOW
+        # MACHINERY, never through the actor registry: the body resolves
+        # from the registered definition (D1 — the flow root's stamped
+        # workflow name) and runs via the runner's ledger-claim/finalize
+        # machinery (the same tx1/tx2 + the fences — NOT a second
+        # execution semantics; the in-process driver and this door differ
+        # only in WHO CLAIMED). The seam resolves lazily (the §16.1
+        # import law): a worker that never installed taskq[flows] has no
+        # seam — and the dispatch fence (the workers row's
+        # workflow_execution capability) never hands it a workflow row in
+        # the first place, so falling through to the actor-not-found
+        # parking below is the defined legacy behavior, not a snooze
+        # loop.
+        if job.metadata.get("flow_id") is not None:
+            _flow_seam = _workflow_execution_seam()
+            if _flow_seam is not None:
+                try:
+                    _flow_outcome = await _dispatch_flow_job(
+                        deps=deps,
+                        job=job,
+                        worker_id=worker_id,
+                        enqueuer=enqueuer,
+                        flow_seam=_flow_seam,
+                    )
+                except _flow_seam.WorkflowBodyUnresolvableError:
+                    # THE UNRESOLVABLE ROW (a stamped workflow name no
+                    # process carries, a hand-crafted row): the SAME
+                    # defined parking an unregistered actor gets — the
+                    # snooze cadence, budget-free, the stranded-jobs
+                    # detector the witness. LOUD, never a silent wedge.
+                    _consumer_log.error(
+                        "dispatch-workflow-body-unresolvable",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                        flow_id=str(job.metadata.get("flow_id")),
+                    )
+                    try:
+                        _flow_release = await backend.mark_snoozed(
+                            job.id,
+                            worker_id,
+                            timedelta(seconds=10),
+                            metadata_update={"released_reason": "workflow-body-unresolvable"},
+                            attempt=job.attempt,
+                            claim_epoch=job.claim_epoch,
+                        )
+                    except Exception:
+                        _consumer_log.exception(
+                            "dispatch-workflow-unresolvable-release-failed",
+                            job_id=str(job.id),
+                        )
+                        deps.disowned_jobs.add(job.id)
+                    else:
+                        if _flow_release == "noop":
+                            _consumer_log.debug(
+                                "dispatch-workflow-unresolvable-release-noop",
+                                job_id=str(job.id),
+                            )
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    continue
+                if _flow_outcome == "failed":
+                    deps.drain_failures += 1
+                deps.active_jobs.resolve_claim(job.id, _claim)
+                continue
+
         if job.actor not in actor_registry:
             _consumer_log.error(
                 "dispatch-actor-not-found",
@@ -1100,7 +1298,12 @@ async def di_consumer_loop(
                 slot_freed_event.set()
 
 
-async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
+async def register_worker(
+    pool: asyncpg.Pool,
+    settings: WorkerSettings,
+    *,
+    workflow_execution: bool = False,
+) -> UUID:
     """Register the current worker in ``taskq.workers`` and return its UUID.
 
     Generates a UUIDv7, inserts a row into ``{schema}.workers``, and returns
@@ -1112,8 +1315,17 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     they are stored directly for cross-process correlation and health checking.
 
     The row's metadata records the worker's runtime facts: whether NOTIFY
-    dispatch is enabled, and ``max_concurrency``, the capacity the worker
-    runs at, which sizes ``local_queue`` and bounds every dispatch.
+    dispatch is enabled, ``max_concurrency``, the capacity the worker
+    runs at (which sizes ``local_queue`` and bounds every dispatch), and
+    ``workflow_execution`` — whether this worker's process imported the
+    flow definitions (the boot's F3 projection ran). The dispatch claim's
+    EXECUTION fence reads that fact as data: a workflow row is claimable
+    only by a worker that can resolve its body, so a worker that never
+    imported the definitions is never handed one to snooze-loop on.
+
+    ``workflow_execution`` defaults ``False``: a caller that did not run
+    the projection is not capable, by the same predicate the projection
+    itself answers (``workflow_execution_capable``).
     """
     worker_id = new_uuid()
     schema = settings.schema_name
@@ -1134,6 +1346,7 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     metadata: dict[str, object] = {
         "notify_enabled": notify_enabled,
         "max_concurrency": settings.max_concurrency,
+        "workflow_execution": workflow_execution,
     }
 
     sql = (

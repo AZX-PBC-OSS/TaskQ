@@ -309,10 +309,54 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # _render_dispatch_sql (never .format — the templates keep {schema} for the
 # call-site render).
 _WF_DISPATCH_FENCE_TEMPLATE = """\
-      -- THE DISPATCH FENCE (P3 rule 4's second leg, T04): a pending
-      -- workflow child of a TERMINAL flow is unclaimable (see the
-      -- _wf_dispatch_fence derivation above the template). Short-circuits
-      -- on the step_key probe — vanilla rows evaluate no subplan.
+      -- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker
+      -- EXECUTION capability): a workflow row is claimable only by a
+      -- worker that can EXECUTE it, and never on a TERMINAL flow.
+      -- Short-circuits on the step_key probe — vanilla rows evaluate no
+      -- subplan.
+      --
+      -- THE EXECUTION LEG (the execution verdict's cure): a workflow
+      -- row's body resolves from the registered workflow definition
+      -- (D1), which lives only in a worker whose process imported the
+      -- flow definitions (the boot's F3 projection —
+      -- ``taskq.workflows._worker_execution``). A worker that never
+      -- imported them cannot resolve any body: claiming the row buys a
+      -- claim-snooze-claim loop (the actor-not-found snooze, the
+      -- execution probe A2's red). So the fence admits flow rows ONLY
+      -- when THIS round's worker registered itself
+      -- ``workflow_execution`` capable (the workers row's metadata —
+      -- stamped at boot by the projection's own sync). The capability
+      -- is DATA (one primary-key probe per round, an InitPlan off
+      -- params.worker_id), never a second SQL variant: the claim
+      -- statement's text is one text for every worker, and a vanilla
+      -- row's plan cost is the step_key short-circuit probe — the same
+      -- cost class the P3 leg's own comment pins.
+      AND (
+          __WF_ALIAS__.step_key IS NULL
+          OR (
+              (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "{schema}".jobs wf_flow
+                  WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                    AND wf_flow.status IN __WF_TERMINAL__
+              )
+          )
+      )
+"""
+
+
+#: The claimable probe's P3-only fence: the probe statement has NO worker
+#: identity (its params are the queue list alone), so the execution leg
+#: has nothing to read — the probe answers "does ANY routable row remain"
+#: for the round-expansion loop, whose bounded wasted expansions on a
+#: flow row a fenced worker will not claim are the accepted transient the
+#: probe's own docstring already prices (``bound_wasted_work_on_a_
+#: transient_state``). The claim statement proper owns the execution
+#: decision.
+_WF_PROBE_FENCE_TEMPLATE = """\
+      -- THE DISPATCH FENCE, P3 leg only (the probe carries no worker
+      -- identity — see the derivation at _wf_dispatch_fence).
       AND NOT (
           __WF_ALIAS__.step_key IS NOT NULL
           AND EXISTS (
@@ -337,6 +381,48 @@ def _wf_dispatch_fence(alias: str) -> str:
     )
 
 
+def _wf_probe_fence(alias: str) -> str:
+    # The P3-only variant the claimable probe bakes: the terminal-status
+    # set renders from statemachine.TERMINAL_STATUSES (the same
+    # derivation _wf_dispatch_fence applies — a table alias and that
+    # set, never caller input).
+    terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+    return _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias).replace(
+        "__WF_TERMINAL__", terminal
+    )
+
+
+# THE EXECUTION FENCE'S DATA LEG (the capability CTE, named once): the
+# dispatch template composes it after params (the token
+# __WF_EXEC_CAPABLE_CTE__), and the EXPLAIN pins' wrappers compose the
+# SAME constant verbatim — the pins' lateral fragments reference it, and
+# a literalized stand-in in the wrapper would let the pin's plan drift
+# from the production one.
+#
+# THIS round's worker's workflow-execution capability: the workers row's
+# own metadata, stamped at boot by the F3 projection's sync
+# (``workflow_execution: true`` iff the process imported flow
+# definitions). One primary-key probe per round, evaluated once as an
+# InitPlan; the read is the VALUE (::boolean), never the key-existence
+# probe (``?``) — the metadata key is stamped on EVERY worker's row
+# (``false`` for the vanilla deployment), so the key's existence proves
+# nothing; the value is the capability. The COALESCE answers the
+# unregistered edge (a row the staleness sweep reaped mid-flight) with
+# the SAFE default — a worker the fleet cannot vouch for is not
+# admitted workflow rows.
+_WF_EXEC_CAPABLE_CTE = """\
+wf_exec_capable AS (
+  SELECT COALESCE(
+           (
+             SELECT (w.metadata->>'workflow_execution')::boolean
+             FROM "{schema}".workers w
+             WHERE w.id = (SELECT worker_id FROM params)
+           ),
+           false
+         ) AS capable
+),
+"""
+
 # Shared dispatch CTE template.  ``{schema}`` is left intact so callers
 # (and tests) can ``.format(schema=...)`` at render time; the ``__*__``
 # tokens are substituted by _render_dispatch_sql.
@@ -354,6 +440,7 @@ WITH RECURSIVE params AS (
     $4::interval AS lock_lease,
     $5::int      AS oversample
 ),
+__WF_EXEC_CAPABLE_CTE__
 __KEYS_CTE__
 -- The round's label-routed actor set: DISTINCT actors holding at least
 -- one pending, producer-placed (NOT assignment_routed) row on one of the
@@ -1700,6 +1787,9 @@ def _render_dispatch_sql(
         # (alias j2) and the terminal race guard (alias j).
         .replace("__WF_FENCE_J2__", _wf_dispatch_fence("j2"))
         .replace("__WF_FENCE_J__", _wf_dispatch_fence("j"))
+        # The execution fence's data leg (the capability CTE): one named
+        # constant composed after params (see the constant's note).
+        .replace("__WF_EXEC_CAPABLE_CTE__", _WF_EXEC_CAPABLE_CTE)
     )
 
 
@@ -1805,7 +1895,7 @@ __WF_FENCE_J__
     )
 )
 LIMIT 1
-""".replace("__WF_FENCE_J__", _wf_dispatch_fence("j"))
+""".replace("__WF_FENCE_J__", _wf_probe_fence("j"))
 
 
 async def dispatch_batch(
