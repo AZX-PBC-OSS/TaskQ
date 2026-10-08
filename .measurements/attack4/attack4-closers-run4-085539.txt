@@ -1,0 +1,81 @@
+.........F.......                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_signal_reads_a_delivered_payload_and_refuses_the_rest __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fb6a05fe740>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """``ctx.signal(name)``: the DELIVERED payload rides the row; a
+        non-delivered (or absent) signal is the named SignalUnavailableError
+        with the row's actual status."""
+        from taskq.workflows.api._ctx_wait import SignalUnavailableError
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds_and_reads(ctx: Any, params: Ingest) -> dict[str, Any]:
+            decision = await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            after = await ctx.signal("Approval")
+            return {"via_wait": getattr(decision, "verdict", None), "via_signal": after}
+    
+        async def _wait(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            return str(await ctx.signal("Approval"))
+    
+        @app.workflow("attack4_signal_reader")
+        def signal_reader() -> object:
+            return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+        runner = FlowRunner(app.get("attack4_signal_reader"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(str(flow_id))
+        await client.resolve(hold.hold_id, {"verdict": "approve", "note": "shipped"})
+        await runner.drive(flow_id)
+        result = await runner.result(flow_id)
+        got = result if isinstance(result, dict) else (
+            __import__("ast").literal_eval(str(result))
+        )
+        assert got == {"verdict": "approve", "note": "shipped"}, (
+            f"the delivered payload did not ride the row: {result!r}"
+        )
+    
+        # THE ABSENT arm: a signal name nothing declared/delivered (the
+        # named refusal carries the row's status — 'none' here).
+        node_id = await module_pg_pool.fetchval(
+            f'SELECT id FROM "{schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
+            flow_id,
+        )
+        ctx = _make_wait_ctx(module_pg_pool, schema, flow_id, node_id, "review")
+        with pytest.raises(SignalUnavailableError) as ei:
+            await ctx.signal("never_declared")
+        assert "none" in str(ei.value), ei.value
+        # THE NON-DELIVERED arm: a row that exists but is not delivered.
+        await module_pg_pool.execute(
+            f'INSERT INTO "{schema}".wf_signals '
+            "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, payload, "
+            " status, created_at) "
+            "VALUES ($1, $2, 'review', 'Ghost', 1, 'g', 'null', 'cancelled', now())",
+            uuid.uuid4(), flow_id,
+        )
+        with pytest.raises(SignalUnavailableError) as ei2:
+            await ctx.signal("Ghost")
+>       assert "'cancelled'" in str(ei2.value), ei2.value
+E       AssertionError: SignalUnavailableError("signal 'Ghost' has no delivered payload on 'review' (status: cancelled)")
+E       assert "'cancelled'" in "signal 'Ghost' has no delivered payload on 'review' (status: cancelled)"
+E        +  where "signal 'Ghost' has no delivered payload on 'review' (status: cancelled)" = str(SignalUnavailableError("signal 'Ghost' has no delivered payload on 'review' (status: cancelled)"))
+E        +    where SignalUnavailableError("signal 'Ghost' has no delivered payload on 'review' (status: cancelled)") = <ExceptionInfo SignalUnavailableError("signal 'Ghost' has no delivered payload on 'review' (status: cancelled)") tblen=2>.value
+
+tests/attack4-coverage-closers.py:559: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 01:55:40 [info     ] node.held                      hold_id=01a11ab9-b51f-7b71-8315-e2cb43825b7d node=review run_id=01a11ab9-b505-7323-b8b9-5b6d1e11f6cf signals=['Approval']
+2026-10-08 01:55:40 [info     ] signal.resolved                hold_id=01a11ab9-b51f-7b71-8315-e2cb43825b7d run_id=01a11ab9-b505-7323-b8b9-5b6d1e11f6cf signal=Approval
+=========================== short test summary info ============================
+FAILED tests/attack4-coverage-closers.py::test_signal_reads_a_delivered_payload_and_refuses_the_rest
+1 failed, 16 passed in 1.68s

@@ -1,0 +1,27 @@
+== the run page:
+200
+== the run's state after the fork+join (the demo's drive loop):
+id: 1
+event: run_state
+data: {"seq": 1, "run_id": "01a11ace-a708-7081-85f2-f3edb58d8944", "status": "blocked", "root_status": "running", "nodes": [{"key": "classify", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "extract_entities", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "gather", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "gather:1", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest", "status": "succeeded", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.item", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "ingest.join", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "publish", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "review", "status": "pending", "hold": true, "map_done": 0, "map_children": 0}, {"key": "route", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}, {"key": "summarize", "status": "pending", "hold": false, "map_done": 0, "map_children": 0}], "holds": [{"hold_id": "01a11ace-a7e0-72e1-b226-7f5543197603", "signal": "ReviewDecision", "node": "review", "epoch": 1}]}
+
+
+== the CLI against the live run (the host CLI, the stack's PG not published — the CLI runs IN the app container):
+run 01a11ace-a708-7081-85f2-f3edb58d8944
+workflow: doc_ingest
+status: blocked  (derived from the node rows — §17.5; the root row caches 'running')
+nodes: 17 — 16 pending, 1 succeeded (source: jobs rows by metadata.flow_id)
+  classify: JOIN-WAIT — waiting on 1 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)
+       remedy: none — the join fires when its parents finalize
+  extract_entities: JOIN-WAIT — waiting on 1 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)
+       remedy: none — the join fires when its parents finalize
+  gather: JOIN-WAIT — waiting on 2 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)
+       remedy: none — the join fires when its parents finalize
+  gather:1: JOIN-WAIT — waiting on 1 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)
+       remedy: none — the join fires when its parents finalize
+  publish: JOIN-WAIT — waiting on 3 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)
+       remedy: none — the join fires when its parents finalize
+  review: HELD — waiting for: signal 'ReviewDecision' · hold 01a11ace-a7e0-72e1-b226-7f5543197603 · deadline 2026-10-15 09:18:33.440523+00:00
+       reason: editorial review (the demo)
+  ... and 7 more stuck row(s) — narrow with taskq flows holds 01a11ace-a708-7081-85f2-f3edb58d8944 or the admin's run explorer
+rc=0

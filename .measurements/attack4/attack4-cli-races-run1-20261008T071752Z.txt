@@ -1,0 +1,438 @@
+FFFFFF                                                                   [100%]
+=================================== FAILURES ===================================
+_________ test_the_cancel_of_an_already_terminal_run_is_the_named_noop _________
+
+>   ???
+
+asyncpg/protocol/prepared_stmt.pyx:175: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+asyncpg/protocol/codecs/base.pyx:251: in asyncpg.protocol.protocol.Codec.encode
+    return self.encoder(self, settings, buf, obj)
+asyncpg/protocol/codecs/base.pyx:153: in asyncpg.protocol.protocol.Codec.encode_scalar
+    self.c_encoder(settings, buf, obj)
+asyncpg/pgproto/codecs/text.pyx:29: in asyncpg.pgproto.pgproto.text_encode
+    as_pg_string_and_size(settings, obj, &str, &size)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   raise TypeError('expected str, got {}'.format(type(obj).__name__))
+E   TypeError: expected str, got UUID
+
+asyncpg/pgproto/codecs/text.pyx:12: TypeError
+
+The above exception was the direct cause of the following exception:
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_cancel_of_an_already_terminal_run_is_the_named_noop(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """The cancel against a TERMINAL run: exit 0 with the no-op line (an
+        honest 'nothing cancelled'), the audit trail untouched by the
+        no-op."""
+        schema = module_pg_schema.schema_name
+        compiled = sys.modules[MODULE_NAME].app.get("attack4_hold_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        from taskq.workflows.api._hitl import HitlClient
+    
+        hc = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await hc.list(str(flow_id))
+        await hc.resolve(hold.hold_id, {"verdict": "approve"})
+        await runner.drive(flow_id)
+    
+        proc = _cli(module_pg_schema, "cancel", str(flow_id))
+        assert proc.returncode == 0, f"the no-op cancel errored: {proc.stderr}"
+        assert "no-op" in proc.stdout, f"the no-op is not named: {proc.stdout!r}"
+>       audits = await module_pg_pool.fetchval(
+            f'SELECT count(*) FROM "{schema}".admin_audit '
+            "WHERE target_id = $1 AND action = 'workflow.cancel'",
+            flow_id,
+        )
+
+tests/attack4-cli-races.py:326: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/pool.py:647: in fetchval
+    return await con.fetchval(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncpg/protocol/protocol.pyx:184: in bind_execute
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.DataError: invalid input for query argument $1: UUID('01a11a60-2f78-7081-9783-7385f1f222... (expected str, got UUID)
+
+asyncpg/protocol/prepared_stmt.pyx:204: DataError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 00:17:53 [info     ] node.held                      hold_id=01a11a60-2faf-7323-85de-1d9109227e2d node=review run_id=01a11a60-2f78-7081-9783-7385f1f22241 signals=['Approval']
+2026-10-08 00:17:53 [info     ] signal.resolved                hold_id=01a11a60-2faf-7323-85de-1d9109227e2d run_id=01a11a60-2f78-7081-9783-7385f1f22241 signal=Approval
+________ test_the_torn_cancel_the_signal_leg_rides_a_second_connection _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f36e6db33e0>
+
+    async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any, monkeypatch: Any
+    ) -> None:
+        """THE STRUCTURAL PROBE: ``cancel_workflow_run`` opens ONE
+        transaction, but its held-signal leg (``cancel_run_signals``) runs on
+        a SECOND pool connection OUTSIDE that transaction. If the outer tx
+        rolls back after the signal leg ran, the signals stay 'cancelled'
+        while the run is NOT cancelled — the torn cancel. This probe forces
+        the rollback (the audit write raises) and asserts the damage is
+        VISIBLE (a red here is the finding; the fixer owns the cure)."""
+        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows.api._runner_exit import cancel_workflow_run
+    
+        schema = module_pg_schema.schema_name
+        run_id = await _held_run(module_pg_pool, module_pg_schema)
+        hc = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await hc.list(run_id)
+        assert await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        ) == "held"
+    
+        # Force the OUTER tx to fail after the signal leg ran: the audit
+        # writer raises (the admin_audit write is the last statement before
+        # the tx's end).
+        import taskq.workflows.api._runner_exit as exit_mod
+    
+>       real_record = exit_mod.record_admin_action
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'taskq.workflows.api._runner_exit' has no attribute 'record_admin_action'
+
+tests/attack4-cli-races.py:363: AttributeError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 00:17:54 [info     ] node.held                      hold_id=01a11a60-31f0-79f3-a2e0-cde3327e72d4 node=review run_id=01a11a60-31af-7861-883b-10079b42d6f6 signals=['Approval']
+________________ test_the_why_stuck_arm_names_the_TRUE_blocker _________________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_why_stuck_arm_names_the_TRUE_blocker(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """A deliberately stuck run: 'doomed' fails permanently; 'downstream'
+        is BLOCKED by it. ``flows status`` must name the FAILED row as the
+        thing to retry (with its remedy) and the blocked row as the
+        consequence — the operator's next action is the answer, not a
+        symptom hunt."""
+        schema = module_pg_schema.schema_name
+        compiled = sys.modules[MODULE_NAME].app.get("attack4_stuck_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+    
+>       proc = _cli(module_pg_schema, "status", flow_id)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-cli-races.py:256: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/attack4-cli-races.py:115: in _cli
+    return subprocess.run(
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:554: in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:1039: in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: None args: ['/tmp/opencode/wt-taskqflow-p4/.venv/bin/pyt...>
+args = ['/tmp/opencode/wt-taskqflow-p4/.venv/bin/python', '-m', 'taskq', 'flows', 'status', UUID('01a11a60-320e-7d91-95a7-8501bcf3669c')]
+executable = b'/tmp/opencode/wt-taskqflow-p4/.venv/bin/python'
+preexec_fn = None, close_fds = True, pass_fds = (), cwd = None
+env = {'TASKQ_TEST_PG_DSN': 'postgresql://postgres@127.0.0.1:5711/postgres', 'TMPDIR': '/home/rich/.attack4-pytest', 'SHELL'...sh', 'SESSION_MANAGER': 'local/rich-cachyos-azx:@/tmp/.ICE-unix/12266,unix/rich-cachyos-azx:/tmp/.ICE-unix/12266', ...}
+startupinfo = None, creationflags = 0, shell = False, p2cread = -1
+p2cwrite = -1, c2pread = 15, c2pwrite = 16, errread = 17, errwrite = 18
+restore_signals = True, gid = None, gids = None, uid = None, umask = -1
+start_new_session = False, process_group = -1
+
+    def _execute_child(self, args, executable, preexec_fn, close_fds,
+                       pass_fds, cwd, env,
+                       startupinfo, creationflags, shell,
+                       p2cread, p2cwrite,
+                       c2pread, c2pwrite,
+                       errread, errwrite,
+                       restore_signals,
+                       gid, gids, uid, umask,
+                       start_new_session, process_group):
+        """Execute program (POSIX version)"""
+    
+        if isinstance(args, (str, bytes)):
+            args = [args]
+        elif isinstance(args, os.PathLike):
+            if shell:
+                raise TypeError('path-like args is not allowed when '
+                                'shell is true')
+            args = [args]
+        else:
+            args = list(args)
+    
+        if shell:
+            # On Android the default shell is at '/system/bin/sh'.
+            unix_shell = ('/system/bin/sh' if
+                      hasattr(sys, 'getandroidapilevel') else '/bin/sh')
+            args = [unix_shell, "-c"] + args
+            if executable:
+                args[0] = executable
+    
+        if executable is None:
+            executable = args[0]
+    
+        sys.audit("subprocess.Popen", executable, args, cwd, env)
+    
+        if (_USE_POSIX_SPAWN
+                and os.path.dirname(executable)
+                and preexec_fn is None
+                and (not close_fds or _HAVE_POSIX_SPAWN_CLOSEFROM)
+                and not pass_fds
+                and cwd is None
+                and (p2cread == -1 or p2cread > 2)
+                and (c2pwrite == -1 or c2pwrite > 2)
+                and (errwrite == -1 or errwrite > 2)
+                and not start_new_session
+                and process_group == -1
+                and gid is None
+                and gids is None
+                and uid is None
+                and umask < 0):
+            self._posix_spawn(args, executable, env, restore_signals, close_fds,
+                              p2cread, p2cwrite,
+                              c2pread, c2pwrite,
+                              errread, errwrite)
+            return
+    
+        orig_executable = executable
+    
+        # For transferring possible exec failure from child to parent.
+        # Data format: "exception name:hex errno:description"
+        # Pickle is not used; it is complex and involves memory allocation.
+        errpipe_read, errpipe_write = os.pipe()
+        # errpipe_write must not be in the standard io 0, 1, or 2 fd range.
+        low_fds_to_close = []
+        while errpipe_write < 3:
+            low_fds_to_close.append(errpipe_write)
+            errpipe_write = os.dup(errpipe_write)
+        for low_fd in low_fds_to_close:
+            os.close(low_fd)
+        try:
+            try:
+                # We must avoid complex work that could involve
+                # malloc or free in the child process to avoid
+                # potential deadlocks, thus we do all this here.
+                # and pass it to fork_exec()
+    
+                if env is not None:
+                    env_list = []
+                    for k, v in env.items():
+                        k = os.fsencode(k)
+                        if b'=' in k:
+                            raise ValueError("illegal environment variable name")
+                        env_list.append(k + b'=' + os.fsencode(v))
+                else:
+                    env_list = None  # Use execv instead of execve.
+                executable = os.fsencode(executable)
+                if os.path.dirname(executable):
+                    executable_list = (executable,)
+                else:
+                    # This matches the behavior of os._execvpe().
+                    executable_list = tuple(
+                        os.path.join(os.fsencode(dir), executable)
+                        for dir in os.get_exec_path(env))
+                fds_to_keep = set(pass_fds)
+                fds_to_keep.add(errpipe_write)
+>               self.pid = _fork_exec(
+                        args, executable_list,
+                        close_fds, tuple(sorted(map(int, fds_to_keep))),
+                        cwd, env_list,
+                        p2cread, p2cwrite, c2pread, c2pwrite,
+                        errread, errwrite,
+                        errpipe_read, errpipe_write,
+                        restore_signals, start_new_session,
+                        process_group, gid, gids, uid, umask,
+                        preexec_fn, _USE_VFORK)
+E                       TypeError: expected str, bytes or os.PathLike object, not UUID
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py:1921: TypeError
+_____ test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """The typed door's refusal: a WRONG-SHAPED payload → the NAMED
+        pydantic error (the model's own fields named, not a bare 'error'),
+        exit 1, and the hold SURVIVES (the reply handle still lists)."""
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        run_id = await _held_run(module_pg_pool, module_pg_schema)
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+    
+        proc = _cli(
+            module_pg_schema, "resolve", hold.hold_id, '{"verdict": 42}', "--app", f"{MODULE_NAME}:app",
+        )
+        assert proc.returncode == 1, f"the wrong payload did not refuse: {proc.returncode}"
+>       assert "pydantic refused" in proc.stderr, f"the refusal is not the named one: {proc.stderr!r}"
+E       AssertionError: the refusal is not the named one: 'module not found: attack4_cli_demo_flows\n'
+E       assert 'pydantic refused' in 'module not found: attack4_cli_demo_flows\n'
+E        +  where 'module not found: attack4_cli_demo_flows\n' = CompletedProcess(args=['/tmp/opencode/wt-taskqflow-p4/.venv/bin/python', '-m', 'taskq', 'flows', 'resolve', '01a11a62-..., '--app', 'attack4_cli_demo_flows:app'], returncode=1, stdout='', stderr='module not found: attack4_cli_demo_flows\n').stderr
+
+tests/attack4-cli-races.py:220: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 00:20:00 [info     ] node.held                      hold_id=01a11a62-1d7a-7113-a02e-819046b0c914 node=review run_id=01a11a62-1d60-7c41-a6fa-20639b43476c signals=['Approval']
+________ test_the_exit_code_contract_the_empty_error_and_missing_states ________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_exit_code_contract_the_empty_error_and_missing_states(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """THE EXIT CODES: a bad UUID → exit 1 + the named error; an unknown
+        run's status/holds → exit 1 + the named error + the remedy; an empty
+        schema's ``flows list`` → exit 0 + the honest zero (never a blank
+        section, never a traceback)."""
+        # THE BAD UUID.
+        for verb in ("status", "holds", "cancel"):
+            proc = _cli(module_pg_schema, verb, "not-a-uuid")
+            assert proc.returncode == 1, f"{verb}: a bad UUID exited {proc.returncode}"
+            assert "invalid run id" in proc.stderr
+            assert "Traceback" not in proc.stderr
+        # THE UNKNOWN RUN.
+        ghost = "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
+        proc = _cli(module_pg_schema, "status", ghost)
+        assert proc.returncode == 1
+        assert f"no run {ghost}" in proc.stderr
+        assert "taskq flows list" in proc.stderr  # the remedy
+        proc = _cli(module_pg_schema, "holds", ghost)
+        assert proc.returncode == 0, "an unknown run's holds is the honest zero, not an error"
+        assert "none pending" in proc.stdout
+        # THE EMPTY LIST.
+        proc = _cli(module_pg_schema, "list")
+        assert proc.returncode == 0
+>       assert "none yet" in proc.stdout, f"the empty list is not the honest zero: {proc.stdout!r}"
+E       AssertionError: the empty list is not the honest zero: "runs: 4 (source: jobs rows where step_key = '__flow__', newest first)\n  01a11a62-1d60-7c41-a6fa-20639b43476c  pending    root=running    nodes=1    attack4_hold_flow  2026-10-08 07:20:00.096504+00:00\n  01a11a60-320e-7d91-95a7-8501bcf3669c  failed     root=running    nodes=2    attack4_stuck_flow  2026-10-08 07:17:54.318910+00:00\n  01a11a60-31af-7861-883b-10079b42d6f6  pending    root=running    nodes=1    attack4_hold_flow  2026-10-08 07:17:54.223866+00:00\n  01a11a60-2f78-7081-9783-7385f1f22241  complete   root=succeeded  nodes=1    attack4_hold_flow  2026-10-08 07:17:53.656516+00:00\n"
+E       assert 'none yet' in "runs: 4 (source: jobs rows where step_key = '__flow__', newest first)\n  01a11a62-1d60-7c41-a6fa-20639b43476c  pendin...78-7081-9783-7385f1f22241  complete   root=succeeded  nodes=1    attack4_hold_flow  2026-10-08 07:17:53.656516+00:00\n"
+E        +  where "runs: 4 (source: jobs rows where step_key = '__flow__', newest first)\n  01a11a62-1d60-7c41-a6fa-20639b43476c  pendin...78-7081-9783-7385f1f22241  complete   root=succeeded  nodes=1    attack4_hold_flow  2026-10-08 07:17:53.656516+00:00\n" = CompletedProcess(args=['/tmp/opencode/wt-taskqflow-p4/.venv/bin/python', '-m', 'taskq', 'flows', 'list'], returncode=0...-7385f1f22241  complete   root=succeeded  nodes=1    attack4_hold_flow  2026-10-08 07:17:53.656516+00:00\n", stderr='').stdout
+
+tests/attack4-cli-races.py:295: AssertionError
+_________ test_the_resolve_racing_the_cancel_one_outcome_honest_codes __________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6087d63249', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_6087d6324989')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f36e82fef80>
+demo_env = <module 'attack4_cli_demo_flows'>
+
+    async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
+        module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
+    ) -> None:
+        """A resolve and a cancel land CONCURRENTLY on one held run (two real
+        CLI processes): each exits with an honest code, the run ends in ONE
+        named terminal, and the audit rows tell the same story the outputs
+        did — no silent loser."""
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        run_id = await _held_run(module_pg_pool, module_pg_schema)
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+    
+        app_ref = f"{MODULE_NAME}:app"
+        resolve_proc = subprocess.Popen(
+            [sys.executable, "-m", "taskq", "flows", "resolve", hold.hold_id,
+             '{"verdict": "approve", "note": ""}', "--app", app_ref],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+                 "TASKQ_SCHEMA_NAME": schema},
+        )
+        cancel_proc = subprocess.Popen(
+            [sys.executable, "-m", "taskq", "flows", "cancel", run_id, "--reason", "the race"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+                 "TASKQ_SCHEMA_NAME": schema},
+        )
+        r_out, r_err = resolve_proc.communicate(timeout=60)
+        c_out, c_err = cancel_proc.communicate(timeout=60)
+    
+        # NEITHER process crashed with a traceback — whatever the overlap,
+        # the verbs answer in their own voices.
+        assert "Traceback" not in r_err, f"the resolve crashed: {r_err}"
+        assert "Traceback" not in c_err, f"the cancel crashed: {c_err}"
+        # The outcomes agree with the ROWS: the hold is delivered-or-cancelled,
+        # never both, and the run is terminal.
+        row = await module_pg_pool.fetchrow(
+            f'SELECT status, resolved_at FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        )
+        assert row is not None
+        assert row["status"] in ("delivered", "cancelled"), f"a zombie hold: {row['status']}"
+        root = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+        )
+        assert root in ("succeeded", "failed", "cancelled"), f"the run is not terminal: {root}"
+        # THE HONESTY: if the hold was delivered, the resolve said so (exit 0);
+        # if it was cancelled first, the resolve's output says refused/no-op —
+        # never a delivered-sounding line over a cancelled row.
+        if row["status"] == "cancelled":
+            assert "delivered" not in r_out.lower(), (
+                f"the resolve CLAIMED delivery over a cancelled hold: {r_out!r}"
+            )
+        # The audit rows tell the same story (at least one of the two actions
+        # landed; the winner's row exists).
+        actions = {
+>           r["action"] for r in await module_pg_pool.fetch(
+                f"SELECT action FROM \"{schema}\".admin_audit "
+                "WHERE target_id = ANY($1::text[]) OR detail->>'run_id' = $1",
+                [hold.hold_id, run_id],
+            )
+        }
+
+tests/attack4-cli-races.py:188: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/pool.py:629: in fetch
+    return await con.fetch(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedFunctionError: operator does not exist: text = text[]
+E   HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+
+asyncpg/protocol/protocol.pyx:165: UndefinedFunctionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 00:20:02 [info     ] node.held                      hold_id=01a11a62-2850-7761-a3e7-fc30975466a6 node=review run_id=01a11a62-283b-7b52-80c3-721f7093b400 signals=['Approval']
+=========================== short test summary info ============================
+FAILED tests/attack4-cli-races.py::test_the_cancel_of_an_already_terminal_run_is_the_named_noop
+FAILED tests/attack4-cli-races.py::test_the_torn_cancel_the_signal_leg_rides_a_second_connection
+FAILED tests/attack4-cli-races.py::test_the_why_stuck_arm_names_the_TRUE_blocker
+FAILED tests/attack4-cli-races.py::test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives
+FAILED tests/attack4-cli-races.py::test_the_exit_code_contract_the_empty_error_and_missing_states
+FAILED tests/attack4-cli-races.py::test_the_resolve_racing_the_cancel_one_outcome_honest_codes
+6 failed in 130.66s (0:02:10)

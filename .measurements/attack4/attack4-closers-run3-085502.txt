@@ -1,0 +1,114 @@
+...........F....E                                                        [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_the_deliver_cas_the_noop_and_the_resume_refused_arms __
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fad3e03c4c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    @pytest.fixture
+    async def held_app(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> Any:
+        """The D1 registry registers ONCE per process (a second registration
+        is the refused shadow) — the app+runner are module-state; each test
+        seeds its OWN flow from them."""
+        from taskq.workflows.definitions import get_registry
+    
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the closers' hold")
+            return "done"
+    
+        if "attack4_closer_hold" not in get_registry()._workflows:  # pyright: ignore[reportPrivateUsage]
+            @app.workflow("attack4_closer_hold")
+            def closer_hold() -> object:
+                return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+>       runner = FlowRunner(app.get("attack4_closer_hold"), module_pg_pool, module_pg_schema.schema_name)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/attack4-coverage-closers.py:250: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._app.WorkflowApp object at 0x7fad3c875ae0>
+name = 'attack4_closer_hold'
+
+    def get(self, name: str) -> CompiledWorkflow:
+        """Compile the NAMED workflow: run its build function under a
+        fresh recorder. Same module → same graph, every time.
+    
+        The build function is SYNC and PURE — the wiring is compile-time
+        dataflow spelling (the recorder's verbs); nothing async happens
+        at compile. Its RETURN is the terminal promise (or an explicit
+        ``build(...)`` result)."""
+        build_fn = self._workflows.get(name)
+        if build_fn is None:
+>           raise KeyError(f"workflow {name!r} is not declared on this app")
+E           KeyError: "workflow 'attack4_closer_hold' is not declared on this app"
+
+src/taskq/workflows/api/_app.py:316: KeyError
+=================================== FAILURES ===================================
+__________ test_signal_reads_a_delivered_payload_and_refuses_the_rest __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fad3e03c4c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """``ctx.signal(name)``: the DELIVERED payload rides the row; a
+        non-delivered (or absent) signal is the named SignalUnavailableError
+        with the row's actual status."""
+        from taskq.workflows.api._ctx_wait import SignalUnavailableError
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds_and_reads(ctx: Any, params: Ingest) -> dict[str, Any]:
+            decision = await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            after = await ctx.signal("Approval")
+            return {"via_wait": getattr(decision, "verdict", None), "via_signal": after}
+    
+        async def _wait(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
+            return str(await ctx.signal("Approval"))
+    
+        @app.workflow("attack4_signal_reader")
+        def signal_reader() -> object:
+            return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+        runner = FlowRunner(app.get("attack4_signal_reader"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(str(flow_id))
+        await client.resolve(hold.hold_id, {"verdict": "approve", "note": "shipped"})
+        await runner.drive(flow_id)
+        result = await runner.result(flow_id)
+        got = result if isinstance(result, dict) else (
+            __import__("ast").literal_eval(str(result))
+        )
+        assert got == {"verdict": "approve", "note": "shipped"}, (
+            f"the delivered payload did not ride the row: {result!r}"
+        )
+    
+        # THE ABSENT/undelivered arm: a signal name nothing delivered.
+        node_id = await module_pg_pool.fetchval(
+            f'SELECT id FROM "{schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
+            flow_id,
+        )
+        ctx = _make_wait_ctx(module_pg_pool, schema, flow_id, node_id, "review")
+>       with pytest.raises(SignalUnavailableError) as ei:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE SignalUnavailableError
+
+tests/attack4-coverage-closers.py:541: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 01:55:03 [info     ] node.held                      hold_id=01a11ab9-24f0-76a2-abc4-b2c48b9bae60 node=review run_id=01a11ab9-24d8-74d1-90ec-2af4ab520fd2 signals=['Approval']
+2026-10-08 01:55:03 [info     ] signal.resolved                hold_id=01a11ab9-24f0-76a2-abc4-b2c48b9bae60 run_id=01a11ab9-24d8-74d1-90ec-2af4ab520fd2 signal=Approval
+=========================== short test summary info ============================
+ERROR tests/attack4-coverage-closers.py::test_the_deliver_cas_the_noop_and_the_resume_refused_arms
+FAILED tests/attack4-coverage-closers.py::test_signal_reads_a_delivered_payload_and_refuses_the_rest
+1 failed, 15 passed, 1 error in 1.48s

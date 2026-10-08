@@ -1,0 +1,94 @@
+..........................................s............................. [ 28%]
+........................................................................ [ 57%]
+........................................................................ [ 86%]
+...................................                                      [100%]
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+___________________________________ coverage ___________________________________
+
+Name                                        Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------------------------------------
+src/taskq/web/admin/__init__.py                 2      0      0      0   100%
+src/taskq/web/admin/_actor_stats.py            28     15      6      0    38%
+src/taskq/web/admin/_audit.py                  64     18     10      3    69%
+src/taskq/web/admin/_constants.py              67     48     26      0    20%
+src/taskq/web/admin/_factory.py               269    158     62      0    35%
+src/taskq/web/admin/_jsonb.py                  13     10      6      0    16%
+src/taskq/web/admin/_listen.py                 62     49     12      0    18%
+src/taskq/web/admin/_static.py                 15      8      4      0    37%
+src/taskq/web/admin/_wf_actions.py            165    127     38      0    19%
+src/taskq/web/admin/_wf_rows.py               109     57     26      0    39%
+src/taskq/web/admin/actors.py                  71     50      8      0    27%
+src/taskq/web/admin/auth/__init__.py            5      0      0      0   100%
+src/taskq/web/admin/auth/_session.py          105     60     24      0    35%
+src/taskq/web/admin/auth/oidc.py              210    160     42      0    20%
+src/taskq/web/admin/auth/saml.py              260    184     62      0    24%
+src/taskq/web/admin/auth/token.py               7      0      0      0   100%
+src/taskq/web/admin/batches.py                 73     47      8      0    32%
+src/taskq/web/admin/history.py                121     88     26      0    22%
+src/taskq/web/admin/insights.py                63     46     16      0    22%
+src/taskq/web/admin/jobs.py                   296    237     84      0    16%
+src/taskq/web/admin/ops.py                    388    326    126      0    12%
+src/taskq/web/admin/queues.py                 117     87     28      0    21%
+src/taskq/web/admin/sse.py                     96     68     18      0    25%
+src/taskq/web/admin/workers.py                 71     51     18      0    22%
+src/taskq/web/admin/workflows.py               81     52     10      0    32%
+src/taskq/workflows/__init__.py                 6      0      0      0   100%
+src/taskq/workflows/_capture.py                75      6     36      5    88%
+src/taskq/workflows/_cli.py                   101      5     30      2    93%
+src/taskq/workflows/_emit.py                   11      0      0      0   100%
+src/taskq/workflows/_fork.py                   31      1     10      1    95%
+src/taskq/workflows/_progress.py              133     12     30      2    91%
+src/taskq/workflows/_progress_read.py         128      4     44      8    93%
+src/taskq/workflows/_reducers.py               21      0      4      0   100%
+src/taskq/workflows/_sql.py                    76      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py           22      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py              9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py           12      0      0      0   100%
+src/taskq/workflows/_sql_status.py              7      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py               8      0      0      0   100%
+src/taskq/workflows/_status.py                 52      0     16      0   100%
+src/taskq/workflows/_sweep.py                  89      4     20      4    93%
+src/taskq/workflows/_types.py                 105      3      6      2    95%
+src/taskq/workflows/_version.py                10      0      0      0   100%
+src/taskq/workflows/api/__init__.py             4      0      0      0   100%
+src/taskq/workflows/api/_app.py               123      2     36      3    97%
+src/taskq/workflows/api/_ctx.py                66     10      4      1    81%
+src/taskq/workflows/api/_ctx_wait.py           76      7     14      4    86%
+src/taskq/workflows/api/_graph.py             118      6     18      6    91%
+src/taskq/workflows/api/_hints.py               4      0      0      0   100%
+src/taskq/workflows/api/_hitl.py              231     53     78     13    68%
+src/taskq/workflows/api/_loop.py               53      8      8      4    80%
+src/taskq/workflows/api/_mermaid.py            42      1     22      1    97%
+src/taskq/workflows/api/_runner.py            276     22     70     14    90%
+src/taskq/workflows/api/_runner_chain.py       26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py       63      3     22      3    93%
+src/taskq/workflows/api/_runner_errors.py       3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py        85     14     24      6    80%
+src/taskq/workflows/api/_runner_ladder.py      34      0      4      1    97%
+src/taskq/workflows/api/_runner_loop.py       140     16     36     10    84%
+src/taskq/workflows/api/_sql_loop.py           25      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py         33      0      0      0   100%
+src/taskq/workflows/api/_validate.py          141      6     76      6    94%
+src/taskq/workflows/chain.py                   63      2     20      3    94%
+src/taskq/workflows/context.py                 42      2     10      2    92%
+src/taskq/workflows/definitions.py             66      2     14      1    96%
+src/taskq/workflows/engine.py                 109      7     34      5    90%
+src/taskq/workflows/ledger.py                  68      4     10      3    91%
+-----------------------------------------------------------------------------
+TOTAL                                        5545   2146   1358    113    57%
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+250 passed, 2 skipped, 12803 deselected, 2 warnings in 133.53s (0:02:13)

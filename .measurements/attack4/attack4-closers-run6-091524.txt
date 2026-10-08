@@ -1,0 +1,67 @@
+....F...............                                                     [100%]
+=================================== FAILURES ===================================
+____________ test_the_cursors_checkpoint_the_empty_then_the_decoded ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f35a2e03a00>
+module_pg_schema = ModulePgSchema(schema_name='tq_f34cca2de7', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_f34cca2de79d')
+
+    async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """``ctx.cursor()``: ``{}`` before the first emit; the committed
+        checkpoint decodes after (the T20 resume law's read half)."""
+        from taskq.workflows.api._ctx import StepContext
+        from taskq.workflows._sql import WorkflowSql
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+    
+        async def src(ctx: Any, params: Ingest) -> list[Item]:
+            # THE EMPTY world: no emit has ever run for this node.
+            before = await ctx.cursor()
+            assert before == {}, f"an un-emitted source's cursor is {before!r}"
+            await ctx.emit_batch(
+                [Item(n=1).model_dump()], cursor={"page": 1}
+            )
+            after = await ctx.cursor()
+            assert after.get("page") == 1, f"the checkpoint did not read back: {after!r}"
+            return [Item(n=1)]
+    
+        async def child(ctx: Any, n: int) -> dict[str, int]:
+            # The map child's ctx carries ITS map_index (the per-item identity).
+            assert ctx.map_index is not None
+            return {"n": n}
+    
+        @app.workflow("attack4_cursor_flow")
+        def cursor_flow() -> object:
+            from taskq.workflows import map_source
+    
+            ingested = step(src, Ingest(doc_id="d1"), key="src")
+            return build(map_source(ingested, child, key="kid"))
+    
+        runner = FlowRunner(app.get("attack4_cursor_flow"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        outcome = await runner.drive(flow_id)
+        assert outcome == "terminal"
+    
+        # THE STR-DECODE arm (the no-codec connection's world — asyncpg
+        # returns the jsonb as TEXT there): a RAW pool's ctx reads the same
+        # checkpoint through _json_loads.
+        raw_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)  # no codecs
+        node_id = await module_pg_pool.fetchval(
+            f'SELECT id FROM "{schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'src'",
+            flow_id,
+        )
+        raw_ctx = _make_wait_ctx(raw_pool, schema, flow_id, node_id, "src")
+        stamped = await raw_ctx.cursor()
+>       assert stamped.get("page") == 1, f"the str-decode arm lost the checkpoint: {stamped!r}"
+E       AssertionError: the str-decode arm lost the checkpoint: {}
+E       assert None == 1
+E        +  where None = <built-in method get of dict object at 0x7f35a2cd9040>('page')
+E        +    where <built-in method get of dict object at 0x7f35a2cd9040> = {}.get
+
+tests/attack4-coverage-closers.py:540: AssertionError
+=========================== short test summary info ============================
+FAILED tests/attack4-coverage-closers.py::test_the_cursors_checkpoint_the_empty_then_the_decoded
+1 failed, 19 passed in 2.16s
