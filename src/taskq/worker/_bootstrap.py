@@ -1976,7 +1976,37 @@ async def _main(
                 _startup_log,
             )
 
-        worker_id = await register_worker(deps.dispatcher_pool, settings)
+        # THE WORKFLOW EXECUTION PROJECTION (the F3 law's call site + the
+        # dispatch fence's capability): resolved BEFORE register_worker —
+        # the workers row's metadata carries the capability the dispatch
+        # fence reads as data. The lazy import keeps the §16.1 import law
+        # (a worker that never installed taskq[flows] pays nothing, and
+        # is not capable — the fence never hands it a workflow row).
+        # The PROJECTION runs here too (compiling every imported app's
+        # workflows): its side effect is the D1 definition registry's
+        # population in THIS process — the dispatch intercept's body
+        # resolution answers from it. A cohort conflict (one actor name,
+        # two queues) REFUSES the boot — the drift-guard precedent, the
+        # cure named in the error. The cohort rows' SYNC rides after the
+        # plain actors' sync below (the startup-warnings ordering pin:
+        # the observability emits precede every config-sync round trip).
+        _wf_execution = None
+        try:
+            from taskq.workflows import _worker_execution as _wf_execution_mod
+
+            _wf_execution = _wf_execution_mod
+        except ImportError:  # pragma: no cover - the extra-less deployment
+            _wf_execution = None
+        wf_execution_capable = False
+        _wf_cohort_configs: list[ActorConfig] = []
+        if _wf_execution is not None:
+            wf_execution_capable = _wf_execution.workflow_execution_capable()
+            if wf_execution_capable:
+                _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
+
+        worker_id = await register_worker(
+            deps.dispatcher_pool, settings, workflow_execution=wf_execution_capable
+        )
 
         structlog.contextvars.bind_contextvars(worker_id=str(worker_id))
 
@@ -2144,6 +2174,29 @@ async def _main(
                     )
 
             await _ensure_own_reservation_slots(deps, own_reservations)
+
+        if _wf_execution is not None and _wf_cohort_configs:
+            # THE WORKFLOW COHORTS' SYNC (the F3 projection's write half —
+            # the same `sync_actor_config` surface, the same drift guards
+            # the plain actors' sync just rode). AFTER the plain sync
+            # block: the startup-warnings ordering pin holds (the
+            # observability emits precede every config-sync round trip),
+            # and the capability is already stamped on the workers row —
+            # the fence's data leg never waits on this write.
+            async with deps.dispatcher_pool.acquire(
+                timeout=settings.dispatcher_command_timeout
+            ) as conn:
+                await sync_actor_config(
+                    conn,
+                    _wf_cohort_configs,
+                    force=settings.force_update_actor_config,
+                    schema=settings.schema_name,
+                )
+            _startup_log.info(
+                "workflow-actor-configs-synced",
+                count=len(_wf_cohort_configs),
+                cohorts=sorted(c.actor for c in _wf_cohort_configs),
+            )
 
         # Fleet-wide per-queue concurrency caps (DB-driven): query the
         # queues table for queues this worker consumes that have a
