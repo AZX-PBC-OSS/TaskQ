@@ -23,11 +23,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
 from taskq.workflows.chain import Chain
+
+if TYPE_CHECKING:
+    from typing import Never
 
 __all__ = [
     "Exit",
@@ -43,11 +46,25 @@ __all__ = [
     "step",
 ]
 
-T_co = TypeVar("T_co", covariant=True)
-
 #: A step body: the coroutine the runner executes for one node —
 #: ``await body(ctx, *decoded_parent_results)`` (the fan-in's decoded
 #: args — cut #14's decode-once; the bodies never see raw rows).
+#:
+#: THE MECHANISM (the type-mechanism probes, pyright 1.1.414 + ty 0.0.85):
+#: the WIRING verbs are generic over the body's RESULT —
+#: :func:`step` is ``step[R](body: Callable[..., Awaitable[R]]) -> Promise[R]``
+#: (R is INFERRED from the body's declared return — the promise carries the
+#: body's type); :func:`gather` is
+#: ``gather[R](promises: list[Promise[R]]) -> Promise[list[R]]`` (the join
+#: PRESERVES the element type); :func:`build` is
+#: ``build[R](result: Promise[R], *residuals: Promise[Never]) -> Promise[R]``
+#: (a residual must be a produces-nothing handle — a body annotated
+#: ``-> NoReturn``; any REAL promise in the residual slot is the checker's
+#: error, because :class:`Promise` is COVARIANT and ``Never`` is the bottom
+#: type). The verbs' bodies still take the DECODED payload shapes — the
+#: wiring-site compat between a producer's model and a consumer's param is
+#: the VALIDATOR's face (:func:`taskq.workflows.api._validate`'s
+#: ``E5-incompatible-consumer``); the checker's face is the HANDLE flow.
 BodyFn = Callable[..., Awaitable[object]]
 
 #: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated AT
@@ -180,6 +197,16 @@ class Promise[T_co]:
     ``gather``) — never constructed directly; the data type travels ON the
     promise (the compile's compatibility rule reads it), never through a
     runtime cast.
+
+    THE COVARIANCE (the type-mechanism probes' load-bearing half — proven
+    on pyright 1.1.414 + ty 0.0.85): the type parameter appears in no
+    method signature — a promise is only ever READ through (its result
+    flows downstream), never written — so the checkers infer COVARIANCE:
+    ``Promise[Report]`` is a ``Promise[object]``, and a consumer that
+    declares ``Promise[Config]`` REJECTS ``Promise[Report]`` (the
+    contravariant-consumer rejection — the handle-flow compat face). The
+    same covariance is what makes :func:`build`'s ``Promise[Never]``
+    residual slot refuse every real promise.
     """
 
     __slots__ = ("_data_type", "_graph", "_key")
@@ -288,8 +315,8 @@ def _promise_args(args: tuple[object, ...]) -> tuple[list[str], list[object]]:
     return keys, data
 
 
-def step(
-    body: BodyFn,
+def step[R](
+    body: Callable[..., Awaitable[R]],
     *args: object,
     key: str | None = None,
     actor: str = "wf",
@@ -300,8 +327,11 @@ def step(
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
-) -> Promise[Any]:
-    """Wire ONE node: ``p = step(fetch_body, params)``.
+) -> Promise[R]:
+    """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
+    ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
+    the mechanism, not a cast: a body annotated ``-> Report`` wires a
+    ``Promise[Report]``).
 
     Promise arguments become the node's incoming edges (the fan-in when
     there are several — the join's user body IS this node's body, run
@@ -311,7 +341,15 @@ def step(
     progress payload schema (T21 — the TypedGate-door pattern): the
     body's ``ctx.progress`` data emissions are validated against it, a
     wrong shape refused (the declaration is what makes a separate UI
-    render the emission — the context-contract law)."""
+    render the emission — the context-contract law).
+
+    THE TWO FACES (be honest about the boundary): the checker reads the
+    HANDLE flow (R's inference, the promise threading, build's
+    ``Promise[Never]`` residuals); the DECODED-payload compat between a
+    producer's model and this body's param models is the validator's face
+    (``validate()``'s ``E5-incompatible-consumer``) — the bodies take
+    decoded data, not handles, so the wiring call itself is erased to
+    ``object`` and the checker cannot see the edge's payload."""
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))
@@ -362,23 +400,28 @@ def step(
             kind="gather" if len(keys) > 1 else "step",
         )
     )
-    return Promise(node_key, getattr(body, "__annotations__", {}).get("return", object), graph)
+    return cast(
+        "Promise[R]",
+        Promise(node_key, getattr(body, "__annotations__", {}).get("return", object), graph),
+    )  # Why: the promise's STATIC type is the generic R (the body's declared return — the checker's face); the runtime data_type stays the annotation's DECLARATION (string under future-annotations), read back by validate()'s compat rule. The constructor does not bind R — the cast is the seam.
 
 
-def map_source(
-    source: Promise[Any],
-    body: BodyFn,
+def map_source[S, R](
+    source: Promise[S],
+    body: Callable[..., Awaitable[R]],
     *,
     key: str | None = None,
     queue: str = "default",
     on_failure: str = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
-) -> Promise[Any]:
+) -> Promise[list[R]]:
     """Wire a MAP over *source*'s items: the source's body returns the
     list; each item runs *body* as a FRESH job (per-item ledger
     identity); the map's join collects — the flat ``Promise[list[R]]``
-    shape. The map attaches to the SOURCE node (its finalize forks the
+    shape (R INFERRED from the per-item body's declared return — the
+    generic threads through every child body, the mechanism's map face).
+    The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
 
@@ -418,12 +461,19 @@ def map_source(
         )
     )
     item_type = getattr(body, "__annotations__", {}).get("return", object)
-    return Promise(join_key, list[item_type] if isinstance(item_type, type) else object, graph)  # type: ignore[valid-type]  # Why: the promise's data_type is the wiring's DECLARATION, read back by validate(); a bare type makes the generic shape.
+    return cast(
+        "Promise[list[R]]",
+        Promise(join_key, list[item_type] if isinstance(item_type, type) else object, graph),
+    )  # Why: the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's DECLARATION read back by validate(). The constructor does not bind R — the cast is the seam.
 
 
-def gather(promises: list[Promise[Any]], *, on_failure: str = "fail_closed") -> Promise[Any]:
-    """The ALL-upstream join: ``gather([pa, pb]) → Promise[list]`` — the
-    flat shape. The join's default body packs the decoded parents; a
+def gather[R](promises: list[Promise[R]], *, on_failure: str = "fail_closed") -> Promise[list[R]]:
+    """The ALL-upstream join: ``gather([pa, pb]) → Promise[list[R]]`` —
+    the flat shape, the ELEMENT TYPE PRESERVED (a homogeneous gather over
+    ``Promise[Report]``s is a ``Promise[list[Report]]`` — the generic's
+    join face; a heterogeneous list upcasts to ``Promise[object]``
+    elements and the join degrades to ``Promise[list[object]]``
+    honestly). The join's default body packs the decoded parents; a
     consumer of the gather's promise is the join's downstream (a NORMAL
     step — the cascade, cut #1's cure)."""
     if not promises:
@@ -454,7 +504,9 @@ def gather(promises: list[Promise[Any]], *, on_failure: str = "fail_closed") -> 
             kind="gather",
         )
     )
-    return Promise(node_key, list[object], graph)
+    return cast(
+        "Promise[list[R]]", Promise(node_key, list[object], graph)
+    )  # Why: the join promise's STATIC type is Promise[list[R]] (the element type preserved); the runtime data_type stays the packing declaration (list[object]) read back by validate(). The cast is the seam.
 
 
 def chain_source(
@@ -513,11 +565,17 @@ def sink(*dropped: Promise[object]) -> None:
     graph.sunk = (*graph.sunk, *(p.key for p in dropped))
 
 
-def build[R](result: Promise[R], *residuals: Promise[object]) -> Promise[R]:
+def build[R](result: Promise[R], *residuals: Promise[Never]) -> Promise[R]:
     """The terminal completeness point: names the workflow's RESULT and
-    accounts for every residual promise (the ``Promise[Never]`` typing
-    forces the static side; at runtime the residuals are recorded so
-    validate's produced-never-consumed rule never flags them)."""
+    accounts for every residual promise. THE STATIC LAW (the
+    type-mechanism probes' terminal half): the residual slot is
+    ``Promise[Never]`` — a handle whose body produces NOTHING (annotated
+    ``-> NoReturn``). :class:`Promise` is covariant, so every REAL
+    promise (``Promise[Report]``, ... ) is REJECTED in the slot — an
+    unconsumed data handle passed to ``build`` is the CHECKER's error,
+    the same shape validate's ``E2-produced-never-consumed`` convicts at
+    build (the two faces, one law). At runtime the residuals are
+    recorded so the produced-never-consumed rule never flags them."""
     graph = active_graph()
     graph.sunk = (*graph.sunk, *(p.key for p in residuals))
     graph.terminal = result.key

@@ -265,18 +265,24 @@ class WorkflowApp:
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         channel: SignalChannel | None = None,
-    ) -> Callable[[Callable[..., Awaitable[object]]], Callable[..., Awaitable[object]]]:
+    ) -> Callable[[Callable[[], object]], Callable[[], object]]:
         """``@app.workflow(name, capture=…, redact=…)`` — the per-workflow
         declaration (§10.3's policies). The declaration is what T04's
         capture writer and every export surface consume; ``redact=fn``
         POST-COMPOSES on the default chain's output (it can only redact
-        more, never less — TORS-REV-0.16 §G1)."""
+        more, never less — TORS-REV-0.16 §G1).
+
+        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round): the
+        build function is SYNC and PURE (``get``'s docstring — the
+        recorder's verbs never await), so the decorator takes
+        ``Callable[[], object]``, NOT ``Callable[..., Awaitable[object]]``
+        — the old annotation red every honest sync builder under a strict
+        config (the probe corpus's unmarked decorator reds). An async fn
+        ALSO satisfies ``Callable[[], object]`` — nothing is refused."""
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
-        def decorate(
-            build_fn: Callable[..., Awaitable[object]],
-        ) -> Callable[..., Awaitable[object]]:
+        def decorate(build_fn: Callable[[], object]) -> Callable[[], object]:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
             build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]
