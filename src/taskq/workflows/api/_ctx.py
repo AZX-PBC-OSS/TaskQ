@@ -46,6 +46,7 @@ def build_step_context(
     redact: Callable[[str], str] | None = None,
     worker_id: JobId | None = None,
     progress: ProgressEmitter | None = None,
+    claim_epoch: int = 0,
 ) -> StepContext:
     """The ONE context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -65,6 +66,7 @@ def build_step_context(
         _redact=redact,
         _worker_id=worker_id,
         _progress=progress,
+        _claim_epoch=claim_epoch,
     )
 
 
@@ -99,6 +101,13 @@ class StepContext(CtxWaitOps):
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
+    #: The claim view's FENCE EPOCH: the in-process driver's own claim
+    #: stamps 0 (NODE_CLAIM_SQL_TEMPLATE); a fleet-claimed row carries
+    #: its dispatch claim's epoch — the emit's cursor checkpoint fences
+    #: on the epoch beside the worker and the attempt (the fence must
+    #: match the row, or the checkpoint updates nothing and the emit
+    #: refuses).
+    _claim_epoch: int = 0
     # THE EMISSION OP's buffer (T21): the attempt's own ProgressEmitter —
     # the runner wires it at the claim seam. None when unwired (direct
     # testing): ctx.progress then VALIDATES the shape (the typed door is
@@ -153,7 +162,7 @@ class StepContext(CtxWaitOps):
             source_id=self.job_id,
             worker_id=self._worker_id,
             attempt=self.attempt,
-            claim_epoch=0,  # the runner's own claim writes epoch 0 (NODE_CLAIM_SQL_TEMPLATE)
+            claim_epoch=self._claim_epoch,  # the claim view's fence epoch
             children=children,
             cursor=cursor,
         )

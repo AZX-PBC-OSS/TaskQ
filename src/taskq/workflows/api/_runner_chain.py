@@ -52,6 +52,8 @@ class ChainOps(_ChainHost):
         chain: Any,
         outcome: object,
         payload_doc: dict[str, object],
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         """THE CHAIN STEP'S ROUTED FINALIZE (T20): the body's typed
         outcome is the router's decision —
@@ -92,7 +94,7 @@ class ChainOps(_ChainHost):
                 step_key=step_key,
                 worker_id=self._worker_id,
                 attempt=attempt,
-                claim_epoch=0,
+                claim_epoch=claim_epoch,
                 outcome="failed",
                 error_class="RouterNotTotal",
                 error_message=str(exc)[:500],
@@ -108,7 +110,7 @@ class ChainOps(_ChainHost):
             step_key=step_key,
             worker_id=self._worker_id,
             attempt=attempt,
-            claim_epoch=0,
+            claim_epoch=claim_epoch,
             outcome="succeeded",
             result=encode_result(outcome),
             fork=fork,

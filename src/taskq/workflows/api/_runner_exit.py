@@ -66,6 +66,8 @@ class ExitOps(_ExitHost):
         attempt: int,
         node: Any,
         exit_value: Exit[object],
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         """THE TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
         body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
@@ -86,7 +88,7 @@ class ExitOps(_ExitHost):
             step_key=step_key,
             worker_id=self._worker_id,
             attempt=attempt,
-            claim_epoch=0,
+            claim_epoch=claim_epoch,
             outcome="succeeded",
             result={"value": jsonable(exit_value.payload), "exit": True},
             map_index=row["map_index"],

@@ -141,12 +141,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # checkpoint) then names the worker that actually holds the row
         # (the fleet-claimed door, _worker_execution).
         self._worker_id = worker_id if worker_id is not None else JobId(new_uuid())
-        # THE FENCE EPOCH the finalize/emit fences carry: the in-process
-        # driver's own claim stamps claim_epoch 0 (NODE_CLAIM_SQL_TEMPLATE);
-        # a WORKER-HOSTED runner sets the fleet claim's epoch per execution
-        # (dispatch_batch bumps the row's epoch — the fence must match the
-        # row, or the terminal write fences itself out).
-        self._claim_epoch = 0
         # THE ROUTER'S RESOLUTION (T20): the workflow's declared chains —
         # a chain STEP row (fork-spawned or emitted) has no compiled
         # NodeDecl; its route resolves from HERE (the compiled chain),
@@ -282,30 +276,42 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         until: Literal["held", "terminal"] = "terminal",
         tick: float = 0.02,
         max_ticks: int = 5000,
+        execute: bool = True,
     ) -> str:
         """The driver (cut #10): dispatch + sweeps until ``until`` —
         ``"terminal"`` (the flow row is terminal) or ``"held"`` (a node
         waits on a human / a deadline). BOUNDED: ``max_ticks`` caps the
         loop (a hang is a defect with no stack trace); the bound is
-        tested by the timeout pins."""
+        tested by the timeout pins.
+
+        ``execute=False`` is the ORCHESTRATION-ONLY drive (the execution
+        verdict's probe-B shape): this process claims and executes
+        NOTHING — the tick runs only the sweep arms (the crash-window
+        heal + the outbox drain) and the flow's WORK is executed by the
+        fleet's workers through the queue-routed dispatch (the
+        worker-hosted door). The in-process body execution — the
+        dev-loop driver — is the ``execute=True`` default, unchanged."""
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
                 return "terminal"
             if until == "held" and await self._any_held(flow_id):
                 return "held"
-            ran = await self.tick(flow_id)
+            ran = await self.tick(flow_id, execute=execute)
             if not ran:
                 await asyncio.sleep(tick)
         return "max_ticks"
 
-    async def tick(self, flow_id: JobId) -> bool:
-        """One dispatch pass: claim + run + finalize every claimable node;
-        then the sweep arms (the crash-window heal + the outbox drain).
-        Returns whether ANY node ran."""
+    async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
+        """One dispatch pass: claim + run + finalize every claimable node
+        (``execute=True`` — the dev-loop driver); then the sweep arms
+        (the crash-window heal + the outbox drain). With
+        ``execute=False`` the sweep arms only — the orchestration-only
+        pass. Returns whether ANY node ran."""
         ran = False
-        for row in await self._claimable(flow_id):
-            ran = True
-            await self._run_node(flow_id, row)
+        if execute:
+            for row in await self._claimable(flow_id):
+                ran = True
+                await self._run_node(flow_id, row)
         from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 
         await sweep_join_rederive(self.pool, self.wsql)
@@ -364,7 +370,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         attempt: int,
         claim_epoch: int,
-    ) -> None:
+    ) -> str:
         """THE WORKER-HOSTED EXECUTION DOOR (the execution verdict's gap-1
         cure): *row* is a node the FLEET's queue-routed dispatch already
         claimed (``dispatch_batch`` — the row is ``running``, the attempt
@@ -402,7 +408,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 map_index=row["map_index"],
                 attempt=attempt,
             )
-        await self._execute_claimed(
+        return await self._execute_claimed(
             flow_id, row, attempt, claim.ledger_id, node, body, claim_epoch=claim_epoch
         )
 
@@ -416,7 +422,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         body: Any,
         *,
         claim_epoch: int = 0,
-    ) -> None:
+    ) -> str:
         """The shared execution tail, from the ledger claim to the
         terminal: the in-process driver (:meth:`_run_node`) and the
         worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
@@ -424,7 +430,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
         is the fence epoch the finalize/emit fences carry: the runner's
         own claim stamps 0; a fleet-claimed row carries its dispatch
-        claim's epoch."""
+        claim's epoch. Returns the attempt's outcome label (the caller's
+        log line — the ROW is the truth, this is the record's echo)."""
         # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
         # additive write, class='auto', the ONE stream. Best-effort: a
         # lost projection is a logged freshness loss, never a node
@@ -444,8 +451,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             and node.skip is not None
             and node.skip(await self._flow_state(flow_id))
         ):
-            await self._finalize_skipped(flow_id, row, node)
-            return
+            await self._finalize_skipped(flow_id, row, node, claim_epoch=claim_epoch)
+            return "skipped"
 
         # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
         # declared progress schema rides the node's decl (a MAP CHILD
@@ -456,7 +463,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             self.wsql,
             flow_id=flow_id,
             node_id=JobId(row["id"]),
-            schema_decl=self._progress_schema(node_key, node),
+            schema_decl=self._progress_schema(row["step_key"], node),
         )
 
         # THE LOOP NODE (T19): the driver owns the node's lifecycle
@@ -466,10 +473,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # the driver's internal finalizes never wait on the buffer).
         if node is not None and node.loop_spec is not None:
             try:
-                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+                await self._run_loop_node(
+                    flow_id, row, attempt, node, ledger_id, emitter, claim_epoch=claim_epoch
+                )
             finally:
                 await emitter.aclose()
-            return
+            return "loop"
 
         parents_ordered, parents_by_key = await self._parent_results(row["id"])
         payload_raw = row["payload"]
@@ -481,7 +490,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
-            node_key=node_key,
+            node_key=row["step_key"],
             attempt=attempt,
             pool=self.pool,
             wsql=self.wsql,
@@ -504,7 +513,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 result: dict[str, object] | None = {"value": [r for _key, r in parents_ordered]}
             else:
                 outcome_value = await body(ctx, *args)
-                chain = self._chain_steps.get(node_key)
+                chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
                     # THE CHAIN STEP (T20): the body's typed outcome IS
                     # the router's decision — the finalize routes it (at
@@ -512,16 +521,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     # fork-at-finalize machinery owns the child row; the
                     # ROUTE is this runner's decision.
                     await self._finalize_chain_step(
-                        flow_id, row, attempt, node_key, chain, outcome_value, payload_doc
+                        flow_id,
+                        row,
+                        attempt,
+                        row["step_key"],
+                        chain,
+                        outcome_value,
+                        payload_doc,
+                        claim_epoch=claim_epoch,
                     )
-                    return
+                    return "succeeded"
                 if isinstance(outcome_value, Exit):
                     # THE TYPED EARLY-EXIT (§17.1): the sentinel ends the
                     # node NOW — terminal-succeed with the typed payload,
                     # the downstream graph marked skipped-with-the-record.
                     exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard IS the runtime shape check; the sentinel's payload is the walk's boundary.
-                    await self._finalize_exit(flow_id, row, attempt, node, exit_value)
-                    return
+                    await self._finalize_exit(
+                        flow_id, row, attempt, node, exit_value, claim_epoch=claim_epoch
+                    )
+                    return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
             # THE HOLD (T10): the node rests in the held representation
@@ -534,20 +552,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             logger.info(
                 "node.held",
                 run_id=str(flow_id),
-                node=node_key,
+                node=row["step_key"],
                 hold_id=held.hold_id,
                 signals=list(held.signal_names),
             )
-            return
+            return "held"
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
             # law): the final flush is bounded and best-effort — it can
             # cost freshness, never the ladder's correctness.
             await emitter.aclose()
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc)
-            return
+            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            return "laddered"
         await emitter.aclose()
-        await self._finalize_success(flow_id, row, attempt, node, result)
+        await self._finalize_success(flow_id, row, attempt, node, result, claim_epoch=claim_epoch)
+        return "succeeded"
 
     def _redact_hook(self) -> Callable[[str], str] | None:
         """The workflow's OWN redact hook from the REGISTERED DEFINITION
@@ -731,6 +750,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         node: Any,
         result: dict[str, object] | None,
         emitter: ProgressEmitter | None = None,
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
@@ -743,7 +764,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             step_key=row["step_key"],
             worker_id=self._worker_id,
             attempt=attempt,
-            claim_epoch=0,
+            claim_epoch=claim_epoch,
             outcome="succeeded",
             result=result,
             fork=fork,
@@ -837,7 +858,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             max_attempts=node.map_max_attempts,
         )
 
-    async def _finalize_skipped(self, flow_id: JobId, row: dict[str, Any], node: Any) -> None:
+    async def _finalize_skipped(
+        self, flow_id: JobId, row: dict[str, Any], node: Any, *, claim_epoch: int = 0
+    ) -> None:
         """The v1 SKIP semantics: the node succeeds WITH the skip record
         (the envelope never lies about what ran); its ABSORBING joins
         (collect | maybe) receive the typed skip item — a skip is not an
@@ -859,7 +882,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             step_key=row["step_key"],
             worker_id=self._worker_id,
             attempt=int(row["attempt"]) + 1,
-            claim_epoch=0,
+            claim_epoch=claim_epoch,
             outcome="succeeded",
             result=dict(SKIPPED_RESULT),
             map_index=row["map_index"],

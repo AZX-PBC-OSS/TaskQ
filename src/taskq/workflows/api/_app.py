@@ -194,6 +194,16 @@ class WorkflowApp:
         #: queues — validate's W2 rule reads the compiled projection;
         #: attack-3 M5's cure).
         self._actor_queues: set[str] = set()
+        # THE APP REGISTRY (the worker-hosted execution seam): the app
+        # registers weakly, so the boot projection can find every
+        # IMPORTED app — the projection compiles their workflows (the
+        # D1 registry's population in the worker's process) and projects
+        # the (actor, queue) cohorts the estate's actor_config sees (the
+        # F3 law's call site). The lazy import keeps the seam's module
+        # graph out of the authoring surface's own import time.
+        from taskq.workflows._worker_execution import register_app
+
+        register_app(self)
 
     @overload
     def actor(
@@ -298,6 +308,12 @@ class WorkflowApp:
     def has(self, name: str) -> bool:
         return name in self._workflows
 
+    def workflow_names(self) -> list[str]:
+        """The app's declared workflow names (the boot projection's
+        enumeration face — the projection compiles every declared
+        workflow to populate the D1 registry and the cohort set)."""
+        return list(self._workflows)
+
     def get(self, name: str) -> CompiledWorkflow:
         """Compile the NAMED workflow: run its build function under a
         fresh recorder. Same module → same graph, every time.
@@ -332,6 +348,12 @@ class WorkflowApp:
             chains=tuple(graph.chains),
         )
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+        # THE COMPILED CACHE (the worker-hosted execution door's D1
+        # lookup): the compiled graph is recorded under its registered
+        # name — the SAME global namespace the definition registry keys.
+        from taskq.workflows._worker_execution import record_compiled
+
+        record_compiled(name, compiled)
         return compiled
 
     def _known_queues(self) -> frozenset[str]:
