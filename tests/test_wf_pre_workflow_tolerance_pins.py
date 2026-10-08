@@ -5,8 +5,9 @@ miss is the leader's death (a non-transient error class fatal to the
 sweep loop).
 
 The shipped tolerance, pinned END-TO-END against a REAL pre-workflow
-schema (the migrations applied to target ``01.00.22_01`` — jobs, the
-archive pair, the prune watermark; NO workflow tables):
+schema (the migrations applied to target ``01.00.24_01`` — the workflow
+COLUMNS round: jobs + the archive pair with the mirror columns, the
+prune watermark; NO workflow tables — ``wf_edge`` lands one file later):
 
 * the result-expiry arm survives the missing tables by RUNNING — the
   unguarded fallback (semantically exact there: no join-wait rows to
@@ -38,12 +39,12 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import prune_terminal_jobs
 
 #: The crash window's own shape: the workflow round's COLUMN file applied
-#: (01.00.23_01 — the jobs/jobs_archive column mirrors exist, so the
-#: archive write runs), the TABLE file pending (01.00.23_02 — NO wf_edge
+#: (01.00.24_01 — the jobs/jobs_archive column mirrors exist, so the
+#: archive write runs), the TABLE file pending (01.00.24_02 — NO wf_edge
 #: anywhere). The three files apply in one `migrate up --phase pre` run,
 #: each in its own transaction, so a crash between them leaves exactly
 #: this schema — the window the tolerances exist for.
-PRE_WORKFLOW_TARGET = "01.00.23_01"
+PRE_WORKFLOW_TARGET = "01.00.24_01"
 
 
 async def _pre_workflow_schema(admin_conn: asyncpg.Connection, name: str) -> str:
@@ -57,7 +58,7 @@ async def _seed_expired_result(
     conn: asyncpg.Connection, schema: str, *, actor: str, key: str
 ) -> None:
     # NOTE: a PRE-workflow jobs table has NO step_key column (the column
-    # lands with the workflow round, 01.00.23_01) — the seed uses the
+    # lands with the workflow round, 01.00.24_01) — the seed uses the
     # schema's own columns only.
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '

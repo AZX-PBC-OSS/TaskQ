@@ -150,6 +150,36 @@ jobs:
     # always ran, a dedicated core per worker); the standard runner is the
     # stand-in until the org's larger-runner labels exist: the pinned
     # labels matched no runner and queued these legs forever.
+    #
+    # STAGED FLIP, measured 2026-10-06 (local A/B, same commit, CI-exact
+    # invocation; the CI-runtime measurement PR). Still NOT active: the
+    # org's larger-runner labels match no runner (see above), so -n 2 on
+    # the 4-core standard runner remains the measured optimum here —
+    # flipping -n WITHOUT the runner is the measured regression. When the
+    # org's 8-core larger-runner label exists, flip BOTH halves of these
+    # three legs together (runner AND -n; either half alone is measured
+    # harm):
+    #
+    #     test:       runs-on: <the org's 8-core label>   -n 2 -> -n 4
+    #     coverage:   runs-on: <the org's 8-core label>   -n 2 -> -n 4
+    #     slow-suite: runs-on: <the org's 8-core label>   -n 2 -> -n 4
+    #
+    # i.e. this leg becomes:
+    #
+    #     runs-on: <the org's 8-core larger-runner label>
+    #     ...
+    #     run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
+    #
+    # The numbers behind the flip: fast leg 2343.9s at -n 2 -> 1303.0s at
+    # -n 4 (−44.4%), 12,557 passed both ways, workers 96.5-99.0% busy —
+    # the packing survives the wider pool. Slow lane 203.2s -> 100.9s
+    # (−50.3%; at -n 2 its second worker idles 61.3% of the session behind
+    # the soak module, and -n 4 splits that load). Stopping short of the
+    # runner flip is measured harm, not caution: -n 8 on shared cores
+    # reproduced the moving-red class above AND inflated summed work
+    # +32.8% (per-worker setup duplication), and the coverage leg's tracer
+    # taxes density-starved workers +22-55% wall (2026-09-22, below).
+    # -n 4 is a win only with a dedicated core per worker.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

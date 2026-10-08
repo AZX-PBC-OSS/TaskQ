@@ -77,12 +77,13 @@ crash-vs-shutdown accounting.
 16. [`cancel()`](#cancel)
 17. [`cancel_where()`](#cancel_where)
 18. [`list()`](#list)
-19. [`SubJobEnqueuer`](#subjobenqueuer)
-20. [Error handling](#error-handling)
-21. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
-22. [Idempotency example](#idempotency-example)
-23. [Batch enqueue example](#batch-enqueue-example)
-24. [Tags](#tags)
+19. [`backpressure()`](#backpressure)
+20. [`SubJobEnqueuer`](#subjobenqueuer)
+21. [Error handling](#error-handling)
+22. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
+23. [Idempotency example](#idempotency-example)
+24. [Batch enqueue example](#batch-enqueue-example)
+25. [Tags](#tags)
 
 ---
 
@@ -1493,6 +1494,167 @@ for job in page.jobs:
 if page.next_cursor:
     page2 = await client.list(JobFilter(queue="payments", limit=50, cursor=page.next_cursor))
 ```
+
+---
+
+## `backpressure()`
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+async def backpressure(
+    self,
+    queues: Sequence[str],
+    *,
+    parent_id: UUID | None = None,
+) -> BackpressureSnapshot: ...
+```
+
+A read-only typed read of the submit path's backpressure state, mirroring
+the reader methods (`get_row`, `list`) — deliberately **not** an `enqueue`
+kwarg: `enqueue` is generic `JobHandle[R]` and no flag may flip the reply
+type. One call answers, per queue: "is this queue at or past its admission
+boundary?"
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+snapshot = await client.backpressure(["payments"])
+entry = snapshot.queues["payments"]
+if entry.state == "over":
+    shed_or_delay()
+elif entry.state == "unknown":
+    log.warning(entry.reason)  # what could not be seen, never a fake verdict
+```
+
+### The three halves of every verdict
+
+| Field | What it is | Cost |
+|---|---|---|
+| `depth` | Jobs holding a pending slot **in this queue** (pending + scheduled) — the queue-local, ops view. **Reported, not verdict-bearing.** | One indexed aggregate per call (`count_pending_jobs_by_queue`, the `count_active_jobs` pattern), all queried queues in one round trip. |
+| `binding_actor` / `admission_load` / `effective_max_pending` | **The verdict's basis.** The admission cap is per-ACTOR and governs the actor's pending+scheduled count across **all** queues (`enqueue_max_pending_count`: `WHERE actor = $1`, enforced at every enqueue). The binding actor is the queue's routing actor with the smallest headroom (its own cap minus its own all-queue count); `admission_load` is that actor's count; `effective_max_pending` is its stored cap, read from the client-side `ActorCapacityCache` TTL snapshot (default 5s staleness bound — the same snapshot enqueue admission itself resolves through). | Zero I/O beyond one warm-up refresh per TTL window (shared with the enqueue path) plus one `count_pending_jobs` aggregate for the union of the routing actors. |
+| `children_depth` | The fan-out parent's pending children **outside** this queue — the exact `parent_id` ledger. **Reported, not verdict-bearing:** every pending child already counts toward its OWN actor's cap (wherever it sits), which is the number admission enforces — the fan-out pressure reaches the verdict through the routing actors' admission loads, and this field is the parent-attributed view of the same rows. | One more aggregate round trip, only when a parent is in play. |
+
+The verdict: `state` is `"over"` when any routing actor's own all-queue
+count is at or over its stored cap — the next enqueue for that actor is
+likely refused with `MaxPendingExceededError` — and `"ok"` only when every
+routing actor resolves and none is over.
+
+### Why the verdict is actor-scoped, not queue-scoped
+
+The cap is `WHERE actor = $1` — an actor's traffic split across queues
+(an explicit `queue=` override, or a queue move) accumulates in ONE
+count that the queue-local depth cannot see. A queue-local verdict
+false-OKs exactly there: 9 pending in the assigned queue + 9 via the
+override read "9 < 10, ok" while the next enqueue is refused at 18 >=
+10. The verdict therefore compares what the cap actually governs (the
+actor's own count), and the queue-local `depth` stays as the ops view.
+Pinned: `test_differential_actor_split_across_queues_is_seen`.
+
+### The fan-out half: exact `parent_id` accounting
+
+A fan-out parent (a dispatcher enqueuing thousands of children) needs its
+children's pending depth visible. The ledger is **exact**: every child
+enqueue made under a parent's context stamps `jobs.parent_id` with the
+parent's job id (a plain column, migration `01.00.23_01` — deliberately
+**no foreign key**, so it never serializes child inserts behind the parent
+row and never blocks a retention purge; a dangling `parent_id` — parent
+purged, children pending — is a defined, harmless state the count handles
+by construction).
+
+Inside a worker, the parent context is already installed (the same
+contextvar pair that drives tag inheritance, set at worker entry), so an
+actor body needs no arguments:
+
+```python no-exec — not executed: fragment, names bound by an earlier fence
+@actor()
+async def dispatch_orders(payload, ctx) -> None:
+    snapshot = await ctx.jobs.backpressure(["order_items"])  # ambient parent = THIS job
+    entry = snapshot.queues["order_items"]
+    if entry.state == "over":
+        await asyncio.sleep(1)  # shed: our own children are saturating the target
+    for order in payload.orders:
+        await ctx.jobs.enqueue(enrich_item, order)  # child: parent_id stamped
+```
+
+Outside a worker (or for an explicit parent), pass `parent_id=`. The
+fan-out pressure reaches the verdict through the routing actors' own
+counts: every pending child is a row of ITS target actor, and that
+actor's cap governs its all-queue count — so children piling up on the
+target queue turn the TARGET queue's verdict `over`, which is exactly
+the admission truth (the next child will be refused by the same
+arithmetic). `children_depth` is the parent-attributed ledger view of
+those same rows (pending children of the parent outside the queried
+queue), reported for observability; children already in the queried
+queue are in its `depth` and are never counted twice.
+
+### Fail-open: `unknown`, never a fabricated verdict
+
+Any half the verdict needs that cannot be seen forces `state="unknown"`
+with `reason` naming it: a sick database (the read fails or exceeds its
+bounded wait), a backend built before the staged reads existed, no
+capacity snapshot, a queue no stored assignment routes (the unserved-queue
+corner), or a routing actor whose cap lives only in the
+`@actor(max_pending=...)` **literal** — code is invisible to another
+process, so set a stored override (`taskq actor-config set --max-pending`)
+to make the read exact. When SOME routing actors resolve and others do
+not, a resolved actor that is over still reads `over` (that actor's
+refusal is certain), but `ok` is withheld (an unresolved actor may be
+over — claiming ok would be the false-ok). The read never raises on
+backend trouble; the one exception is a missing schema, which surfaces as
+`SchemaNotMigratedError` — a setup defect is not degraded data (the actor
+body's `ctx.jobs.backpressure()` translates it identically).
+
+### As-of: the snapshot states its own age
+
+The snapshot carries `as_of` (the UTC instant of the read) and
+`cap_age_seconds` (how old the capacity snapshot the caps came from was —
+computed from the last refresh that SUCCEEDED, so a sustained-failure
+regime reports the data's real age instead of resetting fresh on every
+failed retry; bounded by the TTL, default 5s; `None` when no snapshot
+exists, then every cap half reads `unknown` with its reason). The depth
+half was **exact at `as_of`** and advisory from it on; a caller surfacing
+the number to users can show the staleness story honestly instead of
+guessing (prefect's "Late" state taught this the hard way: a stale verdict
+presented as fresh).
+
+### Dangling parents: first-class states, never errors
+
+`parent_id` has no foreign key, so nothing in the database distinguishes a
+parent that **never existed** (a stale or fabricated id) from one
+**purged by retention** from one **not yet inserted** (children stamped
+before the parent's row commits). The snapshot makes no attempt to
+distinguish them either — all three are just "children pending", the count
+counts children by `parent_id` and never joins to the parent row, and the
+verdict is the same well-formed `ok`/`over` in all three cases. That is
+deliberate pricing, not an oversight: an advisory signal measures
+admission pressure, which is a property of the CHILDREN; telling the
+three dangling cases apart would cost a join per read and buy a
+distinction no caller can act on. Oban Pro needed three separate
+mechanisms (Lifeline, `ignore_deleted`, `preserve_workflows`) to mop up
+this ambiguity because its signals special-case missing parents; this
+read defines the dangling state as ordinary instead. The one honest
+posture note: pending children of a purged parent run **orphaned** (no
+parent to observe them) — that is a lifecycle question for the caller,
+not a count question, and the snapshot refuses to fabricate a difference.
+
+### Retention is linkage-safe by construction
+
+The prune sweep's candidates are TERMINAL rows only (`finished_at`-bounded);
+a pending child — of a live parent or a purged one — is never a purge
+candidate, so a purge pass running mid-workflow cannot strand or corrupt
+pending children. Pinned in tests/test_backpressure_read.py.
+
+### Advisory semantics
+
+The read is a check; the enqueue is a later act. The race between them is
+acceptable by design — the signal **predicts** admission, it does not
+reserve it. The cap half carries the capacity cache's TTL staleness bound
+(default 5s); the depth half is a real count but ages the moment it is
+taken. Callers needing certainty use `enqueue`'s own typed refusal
+(`MaxPendingExceededError`), which stays the single enforcement point.
+
+Measured cost (100k-row hot table, PG 18, min of 5): the depth aggregate
+serves the whole call from `jobs_parent_pending_idx`-shaped index walks —
+a 10k-pending-children fan-out counts in ~2.6 ms; the enqueue COPY path's
+parented vs unparented rate difference is inside noise (the partial index
+only touches parent-stamped rows). See `scripts/measure_parent_id_cost.py`.
 
 ---
 

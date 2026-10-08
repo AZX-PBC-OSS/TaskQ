@@ -607,6 +607,14 @@ def _bounded_queue(queue: str) -> str:
     )
 
 
+def bounded_queue_label(queue: str) -> str:
+    """The label-bound cardinality cap's public obs-layer seam: the same
+    first-N-then-overflow admission :func:`_bounded_queue` applies, for
+    the obs-internal consumers outside this module (the claim-health
+    gauges) that must not reach the private helper by name."""
+    return _bounded_queue(queue)
+
+
 _published_messages = get_meter().create_counter(
     "messaging.client.published.messages",
     description=(
@@ -3688,7 +3696,7 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
 # tick (the vanilla pattern — never a worker scrape, never the opt-in
 # TASKQ_METRICS_PORT worker port). One grouped read (the same read the
 # admin's status panel uses — the query-count pin), index-driven
-# (jobs_wf_flow_nodes_idx, 01.00.25_02 — the uuid-cast expression, the
+# (jobs_wf_flow_nodes_idx, 01.00.26_02 — the uuid-cast expression, the
 # workflow-rows-only partial `metadata ? 'flow_id'`).
 #
 # THE ALERT SUGGESTION SHIPS WITH THE GAUGE (GAPS-ESTATE F4 — a metric

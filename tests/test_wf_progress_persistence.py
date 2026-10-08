@@ -70,7 +70,7 @@ async def _append(
 
 
 async def test_two_channel_tables_exact_shape(wf_conn: asyncpg.Connection, wf_schema: str) -> None:
-    """The migration's exact shape (01.00.28): the STATE channel's PK is
+    """The migration's exact shape (01.00.29): the STATE channel's PK is
     (node_id, channel) — the latest-wins row's IDENTITY, the fence that
     makes the row count nodes x channels; the STREAM channel's PK is the
     bigserial seq — THE ONE SEQ SPACE (DH3's fence), DB-side because a

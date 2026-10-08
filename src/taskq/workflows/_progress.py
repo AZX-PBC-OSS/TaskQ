@@ -85,7 +85,7 @@ KIND_NODE_STARTED: Final[str] = "wf.node.started"
 KIND_NODE_TERMINAL: Final[str] = "wf.node.terminal"
 
 #: The closure itself: every kind the stream may carry, validated at emit
-#: AND enforced by the storage domain's CHECK (01.00.28). A third
+#: AND enforced by the storage domain's CHECK (01.00.29). A third
 #: vocabulary cannot sprout — the fleet's SSE-fragmentation fossil is
 #: structurally closed here.
 KIND_VOCABULARY: Final[frozenset[str]] = frozenset(

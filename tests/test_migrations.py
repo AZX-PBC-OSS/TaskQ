@@ -142,7 +142,7 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "rate_limit_blocked_count",
         "interrupt_count",
         "claim_epoch",
-        # 01.00.23's workflow columns: vanilla enqueues never set them (the
+        # 01.00.24's workflow columns: vanilla enqueues never set them (the
         # DDL defaults apply); the engine's own statements write them.
         "parent_id",
         "deps_pending",

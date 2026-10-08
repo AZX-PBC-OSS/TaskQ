@@ -51,7 +51,8 @@ from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
-    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
+    _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pins must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
     _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the laterals reference the capability CTE by name — the wrapper composes the production constant verbatim (a literalized stand-in would let the pin's plan drift from the production one).
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
@@ -291,7 +292,10 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # compare; see the migration's header for the per-page full-sort
         # it removes.
         "jobs_seam_idx",
-        # 01.00.23 (pre): the workflow round's three jobs indexes, all
+        # 01.00.23_01 (LIB-2): the fan-out ledger's partial index —
+        # pending/scheduled children only, parent_id IS NOT NULL.
+        "jobs_parent_pending_idx",
+        # 01.00.24 (pre): the workflow round's three jobs indexes, all
         # partial on workflow rows (the sweep's lock-first join-wait walk;
         # the fire arm's join-wait probe — deliberately WITHOUT
         # deps_pending > 0: the firable row's cache was just reconciled
@@ -300,12 +304,12 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         "jobs_wf_join_wait_idx",
         "jobs_wf_join_fire_probe_idx",
         "jobs_wf_children_idx",
-        # 01.00.25_02 (pre): the flow-link index REBUILT on the read shape —
+        # 01.00.26_02 (pre): the flow-link index REBUILT on the read shape —
         # the expression carries the same uuid cast every flow-scoped read
         # carries, and the partial names the index's true population
         # (workflow rows only: metadata ? 'flow_id'). Measured at the 220k-row
         # fleet (40 runs x 500 nodes, VACUUMed): the grouped rollup read one
-        # 500-node run in 21.2 ms on 01.00.25_01's raw-text shape (linear in
+        # 500-node run in 21.2 ms on 01.00.26_01's raw-text shape (linear in
         # the fleet table), 0.12 ms on this one — O(the run's node count).
         # The pin's update IS the commit that changed the index estate;
         # the lock-scope discipline itself stays proven below (the dead
@@ -632,7 +636,13 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
         plan = await _explain_analyze(
             conn,
             _params_wrapper(
-                _STRICT_FIFO_CANDIDATES_LATERAL, mixed_population_schema, rr_keys=False
+                # The PLAIN render's fragment, not the raw template: the
+                # fragment carries the claim-cursor hole, and a raw hole
+                # in an EXPLAIN is a PostgresSyntaxError (the CI red this
+                # constant exists to cure).
+                _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,
+                mixed_population_schema,
+                rr_keys=False,
             ),
             ["default"],
             10,

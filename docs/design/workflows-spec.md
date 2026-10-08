@@ -63,9 +63,9 @@ What was proposed, attacked with evidence, and REFUSED:
 
 ## 2. The schema decision: columns on jobs
 
-Workflow identity lives as COLUMNS on `jobs` (01.00.23_01): `parent_id`,
+Workflow identity lives as COLUMNS on `jobs` (01.00.24_01): `parent_id`,
 `deps_pending`, `map_index`, `step_key`, `code_version` (+ the loop
-budget trio, 01.00.26/30). The measured tax (the SKEPTIC §IV probe): **+3.0
+budget trio, 01.00.27/31). The measured tax (the SKEPTIC §IV probe): **+3.0
 B tuple / 0.0 B heap on vanilla rows; 194× the partial-index exemption;
 +104.9 B paid by workflow rows only.** The `wf_nodes` split-table variant
 is the documented ESCAPE HATCH (the hot path's ticket if the tax ever

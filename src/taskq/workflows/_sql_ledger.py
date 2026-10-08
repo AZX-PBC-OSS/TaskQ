@@ -12,7 +12,7 @@ from __future__ import annotations
 # (verified 30 reps x 10 concurrent). A fresh claim inserts status='running'
 # (the attempt increments at claim, the only grant of work); a conflicting
 # claim returns the EXISTING row — the claim arbiter
-# (wf_step_ledger_claim_uniq, 01.00.23_03: (flow_id, step_key,
+# (wf_step_ledger_claim_uniq, 01.00.24_03: (flow_id, step_key,
 # COALESCE(map_index, -1), attempt)) physically blocks double-recording (P3
 # rule 2), and the ledger terminal write rides the finalize's own
 # transaction.

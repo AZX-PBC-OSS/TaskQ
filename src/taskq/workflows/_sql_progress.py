@@ -161,7 +161,7 @@ ORDER BY p.channel
 
 # The run-scoped read joins the jobs table on the flow link (the same
 # flow-nodes shape the rollup reads — never a seq scan; the partial index
-# 01.00.25_02 serves the bound).
+# 01.00.26_02 serves the bound).
 PROGRESS_STATE_READ_RUN_SQL = """\
 SELECT p.node_id, p.channel, p.pct, p.message, p.data, p.occurrences,
        p.dropped, p.last_seq, p.updated_at

@@ -46,7 +46,7 @@ def _absorbed_exists(node_alias: str) -> str:
 # never counted among them — the WHERE names that (the root's own status
 # is not a NODE's status, and counting it manufactured a phantom one).
 # The two exact clauses (step_key <> '__flow__' + the flow link present)
-# are what let the planner prove the partial index (01.00.25_02 — the
+# are what let the planner prove the partial index (01.00.26_02 — the
 # uuid-cast expression, the workflow-rows-only partial) serves this read
 # at the fleet shape: without them the read was a Seq Scan of the whole
 # jobs table per status read (the H3 conviction).
@@ -125,7 +125,7 @@ GROUP BY c.step_key
 # cancel flip and the direct cascade own their own legs (the
 # linearization points); this heals the windows. Bounded: the roots batch
 # (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node scan rides
-# jobs_wf_flow_nodes_idx (01.00.25_02) — never a seq scan.
+# jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
 #
 # THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the phase-2 attack's H1
 # cure): the maintenance leg derives the root's terminal state from THE

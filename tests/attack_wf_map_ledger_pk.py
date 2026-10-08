@@ -1,7 +1,7 @@
 """ATTACK: the step ledger's PK omits map_index — map children collide.
 
 The ledger's uniqueness is ``UNIQUE (flow_id, step_key, attempt)``
-(``01.00.23_02_pre_workflow_tables.sql``), and the claim's conflict target
+(``01.00.24_02_pre_workflow_tables.sql``), and the claim's conflict target
 (``LEDGER_CLAIM_SQL`` in ``src/taskq/workflows/_sql_ledger.py``) is
 ``(flow_id, step_key, attempt)`` — ``map_index`` is carried as a bound
 value but is NOT part of the arbiter. T05's contract says the map child's

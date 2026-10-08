@@ -584,7 +584,7 @@ async def test_t08_rollup_cost_gate_index_driven(
     broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
     per-node read at this very shape —
     .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
-    The ride: jobs_wf_flow_nodes_idx (01.00.25_02 — the index expression
+    The ride: jobs_wf_flow_nodes_idx (01.00.26_02 — the index expression
     carries the same uuid cast the reads carry; the partial covers the
     workflow rows only)."""
     import time
@@ -647,7 +647,7 @@ async def test_t08_rollup_cost_gate_index_driven(
             # per-node probes ride wf_edge_parent_idx when rows exist.)
             assert not (node_type == "Seq Scan" and rel == "jobs"), (
                 f"the read seq-scans {rel} at the fleet shape — the "
-                "index-driven gate reds (the cure: 01.00.25_02's uuid-cast "
+                "index-driven gate reds (the cure: 01.00.26_02's uuid-cast "
                 "expression + the workflow-rows-only partial)"
             )
             for child in node.get("Plans", []) or []:
@@ -700,11 +700,11 @@ async def test_t08_rollup_cost_gate_index_driven(
                     "containing ONLY the measured flow's rows — the "
                     "measured flow WAS the whole table, so the plan assert "
                     "could not fail on a seq scan. At the fleet shape the "
-                    "pre-cure index (01.00.25_01's raw-TEXT key) served NO "
+                    "pre-cure index (01.00.26_01's raw-TEXT key) served NO "
                     "flow-scoped read: the rollup read p50 21.2 ms and the "
                     "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
                     "fleet table (.measurements/fix2/index-before-text-"
-                    "index.txt). The cure (01.00.25_02: the uuid-cast "
+                    "index.txt). The cure (01.00.26_02: the uuid-cast "
                     "expression + the metadata?'flow_id' partial, the "
                     "reads carrying the proving clauses) puts every "
                     "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
@@ -715,7 +715,7 @@ async def test_t08_rollup_cost_gate_index_driven(
                     "DESIGN (no run id to key); its band is recorded in "
                     "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
                 ),
-                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_02)",
+                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02)",
             },
             indent=2,
         )

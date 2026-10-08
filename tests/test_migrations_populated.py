@@ -177,7 +177,7 @@ def _job_row(
         "id": row_id,
         "actor": ("actor_a", "actor_b", "actor_c", "test_actor")[i % 4],
         "queue": "default",
-        # 01.00.23's workflow columns: the seeder's rows are VANILLA rows
+        # 01.00.24's workflow columns: the seeder's rows are VANILLA rows
         # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
         # explicitly so the runtime column intersection never KeyErrors.
         "parent_id": None,
@@ -185,8 +185,8 @@ def _job_row(
         "map_index": None,
         "step_key": None,
         "code_version": None,
-        # 01.00.26's loop-budget columns (mirrored onto jobs_archive by
-        # 01.00.30): the seeder's rows are VANILLA rows -- the DEFAULT/NULL
+        # 01.00.27's loop-budget columns (mirrored onto jobs_archive by
+        # 01.00.31): the seeder's rows are VANILLA rows -- the DEFAULT/NULL
         # shapes, stated explicitly so the runtime intersection never
         # KeyErrors.
         "budget_deadline": None,
@@ -247,6 +247,12 @@ def _job_row(
         # backfills them): both populations seeded so the column proves
         # it round-trips through COPY, not just that the DDL accepts it.
         "assignment_routed": i % 4 == 0,
+        # The fan-out ledger (01.00.24_01): a deterministic parent
+        # pointer on every 10th row - dangling by construction (the
+        # ledger has no FK and never joins to the parent row), so the
+        # COPY column proves it round-trips, not just that the DDL
+        # accepts it.
+        "parent_id": _uuid5(f"job-parent:{slice_id}:{i}") if i % 10 == 0 else None,
     }
 
 

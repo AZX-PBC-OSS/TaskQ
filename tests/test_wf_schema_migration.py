@@ -34,7 +34,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.migrate import split_statements
 from tests._wf_fixtures import MEASUREMENTS
 
-WORKFLOW_ROUND = "01.00.23"
+WORKFLOW_ROUND = "01.00.24"
 _MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "taskq" / "migrations"
 _ROUND_FILES = sorted(_MIGRATIONS_DIR.glob(f"{WORKFLOW_ROUND}_*.sql"))
 _WF_COLUMNS = ("parent_id", "deps_pending", "map_index", "step_key", "code_version")
@@ -63,9 +63,9 @@ def test_round_is_split_into_single_lock_class_files() -> None:
     lock-scope family's finding)."""
     names = [f.name for f in _round_files()]
     assert names == [
-        "01.00.23_01_pre_workflow_columns.sql",
-        "01.00.23_02_pre_workflow_tables.sql",
-        "01.00.23_03_pre_workflow_indexes.sql",
+        "01.00.24_01_pre_workflow_columns.sql",
+        "01.00.24_02_pre_workflow_tables.sql",
+        "01.00.24_03_pre_workflow_indexes.sql",
     ], names
 
 

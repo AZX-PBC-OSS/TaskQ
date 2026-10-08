@@ -334,7 +334,7 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
 #: The workflow progress rollup (T08): per (declared workflow, node state)
 #: node counts — ONE grouped read for the wf-progress gauge and the
 #: admin's status panel alike (the query-count pin). Index-driven: the
-#: node rows ride jobs_wf_flow_nodes_idx (01.00.25_02 — the uuid-cast
+#: node rows ride jobs_wf_flow_nodes_idx (01.00.26_02 — the uuid-cast
 #: expression, the workflow-rows-only partial `metadata ? 'flow_id'`,
 #: which this WHERE names exactly: the read is O(the fleet's WORKFLOW
 #: rows), never a seq scan of the fleet table), each root a primary-key
@@ -685,9 +685,9 @@ _ARCHIVE_CTE_SQL = (
 
 _DB_NOW_SQL = "SELECT clock_timestamp()"
 
-#: The workflow-era columns the LOOP-BUDGET round added (01.00.26 jobs,
-#: 01.00.30 the archive mirror): the columns the PRE-BUDGET schemas (the
-#: rolling-deploy tolerance's own target, 01.00.23_01) do not carry.
+#: The workflow-era columns the LOOP-BUDGET round added (01.00.27 jobs,
+#: 01.00.31 the archive mirror): the columns the PRE-BUDGET schemas (the
+#: rolling-deploy tolerance's own target, 01.00.24_01) do not carry.
 _BUDGET_ERA_JOBS_COLUMNS = frozenset(
     {"budget_deadline", "budget_paused", "budget_remaining_ms"}
 )
@@ -1015,7 +1015,7 @@ async def prune_terminal_jobs(
                 )
             except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
                 # THE ROLLING-DEPLOY TOLERANCE (T18's own guard's edge): a
-                # schema the 01.00.23 round has not landed on yet has NO
+                # schema the 01.00.24 round has not landed on yet has NO
                 # wf_edge table — the guard cannot resolve, and an
                 # untolerated miss is the prune's death (a
                 # non-transient error class fatal to the leader). The
@@ -1029,7 +1029,7 @@ async def prune_terminal_jobs(
                 # statement and resumes guarded).
                 #
                 # THE COLUMN HALF (the deploy matrix's battery finding):
-                # the budget round (01.00.26/30) added its trio to BOTH
+                # the budget round (01.00.27/31) added its trio to BOTH
                 # mirror sides — a schema the budget round has not landed
                 # on raises UndefinedColumnError from the WRITE (the
                 # mirror names columns the schema does not carry), the

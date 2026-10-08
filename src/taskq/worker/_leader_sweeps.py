@@ -780,7 +780,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             #   memo's bound).
             #
             # UndefinedTableError tolerance: a rolling deploy may run this
-            # code against a schema the 01.00.23 round has not landed on
+            # code against a schema the 01.00.24 round has not landed on
             # yet — a per-tick warn until the migration applies, never the
             # deliberately-fatal streak (the keyed-row sweep's pattern).
             name="wf_join_rederive",
@@ -1742,7 +1742,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # port). One grouped read (the same read class the
                     # admin's status panel uses — one query per status
                     # read), index-driven (jobs_wf_flow_nodes_idx,
-                    # 01.00.25_02 — the uuid-cast expression, the
+                    # 01.00.26_02 — the uuid-cast expression, the
                     # workflow-rows-only partial). The DECLARED-WORKFLOW dimension: the
                     # registered names keep their series; every other
                     # workflow's runs collapse onto `_other_` (summed) —

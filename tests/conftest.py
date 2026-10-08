@@ -1126,8 +1126,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     ``xdist_group(name=<module basename>)`` to every ``integration`` or
     ``e2e`` test that doesn't already carry an explicit ``xdist_group``
     marker, so chaos-style tests keep whatever group they already declared
-    (e.g. ``xdist_group(name="chaos")``) while everything else gets a safe,
-    per-file default. The e2e namespace prefix keeps an e2e module from
+    (e.g. the per-module chaos families: ``chaos_leader``, ``chaos_notify``,
+    ``chaos_ratelimit``, ``chaos_livelock``, ``chaos_health``) while
+    everything else gets a safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
     """
     for item in items:

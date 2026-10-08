@@ -2030,7 +2030,7 @@ nothing was lost, the move is documented here).
   the insights SQL recipes, the hypothesis totality property, the
   (state, event) totality table (64 cells, zero undefined), one-run-one-
   trace ×10 concurrent, the index-driven rollup cost gate
-  (`jobs_wf_flow_nodes_idx`, migration 01.00.25_01).
+  (`jobs_wf_flow_nodes_idx`, migration 01.00.26_02).
 
 ### Jobs and batches
 
@@ -2708,9 +2708,9 @@ and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
 
-## The workflow round (01.00.23) — the DAG engine's schema
+## The workflow round (01.00.24) — the DAG engine's schema
 
-Migrations `01.00.23_01/_02/_03` ship the workflow engine's DDL: the five
+Migrations `01.00.24_01/_02/_03` ship the workflow engine's DDL: the five
 workflow columns on `jobs` (`parent_id`, `map_index`, `step_key`,
 `deps_pending`, `code_version`), the four ledger tables (`wf_edge`,
 `wf_join_fire`, `wf_outbox`, `wf_step_ledger`), and the workflow indexes —
@@ -2744,7 +2744,7 @@ pre-release build that carried the older constraint: the files' checksums
 changed, and `taskq migrate status` will name the drift — the cure is the
 same as the published-variants discipline below, except the honest
 bookkeeping here is "this pre-release build's ledger refers to a draft of
-01.00.23 that was never published"; re-run the round's files on a fresh
+01.00.24 that was never published"; re-run the round's files on a fresh
 schema (they are idempotent-ordered, additive DDL) rather than
 legitimising a draft checksum with a variant.
 

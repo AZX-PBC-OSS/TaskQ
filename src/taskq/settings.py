@@ -1122,6 +1122,33 @@ class WorkerSettings(TaskQSettings):
         "transient oversubscription, the setting governs the steady state "
         "so the common case never pays the expansion round trip.",
     )
+    claim_cursor_reset_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=86400.0,
+        validator=_finite_float,
+        description="TASKQ_CLAIM_CURSOR_RESET_SECONDS. OPT-IN (default 0 = disabled): the "
+        "claim cursor's jitter reset interval, in seconds - the MVCC-horizon hygiene pair's "
+        "worker-side half (backend/_claim_cursor.py). When enabled, each worker's dispatch "
+        "keeps a per-queue high-water mark of successfully-claimed job ids (UUIDv7, "
+        "time-ordered) and bounds the claim query's candidate predicate at it, so the B-tree "
+        "seek can land on live tuples instead of degenerating through the dead tuples a "
+        "pinned MVCC horizon leaves behind. The bound is a selection predicate: any pending "
+        "row whose id falls below it (a skewed producer's clock, a row the round's window "
+        "never reached) is invisible to the claim query until the reset forgets the cursor - "
+        "the reset is this interval, jittered +/-50% per entry so a fleet's resets never "
+        "synchronize, armed at the entry's creating claim and never extended by later "
+        "claims. Round-robin queues are exempt (cohort fairness is id-order-blind by "
+        "design). Disabled by default on measured evidence: on this codebase's multi-surface "
+        "claim CTE the bound's full-path win is plan-dependent (the spiral's planner "
+        "blindness - dead rows are invisible to every fresh snapshot, so ANALYZE's estimates "
+        "stay healthy while the index rots - keeps the probes on index choices the bound "
+        "cannot position), so the bounded-stranding trade buys no robust end-to-end "
+        "improvement; see tests/perf/test_mvcc_claim_degradation.py for the curves and the "
+        "TaskQClaimLatencyDegraded runbook for the primary cure. Enable it for fleets whose "
+        "shape matches the isolated-surface measurement (single-queue, monotone claim "
+        "streams, fresh statistics).",
+    )
     dispatch_scope_by_home_queue: bool = Field(
         default=False,
         description="TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE. Deprecated no-op, "

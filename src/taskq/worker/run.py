@@ -848,7 +848,11 @@ async def consumer_loop_stub(
         if current_task is None:
             raise RuntimeError("consumer_loop_stub must run inside a TaskGroup")
 
-        with parent_tags(tuple(job.tags)):
+        # The ONE parent context: tag inheritance AND the fan-out ledger
+        # stamp (LIB-2) — every child enqueue in the actor body carries
+        # this job's id as parent_id, the exact pending-children
+        # accounting the client's backpressure read serves.
+        with parent_tags(tuple(job.tags), job_id=job.id):
             ctx: JobContext[_StubPayload] = JobContext(
                 job_id=job.id,
                 actor=job.actor,

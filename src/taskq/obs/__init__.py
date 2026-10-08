@@ -53,6 +53,11 @@ consistent behavior. No runtime conditional branching on this env var is
 needed, the attribute values are correct by construction.
 """
 
+from taskq.obs._claim_health import (
+    claim_health_snapshot,
+    record_claim_latency,
+    reset_claim_health_state,
+)
 from taskq.obs._exporter import (
     ExporterWiring,
     OtelExporterConfigurationError,
@@ -193,6 +198,7 @@ __all__ = [
     "StrandedReason",
     "TimeoutKind",
     "bind_job_context",
+    "claim_health_snapshot",
     "configure_exporters",
     "get_logger",
     "get_meter",
@@ -208,6 +214,7 @@ __all__ = [
     "record_cancel_actored",
     "record_cancel_requested",
     "record_capacity_refresh_failure",
+    "record_claim_latency",
     "record_consumed_message",
     "record_corrupt_dispatch_row",
     "record_cron_budget_deferral",
@@ -260,6 +267,7 @@ __all__ = [
     "record_sweep_unexpected_error",
     "redact_payload",
     "render_exception",
+    "reset_claim_health_state",
     "safe_exception_message",
     "safe_repr",
     "safe_start_span",

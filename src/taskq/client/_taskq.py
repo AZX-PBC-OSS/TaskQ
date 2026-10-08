@@ -35,7 +35,7 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -99,7 +99,7 @@ from taskq.constants import (
 )
 from taskq.cron import ScheduleHandle
 from taskq.exceptions import EventRetentionGapError
-from taskq.types import BulkCancelResult, CancelResult
+from taskq.types import BackpressureSnapshot, BulkCancelResult, CancelResult
 
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
 
@@ -373,6 +373,10 @@ class _ClientSettings:
     # bound is used if a client is ever handed a dispatcher_pool, and
     # mirrors WorkerSettings.dispatcher_command_timeout's default.
     dispatch_oversample: int = 2
+    # The claim cursor's knob, declared on BackendSettings and mirrored
+    # at the opt-in default (0 = disabled): a client-built backend never
+    # dispatches, and an unconfigured one keeps the disabled posture.
+    claim_cursor_reset_seconds: float = 0.0
     dispatcher_command_timeout: float = 5.0
     # Mirrors WorkerSettings.result_max_bytes' default: the client never
     # writes a terminal result, but the backend's storage-boundary guard
@@ -1145,6 +1149,23 @@ class TaskQ:
         status ('currently executing').  See :class:`JobFilter`.
         """
         return await self._require_open().list(filter)
+
+    async def backpressure(
+        self,
+        queues: Sequence[str],
+        *,
+        parent_id: "JobId | None" = None,
+    ) -> BackpressureSnapshot:
+        """Read the submit path's backpressure state for *queues*.
+
+        Delegates to :meth:`JobsClient.backpressure`; see it for the
+        full contract (the depth/cap/children halves, the fail-open
+        ``unknown`` state, the advisory semantics). Returns a
+        :class:`~taskq.types.BackpressureSnapshot` — a read-only typed
+        read mirroring the reader methods above, deliberately not an
+        ``enqueue`` kwarg.
+        """
+        return await self._require_open().backpressure(queues, parent_id=parent_id)
 
     async def cancel(
         self,
