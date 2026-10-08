@@ -30,8 +30,13 @@ services:
   worker-1:
     # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
     # benchmarks/example_image_spec.py): when set and present locally, compose
-    # skips the docker build entirely. Unset, this is the stock behavior
-    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    # skips the docker build entirely — set TASKQ_EXAMPLE_PULL_POLICY=missing
+    # with it (the README's fast path does). Unset, the pull policy defaults
+    # to `build`: every `up` REBUILDS the image, so a cold start can never
+    # silently serve another tree's stale `taskq-example:dev` (the attack-4
+    # finding: the worktree-GLOBAL tag reused an image built elsewhere — the
+    # demo's routes were yesterday's).
+    pull_policy: ${TASKQ_EXAMPLE_PULL_POLICY:-build}
     image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
@@ -50,10 +55,9 @@ services:
       TASKQ_QUEUES: examples
 
   worker-2:
-    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
-    # benchmarks/example_image_spec.py): when set and present locally, compose
-    # skips the docker build entirely. Unset, this is the stock behavior
-    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    # See worker-1's pull-policy note: the default is `build` (fresh every
+    # up); the content-hashed fast path opts out with TASKQ_EXAMPLE_PULL_POLICY=missing.
+    pull_policy: ${TASKQ_EXAMPLE_PULL_POLICY:-build}
     image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
@@ -72,10 +76,9 @@ services:
       TASKQ_QUEUES: examples
 
   app:
-    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
-    # benchmarks/example_image_spec.py): when set and present locally, compose
-    # skips the docker build entirely. Unset, this is the stock behavior
-    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    # See worker-1's pull-policy note: the default is `build` (fresh every
+    # up); the content-hashed fast path opts out with TASKQ_EXAMPLE_PULL_POLICY=missing.
+    pull_policy: ${TASKQ_EXAMPLE_PULL_POLICY:-build}
     image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
@@ -96,12 +99,21 @@ services:
       TASKQ_EXAMPLE_PORT: "8000"
       TASKQ_ADMIN_URL: http://localhost:8001
       TASKQ_MIGRATE_ON_START: "true"
+      # THE DEMO'S CENTRAL PROPERTY (attack-4 F-P4-DEMO-DEAD-RESOLVE's
+      # cure): the trigger's 202 URL lands HERE — the run page renders on
+      # THIS process's embedded admin, and its Resolve form POSTs to THIS
+      # process's actions route. Without the actions opt-in the form's
+      # POST answers 403 and the demo cannot resolve its own hold.
+      # TASKQ_ADMIN_UI_SECURE_COOKIES comes off too: this stack is plain
+      # http on a published port, and a Secure CSRF cookie is refused
+      # there (the flag's own doc: http-only local development).
+      TASKQ_ADMIN_ACTIONS_ENABLED: "true"
+      TASKQ_ADMIN_UI_SECURE_COOKIES: "false"
 
   admin:
-    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
-    # benchmarks/example_image_spec.py): when set and present locally, compose
-    # skips the docker build entirely. Unset, this is the stock behavior
-    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    # See worker-1's pull-policy note: the default is `build` (fresh every
+    # up); the content-hashed fast path opts out with TASKQ_EXAMPLE_PULL_POLICY=missing.
+    pull_policy: ${TASKQ_EXAMPLE_PULL_POLICY:-build}
     image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..
@@ -133,10 +145,9 @@ services:
 
   fastapi-app:
     profiles: [example]
-    # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
-    # benchmarks/example_image_spec.py): when set and present locally, compose
-    # skips the docker build entirely. Unset, this is the stock behavior
-    # (compose builds examples/Dockerfile and tags it taskq-example:dev).
+    # See worker-1's pull-policy note: the default is `build` (fresh every
+    # up); the content-hashed fast path opts out with TASKQ_EXAMPLE_PULL_POLICY=missing.
+    pull_policy: ${TASKQ_EXAMPLE_PULL_POLICY:-build}
     image: ${TASKQ_EXAMPLE_IMAGE:-taskq-example:dev}
     build:
       context: ..

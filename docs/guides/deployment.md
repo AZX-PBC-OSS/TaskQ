@@ -81,6 +81,19 @@ The production `Dockerfile` is deliberately NOT spec-expressed: containerspec
 cannot render its `HEALTHCHECK`, and its release-tag-only build cadence has
 no repeated-run cost for a content hash to amortize.
 
+The default pull policy is `build` — a plain `docker compose up` always
+rebuilds THIS tree's image, so a cold start can never silently serve a
+stale `taskq-example:dev` left by another checkout (the worktree-global
+tag is shared). The content-hashed fast path opts out explicitly — set
+`TASKQ_EXAMPLE_PULL_POLICY=missing` beside `TASKQ_EXAMPLE_IMAGE` (the
+hash tag is content-addressed, so `missing` cannot serve a stale tree):
+
+```bash
+export TASKQ_EXAMPLE_IMAGE="$(uv run python benchmarks/example_image_spec.py)"
+export TASKQ_EXAMPLE_PULL_POLICY=missing
+docker compose -f examples/docker-compose.yml up -d
+```
+
 ### systemd
 
 ```ini
