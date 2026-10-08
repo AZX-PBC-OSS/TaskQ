@@ -1,0 +1,116 @@
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/taskq/workflows/_sweep.py:303:35
+    |
+301 |         edge_rows = [
+302 |             (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+303 |             for spawn_id, r, b in zip(ids, rows, bindings)
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^
+304 |         ]
+305 |         await conn.executemany(
+    |
+help: Add explicit value for parameter `strict=`
+
+UP032 [*] Use f-string instead of `format` call
+   --> src/taskq/workflows/_sweep.py:306:13
+    |
+304 |           ]
+305 |           await conn.executemany(
+306 | /             "INSERT INTO {schema}.wf_edge (child_id, flow_id, parent_id, failure_policy) "
+307 | |             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING".format(schema=schema_of(wsql)),
+    | |___________________________________________________________________________________________^
+308 |               edge_rows,
+309 |           )
+    |
+help: Convert to f-string
+    |
+305 |         await conn.executemany(
+    -             "INSERT INTO {schema}.wf_edge (child_id, flow_id, parent_id, failure_policy) "
+    -             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING".format(schema=schema_of(wsql)),
+306 +             f"INSERT INTO {schema_of(wsql)}.wf_edge (child_id, flow_id, parent_id, failure_policy) "
+307 +             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+308 |             edge_rows,
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/_sweep.py:306:13
+    |
+304 |           ]
+305 |           await conn.executemany(
+306 | /             "INSERT INTO {schema}.wf_edge (child_id, flow_id, parent_id, failure_policy) "
+307 | |             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING".format(schema=schema_of(wsql)),
+    | |___________________________________________________________________________________________^
+308 |               edge_rows,
+309 |           )
+    |
+
+N818 Exception name `_NodeHeld` should be named with an Error suffix
+  --> src/taskq/workflows/api/_runner.py:71:7
+   |
+71 | class _NodeHeld(Exception):
+   |       ^^^^^^^^^
+72 |     """The wait site's control-flow unwinding (INTERNAL): the body
+73 |     raised it after registering the hold — the runner catches it, leaves
+   |
+
+RUF003 Comment contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+    --> src/taskq/workflows/api/_runner.py:1093:58
+     |
+1091 |                     outcome = await node.loop_body(loop_ctx, carry)
+1092 |                 except _NodeHeld:
+1093 |                     # THE HOLD INSIDE THE ITERATION (T10 × T19's
+     |                                                          ^
+1094 |                     # composition): the loop node rests in the held
+1095 |                     # representation (the budget PAUSED — register_hold's
+     |
+
+F401 [*] `sys` imported but unused
+  --> tests/test_doc_ingest_example.py:21:8
+   |
+20 | import subprocess
+21 | import sys
+   |        ^^^
+22 | from pathlib import Path
+23 | from typing import Any
+   |
+help: Remove unused import: `sys`
+   |
+20 | import subprocess
+   - import sys
+21 | from pathlib import Path
+   |
+
+S603 `subprocess` call: check for execution of untrusted input
+  --> tests/test_doc_ingest_example.py:84:16
+   |
+82 |     # ZERO with no exclusions at all.
+83 |     for root in ("docs", "examples", "src/taskq/workflows"):
+84 |         proc = subprocess.run(
+   |                ^^^^^^^^^^^^^^
+85 |             ["grep", "-riE", "|".join(_FORBIDDEN), str(REPO_ROOT / root)],
+86 |             capture_output=True,
+   |
+
+S607 Starting a process with a partial executable path
+  --> tests/test_doc_ingest_example.py:85:13
+   |
+83 |     for root in ("docs", "examples", "src/taskq/workflows"):
+84 |         proc = subprocess.run(
+85 |             ["grep", "-riE", "|".join(_FORBIDDEN), str(REPO_ROOT / root)],
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+86 |             capture_output=True,
+87 |             text=True,
+   |
+
+S603 `subprocess` call: check for execution of untrusted input
+  --> tests/test_doc_ingest_example.py:95:12
+   |
+93 |             f"surfaces: {hits[:10]}"
+94 |         )
+95 |     proc = subprocess.run(
+   |            ^^^^^^^^^^^^^^
+96 |         [
+97 |             "/usr/bin/grep", "-riE", "|".join(_FORBIDDEN), str(REPO_ROOT / "tests"),
+   |
+
+Found 9 errors.
+[*] 2 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).
