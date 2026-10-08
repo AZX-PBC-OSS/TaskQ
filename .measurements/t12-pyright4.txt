@@ -1,0 +1,6 @@
+/tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py:4113:9 - error: Type of "reason" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/cli.py:4123:16 - error: Argument type is partially unknown
+    Argument corresponds to parameter "reason" in function "__init__"
+    Argument type is "Unknown | str | None" (reportUnknownArgumentType)
+2 errors, 0 warnings, 0 informations

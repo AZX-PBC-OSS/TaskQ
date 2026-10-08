@@ -1,0 +1,45 @@
+N818 Exception name `_NodeHeld` should be named with an Error suffix
+  --> src/taskq/workflows/api/_runner.py:71:7
+   |
+71 | class _NodeHeld(Exception):
+   |       ^^^^^^^^^
+72 |     """The wait site's control-flow unwinding (INTERNAL): the body
+73 |     raised it after registering the hold — the runner catches it, leaves
+   |
+
+RUF003 Comment contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+    --> src/taskq/workflows/api/_runner.py:1083:58
+     |
+1081 |                     outcome = await node.loop_body(loop_ctx, carry)
+1082 |                 except _NodeHeld:
+1083 |                     # THE HOLD INSIDE THE ITERATION (T10 × T19's
+     |                                                          ^
+1084 |                     # composition): the loop node rests in the held
+1085 |                     # representation (the budget PAUSED — register_hold's
+     |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> tests/test_wf_cli_pins.py:201:9
+    |
+199 |       # THE AUDIT (G4): "who approved this" is a ROW — principal + reason.
+200 |       audit = await wf_conn.fetchrow(
+201 | /         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+202 | |         "WHERE action = 'hitl.resolve'",
+    | |_______________________________________^
+203 |       )
+204 |       assert audit is not None, "a resolve without an audit row reds"
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> tests/test_wf_cli_pins.py:258:9
+    |
+256 |       # THE AUDIT (G4): the manual resume is a row.
+257 |       audit = await wf_conn.fetchrow(
+258 | /         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+259 | |         "WHERE action = 'workflow.retry_node'",
+    | |______________________________________________^
+260 |       )
+261 |       assert audit is not None
+    |
+
+Found 4 errors.
