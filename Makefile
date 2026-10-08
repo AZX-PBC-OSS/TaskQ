@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e test-system test-otel clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
+.PHONY: help install env test test-fast test-e2e test-system test-otel clean-e2e test-cov test-wf-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
 
 help:
 	@echo "Available commands:"
@@ -77,6 +77,30 @@ test: env
 
 test-cov: env
 	$(UVRUN) pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html --cov-fail-under=90
+
+# THE WORKFLOWS-SCOPED COVERAGE GATE (the gate leg): the wf pin suite +
+# the pytest attack rounds + the validator's pins under BRANCH coverage
+# scoped to src/taskq/workflows, then the floor check (90, honestly
+# measured — the capture lands .measurements/runs/wf-scoped-coverage-*.json).
+test-wf-cov: env
+	$(UVRUN) pytest \
+		tests/test_wf_api_surface_pins.py tests/test_wf_cli_pins.py \
+		tests/test_wf_context_contract.py tests/test_wf_coverage_closing.py \
+		tests/test_wf_coverage_closing2.py tests/test_wf_ctx_annotation_pins.py \
+		tests/test_wf_demo_legs.py tests/test_wf_engine_units.py \
+		tests/test_wf_ergonomics_contract.py tests/test_wf_fanin_bound_pins.py \
+		tests/test_wf_finalize_pins.py tests/test_wf_fork_pins.py \
+		tests/test_wf_hitl_pins.py tests/test_wf_loop_pins.py \
+		tests/test_wf_perf_bands.py tests/test_wf_phase3_cure_pins.py \
+		tests/test_wf_pre_workflow_tolerance_pins.py tests/test_wf_progress_emission.py \
+		tests/test_wf_progress_faces.py tests/test_wf_progress_persistence.py \
+		tests/test_wf_propagation_pins.py tests/test_wf_pruner_pins.py \
+		tests/test_wf_runner_pins.py tests/test_wf_scenario_pins.py \
+		tests/test_wf_schema_migration.py tests/test_fv_redlog_guard.py \
+		tests/test_fv_sweep_lock_teeth_pin.py tests/attack3-validate.py \
+		tests/attack4-coverage-closers.py \
+		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
+	$(UVRUN) python scripts/check_wf_coverage.py
 
 test-fast: env
 	$(UVRUN) pytest -n 4 -m "not integration"

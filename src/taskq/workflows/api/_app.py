@@ -367,6 +367,8 @@ class WorkflowApp:
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),
             max_in_flight=getattr(build_fn, "__wf_max_in_flight__", EMIT_MAX_IN_FLIGHT_DEFAULT),
+            capture=getattr(build_fn, "__wf_capture__", "errors-only"),
+            redact=getattr(build_fn, "__wf_redact__", None),
         )
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         # THE COMPILED CACHE (the worker-hosted execution door's D1
