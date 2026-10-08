@@ -94,6 +94,8 @@ class LadderOps(_LadderHost):
         attempt: int,
         node: Any,
         exc: Exception,
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
@@ -152,7 +154,7 @@ class LadderOps(_LadderHost):
             step_key=row["step_key"],
             worker_id=self._worker_id,
             attempt=attempt,
-            claim_epoch=0,
+            claim_epoch=claim_epoch,
             outcome="failed",
             error_class=type(exc).__name__,
             error_message=str(exc)[:MESSAGE_TERMINAL_MAX],

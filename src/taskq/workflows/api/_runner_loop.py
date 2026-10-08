@@ -58,6 +58,8 @@ class _LoopHost(Protocol):
         node: Any,
         result: dict[str, object] | None,
         emitter: ProgressEmitter | None = None,
+        *,
+        claim_epoch: int = 0,
     ) -> None: ...
 
 
@@ -75,6 +77,8 @@ class LoopOps(_LoopHost):
         node: Any,
         ledger_id: JobId | None = None,
         emitter: ProgressEmitter | None = None,
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         """THE LOOP DRIVER (T19): fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -99,7 +103,9 @@ class LoopOps(_LoopHost):
         spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
 
         try:
-            return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id, emitter)
+            return await self._drive_loop(
+                flow_id, row, attempt, node, spec, ledger_id, emitter, claim_epoch=claim_epoch
+            )
         except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
                 return await self._reclaim_loop(flow_id, row, attempt, exc)
@@ -114,6 +120,8 @@ class LoopOps(_LoopHost):
         spec: Any,
         ledger_id: JobId | None,
         emitter: ProgressEmitter | None = None,
+        *,
+        claim_epoch: int = 0,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — attack-3 H5's cure): every exception
@@ -186,7 +194,13 @@ class LoopOps(_LoopHost):
             # coroutine object is the convicted dragon).
             if node.loop_until is not None and await node.loop_until():
                 await self._finalize_success(
-                    flow_id, row, attempt, node, encode_result(carry), emitter=emitter
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    encode_result(carry),
+                    emitter=emitter,
+                    claim_epoch=claim_epoch,
                 )
                 return
 
@@ -221,7 +235,13 @@ class LoopOps(_LoopHost):
                 if memo_doc.get("done"):
                     payload: object = memo_doc.get("payload")
                     await self._finalize_success(
-                        flow_id, row, attempt, node, encode_result(payload), emitter=emitter
+                        flow_id,
+                        row,
+                        attempt,
+                        node,
+                        encode_result(payload),
+                        emitter=emitter,
+                        claim_epoch=claim_epoch,
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
@@ -285,7 +305,13 @@ class LoopOps(_LoopHost):
                 if isinstance(outcome, Done):
                     done_payload = cast(object, outcome.payload)  # the union's boundary
                     await self._finalize_success(
-                        flow_id, row, attempt, node, encode_result(done_payload), emitter=emitter
+                        flow_id,
+                        row,
+                        attempt,
+                        node,
+                        encode_result(done_payload),
+                        emitter=emitter,
+                        claim_epoch=claim_epoch,
                     )
                     return
                 assert isinstance(outcome, Refine), (
