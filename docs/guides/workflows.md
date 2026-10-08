@@ -14,7 +14,9 @@
 > loops, T20 the streaming router). `§N` references this page's own
 > sections. `.measurements/…` citations point at files IN THIS REPO
 > (the evidence tier ships with the source). "P3 rule N" is the engine's
-> own rulebook (see the design docs under `docs/design/`).
+> own rulebook (see the design docs under `docs/design/`; the layer's
+> SPEC — the built truth, the kill list, the adoption pitch, the LATER
+> rows — is [docs/design/workflows-spec.md](../design/workflows-spec.md)).
 
 The workflow engine turns a fan-out/fan-in shape into queue rows with a
 counter and a ledger: fork N children atomically, join when the ledger
