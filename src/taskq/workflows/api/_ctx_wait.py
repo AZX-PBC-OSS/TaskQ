@@ -178,21 +178,46 @@ class CtxWaitOps(_WaitHost):
         # re-answers, the retry is deterministic); a wait past the
         # queue's end registers a NEW hold (a NEW epoch — multi-hold).
         # (2) the CONSUMED hold can never answer twice.
+        #
+        # THE LOOP'S ITERATION INDEX IS THE CURSOR (the deploy matrix's
+        # multi-HITL cure): a LOOP resume is a CONTINUATION of the
+        # iteration sequence, never a replay of it — the per-attempt
+        # cursor restarts at 0 on every resume (a new attempt), so the
+        # resumed loop's later iterations re-consumed the EARLIER
+        # answers (the deep-research march's third iteration received
+        # the second refine, the carry ran past the cap, the loop
+        # exhausted without the operator's third decision ever landing).
+        # For a loop-kind node the queue position IS the row's iteration
+        # counter (the ADVANCE statement's own write — the derived value
+        # has exactly one writer): iteration k's wait consumes the k-th
+        # answer — a hold-resume continues, a retry of a failed
+        # iteration replays ITS OWN answer (the same k-th), both laws
+        # one mechanism. A loop body declares ONE wait per iteration
+        # (the loop's shape); the plain steps keep the per-attempt
+        # cursor.
         async with self._pool.acquire() as conn:
-            cursor_meta = await conn.fetchval(
+            row_meta = await conn.fetchrow(
                 render_sql(
-                    "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
+                    "SELECT (metadata ->> $2)::int AS cursor, "
+                    "metadata->>'kind' AS kind, "
+                    "(metadata->>'iteration')::int AS iteration "
+                    "FROM {schema}.jobs WHERE id = $1",
                     self._wsql.schema,
                 ),
                 self.job_id,
                 f"hold_cursor_{self.attempt}",
             )
-            cursor = int(cursor_meta or 0)
+            is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
+            cursor = (
+                int(row_meta["iteration"] or 0)
+                if is_loop_kind
+                else int((row_meta["cursor"] if row_meta else None) or 0)
+            )
             queue = await conn.fetch(
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
-                    "AND status = 'delivered' ORDER BY hold_epoch",
+                    "AND status = 'delivered' ORDER BY hold_epoch ",
                     self._wsql.schema,
                 ),
                 self.flow_id,
@@ -200,23 +225,26 @@ class CtxWaitOps(_WaitHost):
                 [*names, "|".join(names)],
             )
             if cursor < len(queue):
-                # THE REPLAY/CONSUME: this attempt's wait takes the
-                # queue's next answer (the cursor advances — the same
-                # hold can never answer the same attempt twice).
+                # THE REPLAY/CONSUME: this wait takes the queue's next
+                # answer (the per-attempt cursor advances — the same
+                # hold can never answer the same attempt twice; the
+                # loop's counter is the ADVANCE statement's own write,
+                # never this one).
                 answer = queue[cursor]
                 payload = (
                     _json_loads(answer["payload"])
                     if isinstance(answer["payload"], str)
                     else answer["payload"]
                 )
-                await conn.execute(
-                    render_sql(
-                        "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
-                        self._wsql.schema,
-                    ),
-                    self.job_id,
-                    dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
-                )
+                if not is_loop_kind:
+                    await conn.execute(
+                        render_sql(
+                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
+                            self._wsql.schema,
+                        ),
+                        self.job_id,
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                    )
                 # THE CONTEXT CONTRACT: the resumed body's answer
                 # identity — the epoch of the hold THIS wait consumed
                 # (the body asserting on ctx sees which answer it got).

@@ -1,0 +1,17 @@
+[
+  {
+    "beat": "cron-kickoff",
+    "measured_s": 22.04,
+    "bound_s": 200.0
+  },
+  {
+    "beat": "map-fork",
+    "measured_s": 0.0,
+    "bound_s": 132.0
+  },
+  {
+    "beat": "march-terminal",
+    "measured_s": 11.31,
+    "bound_s": 264.0
+  }
+]

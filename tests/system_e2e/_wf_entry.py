@@ -27,6 +27,7 @@ from tests.system_e2e import (
 from tests.system_e2e.actors import ACTORS
 
 REGISTRY: dict[str, object] = dict(ACTORS)
+REGISTRY.update(_wf_app_module.MARCH_ACTORS)
 
 #: The marches' app module — the projection's compile pass reads the
 #: same module object the import above bound (the capability's witness,

@@ -35,10 +35,12 @@ reaches outside the database (the tier's hermeticity).
 from __future__ import annotations
 
 import enum
+import json
 from typing import Any
 
 from pydantic import BaseModel
 
+from taskq import JobContext, actor
 from taskq.exceptions import SignalTimeoutError
 from taskq.workflows import (
     Done,
@@ -54,6 +56,7 @@ from taskq.workflows import (
 )
 from taskq.workflows._types import EmitChild
 from taskq.workflows.api import GateDecl
+from taskq.workflows.api._sql_runner import render_sql
 from taskq.workflows.chain import DONE, Chain, Route, Step
 
 #: The march pods' queues: BOTH the vanilla actors' system_e2e and the
@@ -122,7 +125,9 @@ def _source_names(items: list[Any]) -> tuple[list[str], list[str]]:
     """The collect join's decode: the succeeded sources and the surfaced
     failures (the FailureInfo envelope names the latter — its
     ``node_key`` IS the failed child's key; the item's source id rides
-    the error message)."""
+    the error message). THE ROUND-TRIP HONESTY: the join's items arrive
+    as PLAIN DICTS (the jsonb decode — the ledger is the truth), never
+    the body's own models; the decode reads the SHAPES."""
     from taskq.workflows._types import FailureInfo
 
     ok: list[str] = []
@@ -132,11 +137,43 @@ def _source_names(items: list[Any]) -> tuple[list[str], list[str]]:
             failed.append(item.node_key)
         elif isinstance(item, SourceDoc):
             ok.append(item.source_id)
+        elif isinstance(item, dict):
+            if "node_key" in item:  # the collect's failure envelope, decoded
+                failed.append(str(item["node_key"]))
+            elif "source_id" in item:
+                ok.append(str(item["source_id"]))
     return ok, failed
 
 
 async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
     ok, failed = _source_names(fetched)
+    # THE COLLECT'S ABSORPTION RECORD (the fan-in's own home): the failed
+    # children ride the MAP JOIN ROW's metadata.failures (the typed
+    # envelope), never the packed results — the body reads its PARENT
+    # (the join) through the edge ledger (the edge ledger is the wiring's
+    # own record; the triage node's parent IS the map join).
+    async with ctx._pool.acquire() as conn:  # pyright: ignore[reportAttributeAccessIssue]
+        failures_raw = await conn.fetchval(
+            render_sql(
+                "SELECT j.metadata->'failures' "
+                "FROM {schema}.wf_edge e JOIN {schema}.jobs j ON j.id = e.parent_id "
+                "WHERE e.child_id = $1",
+                ctx._wsql.schema,  # pyright: ignore[reportAttributeAccessIssue]
+            ),
+            ctx.job_id,
+        )
+    if failures_raw:
+        for item in (failures_raw if isinstance(failures_raw, list) else json.loads(failures_raw)):
+            if not isinstance(item, dict) or "node_key" not in item:
+                continue
+            # THE MAP CHILD'S IDENTITY: the children share ONE step key
+            # ('<parent>.item'); the item's own identity is the MAP
+            # INDEX — the march's source order decodes it back to the
+            # source id (the report names the SOURCE, never the row).
+            idx = item.get("map_index")
+            failed.append(
+                str(_SOURCES[idx]) if isinstance(idx, int) and idx < len(_SOURCES) else str(item["node_key"])
+            )
     await ctx.progress(60, "triaged", {"fetched": len(ok), "failed": len(failed)})
     return {"fetched": ok, "failed": failed}
 
@@ -480,3 +517,41 @@ MARCH_FLOWS: dict[str, Any] = {
     "drain_hold": matrix_app.get("drain_hold"),
     "drift_target": matrix_app.get("drift_target"),
 }
+
+
+# ── the cron kickoff's bridge actor (the G3 composition's fire leg) ──────
+
+
+class CronKick(BaseModel):
+    slot: str
+
+
+@actor(name="wf_research_cron", queue="default")
+async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict[str, str]:
+    """The cron schedule's TARGET: the fire arm enqueues THIS actor (the
+    schedule's every-minute slot), the body kicks the workflow with the
+    SLOT as the run key (G3: the two dedup regimes compose — a
+    double-fired slot is ONE run). The body resolves the flow's compiled
+    graph from the D1 registry (the process imported the march app —
+    the capability stamp) and creates the run on its OWN pool (the body
+    is DB-local, the tier's hermeticity)."""
+    import asyncpg
+
+    from taskq.settings import WorkerSettings
+    from taskq.workflows._worker_execution import get_compiled_workflow
+    from taskq.workflows.api._runner import FlowRunner
+
+    settings = WorkerSettings.load()
+    pool = await asyncpg.create_pool(str(settings.pg_dsn), min_size=1, max_size=1)
+    try:
+        compiled = get_compiled_workflow("deep_research")
+        runner = FlowRunner(compiled, pool, settings.schema_name)
+        flow_id = await runner.create_flow(run_key=f"deep-research:{payload.slot}")
+        return {"flow_id": str(flow_id)}
+    finally:
+        await pool.close()
+
+
+#: The bridge actor's REGISTRY face (the _wf_entry's import merges it):
+#: the cron fire resolves the actor by NAME from the boot's registry.
+MARCH_ACTORS: dict[str, object] = {"wf_research_cron": wf_research_cron}
