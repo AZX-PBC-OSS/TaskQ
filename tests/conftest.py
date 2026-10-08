@@ -901,7 +901,21 @@ def pg_container(
     container instead - never this one. Skips with a reason (never errors)
     when the Docker daemon is unreachable, so a Docker-less machine runs the
     non-container tiers instead.
+
+    ``TASKQ_TEST_PG_DSN`` (set): the container boot is SKIPPED and this DSN
+    is used as-is - the local dev loop's own warm cluster. Per-module
+    databases are still created and dropped on it (the caller owns the
+    cluster's lifecycle).
     """
+    # The LOCAL DEV LOOP's override (BUILD-PROTOCOL §7b: the dev loop is
+    # local): an externally-provisioned cluster (e.g. the phase worktree's
+    # own warm container on a fixed port) is used AS-IS — no container boot,
+    # no teardown sweep, the DSN is the whole contract. Default-inert: unset
+    # (CI, the plain dev run), the shared per-invocation pair boots below.
+    external_dsn = os.environ.get("TASKQ_TEST_PG_DSN")
+    if external_dsn:
+        yield _PgContainerShim(dsn=external_dsn)
+        return
     skip_test_without_docker()
     with shared_service_pair(invocation_state_dir(tmp_path_factory)) as services:
         delta = _pg_clock_delta(services.pg_dsn)

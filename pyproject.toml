@@ -313,6 +313,9 @@ ignore = [
 # user input reaches a command line; the partial executable path and the
 # subprocess calls are the gate's whole job.
 "tests/typeprobe/_gate.py" = ["S603", "S607"]
+# T17's abstraction check: the same shape — a fixed-argv grep over the
+# repo's own surface paths (no user input; the check IS the grep).
+"tests/test_wf_ergonomics_contract.py" = ["S603", "S607"]
 # The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
 # every other module goes through, so the ban cannot apply to its definition.
 "src/taskq/_ids.py" = ["TID251"]
