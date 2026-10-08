@@ -19,7 +19,6 @@ the red drill's convicted shape).
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -32,7 +31,6 @@ import pytest
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.migrate import split_statements
-from tests._wf_fixtures import MEASUREMENTS
 
 WORKFLOW_ROUND = "01.00.23"
 _MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "taskq" / "migrations"

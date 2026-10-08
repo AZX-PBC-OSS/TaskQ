@@ -28,6 +28,7 @@ from datetime import timedelta
 from typing import Any
 
 import asyncpg
+import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
@@ -502,9 +503,7 @@ async def test_consume_budget_dragon_red_forever(
     # fires it.
     import taskq.workflows.api._sql_loop as sql_loop_module
 
-    mutant_sql = sql_loop_module.LOOP_BUDGET_SWEEP_SQL.replace(
-        "  AND NOT j.budget_paused\n", "", 1
-    )
+    mutant_sql = sql_loop_module.LOOP_BUDGET_SWEEP_SQL.replace("  AND NOT j.budget_paused\n", "", 1)
     assert mutant_sql != sql_loop_module.LOOP_BUDGET_SWEEP_SQL, (
         "the mutation did not land — the drill's leg is missing from the constant"
     )

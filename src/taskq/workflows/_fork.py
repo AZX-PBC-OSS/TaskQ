@@ -108,7 +108,12 @@ async def insert_fork(
                 "metadata = jsonb_set(metadata, '{consumers}', $2::jsonb, true) "
                 "WHERE id = $3",
                 len(children),
-                _jsonb(_join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven).get("consumers") or []),
+                _jsonb(
+                    _join_metadata(
+                        flow_id, fork.join.consumers, child_driven=fork.join.child_driven
+                    ).get("consumers")
+                    or []
+                ),
                 join_id,
             )
         else:
@@ -126,7 +131,9 @@ async def insert_fork(
                 len(children),
                 fork.trace_id,
                 _jsonb(
-                    _join_metadata(flow_id, fork.join.consumers, child_driven=fork.join.child_driven)
+                    _join_metadata(
+                        flow_id, fork.join.consumers, child_driven=fork.join.child_driven
+                    )
                 ),
                 f"workflow:{flow_id}",
                 f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",

@@ -1,4 +1,4 @@
-# ruff: noqa: N999, S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
+# ruff: noqa: N999, S608, TID251  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
 """ATTACK4 — THE ADMIN PAGE UNDER FIRE (the phase-4 attacker's suite).
 
 The stranger's adversarial probes against the workflow-run explorer:
@@ -43,6 +43,7 @@ import time
 import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -671,12 +672,20 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
         f"(band 50 ms), run-page median {med_page:.1f} ms"
     )
     # THE APPEND-ONLY CONVERSION: run-scoped (the in-place rewrite is the
-    # torn-write race; the newest CITED = the newest stamp).
-    attack4_dir = Path(".measurements/attack4")
-    attack4_dir.mkdir(parents=True, exist_ok=True)
+    # torn-write race; the newest CITED = the newest stamp). The write is
+    # a probe capture's tail — off the event loop (to_thread), never a
+    # blocking op on it.
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    with open(attack4_dir / f"attack4-panel-latency-200map-{stamp}.json", "w") as f:
-        json.dump(
-            {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms}, f, indent=2
-        )
+
+    def _write_capture() -> None:
+        out_dir = Path(".measurements/attack4")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / f"attack4-panel-latency-200map-{stamp}.json", "w") as f:
+            json.dump(
+                {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms},
+                f,
+                indent=2,
+            )
+
+    await asyncio.to_thread(_write_capture)
     assert p95_panel <= 50.0, f"the panel's p95 read {p95_panel:.1f} ms — the band is 50 ms"

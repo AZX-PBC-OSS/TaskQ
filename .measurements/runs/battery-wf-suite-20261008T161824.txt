@@ -1,0 +1,4 @@
+TOTAL                                        2918    202    742    109    90%
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:163: pyright is not installed (the typeprobe dependency group owns the binary)
+237 passed, 1 skipped, 1 warning in 48.52s

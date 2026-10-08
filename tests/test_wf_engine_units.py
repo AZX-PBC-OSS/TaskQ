@@ -244,10 +244,9 @@ def test_pin_14_deadlock_retry_budget(engine_redlog: RedLog) -> None:
             "pin14-deadlock-retry",
             "no retry (the single-shot operator under storm contention)",
             {
-                "aborted_with_DeadlockDetectedError": isinstance(
-                    exhausted.value, DeadlockRetriesExhaustedError
-                ),
-                "retries": exhausted_attempts,
+                "aborted_with": type(exhausted.value).__name__,
+                "deadlock_aborts": exhausted_attempts,
+                "retries": exhausted_attempts - 1,
             },
         )
 

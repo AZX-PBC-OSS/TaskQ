@@ -55,9 +55,7 @@ def _capture(name: str, content: str) -> Path:
 # ── LEG 1: the cancellation ──────────────────────────────────────────────
 
 
-async def test_leg1_the_cancellation_story(
-    wf_pool: Any, wf_schema: str, wf_conn: Any
-) -> None:
+async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn: Any) -> None:
     """A run cancelled MID-FLIGHT: the named states + the audit row + the
     explorer's derived status. THE RUNNABLE PATH: trigger → mid-flight →
     ``taskq flows cancel <run_id> --reason ...`` (the CLI; the admin's
@@ -72,15 +70,16 @@ async def test_leg1_the_cancellation_story(
 
     # THE CANCELLATION (the operator's action — the CLI's own form):
     stopped = await cancel_workflow_run(
-        wf_pool, schema=wf_schema, flow_id=run_id,
-        reason="the demo's cancellation leg", principal="cli:demo",
+        wf_pool,
+        schema=wf_schema,
+        flow_id=run_id,
+        reason="the demo's cancellation leg",
+        principal="cli:demo",
     )
     assert stopped >= 1, "the cancel cascade landed on nothing"
 
     # THE NAMED STATES: the root + the nodes + the signals + the audit.
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id)
     assert root == "cancelled"
     node_rows = await wf_conn.fetch(
         f'SELECT step_key, status FROM "{wf_schema}".jobs '
@@ -113,18 +112,25 @@ async def test_leg1_the_cancellation_story(
     assert view is not None
     assert view.derive() == "cancelled", view.derive()
 
-    _capture("leg1-cancellation.json", json.dumps({
-        "leg": "1 — the cancellation",
-        "run_id": str(run_id),
-        "root_status": root,
-        "derived_status": view.derive(),
-        "nodes": {row["step_key"]: row["status"] for row in node_rows},
-        "audit_row": {
-            "principal": audit["principal_subject"],
-            "action": audit["action"],
-            "reason": audit["reason"],
-        },
-    }, indent=2, default=str))
+    _capture(
+        "leg1-cancellation.json",
+        json.dumps(
+            {
+                "leg": "1 — the cancellation",
+                "run_id": str(run_id),
+                "root_status": root,
+                "derived_status": view.derive(),
+                "nodes": {row["step_key"]: row["status"] for row in node_rows},
+                "audit_row": {
+                    "principal": audit["principal_subject"],
+                    "action": audit["action"],
+                    "reason": audit["reason"],
+                },
+            },
+            indent=2,
+            default=str,
+        ),
+    )
 
 
 # ── LEG 2: the kill-and-resume drill ─────────────────────────────────────
@@ -169,13 +175,19 @@ async def test_leg2_the_kill_and_resume_drill(
         "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
     }
     worker_argv = [
-        sys.executable, "-m", "taskq", "worker",
-        "--actors", "examples.workflows:ACTORS",
+        sys.executable,
+        "-m",
+        "taskq",
+        "worker",
+        "--actors",
+        "examples.workflows:ACTORS",
     ]
 
     def spawn(tag: str) -> subprocess.Popen[bytes]:
         return subprocess.Popen(  # noqa: S603  # Why: fixed argv, this interpreter, the project's own module.
-            worker_argv, env=worker_env, cwd=str(demo_wd),
+            worker_argv,
+            env=worker_env,
+            cwd=str(demo_wd),
             stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),
             stderr=subprocess.STDOUT,
         )
@@ -215,8 +227,7 @@ async def test_leg2_the_kill_and_resume_drill(
                 break
             await asyncio.sleep(1.0)
         assert root_status == "succeeded", (
-            f"the killed run never resumed: {root_status} — the reclaim's "
-            "resilience story broke"
+            f"the killed run never resumed: {root_status} — the reclaim's resilience story broke"
         )
     finally:
         fresh.send_signal(signal.SIGTERM)
@@ -228,18 +239,23 @@ async def test_leg2_the_kill_and_resume_drill(
     # THE LEDGER'S STORY: the killed attempt's rows + the successful
     # re-run (the reclaim's record).
     ledger = await wf_conn.fetch(
-        f'SELECT attempt, status FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 ORDER BY id",
+        f'SELECT attempt, status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 ORDER BY id',
         run_id_uuid,
     )
     attempts = [r["status"] for r in ledger]
-    _capture("leg2-kill-resume.json", json.dumps({
-        "leg": "2 — the kill-and-resume",
-        "run_id": run_id,
-        "root_status": root_status,
-        "ledger_statuses": attempts,
-        "the_drill": "worker1 SIGKILLed mid-node → the lease expiry → worker2 re-claimed → the run completed",
-    }, indent=2))
+    _capture(
+        "leg2-kill-resume.json",
+        json.dumps(
+            {
+                "leg": "2 — the kill-and-resume",
+                "run_id": run_id,
+                "root_status": root_status,
+                "ledger_statuses": attempts,
+                "the_drill": "worker1 SIGKILLed mid-node → the lease expiry → worker2 re-claimed → the run completed",
+            },
+            indent=2,
+        ),
+    )
 
 
 # ── LEG 3: the observability (the live scrape) ───────────────────────────
@@ -259,7 +275,9 @@ async def test_leg3_the_live_wf_gauge_scrape(
     # Drive the run to its hold (a real mid-flight state for the gauge).
     from taskq.workflows import FlowRunner
 
-    runner = FlowRunner(module_pg_pool and wf_app_fixture().get("doc_ingest"), module_pg_pool, schema)
+    runner = FlowRunner(
+        module_pg_pool and wf_app_fixture().get("doc_ingest"), module_pg_pool, schema
+    )
     await runner.drive(run_id_uuid, until="held", max_ticks=300)
 
     # THE LEADER'S SAMPLER: one tick reads the rollup + updates the cache
@@ -327,15 +345,22 @@ async def test_leg4_the_conditional_router_routes_live(
     by_key: dict[str, list[str]] = {}
     for row in node_rows:
         by_key.setdefault(row["step_key"], []).append(row["status"])
-    _capture("leg4-router.json", json.dumps({
-        "leg": "4 — the conditional router (the T20 chain)",
-        "run_id": str(run_id),
-        "rows": dict(sorted(by_key.items())),
-        "the_route": {
-            "screen": "READABLE → index · UNREADABLE → dead_letter",
-            "fence": "a non-total route is refused at declaration; a body outcome with no arm is the loud RouterNotTotal",
-        },
-    }, indent=2, default=str))
+    _capture(
+        "leg4-router.json",
+        json.dumps(
+            {
+                "leg": "4 — the conditional router (the T20 chain)",
+                "run_id": str(run_id),
+                "rows": dict(sorted(by_key.items())),
+                "the_route": {
+                    "screen": "READABLE → index · UNREADABLE → dead_letter",
+                    "fence": "a non-total route is refused at declaration; a body outcome with no arm is the loud RouterNotTotal",
+                },
+            },
+            indent=2,
+            default=str,
+        ),
+    )
     assert by_key.get("screen.start") or by_key.get("screen_source"), by_key
 
 

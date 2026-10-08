@@ -33,8 +33,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 _TESTS = Path(__file__).resolve().parent
 
 #: The redlog sinks' method name (the fixture handles: engine_redlog,
@@ -52,7 +50,9 @@ def _is_literal(node: ast.expr) -> bool:
     if isinstance(node, _LITERAL_NODES):
         return True
     if isinstance(node, ast.Dict):
-        return all(_is_literal(k) and _is_literal(v) for k, v in zip(node.keys, node.values))
+        return all(
+            _is_literal(k) and _is_literal(v) for k, v in zip(node.keys, node.values, strict=True)
+        )
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return all(_is_literal(e) for e in node.elts)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
@@ -94,23 +94,18 @@ def test_redlog_entries_are_machine_generated_not_hand_constructed() -> None:
                 )
     assert not violations, (
         "THE REDLOG LAW: a redlog entry is machine-generated or it doesn't "
-        "exist — these .red() calls record hand-constructed payloads:\n"
-        + "\n".join(violations)
+        "exist — these .red() calls record hand-constructed payloads:\n" + "\n".join(violations)
     )
 
 
 def test_guard_bites() -> None:
     """The guard's own red: a literal payload must be convicted, a
     derived payload must pass."""
-    literal = ast.parse(
-        "log.red('pin-x', 'mutation', {'zombie_wake': True, 'n': 3})"
-    ).body[0]
+    literal = ast.parse("log.red('pin-x', 'mutation', {'zombie_wake': True, 'n': 3})").body[0]
     call = next(n for n in ast.walk(literal) if isinstance(n, ast.Call))
     assert isinstance(call.args[2], ast.expr)
     assert _is_literal(call.args[2]), "the literal payload must be convicted"
 
-    derived = ast.parse(
-        "log.red('pin-x', 'mutation', {'rows': rows, 'fired': rows == 0})"
-    ).body[0]
+    derived = ast.parse("log.red('pin-x', 'mutation', {'rows': rows, 'fired': rows == 0})").body[0]
     call_d = next(n for n in ast.walk(derived) if isinstance(n, ast.Call))
     assert not _is_literal(call_d.args[2]), "the derived payload must pass"

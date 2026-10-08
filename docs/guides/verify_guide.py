@@ -12,14 +12,12 @@ Usage: python docs/guides/verify_guide.py
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 from typing import Any
 
 from pydantic import BaseModel
 from testcontainers.postgres import PostgresContainer
 
 import taskq.migrate
-from taskq.backend._protocol import JobId
 from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
 
 VERDICTS: list[tuple[str, bool, str]] = []
@@ -106,6 +104,7 @@ def batch_build() -> object:
 async def main() -> None:
     async def pool_holder(dsn: str):
         from asyncpg import create_pool as _cp
+
         conn = await _cp(dsn)
         return conn
 
@@ -127,9 +126,7 @@ async def main() -> None:
         # legacy single-column uniq (01.00.03_01_post) — the verify run's
         # apply left it behind, and it convicts the per-run step keys.
         conn0 = await pool_holder(dsn)
-        await conn0.execute(
-            f'DROP INDEX IF EXISTS "{schema}".jobs_idempotency_key_uniq'
-        )
+        await conn0.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_idempotency_key_uniq')
         await conn0.close()
         from asyncpg import create_pool
 
@@ -137,8 +134,11 @@ async def main() -> None:
 
         # ── BLOCK A: the AFTER port — compile, hold, resolve, terminal ──
         compiled = app.get("doc_ingest")
-        verdict("A0 compile", compiled.node_keys() == ["enrich", "review"],
-                f"node_keys={compiled.node_keys()}")
+        verdict(
+            "A0 compile",
+            compiled.node_keys() == ["enrich", "review"],
+            f"node_keys={compiled.node_keys()}",
+        )
         compiled.validate()
         verdict("A1 validate", True, "no findings on the ported graph")
 
@@ -151,48 +151,78 @@ async def main() -> None:
 
         hitl = HitlClient(pool, schema=schema)
         holds = await hitl.list(run=flow_id)
-        verdict("A3 enumerate", len(holds) == 1 and holds[0].node_key == "review",
-                f"pending holds: {[(h.node_key, h.signal_name) for h in holds]}")
+        verdict(
+            "A3 enumerate",
+            len(holds) == 1 and holds[0].node_key == "review",
+            f"pending holds: {[(h.node_key, h.signal_name) for h in holds]}",
+        )
         hold_id = holds[0].hold_id
-        result = await hitl.resolve(hold_id, {"verdict": "approve", "note": "ship it"})  # the DICT payload (the models validate objects)
-        verdict("A4 resolve-by-id", result is not None and getattr(result, "ok", getattr(result, "status", "")) != "refused",
-                f"DeliveryResult: {result}")
+        result = await hitl.resolve(
+            hold_id, {"verdict": "approve", "note": "ship it"}
+        )  # the DICT payload (the models validate objects)
+        verdict(
+            "A4 resolve-by-id",
+            result is not None
+            and getattr(result, "ok", getattr(result, "status", "")) != "refused",
+            f"DeliveryResult: {result}",
+        )
         again = await hitl.resolve(hold_id, {"verdict": "reject"})
-        verdict("A5 idempotent", "no-op" in str(getattr(again, "status", "")), f"second resolve: {again} (the defined no-op)")
+        verdict(
+            "A5 idempotent",
+            "no-op" in str(getattr(again, "status", "")),
+            f"second resolve: {again} (the defined no-op)",
+        )
         await runner.drive(flow_id, until="terminal")
         row = await pool.fetchrow(
             f"SELECT status FROM \"{schema}\".jobs WHERE step_key = 'review' AND (metadata->>'flow_id')::uuid = $1",
             flow_id,
         )
-        verdict("A6 terminal", row is not None and row["status"] == "succeeded",
-                f"review status = {row['status'] if row else None}")
+        verdict(
+            "A6 terminal",
+            row is not None and row["status"] == "succeeded",
+            f"review status = {row['status'] if row else None}",
+        )
         enrich_after = dict(enrich_results)
         enrich_calls_after = enrich_calls
 
-        # the exactly-once resume: re-drive a terminal flow — no re-runs
+        # the exactly-once resume: re-drive a terminal flow — no re-runs,
+        # the replay's memo returns the SAME results (the ledger's truth)
         enrich_calls_before = enrich_calls_after
         await runner.drive(flow_id, until="terminal")
-        verdict("A7 no-re-execution", enrich_calls == enrich_calls_before,
-                f"enrich calls stable at {enrich_calls}")
+        verdict(
+            "A7 no-re-execution",
+            enrich_calls == enrich_calls_before and dict(enrich_results) == enrich_after,
+            f"enrich calls stable at {enrich_calls}, results replayed: "
+            f"{dict(enrich_results) == enrich_after}",
+        )
 
         # ── BLOCK B: the map-reduce port — dynamic cardinality + the join ──
         runner_b = FlowRunner(app.get("batch_ingest"), pool, schema)
         flow_b = await runner_b.create_flow(input={"doc_ids": [f"d{i}" for i in range(7)]})
         await runner_b.drive(flow_b, until="terminal")
-        verdict("B1 fan-out cardinality", len(map_results) == 7,
-                f"children materialized: {len(map_results)}/7")
+        verdict(
+            "B1 fan-out cardinality",
+            len(map_results) == 7,
+            f"children materialized: {len(map_results)}/7",
+        )
         join_row = await pool.fetchrow(
             f"SELECT status FROM \"{schema}\".jobs WHERE step_key = 'plan.join' AND (metadata->>'flow_id')::uuid = $1",
             flow_b,
         )
-        verdict("B2 join terminal-once", join_row is not None and join_row["status"] == "succeeded",
-                f"the join collected all children: {join_row['status'] if join_row else None}")
+        verdict(
+            "B2 join terminal-once",
+            join_row is not None and join_row["status"] == "succeeded",
+            f"the join collected all children: {join_row['status'] if join_row else None}",
+        )
 
         # the run-key arbiter: the same key → the SAME run (no second run)
         flow_c = await runner_b.create_flow(input={"doc_ids": []}, run_key="batch:slot-1")
         flow_d = await runner_b.create_flow(input={"doc_ids": []}, run_key="batch:slot-1")
-        verdict("B3 run-key arbiter", flow_c == flow_d,
-                f"same slot twice → one run: {flow_c} == {flow_d}")
+        verdict(
+            "B3 run-key arbiter",
+            flow_c == flow_d,
+            f"same slot twice → one run: {flow_c} == {flow_d}",
+        )
     finally:
         pg.stop()
 

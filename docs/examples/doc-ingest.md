@@ -49,6 +49,7 @@ from taskq.workflows.api import GateDecl
 
 # ── the payload contract (the typed doors' shapes) ──────────────────────
 
+
 class IngestBatch(BaseModel):
     doc_ids: list[str]
 
@@ -211,6 +212,7 @@ def doc_ingest() -> object:
 # cron-slot key IS the run key. The same slot twice produces ONE run (the
 # run-key arbiter's claim); the stale-key silent-replay fossil is
 # prevented by construction — the second call returns the FIRST run's id.
+
 
 async def run_nightly_refresh(schema: str, pool: object, slot: str) -> str:
     """The nightly cron's arm: key = <flow>:<slot-timestamp> — run-level

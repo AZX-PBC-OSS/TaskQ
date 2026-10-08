@@ -29,9 +29,7 @@ class Ingest(BaseModel):
     doc_id: str
 
 
-async def test_drive_until_held_sees_a_no_deadline_hold(
-    wf_pool: object, wf_schema: str
-) -> None:
+async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_schema: str) -> None:
     """THE LIVELock PIN, GREEN: the cure landed IN PHASE 4 (the held
     marker is the question — `metadata ? 'hold'` replaced
     `scheduled_at > now()` in the driver's held-count). The RED
