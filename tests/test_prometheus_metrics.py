@@ -146,6 +146,11 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_maintenance_leader_sweep_batch_size_configured",
         "gauge",
     ),
+    (
+        "taskq.maintenance_leader.sweep_rows",
+        "taskq_maintenance_leader_sweep_rows_total",
+        "counter",
+    ),
     # Name already ends in the unit word "seconds" - the no-double-suffix rule.
     (
         "taskq.maintenance_leader.lease_expires_in_seconds",
@@ -268,6 +273,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQStrandedJobs",
     "TaskQClaimLatencyDegraded",
     "TaskQWorkflowBlockedStuck",
+    "TaskQWfHoldExpired",
 }
 
 
@@ -352,6 +358,9 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.maintenance_leader.sweep_unexpected_errors", unit="1").add(
         1, {"sweep_name": "scheduled_to_pending"}
+    )
+    meter.create_counter("taskq.maintenance_leader.sweep_rows", unit="1").add(
+        1, {"sweep_name": "wf_signal_sweep"}
     )
     meter.create_observable_gauge(
         "taskq.maintenance_leader.sweep_last_success_seconds",
@@ -477,7 +486,7 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 24 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 25 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
@@ -492,11 +501,11 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 22 alerts ───────────────────────────────
+# ── rules.yaml has exactly 25 alerts ───────────────────────────────
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 24 alerts with the names."""
+    """rules.yaml contains exactly 25 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
     assert len(rules) == 25

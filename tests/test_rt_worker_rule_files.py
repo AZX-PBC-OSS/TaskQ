@@ -115,6 +115,17 @@ _MVCC_SEVERITIES = {
     "TaskQClaimLatencyDegraded": "warning",
 }
 
+#: The workflow-hold family (F-R3): the signal sweep's expiry arm resolving
+#: hold rows past their deadline — the gate's on_timeout face working (the
+#: system behaved as designed), a degradation-of-SLA signal at warning. The
+#: row counter it reads (taskq.maintenance_leader.sweep_rows) is the sweep's
+#: own shipped series; the runbook row is the promise the alert now keeps.
+_WF_HOLD_ALERTS = ("TaskQWfHoldExpired",)
+
+_WF_HOLD_SEVERITIES = {
+    "TaskQWfHoldExpired": "warning",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
 _ALL_RUNBOOKED_ALERTS = (
@@ -126,6 +137,7 @@ _ALL_RUNBOOKED_ALERTS = (
     + _CRON_BUDGET_ALERTS
     + _CRON_SKIP_ALERTS
     + _MVCC_ALERTS
+    + _WF_HOLD_ALERTS
 )
 
 

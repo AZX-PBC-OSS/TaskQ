@@ -77,6 +77,7 @@ _PROMQL_KEYWORDS = frozenset(
         "histogram_quantile",
         "time",
         "changes",
+        "increase",
         "offset",
         "not",
         "le",
@@ -613,6 +614,12 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     # expression is a bare selector (no aggregation), so the result
     # vector carries the series' FULL label set — state included.
     "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf", "state": "blocked"}, 3.0),
+    # F-R3's shipped rule: the hold-expiry alert on the signal sweep's own
+    # row counter. The pathology: the expiry sweep resolving holds inside
+    # the increase window (+1/tick, evaluated at 8m — increase = 8). The
+    # expr aggregates over sweep_name, so the result vector carries the
+    # sweep_name label only.
+    "TaskQWfHoldExpired": ({"sweep_name": "wf_signal_sweep"}, 8.0),
 }
 
 
@@ -1162,6 +1169,38 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
         )
     )
 
+    # F-R3 — TaskQWfHoldExpired: the hold-expiry alert on the signal
+    # sweep's own row counter (the shipped series the runbook's row always
+    # promised). The pathology: one hold resolved 'expired' inside the
+    # increase window; the healthy side: the sweep ticking with zero rows
+    # every tick (the humans answering, no gate timing out).
+    cases.append(
+        _firing_case(
+            "TaskQWfHoldExpired",
+            [
+                (
+                    "taskq_maintenance_leader_sweep_rows_total",
+                    {"sweep_name": "wf_signal_sweep"},
+                    "0+1x30",
+                ),
+            ],
+            "8m",
+        )
+    )
+    cases.append(
+        _silent_case(
+            "TaskQWfHoldExpired",
+            [
+                (
+                    "taskq_maintenance_leader_sweep_rows_total",
+                    {"sweep_name": "wf_signal_sweep"},
+                    "0+0x30",
+                ),
+            ],
+            "8m",
+        )
+    )
+
     return cases
 
 
@@ -1399,22 +1438,23 @@ def test_harness_series_are_bound_to_the_served_exposition(
     """A rule-test harness that hand-types series can drift from the
     emitted truth while every case still passes (a wrong-but-consistent
     name evaluates an empty vector and the SILENT guards still pass). The
-    binding pin: every input series name the cases feed must be a name
+    binding pin: every input series name the 39 cases feed must be a name
     a real scrape actually served - the worker probes for everything a
     live worker carries, the emitter probe for the families whose
     pathology cannot be staged live (the sweep-abort pair, the
-    skipped-slots counter no live run reaches, the claim-health
+    skipped-slots counter no live run reaches: the 1-hour default
+    catch-up window swallows the probes' staged backlog, the claim-health
     degradation ratio whose 5-minute baseline warm-up a seconds-long
     probe cannot warm, and the wf-progress gauge whose observable
     emission is the maintenance leader's admin-surface sample, never a
-    worker scrape) - and the case counts must be the honest firing +
-    healthy guards covering every shipped rule."""
+    worker scrape) - and the case counts must be the honest 26 firing +
+    13 healthy guards covering every shipped rule."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
     firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
     guards = [c for c in cases if not c["alert_rule_test"][0]["exp_alerts"]]
-    assert (len(firing), len(guards)) == (25, 12), (
-        f"the harness must stay 25 firing + 12 guards, got {len(firing)} + {len(guards)}"
+    assert (len(firing), len(guards)) == (26, 13), (
+        f"the harness must stay 26 firing + 13 guards, got {len(firing)} + {len(guards)}"
     )
     for case in cases:
         for input_entry in case["input_series"]:

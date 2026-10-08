@@ -471,6 +471,30 @@ groups:
             own rule configuration. Runbook:
             docs/guides/runbooks.md#taskqworkflowblockedstuck.
 
+      - alert: TaskQWfHoldExpired
+        expr: increase(taskq_maintenance_leader_sweep_rows_total{sweep_name="wf_signal_sweep"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            TaskQ resolved {{ $value }} workflow hold(s) past their
+            deadline in the last 15m — a human did not answer in the
+            gate's window
+          description: >-
+            The signal sweep's expiry arm (wf_signal_sweep, the only live
+            timer on a held row) resolved workflow hold rows past their
+            deadline: the gate's `on_timeout` policy took over (`fail` —
+            the default — sends the node through the retry ladder). The
+            system behaved as designed — this is the timeout face working,
+            not an outage — but a sustained rate means the humans' SLA and
+            the gates' `timeout_s=` disagree: tighten the answer path (the
+            runbook's resolve door) or widen the deadline. The series is
+            the sweep's own row counter (sweep_name='wf_signal_sweep'), so
+            every resolved expiry appears within one leader tick; the
+            per-run truth is the run's hold panel (`taskq flows holds`).
+            Runbook: docs/guides/runbooks.md#taskqwfholdexpired.
+
       - alert: TaskQRunningLeaseExpired
         expr: taskq_jobs_running_lease_expired > 0
         for: 5m
