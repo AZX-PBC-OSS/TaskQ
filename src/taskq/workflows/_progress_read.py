@@ -32,7 +32,6 @@ per-child-label counterfactual).
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -40,6 +39,7 @@ from typing import Any
 
 import asyncpg
 
+from taskq._json import dumps_str as _dumps_str
 from taskq._json import loads as _loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._progress import CLASS_USER, KIND_PROGRESS
@@ -167,9 +167,7 @@ def rebuild_display(
         )
         p = e["payload"]
         if isinstance(p, str):
-            import json
-
-            p = json.loads(p)
+            p = _loads(p)
         if e["class"] == CLASS_USER and e["kind"] == KIND_PROGRESS:
             # Progress renders INSIDE whatever the state is — the LIE's
             # fence: an emission can never flip a terminal state back to
@@ -343,7 +341,7 @@ async def progress_stream_generator(
     yield {
         "event": "display",
         "id": str(cursor),
-        "data": json.dumps({"nodes": display}, default=str),
+        "data": _dumps_str({"nodes": display}),
     }
     while stop is None or not stop.is_set():
         face = await progress_sse_face(pool, wsql, flow_id=flow_id, last_event_id=cursor)
@@ -354,13 +352,12 @@ async def progress_stream_generator(
             yield {
                 "event": "resync",
                 "id": str(cursor),
-                "data": json.dumps(
+                "data": _dumps_str(
                     {
                         "mode": "partial",
                         "oldest_retained": face.oldest_retained,
                         "state_sync": face.state_sync,
-                    },
-                    default=str,
+                    }
                 ),
             }
         for e in face.events:
@@ -370,6 +367,6 @@ async def progress_stream_generator(
             yield {
                 "event": "progress",
                 "id": str(seq),
-                "data": json.dumps(e, default=str),
+                "data": _dumps_str(e),
             }
         await _asyncio.sleep(poll_s)

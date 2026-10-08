@@ -27,7 +27,6 @@ operator principal the auth dependency captured.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -38,13 +37,18 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 
+from taskq._json import dumps as _json_dumps
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._sse_limit import acquire_sse_slot, release_after
 from taskq.web.admin._factory import (
     get_admin_pool,
     get_base_path,
     get_principal,
     get_schema,
+    get_settings,
     get_workflow_app,
     require_actions_enabled,
     validate_csrf,
@@ -162,8 +166,8 @@ async def _form_body(request: Request) -> dict[str, Any]:
         raw = body.get(json_field)
         if isinstance(raw, str):
             try:
-                body[json_field] = json.loads(raw)
-            except json.JSONDecodeError:
+                body[json_field] = _json_loads(raw)
+            except ValueError:
                 raise HTTPException(
                     status_code=400, detail=f"{json_field} is not valid JSON"
                 ) from None
@@ -225,7 +229,7 @@ async def _stream_generator(
 
 
 def _frame(seq: int, payload: dict[str, Any]) -> str:
-    return f"id: {seq}\nevent: run_state\ndata: {json.dumps(payload)}\n\n"
+    return f"id: {seq}\nevent: run_state\ndata: {_json_dumps(payload).decode('utf-8')}\n\n"
 
 
 def register_actions(router: APIRouter) -> None:
@@ -268,6 +272,7 @@ def register_actions(router: APIRouter) -> None:
         run_id: uuid.UUID,
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
+        settings: TaskQSettings = Depends(get_settings),
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """The run's SSE state feed (the revisioned-snapshot replay —
@@ -278,8 +283,17 @@ def register_actions(router: APIRouter) -> None:
                 cursor = max(0, int(last_event_id))
             except ValueError:
                 cursor = 0
+        # THE CAP: each stream pins a poll task + a socket for as long as
+        # the client holds it — the uncapped scan's guard (the SSE-cap
+        # law) refuses an endpoint without this, and a burst of open
+        # streams would exhaust exactly what the cap bounds.
+        sse_slot = await acquire_sse_slot("wf-run-stream", settings.admin_max_sse_connections,
+                                          surface="admin")
         return StreamingResponse(
-            _stream_generator(pool, schema, run_id, cursor),
+            release_after(
+                sse_slot, _stream_generator(pool, schema, run_id, cursor), "wf-run-stream",
+                surface="admin",
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

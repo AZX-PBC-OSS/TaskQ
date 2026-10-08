@@ -52,6 +52,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
     _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the laterals reference the capability CTE by name — the wrapper composes the production constant verbatim (a literalized stand-in would let the pin's plan drift from the production one).
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -572,11 +573,23 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     uncapped-pair shape this pin has always exercised): the laterals'
     scalar probes select from it, the probe yields NULL and LEAST ignores
     it, so the residual bound is untouched.
+
+    The capability CTE (``_WF_EXEC_CAPABLE_CTE``) is composed VERBATIM
+    between ``params`` and the rest: the production laterals reference
+    ``wf_exec_capable`` by name (the execution fence's data leg), so a
+    wrapper that omitted it fails to prepare (CERT2 F-CERT2-1) — and one
+    the wrapper literalized would let the pin's plan drift from the
+    production one (the constant's own comment states the law).
     """
     ctes = [
         "params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
         "$3::uuid AS worker_id, $4::interval AS lock_lease, $5::int AS oversample)"
     ]
+    # The capability CTE's body carries the {schema} token (the
+    # schema-independent render form) and a trailing comma (the production
+    # template composes it BETWEEN ctes) — render it, then strip the
+    # trailing comma the join would double.
+    ctes.append(_WF_EXEC_CAPABLE_CTE.format(schema=schema).rstrip().rstrip(","))
     if rr_keys:
         ctes.append(
             "rr_keys (actor, queue, fkey) AS (VALUES ('unrouted_probe'::text, "

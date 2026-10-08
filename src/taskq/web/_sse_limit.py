@@ -23,6 +23,7 @@ from collections.abc import AsyncGenerator
 from fastapi import HTTPException
 
 from taskq.obs import (
+    SseSurface,
     record_sse_connection_closed,
     record_sse_connection_opened,
     record_sse_rejection,
@@ -66,13 +67,17 @@ def _semaphore(key: str, limit: int) -> asyncio.Semaphore:
     return _SEMAPHORES[scoped]
 
 
-async def acquire_sse_slot(key: str, limit: int) -> asyncio.Semaphore:
+async def acquire_sse_slot(
+    key: str, limit: int, *, surface: SseSurface = "progress"
+) -> asyncio.Semaphore:
     """Take an SSE slot for *key* or raise 429.
 
     Returns the semaphore so the caller can release it when its stream ends.
     Callers MUST release exactly once, in a ``finally`` inside the streaming
     generator -- releasing in the route handler would free the slot while the
-    stream is still open.
+    stream is still open. *surface* names the endpoint family for the SSE
+    gauges (the closed SseSurface vocabulary); the default keeps the
+    original progress-stream callers' labels.
 
     Instrumentation (the progress surface's SSE health): the rejection is
     counted AT the 429 (one of the two 429 sites; the admin topic endpoint
@@ -87,18 +92,22 @@ async def acquire_sse_slot(key: str, limit: int) -> asyncio.Semaphore:
     try:
         await asyncio.wait_for(semaphore.acquire(), timeout=_ACQUIRE_TIMEOUT)
     except TimeoutError:
-        record_sse_rejection("progress", key)
+        record_sse_rejection(surface, key)
         raise HTTPException(
             status_code=429,
             detail=f"too many concurrent SSE connections for {key!r}",
         ) from None
-    record_sse_connection_opened("progress", key)
+    record_sse_connection_opened(surface, key)
     return semaphore
 
 
-async def release_after(
-    semaphore: asyncio.Semaphore, gen: AsyncGenerator[str, None], topic: str = _PROGRESS_TOPIC
-) -> AsyncGenerator[str, None]:
+async def release_after[GenT](
+    semaphore: asyncio.Semaphore,
+    gen: AsyncGenerator[GenT, None],
+    topic: str = _PROGRESS_TOPIC,
+    *,
+    surface: SseSurface = "progress",
+) -> AsyncGenerator[GenT, None]:
     """Wrap *gen*, releasing *semaphore* when it finishes for any reason.
 
     Client disconnect surfaces as ``CancelledError`` thrown into the
@@ -124,4 +133,4 @@ async def release_after(
         # family key the slot was acquired with (the gauge's closed
         # vocabulary); the default is the progress stream's own constant,
         # the only production caller's key.
-        record_sse_connection_closed("progress", topic)
+        record_sse_connection_closed(surface, topic)

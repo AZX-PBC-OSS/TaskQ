@@ -1,0 +1,10 @@
+/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py
+  /tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py:1118:27 - error: Argument of type "AsyncIterator[ServerSentEvent]" cannot be assigned to parameter "gen" of type "AsyncGenerator[GenT@release_after, None]" in function "release_after"
+    "AsyncIterator[ServerSentEvent]" is incompatible with protocol "AsyncGenerator[GenT@release_after, None]"
+      "asend" is not present
+      "athrow" is not present
+      "aclose" is not present
+        "__anext__" is an incompatible type
+          Type "() -> Awaitable[ServerSentEvent]" is not assignable to type "() -> Coroutine[Any, Any, _YieldT_co@AsyncGenerator]"
+            Function return type "Awaitable[ServerSentEvent]" is incompatible with type "Coroutine[Any, Any, _YieldT_co@AsyncGenerator]" (reportArgumentType)
+1 error, 0 warnings, 0 informations

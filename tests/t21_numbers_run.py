@@ -45,7 +45,6 @@ from taskq.workflows._progress_read import map_progress_line, read_map_aggregate
 from taskq.workflows.engine import render_workflow_sql
 
 DSN = "postgresql://taskq:taskq@localhost:5705/taskq"
-SCHEMA = "t21numbers"
 
 
 class Ingest(BaseModel):
@@ -53,12 +52,15 @@ class Ingest(BaseModel):
 
 
 async def main() -> dict[str, Any]:
+    # The schema is a per-run local (the suite-hygiene law: no module-level
+    # SCHEMA constant — a shared, stale name is how two runs cross-wire).
+    schema = "t21numbers"
     conn = await asyncpg.connect(DSN)
-    await conn.execute(f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE')
-    await conn.execute(f'CREATE SCHEMA "{SCHEMA}"')
-    await apply_pending(conn, schema=SCHEMA)
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await conn.execute(f'CREATE SCHEMA "{schema}"')
+    await apply_pending(conn, schema=schema)
     pool = await asyncpg.create_pool(DSN)
-    wsql = render_workflow_sql(SCHEMA)
+    wsql = render_workflow_sql(schema)
     out: dict[str, Any] = {}
 
     # ── 1-5: THE CHATTY NODE (10,000 emissions at the ~1000/s shape) ────
@@ -83,23 +85,23 @@ async def main() -> dict[str, Any]:
         return build(step(quiet, Ingest(doc_id="d1"), key="quiet"))
 
     t0 = time.perf_counter()
-    runner = FlowRunner(app.get("t21_chatty_numbers"), pool, SCHEMA)
+    runner = FlowRunner(app.get("t21_chatty_numbers"), pool, schema)
     flow = await runner.create_flow()
     assert await runner.drive(flow) == "terminal"
     wall_s = time.perf_counter() - t0
 
     node = await conn.fetchval(
-        f"""SELECT id FROM "{SCHEMA}".jobs WHERE step_key = 'chatty'
+        f"""SELECT id FROM "{schema}".jobs WHERE step_key = 'chatty'
             AND (metadata->>'flow_id')::uuid = $1::uuid""",
         flow,
     )
     state = await conn.fetchrow(
-        f"""SELECT occurrences, dropped FROM "{SCHEMA}".wf_node_progress
+        f"""SELECT occurrences, dropped FROM "{schema}".wf_node_progress
             WHERE node_id = $1 AND channel = 'progress'""",
         node,
     )
     counters = await conn.fetchrow(
-        f"""SELECT dropped FROM "{SCHEMA}".wf_node_progress
+        f"""SELECT dropped FROM "{schema}".wf_node_progress
             WHERE node_id = $1 AND channel = '__stream__'""",
         node,
     )
@@ -109,10 +111,10 @@ async def main() -> dict[str, Any]:
     # summary row" pattern.
     assert state is not None
     state_rows = await conn.fetchval(
-        f'SELECT count(*) FROM "{SCHEMA}".wf_node_progress WHERE node_id = $1', node
+        f'SELECT count(*) FROM "{schema}".wf_node_progress WHERE node_id = $1', node
     )
     ring_rows = await conn.fetchval(
-        f'SELECT count(*) FROM "{SCHEMA}".wf_node_stream WHERE node_id = $1', node
+        f'SELECT count(*) FROM "{schema}".wf_node_stream WHERE node_id = $1', node
     )
     out["chatty"] = {
         "emissions": 10_000,
@@ -130,7 +132,7 @@ async def main() -> dict[str, Any]:
 
     # the quiet node's finalize (the comparison point)
     t0 = time.perf_counter()
-    runner_q = FlowRunner(app.get("t21_quiet_numbers"), pool, SCHEMA)
+    runner_q = FlowRunner(app.get("t21_quiet_numbers"), pool, schema)
     flow_q = await runner_q.create_flow()
     await runner_q.drive(flow_q)
     quiet_s = time.perf_counter() - t0
@@ -155,19 +157,19 @@ async def main() -> dict[str, Any]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         return build(map_source(source, item, key="proc", aggregate=risk_mean))
 
-    runner_m = FlowRunner(app2.get("t21_map_numbers"), pool, SCHEMA)
+    runner_m = FlowRunner(app2.get("t21_map_numbers"), pool, schema)
     flow_m = await runner_m.create_flow()
     t0 = time.perf_counter()
     await runner_m.drive(flow_m)
     map_s = time.perf_counter() - t0
     source_id = await conn.fetchval(
-        f"""SELECT id FROM "{SCHEMA}".jobs WHERE step_key = 'fetch'
+        f"""SELECT id FROM "{schema}".jobs WHERE step_key = 'fetch'
             AND (metadata->>'flow_id')::uuid = $1::uuid""",
         flow_m,
     )
     line = await map_progress_line(pool, wsql, source_id)
     read = await read_map_aggregate(pool, wsql, flow_m, source_id)
-    join_fires = await conn.fetchval(f'SELECT count(*) FROM "{SCHEMA}".wf_join_fire')
+    join_fires = await conn.fetchval(f'SELECT count(*) FROM "{schema}".wf_join_fire')
     out["map"] = {
         "children": 200,
         "drive_s": round(map_s, 2),
@@ -186,15 +188,15 @@ async def main() -> dict[str, Any]:
 
     # the naively-per-emission counterfactual (the PoC's red's number,
     # observed once more on the built substrate's side table)
-    await conn.execute(f'CREATE TABLE "{SCHEMA}".wf_progress_log_red (node_id uuid, pct int)')
+    await conn.execute(f'CREATE TABLE "{schema}".wf_progress_log_red (node_id uuid, pct int)')
     t0 = time.perf_counter()
     red_node = new_uuid()
     for i in range(2000):
         await conn.execute(
-            f'INSERT INTO "{SCHEMA}".wf_progress_log_red VALUES ($1, $2)', red_node, i
+            f'INSERT INTO "{schema}".wf_progress_log_red VALUES ($1, $2)', red_node, i
         )
     red_s = time.perf_counter() - t0
-    red_rows = await conn.fetchval(f'SELECT count(*) FROM "{SCHEMA}".wf_progress_log_red')
+    red_rows = await conn.fetchval(f'SELECT count(*) FROM "{schema}".wf_progress_log_red')
     out["red_counterfactual"] = {
         "emissions": 2000,
         "rows": red_rows,
@@ -203,7 +205,7 @@ async def main() -> dict[str, Any]:
         "verdict": "the every-emission-a-row shape grows with emissions — kept red",
     }
 
-    await conn.execute(f'DROP SCHEMA "{SCHEMA}" CASCADE')
+    await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
     await pool.close()
     await conn.close()
     return out
