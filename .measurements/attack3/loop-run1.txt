@@ -1,0 +1,8 @@
+E       assert []
+
+tests/attack3-loop.py:73: AssertionError
+=========================== short test summary info ============================
+FAILED tests/attack3-loop.py::test_a3_poison_body_escapes_both_walls - Assert...
+FAILED tests/attack3-loop.py::test_a3_fail_policy_escalates_anyway - Assertio...
+FAILED tests/attack3-loop.py::test_a3_driver_exhaustion_never_enqueues_the_escalation
+3 failed, 3 passed in 4.00s

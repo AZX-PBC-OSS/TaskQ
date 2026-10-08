@@ -1,0 +1,10 @@
+2026-10-07 18:57:16 [info     ] node.held                      hold_id=01a1193a-a7d6-7281-80b1-5fbc25ea068e node=review run_id=01a1193a-a7b6-7d82-9583-19c5be3565fe signals=['Approval']
+2026-10-07 18:57:16 [info     ] signal.delivered               hold_id=01a1193a-a7d6-7281-80b1-5fbc25ea068e run_id=01a1193a-a7b6-7d82-9583-19c5be3565fe signal=Approval
+=========================== short test summary info ============================
+FAILED tests/attack3-hitl.py::test_a3_hold_context_canary_leaks_through_list_by_default
+FAILED tests/attack3-hitl.py::test_a3_drive_held_misses_the_eternal_hold - As...
+FAILED tests/attack3-hitl.py::test_a3_double_resolve_audit_not_exactly_once
+FAILED tests/attack3-hitl.py::test_a3_union_wait_narrows_to_the_first_model
+FAILED tests/attack3-hitl.py::test_a3_expired_hold_reholds_forever_no_timeout_face
+FAILED tests/attack3-hitl.py::test_a3_wrong_model_payload_not_refused_at_boundary
+6 failed, 2 passed in 133.71s (0:02:13)
