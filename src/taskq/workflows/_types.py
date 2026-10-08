@@ -71,6 +71,13 @@ class ConsumerBinding:
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
+    #: The CONSUMER's declared incoming-edge failure policy (the map-join
+    #: consumption cure): the fork writes the join→consumer EDGE with it —
+    #: the downstream dispatches through the SAME edge-ledger door as any
+    #: node result (the counter's decrement gates the claim), and T06's
+    #: propagation reads the policy off the ledger when the JOIN itself
+    #: terminal-fails.
+    failure_policy: str = "fail_closed"
 
 
 @dataclass(frozen=True, slots=True)

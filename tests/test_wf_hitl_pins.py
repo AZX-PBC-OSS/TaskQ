@@ -364,12 +364,19 @@ async def test_hold_id_reply_handle_and_context_contract(
 
 
 async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
 ) -> None:
     """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
     + event) — NEVER the sole copy of the payload; a consumer that
     MISSES the knock still converges by polling ``client.hitl.list()``
-    (the row is the truth)."""
+    (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's
+    cure — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
+    nothing): a raw pg_notify consumer on the MODULE's database
+    (pg_notify is per-database — the env DSN's db is not the module's)
+    observes the resolved knock's SHAPE."""
 
     async def hold_body(ctx: Any, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
@@ -378,20 +385,39 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="knock_flow"
     )
     client = HitlClient(wf_pool, schema=wf_schema)
-    # THE KNOB's payload shape: pinned via the notify's content (the
-    # pointer: hold_id + run_id + event) — the row is the truth.
     holds_before = await client.list(run=flow_id)
     assert len(holds_before) == 1
+    # THE LISTENER: a raw pg_notify consumer on the module's database.
+    import asyncpg as _asyncpg
+
+    knocks: list[str] = []
+    listen_conn = await _asyncpg.connect(module_pg_schema.pg_dsn)
+    await listen_conn.add_listener(
+        HOLD_CHANNEL, lambda *a: knocks.append(str(a[3]) if len(a) > 3 else str(a))
+    )
+    # THE RESOLVE fires the knock (in the CAS-winning tx — exactly once).
+    await client.resolve(holds_before[0].hold_id, {"verdict": "approve"})
+    await asyncio.sleep(0.2)
+    await listen_conn.close()
+    assert knocks, "the knock never fired — the knob is dead (latency, not correctness)"
+    # THE POINTER-ONLY LAW: hold_id + run_id + event, NEVER the payload.
+    import json as _json
+
+    knock = _json.loads(knocks[0])
+    assert set(knock) == {"hold_id", "run_id", "event"}, knock
+    assert knock["event"] == "resolved"
+    assert knock["hold_id"] == holds_before[0].hold_id
+    assert "approve" not in knocks[0], (
+        f"THE KNOCK CARRIED THE PAYLOAD — the pointer-only law is broken: {knocks[0]}"
+    )
     # THE CONVERGENCE: a consumer that misses the knock polls the LIST —
     # the resolution is visible by rows alone.
-    await client.resolve(holds_before[0].hold_id, {"verdict": "approve"})
     async with wf_pool.acquire() as conn:
         status = await conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
             uuid_module.UUID(holds_before[0].hold_id),
         )
     assert status == "delivered"
-    _ = HOLD_CHANNEL  # the channel constant (the knock's address)
 
 
 # ── pin 13: SIGNAL-TIMEOUT-DB-CLOCK + the expiry arm ────────────────────
@@ -401,13 +427,18 @@ async def test_signal_timeout_fires_on_db_clock(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Pin 13 (G6): the expiry arm compares PG's clock — the expired
-    hold → the DEFINED 'abandoned' state; the node resumes (the body
-    re-runs and the wait site raises the typed timeout face)."""
+    hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
+    REAL (the vacuous-audit's cure — the shipped pin's docstring claimed
+    the face it never exercised): the resume's wait site RAISES
+    :class:`taskq.exceptions.SignalTimeoutError` (the glossary
+    exception; the body's ladder/except owns it from there), the node
+    terminal-fails, and NO new epoch is ever minted — hold → expire →
+    re-hold → ∞ is the convicted dragon, kept red by the attack probe."""
 
     async def hold_body(ctx: Any, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=1.0)
 
-    flow_id, _runner, _node = await _held_flow(
+    flow_id, runner, _node = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="timeout_flow"
     )
     # THE DEADLINE PASSES (DB time).
@@ -418,6 +449,26 @@ async def test_signal_timeout_fires_on_db_clock(
         f'SELECT status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
     )
     assert status == "abandoned"
+    # THE FACE: the resume's wait site raises the typed timeout (the
+    # ladder burns through its attempts — the body's except owns the
+    # raise), the node terminal-fails, the flow with it.
+    await runner.drive(flow_id, max_ticks=40)
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    assert root == "failed", (
+        f"on_timeout='fail' never failed the node: the flow is {root!r} — "
+        "the typed timeout face did not fire (the wait site re-held, or "
+        "the raise never reached the ladder)"
+    )
+    epochs = await wf_conn.fetch(
+        f'SELECT status, hold_epoch FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(epochs) == 1 and epochs[0]["status"] == "abandoned", (
+        f"the expired hold RE-HELD (a new epoch, a new deadline): "
+        f"{[dict(r) for r in epochs]} — the wait site must RAISE, never "
+        "mint an automatic new epoch"
+    )
 
 
 # ── the cancel cascade + the hold→resume band ───────────────────────────
@@ -491,7 +542,17 @@ async def test_hold_to_resume_latency_band(
     from tests._wf_fixtures import MEASUREMENTS
 
     MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "t10-hold-resume-band.json").write_text(
-        json.dumps({"hold_to_resume_ms": round(elapsed_ms, 3), "band_ms": 50})
+    # THE PRESERVATION LAW (the RedLog's own): the band's evidence sink
+    # is APPEND-ONLY and RUN-SCOPED (one JSONL record per run) — the
+    # shipped write_text rewrote the whole file per run, so a partial
+    # run falsified the recorded number with only its own subset.
+    record = json.dumps(
+        {
+            "run": f"{uuid_module.uuid4().hex[:8]}",  # noqa: TID251  # Why: the band record's run token is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution only).
+            "hold_to_resume_ms": round(elapsed_ms, 3),
+            "band_ms": 50,
+        }
     )
+    with (MEASUREMENTS / "t10-hold-resume-band.json").open("a") as sink:
+        sink.write(record + "\n")
     assert elapsed_ms < 500, f"the hold→resume band blew out: {elapsed_ms:.1f} ms"

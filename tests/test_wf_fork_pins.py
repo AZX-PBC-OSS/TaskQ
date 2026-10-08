@@ -350,7 +350,12 @@ async def test_pin_20_outbox_drain_exactly_once(
         result.fired[0].join_job_id,
     )
     assert len(consumers) == 1, len(consumers)
-    assert consumers[0]["idempotency_key"] == f"wf:{flow_id}:consumer"
+    # THE ARBITER'S KEY — the STATIC ROW's own convention
+    # (``step_idempotency_key``: scope=workflow:{flow}, key=wf:{step}):
+    # the map-join's downstream is a static row since create (the
+    # consumption cure), so the drain's consumer insert for it is the
+    # arbiter's CONFLICT — the belt, never a second dispatch.
+    assert consumers[0]["idempotency_key"] == "wf:consumer"
 
     # ...and the DOUBLE-INSERT variant reds: a second drain (the crash
     # re-delivery) must be a no-op on the arbiter. The convicted shape

@@ -130,6 +130,7 @@ def test_edgeless_join_mutation() -> None:
 def test_unannotated_step_mutation() -> None:
     """E4: the return annotation IS the wiring — an unannotated body
     reds."""
+
     async def unannotated(ctx: Any, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: THE PROBE — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
         return params
 
@@ -259,7 +260,5 @@ def test_differing_redefinition_refused() -> None:
     from taskq.workflows.definitions import DuplicateWorkflowError, WorkflowDef, get_registry
 
     with pytest.raises(DuplicateWorkflowError):
-        get_registry().register(
-            WorkflowDef(name="shadow", bodies={"produce": _annotated_body})
-        )
+        get_registry().register(WorkflowDef(name="shadow", bodies={"produce": _annotated_body}))
     _ = (Promise, step, gather, build, sink, WorkflowBuildError)

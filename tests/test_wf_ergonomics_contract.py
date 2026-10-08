@@ -213,8 +213,10 @@ def test_paper_cut_4_dispatch_time_predicate() -> None:
             _branch_a,
             pick,
             key="branch_a",
-            skip=lambda state: (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
-            == "b",
+            skip=lambda state: (
+                (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
+                == "b"
+            ),
         )
         sink(guarded)  # the skipped branch's drop is EXPLICIT (recorded)
         return build(step(_branch_b, pick, key="branch_b"))
