@@ -28,6 +28,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 __all__ = [
+    "Exit",
     "GateDecl",
     "NodeDecl",
     "Promise",
@@ -58,13 +59,58 @@ class WorkflowBuildError(TypeError):
     row exists."""
 
 
+class Exit[T]:
+    """THE TYPED EARLY-EXIT SENTINEL (T09's §17.1 — the None-end's
+    sanctioned escape): a body returns ``Exit(payload)`` to
+    TERMINAL-SUCCEED the node with a typed result NOW — the workflow's
+    answer is decided, the remaining downstream graph does not run.
+
+    * THE RUNNER UNWRAPS IT: the exited node terminal-succeeds with the
+      Exit's payload as its typed result (a plain ``T`` return is the
+      DATA result — sentinels appear only where the body's control flow
+      says so), and every non-terminal DOWNSTREAM node is marked
+      SKIPPED-WITH-THE-RECORD (succeeds with ``{"skipped": true,
+      "exit_from": <node>}`` — the record never lies about the nodes
+      that didn't get to run; absorbing joins fan in the typed skip
+      item, a skip is not an attempt, zero ledger rows). All rows
+      terminal → the derivation reports the workflow COMPLETE.
+    * THE LEDGER RECORDS IT: the exited node's own ledger terminal
+      carries the exit marker on the recorded result.
+    * THE TYPE SURFACE: a body whose return annotation promises
+      ``Exit[DoneT]`` that returns a bare value (or a bare ``return``)
+      is the checker's MUST_ERROR — the sentinel is the annotation's
+      only valid return; a bare ``T`` return is the data result under a
+      ``T`` annotation.
+
+    An ``Exit`` falling off the graph (returned but never reaching a
+    downstream consumer) is the residual red — E2's rule owns the
+    unconsumed promise; the runner's unwrap owns the reached one."""
+
+    __slots__ = ("payload",)
+
+    def __init__(self, payload: T) -> None:
+        self.payload = payload
+
+
 @dataclass(frozen=True, slots=True)
 class GateDecl:
     """A node's declared HOLD gate (T09 compiles it; T10's machinery runs
     it): the signal type(s) the body waits on, the deadline policy. The
     declaration is what the Mermaid render's ``[(hold)]`` nodes and the
     validate warning ("a workflow that waits forever on a human") read —
-    the gate is COMPILE-VISIBLE, not discovered at runtime."""
+    the gate is COMPILE-VISIBLE, not discovered at runtime.
+
+    THE TIMER-POLICY DISPOSITION (recorded — the alignment audit's
+    finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm and
+    its face is the RUNTIME raise — the wait site raises
+    :class:`taskq.exceptions.SignalTimeoutError` on an abandoned hold
+    and the body's ladder/except owns it. The other arms
+    (``resume_with_default`` / the timer's own ``escalate``) are recorded
+    LATER (the docs' timer section names the deferral + the sanctioned
+    body-level composition: catch the raise, return the default or
+    enqueue the escalation yourself) — this field records the AUTHOR'S
+    DECLARATION for the compile-time surfaces (the Mermaid face, the
+    docs), it does not introduce a second runtime vocabulary."""
 
     name: str
     payload_models: tuple[type[BaseModel], ...]
@@ -157,6 +203,20 @@ class BuildGraph:
         self.sunk: tuple[str, ...] = ()
         self.terminal: str | None = None
         self._auto_counter: dict[str, int] = {}
+        #: The CROSS-GRAPH SMUGGLES recorded by the wiring verbs
+        #: (attack-3 M3's cure): ``(consumer_key, parent_key)`` pairs
+        #: wired from a promise whose home graph is NOT this recorder.
+        #: The verbs RECORD (never raise mid-build — the report is
+        #: one-pass); validate CONVICTS (``E7-cross-graph-promise``,
+        #: error — the graph cannot run). The convicted shape: a foreign
+        #: promise wired under a colliding key builds a silently WRONG
+        #: edge to this app's own same-named node.
+        self.smuggles: tuple[tuple[str, str], ...] = ()
+
+    def record_smuggle(self, consumer_key: str, parent_key: str) -> None:
+        """One foreign-promise wiring recorded (the validate report's
+        subject; the build completes — the run is what refuses)."""
+        self.smuggles = (*self.smuggles, (consumer_key, parent_key))
 
     def auto_key(self, base: str) -> str:
         """A stable unique key for anonymous nodes (``gather[0]``...)."""
@@ -233,6 +293,27 @@ def step(
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))
+    # THE NAMING RULE (cut #6's API-compile face): a DOTTED wiring key is
+    # refused — the fork's derived namespace (``<key>.item``,
+    # ``<key>.join``, ``<key>.iter<i>``) owns the dot; a wiring key
+    # carrying one collides with the engine's own derived keys (the
+    # parent-by-string-split dragon's remaining seam).
+    if "." in node_key:
+        raise WorkflowBuildError(
+            f"node key {node_key!r} carries a dot — the dot is the engine's "
+            "derived namespace (the map's <key>.item / <key>.join, the "
+            "loop's <key>.iter<i>); a wiring key may not collide with it"
+        )
+    # THE SMUGGLE CHECK (attack-3 M3's cure): a promise arg whose home
+    # recorder is NOT this graph is RECORDED — validate convicts it
+    # (E7-cross-graph-promise, error) before any row is written. The
+    # convicted shape: a foreign promise wired under a colliding key
+    # resolves its edge against THIS app's own same-named node — a
+    # silently WRONG edge, clean at build, invisible to every rule that
+    # reads only keys.
+    for arg in args:
+        if isinstance(arg, Promise) and arg.graph is not graph:
+            graph.record_smuggle(node_key, arg.key)
     # The argument sources IN ORDER (the wiring rule: argument order is
     # signature order — a promise position resolves to the parent's
     # decoded result, a data position to the value itself).
@@ -320,6 +401,16 @@ def gather(promises: list[Promise[Any]], *, on_failure: str = "fail_closed") -> 
         )
     graph = promises[0].graph
     node_key = graph.auto_key("gather")
+    # THE SMUGGLE CHECK (the same conviction step() runs — attack-3 M3):
+    # every joined promise must belong to the ACTIVE recorder, not merely
+    # to the first promise's graph (a build running under one graph while
+    # joining promises from two others is exactly the smuggle).
+    from taskq.workflows.api._graph import active_graph as _active_graph
+
+    recorder = _active_graph()
+    for p in promises:
+        if p.graph is not recorder:
+            graph.record_smuggle(node_key, p.key)
     graph.add(
         NodeDecl(
             key=node_key,
@@ -350,4 +441,10 @@ def build[R](result: Promise[R], *residuals: Promise[object]) -> Promise[R]:
     graph = active_graph()
     graph.sunk = (*graph.sunk, *(p.key for p in residuals))
     graph.terminal = result.key
+    # THE SMUGGLE CHECK (the terminal + the residuals — attack-3 M3's
+    # same conviction): a foreign promise named terminal or residual is
+    # recorded for validate's E7 report.
+    for p in (result, *residuals):
+        if p.graph is not graph:
+            graph.record_smuggle(graph.terminal or "<terminal>", p.key)
     return result

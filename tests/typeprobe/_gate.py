@@ -43,7 +43,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 def _must_error_lines(source: str) -> list[int]:
     import ast
 
-
     tree = ast.parse(source)
     # The module docstring's range is EXCLUDED: it NAMES the convention
     # ("Each ``MUST_ERROR`` marker names...") — prose, never an asserted

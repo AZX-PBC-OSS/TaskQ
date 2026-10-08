@@ -6,10 +6,10 @@
   },
   "extended": {
     "heap_per_row": 249.0368,
-    "avg_tuple": "234.0000000000000000"
+    "avg_tuple": "235.0000000000000000"
   },
   "heap_delta_bytes": 7.372800000000012,
-  "tuple_delta_bytes": "2.0000000000000000",
+  "tuple_delta_bytes": "3.0000000000000000",
   "bound_bytes": 8,
   "seed_rows": 10000
 }

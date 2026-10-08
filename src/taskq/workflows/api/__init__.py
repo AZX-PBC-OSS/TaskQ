@@ -30,6 +30,7 @@ from taskq.workflows.api._app import (
     WorkflowApp,
 )
 from taskq.workflows.api._graph import (
+    Exit,
     GateDecl,
     NodeDecl,
     Promise,
@@ -45,6 +46,7 @@ from taskq.workflows.api._loop import Done, Refine, loop
 __all__ = [
     "CompiledWorkflow",
     "Done",
+    "Exit",
     "GateDecl",
     "NodeDecl",
     "Promise",

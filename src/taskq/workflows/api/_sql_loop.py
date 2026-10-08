@@ -55,9 +55,17 @@ RETURNING id
 #: THE ADVANCE STATEMENT — the carry advanced EXACTLY ONCE per
 #: iteration, ATOMIC with THE CAP GUARD: advancing TO iteration i+1
 #: admits iteration i+1's spawn, so the guard refuses the advance that
-#: would start spawn #max_iterations+1 (the cap bounds TOTAL SPAWNS —
-#: the spike's cut 4). A refused advance IS the cap exhaustion (the
-#: caller terminalizes with the named state — never a silent stop).
+#: would START spawn #max_iterations+2 (the cap bounds TOTAL SPAWNS —
+#: the spike's cut 4): the guard lets the advance reach EXACTLY the cap
+#: (``i+1 <= max``), so the FINAL iteration runs and the metadata's
+#: counter reaches ``max`` — the state the crash window (a worker death
+#: after the final advance, before the driver's top-of-loop cap check)
+#: leaves on a RUNNING row, which is what makes the SWEEP's
+#: ``iteration >= max`` predicate REACHABLE in production (the vacuous
+#: arm's cure: the shipped ``i+1 < max`` guard topped the counter at
+#: ``max-1`` FOREVER — the sweep's trigger state was unconstructible).
+#: The driver's top-of-loop cap check exhausts the live path; a refused
+#: advance (a concurrent terminal) stays the backstop exhaustion.
 #: This one-statement atomicity is the CARRY-OPTIMISTIC dragon's cure: a
 #: carry advanced at hold/retry time (outside this statement) is the
 #: double-apply/lost-apply variant, kept RED forever.
@@ -66,7 +74,7 @@ UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
 WHERE id = $1
   AND status = 'running'
-  AND (metadata->>'iteration')::int + 1 < $3::int
+  AND (metadata->>'iteration')::int + 1 <= $3::int
 RETURNING (metadata->>'iteration')::int AS iteration
 """
 
@@ -124,7 +132,7 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 #: ``clock_timestamp()`` (the DB-clock doctrine).
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
-    SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id
+    SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key
     FROM {schema}.jobs j
     WHERE j.metadata @> '{{"kind": "loop"}}'::jsonb
       AND j.status = 'running'
@@ -142,7 +150,7 @@ WITH loops AS (
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 )
-SELECT l.id, l.flow_id
+SELECT l.id, l.flow_id, l.step_key
 FROM loops l
 """
 
@@ -177,6 +185,14 @@ LOOP_NODE_STATE_SQL = """\
 SELECT status, metadata, budget_deadline, budget_paused
 FROM {schema}.jobs
 WHERE id = $1
+"""
+
+#: THE POLICY'S SOURCE (attack-3 H1's cure): the flow root's stamped
+#: workflow name — the sweep's arm resolves the loop's REGISTERED
+#: DEFINITION from it (D1: the policy is read from the definition, never
+#: from the row's metadata cache).
+LOOP_WORKFLOW_NAME_SQL = """\
+SELECT metadata->>'workflow' FROM {schema}.jobs WHERE id = $1
 """
 
 #: The iteration's carried state update is the ADVANCE statement's job —
