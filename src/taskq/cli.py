@@ -4188,7 +4188,23 @@ def _validate_through_gate(
 
     from taskq.workflows._cli import gate_models_for
 
-    models = gate_models_for(app_obj, workflow, node_key)
+    try:
+        models = gate_models_for(app_obj, workflow, node_key)
+    except KeyError as exc:
+        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's cure):
+        # the stale-deploy world — the run's workflow is not declared on
+        # THIS app (the --app module predates the run, or the node key
+        # does not exist on the declared workflow). The admin's twin
+        # catches KeyError; the CLI's contract is the same: the NAMED
+        # error + exit 1, never a rich traceback.
+        typer.echo(
+            f"{exc.args[0] if exc.args else exc!r} — the typed door cannot "
+            f"validate signal {signal_name!r} against this app; pass the "
+            "--app module that declares the run's workflow (the stale-"
+            "deploy shape: the app moved since the run started)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
     if not models:
         typer.echo(
             f"node {node_key!r} of workflow {workflow!r} declares no gate — "
