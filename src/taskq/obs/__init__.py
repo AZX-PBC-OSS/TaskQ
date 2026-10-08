@@ -66,6 +66,7 @@ from taskq.obs._exporter import (
 from taskq.obs._otel import (
     INSTRUMENTATION_NAME,
     ConsumedOutcome,
+    SseSurface,
     StrandedReason,
     TimeoutKind,
     get_meter,
@@ -193,6 +194,7 @@ __all__ = [
     "NullErrorReporter",
     "OtelExporterConfigurationError",
     "ScrubbedText",
+    "SseSurface",
     "StrandedReason",
     "TimeoutKind",
     "bind_job_context",
