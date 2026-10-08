@@ -134,6 +134,19 @@ class CtxWaitOps(_WaitHost):
             tuple[type[BaseModel], ...],
             signals if isinstance(signals, tuple) else (signals,),
         )
+        if not models:
+            # THE CONTRACT IS MANDATORY AT HOLD TIME (attack-4
+            # F-P4-UNTYPED-COLD-DOOR's cure, the authoring half): a hold
+            # minted without a declared payload schema is the audit hole —
+            # ANY payload delivers to it from a fresh process (the row's
+            # payload_schema is the cold process's only witness). The
+            # declaration is one tuple at the wait site; the hold never
+            # ships contract-less.
+            raise TypeError(
+                "ctx.wait_signal requires at least one declared payload "
+                "model — a hold without a declared contract is the audit "
+                "hole (the typed door refuses to mint one)"
+            )
         names = tuple(m.__name__ for m in models)
         signal_name = names[0] if len(names) == 1 else "|".join(names)
         from taskq.exceptions import SignalTimeoutError

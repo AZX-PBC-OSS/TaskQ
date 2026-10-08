@@ -398,7 +398,20 @@ async def register_hold(
     :func:`redact_hold_context`) and land in the SAME tx as the hold's
     insert — no second statement after the commit, no context-less hold,
     and the row never carries a canary (REDACT-BEFORE-PERSIST extended
-    to the hold row)."""
+    to the hold row).
+
+    THE CONTRACT IS MANDATORY (attack-4 F-P4-UNTYPED-COLD-DOOR's cure,
+    the mint's half): ``payload_schema`` must carry at least one declared
+    model — a contract-less hold is the audit hole (ANY payload delivers
+    to it from a fresh process), so the mint REFUSES one. The boundary
+    additionally refuses any legacy row that predates the law (the
+    migration backfilled those to the explicit no-contract marker)."""
+    if not payload_schema:
+        raise TypeError(
+            "register_hold requires a non-empty payload_schema — a hold "
+            "without a declared contract is the audit hole (the typed "
+            "door refuses to mint one)"
+        )
     hold_id = JobId(new_uuid())
     deadline = await _deadline_expr(conn, timeout_s)
     # THE CONTEXT, REDACTED BEFORE PERSIST: the masked dict is the
@@ -514,7 +527,23 @@ async def _boundary_refusal(
     schema_ref = row["payload_schema"]
     schema_doc = _json_loads(schema_ref) if isinstance(schema_ref, str) else schema_ref
     if not isinstance(schema_doc, dict) or not schema_doc:
-        return None  # no declared models on the row — the legacy hold's shape
+        # THE SCHEMA-LESS HOLD REFUSES (attack-4 F-P4-UNTYPED-COLD-DOOR's
+        # cure): a hold with NO declared contract is the audit hole — ANY
+        # payload would deliver on THE audit-sensitive action, and the
+        # door's teeth would depend on which process asks. There is no
+        # honest delivery for an undeclared hold: the LOUD typed refusal,
+        # the hold SURVIVES; the operator re-runs the flow on the current
+        # code (the wait site mints a declared hold — payload_schema is
+        # mandatory at hold time, the migration backfilled the legacy
+        # rows to the explicit no-contract marker this arm refuses).
+        return (
+            "the hold carries NO declared payload schema — the contract the "
+            "typed door validates against does not exist on this row (a "
+            "legacy/pre-declaration hold). The delivery is REFUSED: nothing "
+            "delivers to an undeclared hold. Remedy: cancel the run and "
+            "re-run the workflow on the current code, whose wait site "
+            "declares the payload contract at hold time"
+        )
     schema_map = cast("dict[str, object]", schema_doc)  # pyright: ignore[reportUnknownVariableType]  # Why: the jsonb walk's boundary — the isinstance guard above is the runtime shape check.
     fitting = [
         name
