@@ -5,9 +5,11 @@ Run:  uv run --no-sync python tests/typeprobe/_gate.py
       (the CI `type-probes` job's single step; the corpus is checked under
       THIS directory's own pyrightconfig.json — NOT the root pyproject)
 
-Each ``MUST_ERROR`` marker names a wrong-shape call the typed-doors law
-(BUILD-PROTOCOL §7b: "the negative probes (wrong-shape inputs RED on both
-checkers) ship WITH the API") requires to be a checker error. A probe the
+Each ``MUST_ERROR(rules)`` marker names a wrong-shape call the typed-doors
+law (BUILD-PROTOCOL §7b: "the negative probes (wrong-shape inputs RED on
+both checkers) ship WITH the API") requires to be a checker error, PLUS
+the EXACT rule-ids the pinned checkers must emit (the gate asserts the
+ids — a stray unrelated error must not satisfy a probe). A probe the
 checkers do NOT flag is a finding: the Any leak the probe demonstrates.
 
 T09's doors probed here: the Promise is WIRING, not a future (awaiting
@@ -20,6 +22,7 @@ door ships with T10's runtime (its probe lands with that surface).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel
@@ -46,9 +49,11 @@ async def probe_awaiting_a_promise() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_await")
-    def probe_await() -> object:
+    async def probe_await() -> object:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
-        return asyncio.ensure_future(fetched)  # MUST_ERROR: not a future
+        return asyncio.ensure_future(
+            fetched
+        )  # MUST_ERROR(reportCallIssue, reportArgumentType, no-matching-overload): not a future
 
     _ = app
 
@@ -59,9 +64,11 @@ async def probe_promise_where_data_is_wanted() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_direct")
-    def probe_direct() -> object:
+    async def probe_direct() -> object:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
-        return await _body(None, fetched)  # MUST_ERROR: promise, not the data
+        return await _body(
+            None, fetched
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): promise, not the data
 
     _ = app
 
@@ -85,7 +92,9 @@ def probe_exit_bare_return() -> None:
 
 def _exit_body():
     async def exit_body(ctx: Any, params: Ingest) -> Exit[Report]:
-        return Report(ref=params.doc_id)  # MUST_ERROR: a bare Report is not the Exit payload
+        return Report(
+            ref=params.doc_id
+        )  # MUST_ERROR(reportReturnType, invalid-return-type): a bare Report is not the Exit payload
 
     return exit_body
 
@@ -104,38 +113,43 @@ def probe_exit_bare_return_none() -> None:
     _ = app
 
 
-def _map_tail_exit_body():
+def _map_tail_exit_body() -> Callable[[Any, list[Report]], Awaitable[Exit[Report]]]:
     """THE MAP-JOIN'S PROMISE-VS-DATA DOOR (the consumption contract's
     type surface): the join's promise is WIRING — the direct unit-call
-    form wants the COLLECTED DATA (the list), never the promise object."""
+    form wants the COLLECTED DATA (the list), never the promise object.
+    (The factory's return is ANNOTATED: ty infers an unannotated
+    factory's inner closure as Unknown and goes silent — the annotation
+    is what keeps the door checker-visible on BOTH checkers.)"""
 
     async def map_tail_exit(ctx: Any, items: list[Report]) -> Exit[Report]:
-        return Exit(Report(n=sum(i.n for i in items)))
+        return Exit(Report(ref=f"{len(items)}"))
 
     return map_tail_exit
 
 
-def probe_map_promise_where_data_is_wanted() -> None:
+async def probe_map_promise_where_data_is_wanted() -> None:
     """The DIRECT (unit-call) form on a map's join promise: passing the
     wiring handle where the collected data is expected must red (the
     map-join consumption contract's type surface)."""
     app = WorkflowApp()
 
     @app.workflow("probe_map_direct")
-    def probe_map_direct() -> object:
+    async def probe_map_direct() -> object:
         src = step(_body, Ingest(doc_id="d"), key="src")
         mapped = map_source(src, _map_body, key="m")
-        return await _map_tail_exit_body()(None, mapped)  # MUST_ERROR: not the list
+        return await _map_tail_exit_body()(
+            None, mapped
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): not the list
 
     _ = app
 
 
-def _map_body(ctx: Any, item: Report) -> Report:
+async def _map_body(ctx: Any, item: Report) -> Report:
     return item
 
 
 def _exit_body_none():
     async def exit_body_none(ctx: Any, params: Ingest) -> Exit[Report]:
-        return  # MUST_ERROR: a bare return carries no Exit payload — the sentinel's return position
+        return  # MUST_ERROR(reportReturnType, invalid-return-type): a bare return carries no Exit payload — the sentinel's return position
 
     return exit_body_none
