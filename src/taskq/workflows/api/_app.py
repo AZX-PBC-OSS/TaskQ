@@ -375,6 +375,7 @@ def _register_bodies(
     bodies: dict[str, StepBody] = {}
     loop_policies: dict[str, str] = {}
     escalation_body: StepBody | None = None
+    aggregates: dict[str, object] = {}
     for node in compiled.nodes.values():
         if node.body is not None:
             bodies[node.key] = node.body
@@ -415,6 +416,13 @@ def _register_bodies(
             if chain_step.body is not None:
                 bodies.setdefault(step_key, chain_step.body)
     if bodies or loop_policies:
+        # THE MAP'S DECLARED AGGREGATE (T21): keyed by the SOURCE node's
+        # step key — the children's PARENT (the read surfaces resolve by
+        # the parent row's own step key; the durable leg is the flow
+        # root's stamped workflow name).
+        if node.map_aggregate is not None:
+            aggregates[node.key] = node.map_aggregate
+    if bodies or aggregates or loop_policies:
         get_registry().register(
             WorkflowDef(
                 name=compiled.name,
@@ -422,5 +430,6 @@ def _register_bodies(
                 capture_policy="errors-only",
                 redact=redact,  # type: ignore[arg-type]  # Why: the app's redact declaration rides the registered definition — the hold-context chain's hook (the same callable the capture path composes).
                 loop_policies=loop_policies,
+                aggregates=aggregates,  # pyright: ignore[reportArgumentType]
             )
         )

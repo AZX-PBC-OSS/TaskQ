@@ -100,6 +100,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_cross_graph(compiled)
     diagnostics += _rule_unknown_queue(compiled)
     diagnostics += _rule_carrier_type(compiled)
+    diagnostics += _rule_join_for_progress(compiled)
     return diagnostics
 
 
@@ -408,4 +409,32 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
                         "cannot receive",
                     )
                 )
+
+
+def _rule_join_for_progress(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """W2 (T21/DH8): a join whose only reader is the explorer's display —
+    the JOIN-FOR-PROGRESS anti-pattern — warns at validate. The
+    detectable shape: a join node (a gather, or the map's auto-join)
+    whose promise the wiring SUNK (``sink(...)`` — the declared
+    no-dataflow-consumer marker). The blocking join's rows-only semantics
+    (T08's) make the DAG wait on a display question; the read-side
+    ``aggregate=`` fn (the map declaration) answers the same question
+    mid-flight, unblocked. Advisory — the aggregate may be dataflow in
+    spirit and sunk for wiring economy; the warning names the door."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.kind not in ("gather", "map_join"):
+            continue
+        if node.key in compiled.sunk:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "W2-join-for-progress",
+                    "warning",
+                    f"join {node.key!r} is sunk — its only reader is the "
+                    "explorer's display, and the DAG still blocks on it (a "
+                    "join is for DATAFLOW): declare the map's "
+                    "``aggregate=`` fn (the read-side aggregate — "
+                    "mid-flight, unblocked) instead",
+                )
+            )
     return diagnostics

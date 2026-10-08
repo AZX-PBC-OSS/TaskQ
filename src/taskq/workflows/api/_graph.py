@@ -156,6 +156,10 @@ class NodeDecl:
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
+    # THE MAP'S READ-SIDE AGGREGATE (T21 decision c): the declared pure
+    # fn over the children's result rows — evaluated AT READ TIME, never
+    # a blocking fan-in (DH8's fence).
+    map_aggregate: Callable[[list[Any]], object] | None = None
     # THE LOOP ATTACHMENT (T19): the loop node's spec + the iteration
     # body + the awaited until-predicate. ``loop_spec is not None`` IS
     # the loop-node marker.
@@ -369,13 +373,21 @@ def map_source(
     queue: str = "default",
     on_failure: str = "fail_closed",
     max_attempts: int = 3,
+    aggregate: Callable[[list[Any]], object] | None = None,
 ) -> Promise[Any]:
     """Wire a MAP over *source*'s items: the source's body returns the
     list; each item runs *body* as a FRESH job (per-item ledger
     identity); the map's join collects — the flat ``Promise[list[R]]``
     shape. The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
-    source is refused (a node finalizes ONCE — one fork)."""
+    source is refused (a node finalizes ONCE — one fork).
+
+    ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (T21
+    decision c): a PURE fn over the children's decoded result rows,
+    evaluated AT READ TIME by the aggregation surfaces
+    (:func:`taskq.workflows._progress_read.read_map_aggregate`) — NEVER a
+    blocking fan-in (DH8's fence: the join node is for DATAFLOW; a
+    progress question is answered at read, unblocked, mid-flight)."""
     graph = source.graph
     source_node = graph.nodes.get(source.key)
     if source_node is None:
@@ -392,6 +404,7 @@ def map_source(
     source_node.map_queue = queue
     source_node.map_max_attempts = max_attempts
     source_node.map_on_failure = on_failure
+    source_node.map_aggregate = aggregate
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(

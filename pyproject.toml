@@ -409,6 +409,7 @@ ignore = [
 # (the hardening H7 cure), not crypto.
 "src/taskq/workflows/_sql.py" = ["S608"]
 "src/taskq/workflows/_sql_status.py" = ["S608"]
+"src/taskq/workflows/_progress_read.py" = ["S608"]
 "src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]
 # Same rationale — schema name validated via the WorkflowSql bundle every
 # fixture builds; all user-supplied values use $N parameter binding. The
@@ -419,6 +420,7 @@ ignore = [
 "tests/test_wf_schema_migration.py" = ["S608"]
 "tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_progress_emission.py" = ["S608"]
+"tests/test_wf_progress_faces.py" = ["S608"]
 "tests/test_wf_finalize_pins.py" = ["S608", "S311"]
 "tests/test_wf_sweep_pins.py" = ["S608"]
 "tests/test_wf_fork_pins.py" = ["S608", "S311"]
