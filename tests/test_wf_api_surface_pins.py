@@ -50,7 +50,8 @@ def test_actor_projects_the_estate_carrier() -> None:
     consume. The projection carries the placement + the retry contract;
     the actor NAME is workflow-namespaced (one registry, no shadows)."""
     app = WorkflowApp()
-    handle = app.actor(queue="gpu", max_attempts=5, retry_kind="permanent")(_body)
+    decorate = app.actor(queue="gpu", max_attempts=5, retry_kind="permanent")
+    handle = decorate(_body)
     config = handle.actor_config("doc_ingest")
     assert config == {
         "actor": "doc_ingest._body",
@@ -65,7 +66,8 @@ def test_actor_preserves_the_function_identity() -> None:
     ``__doc__`` (attribute reads fall through) and is DIRECTLY callable
     for unit tests (the body's own signature)."""
     app = WorkflowApp()
-    handle = app.actor()(_body)
+    decorate = app.actor()
+    handle = decorate(_body)
     assert handle.name == "_body"
     assert handle.__name__ == "_body"  # type: ignore[attr-defined]  # Why: the fall-through IS the pin (the callable-preserving decorator).
     assert "workflow actor handle" in handle.__doc__  # type: ignore[attr-defined]
