@@ -782,7 +782,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above: import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 23 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 24 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies, workflow blocked-stuck)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml`: the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are

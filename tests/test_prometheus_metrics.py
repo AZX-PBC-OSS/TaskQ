@@ -211,6 +211,14 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_worker_loop_stall_attributions_total",
         "counter",
     ),
+    # T08's workflow-progress rollup gauge (obs/_otel.py's observable
+    # gauge; the maintenance leader samples it). The name already ends in
+    # the counter suffix "total" but the instrument is a GAUGE: the bridge
+    # renders the bare name, and rules.yaml's TaskQWorkflowBlockedStuck
+    # cites exactly that series (the registered-instrument pin in
+    # test_rt_worker_rule_files builds its allowed set from this map — a
+    # rule file may only cite series a real scrape serves).
+    ("taskq.wf_progress_nodes_total", "taskq_wf_progress_nodes_total", "gauge"),
 ]
 
 _RULES_YAML = (
@@ -250,6 +258,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQRunningLeaseExpired",
     "TaskQQueueUnserved",
     "TaskQStrandedJobs",
+    "TaskQWorkflowBlockedStuck",
 }
 
 
@@ -427,19 +436,24 @@ def _populate_all_instruments(meter: Any) -> None:
         unit="1",
         callbacks=[lambda _: [Observation(1, {"queue": "q"})]],
     )
+    meter.create_observable_gauge(
+        "taskq.wf_progress_nodes_total",
+        unit="1",
+        callbacks=[lambda _: [Observation(3, {"workflow": "w", "state": "blocked"})]],
+    )
 
 
 # ── rules.yaml parses correctly ────────────────────────────────────
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 23 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 24 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 23
+    assert len(rules) == 24
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -452,10 +466,10 @@ def test_rules_yaml_parses_correctly() -> None:
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 23 alerts with the names."""
+    """rules.yaml contains exactly 24 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 23
+    assert len(rules) == 24
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 
