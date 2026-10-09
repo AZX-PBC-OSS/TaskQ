@@ -482,12 +482,27 @@ class MaintenanceLeader:
                 {sleep_task, stop_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
-            for task in (sleep_task, stop_task, wake_task):
-                if not task.done():
-                    task.cancel()
-                    await reap_cancelled_child(task)
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure — the
+            # same shape every one of the worker's event-racing loops now
+            # carries): CANCEL ALL the pending waiters first, THEN reap
+            # each. Our own cancel (the reaper's re-raise) propagates
+            # after the bounded reap — never swallowed, never orphaning
+            # the siblings. The clear survives even the cancel path (a
+            # wake consumed by nobody is a lost signal; the event's state
+            # belongs to the loop, not the task).
+            pending = [t for t in (sleep_task, stop_task, wake_task) if not t.done()]
+            for t in pending:
+                t.cancel()
+            own: asyncio.CancelledError | None = None
+            for t in pending:
+                try:
+                    await reap_cancelled_child(t)
+                except asyncio.CancelledError as exc:
+                    own = exc
             woken = wake.is_set()
             wake.clear()
+            if own is not None:
+                raise own
         return woken
 
     async def _follower_park(self) -> None:
@@ -1627,10 +1642,25 @@ class MaintenanceLeader:
                     {leader_wait, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED
                 )
             finally:
-                for task in (leader_wait, shutdown_wait):
-                    if not task.done():
-                        task.cancel()
-                        await reap_cancelled_child(task)
+                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure —
+                # the same shape the reload schedule's, the watchdog's, the
+                # producer's, and the bootstrap's loops carry): CANCEL ALL
+                # the pending waiters first, THEN reap each. The one-per-lap
+                # cancel+reap let the reaper's OWN concurrent cancellation
+                # re-raise out of the FIRST reap and orphan the second
+                # waiter. Our own cancel still propagates: after the
+                # bounded reap completes, never swallowed.
+                pending = [t for t in (leader_wait, shutdown_wait) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                own: asyncio.CancelledError | None = None
+                for t in pending:
+                    try:
+                        await reap_cancelled_child(t)
+                    except asyncio.CancelledError as exc:
+                        own = exc
+                if own is not None:
+                    raise own
             if shutdown.is_set():
                 return
             while not shutdown.is_set() and self._deps.is_leader.is_set():

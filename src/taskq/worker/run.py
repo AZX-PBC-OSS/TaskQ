@@ -525,14 +525,36 @@ async def producer_loop(
                     all_waits,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure,
+                # the same shape the reload schedule's and the watchdog's
+                # loops carry): CANCEL ALL the losers first, THEN reap
+                # each — the one-per-lap cancel+reap let the reaper's own
+                # concurrent cancellation re-raise out of the first reap
+                # and orphan the remaining waiters (the parked sleep and
+                # Event.wait tasks the guard convicted).
                 for task in pending:
                     task.cancel()
+                for task in pending:
                     await reap_cancelled_child(task)
             finally:
-                for task in all_waits:
-                    if not task.done():
-                        task.cancel()
+                # Cover OUR OWN cancellation at the wait point: cancel all
+                # the pending waiters first, then reap each; our own cancel
+                # (the reaper's re-raise) still propagates — after the
+                # bounded reap completes, never swallowed, never allowed
+                # to orphan the children.
+                not_done = [task for task in all_waits if not task.done()]
+                for task in not_done:
+                    task.cancel()
+                own: asyncio.CancelledError | None = None
+                for task in not_done:
+                    try:
                         await reap_cancelled_child(task)
+                    except asyncio.CancelledError as exc:
+                        # the reaper re-raised OUR cancel: noted — the
+                        # remaining children are reaped first.
+                        own = exc
+                if own is not None:
+                    raise own
 
             # Cleared after the wait, not before: a release landing while
             # the round ran is covered by the round's own claim (the loop
@@ -611,13 +633,30 @@ async def producer_loop_stub(
                 [stop_wait, shutdown_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure):
+            # cancel all the losers first, then reap each — the reaper's
+            # own concurrent cancellation must not orphan the sibling.
             for task in pending:
                 task.cancel()
+            for task in pending:
                 await reap_cancelled_child(task)
         finally:
+            # Cover OUR OWN cancellation at the wait point: cancel all
+            # first, then reap each — our own cancel (the reaper's
+            # re-raise) is noted and re-raised AFTER the bounded reap, so
+            # the sibling's completion is awaited, never orphaned.
+            own: asyncio.CancelledError | None = None
             for task in [stop_wait, shutdown_wait]:
                 if not task.done():
                     task.cancel()
+            for task in [stop_wait, shutdown_wait]:
+                try:
+                    if not task.done():
+                        await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    own = exc
+            if own is not None:
+                raise own
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
     _producer_log.info("producer-loop-exit", reason=reason)
@@ -819,8 +858,12 @@ async def consumer_loop_stub(
                 [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure):
+            # cancel all the losers first, then reap each — the reaper's
+            # own concurrent cancellation must not orphan the siblings.
             for task in pending:
                 task.cancel()
+            for task in pending:
                 await reap_cancelled_child(task)
             if q_get not in _done:
                 # A stop signal won the race and nothing was taken.
@@ -841,9 +884,22 @@ async def consumer_loop_stub(
             # job runs this final iteration; the outer while's shutdown
             # check then exits the loop.
         finally:
+            # Cover OUR OWN cancellation at the wait point: cancel all the
+            # pending waiters first, then reap each — our own cancel (the
+            # reaper's re-raise) is noted and re-raised after the bounded
+            # reap, never swallowed, never orphaning the siblings.
+            own: asyncio.CancelledError | None = None
             for task in (q_get, shut_wait, stop_wait):
                 if not task.done():
                     task.cancel()
+            for task in (q_get, shut_wait, stop_wait):
+                try:
+                    if not task.done():
+                        await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    own = exc
+            if own is not None:
+                raise own
 
         job: JobRow = q_get.result()
 
@@ -1015,8 +1071,12 @@ async def di_consumer_loop(
                 [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure):
+            # cancel all the losers first, then reap each — the reaper's
+            # own concurrent cancellation must not orphan the siblings.
             for task in pending:
                 task.cancel()
+            for task in pending:
                 await reap_cancelled_child(task)
             if q_get not in _done:
                 # A stop signal won the race and nothing was taken.
@@ -1044,9 +1104,22 @@ async def di_consumer_loop(
             # lock-lease expiry. The taken job runs this final iteration;
             # the outer while's shutdown check then exits the loop.
         finally:
+            # Cover OUR OWN cancellation at the wait point: cancel all the
+            # pending waiters first, then reap each — our own cancel (the
+            # reaper's re-raise) is noted and re-raised after the bounded
+            # reap, never swallowed, never orphaning the siblings.
+            own: asyncio.CancelledError | None = None
             for task in (q_get, shut_wait, stop_wait):
                 if not task.done():
                     task.cancel()
+            for task in (q_get, shut_wait, stop_wait):
+                try:
+                    if not task.done():
+                        await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    own = exc
+            if own is not None:
+                raise own
 
         job: JobRow = q_get.result()
 

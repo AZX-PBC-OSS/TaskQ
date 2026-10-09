@@ -643,10 +643,29 @@ class ShutdownWatchdog:
                 # Cancel the loser AND cover our own cancellation: without
                 # the finally, cancelling this task at the wait point leaks
                 # both inner event-wait tasks until loop teardown.
-                for t in (shutdown_started, shutdown_task):
-                    if not t.done():
-                        t.cancel()
+                #
+                # THE TEARDOWN'S OWN ORDER (the same cure the reload
+                # schedule's loop carries — the leaked-task guard's
+                # conviction): CANCEL ALL the pending waiters first, THEN
+                # reap each. The one-per-lap shape let the reaper's OWN
+                # concurrent cancellation (cancel() landing mid-reap)
+                # re-raise out of the FIRST reap and orphan the SECOND
+                # waiter — the leaked Event.wait the pin convicts. Our
+                # own cancel still propagates: after the bounded reap
+                # completes, never swallowed.
+                pending = [t for t in (shutdown_started, shutdown_task) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                own: asyncio.CancelledError | None = None
+                for t in pending:
+                    try:
                         await reap_cancelled_child(t)
+                    except asyncio.CancelledError as exc:
+                        # the reaper re-raised OUR cancel: noted — the
+                        # remaining children are reaped first.
+                        own = exc
+                if own is not None:
+                    raise own
         else:
             await self._shutdown_event.wait()
         t0 = self._clock()

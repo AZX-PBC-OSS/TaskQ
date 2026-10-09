@@ -176,7 +176,16 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     """A resolve and a cancel land CONCURRENTLY on one held run (two real
     CLI processes): each exits with an honest code, the run ends in ONE
     named terminal, and the audit rows tell the same story the outputs
-    did — no silent loser."""
+    did — no silent loser.
+
+    THE SUBPROCESS TIMING WEATHER (the disposition's mark, recorded at
+    the consolidation and re-observed at the final head): the race is
+    staged through two REAL processes, so the loser's exit can carry the
+    loser's OWN early-read verdict under a noisy box — a one-off red,
+    green ×2 solo and module-parallel (the loaded-bar law's mark, the
+    demo-legs class map's own disposition). The assertion's substance is
+    the OUTCOME HONESTY (one named terminal, the audit agreeing), not
+    the race's scheduling."""
     from taskq.workflows.api._hitl import HitlClient
 
     schema = module_pg_schema.schema_name

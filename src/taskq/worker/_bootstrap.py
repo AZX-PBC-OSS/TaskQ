@@ -36,6 +36,7 @@ from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq._forkguard import guarded_connection_class, install_fork_guard
+from taskq._reaper import reap_cancelled_child
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import ActorConfigRow, list_actor_configs
@@ -2967,11 +2968,29 @@ async def _reload_coordinator_loop(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            for task in waiters:
-                if not task.done():
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure — the
+            # same shape the reload schedule's, the watchdog's, and the
+            # producer's loops carry): CANCEL ALL the pending waiters
+            # first, THEN reap each through the reaper helper. The
+            # one-per-lap cancel + bare suppress(await) let the reaper's
+            # OWN concurrent cancellation die inside the suppress (the
+            # F-DEMO-2 conviction's exact shape) and orphan the remaining
+            # waiters — the two leaked Event.wait tasks the guard
+            # convicted. Our own cancel propagates: after the bounded
+            # reap completes, never swallowed.
+            pending = [t for t in waiters if not t.done()]
+            for task in pending:
+                task.cancel()
+            own: asyncio.CancelledError | None = None
+            for task in pending:
+                try:
+                    await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    # the reaper re-raised OUR cancel: noted — the
+                    # remaining children are reaped first.
+                    own = exc
+            if own is not None:
+                raise own
 
         if shutdown.is_set():
             return
