@@ -1,0 +1,5 @@
+# the union verify: ruff + format + pyright FULL — union head 9676ab2d, OWN venv (the symlink's stale editable install was the round-1 artifact), pg :5722
+--- ruff check .
+All checks passed!
+--- pyright (FULL tree)
+0 errors, 0 warnings, 0 informations

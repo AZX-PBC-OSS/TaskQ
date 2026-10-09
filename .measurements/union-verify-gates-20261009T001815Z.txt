@@ -1,0 +1,7 @@
+# the union verify: ruff + format + pyright FULL — union head 9676ab2d, pg :5722
+--- ruff check .
+All checks passed!
+--- ruff format --check .
+24 files would be reformatted, 1601 files already formatted
+--- pyright (FULL tree)
+745 errors, 0 warnings, 0 informations
