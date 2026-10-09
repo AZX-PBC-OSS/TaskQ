@@ -1,0 +1,14 @@
+== FINDING 1a: the kill after the root insert -> the ORPHAN ROOT ==
+  create_flow raised: the kill: the process dies after the root insert
+  CURED: the kill after the root insert committed NOTHING — the orphan root is UNREPRESENTABLE (the create is one transaction).
+== FINDING 2: the CLAIM CHURN — a capable worker claims the pending root row ==
+  SKIPPED: no pending root exists to churn (the tx cure) — the
+  ROOT-MARKER fence's own pin carries the drill (the churn
+  observed on the mutated statement, the shipped one green).
+== FINDING 1b: the orphan SQUATS THE RUN KEY — the retry never completes ==
+  retry: claim kind=created, flow_id=01a11f41-f7e4-7070-b31d-23df5f32c59a, node count=2
+  drive() -> terminal  (max_ticks = the wedged run; terminal = the cure)
+== FINDING 3: the FAILED run + the same key = the silent no-op ==
+  SKIPPED: no orphan to terminal-fail (the tx cure); the honest
+  claim's pin carries the existing-terminal verdict (typed, loud).
+{"repro": "complete"}
