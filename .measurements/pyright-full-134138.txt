@@ -1,0 +1,8 @@
+/tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:639:13 - error: Type of "handle" is partially unknown
+    Type of "handle" is "Promise[Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:639:22 - error: Unnecessary "cast" call; type is already "Promise[Unknown]" (reportUnnecessaryCast)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:639:28 - error: Expected type arguments for generic class "Promise" (reportMissingTypeArgument)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:639:43 - error: Cannot access attribute "initial_carry" for class "object"
+    Attribute "initial_carry" is unknown (reportAttributeAccessIssue)
+4 errors, 0 warnings, 0 informations

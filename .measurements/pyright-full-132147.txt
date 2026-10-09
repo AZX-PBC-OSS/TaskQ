@@ -1,0 +1,5 @@
+/tmp/opencode/wt-land/tests/test_heartbeat_cadence.py
+  /tmp/opencode/wt-land/tests/test_heartbeat_cadence.py:82:5 - error: Type of parameter "pg_container" is unknown (reportUnknownParameterType)
+  /tmp/opencode/wt-land/tests/test_heartbeat_cadence.py:82:5 - error: Type annotation is missing for parameter "pg_container" (reportMissingParameterType)
+2 errors, 0 warnings, 0 informations
+pyright rc=1

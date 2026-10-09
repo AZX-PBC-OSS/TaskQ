@@ -1,0 +1,10 @@
+/tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:493:45 - error: Cannot access attribute "max_iterations" for class "object"
+    Attribute "max_iterations" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:493:77 - error: Cannot access attribute "budget_s" for class "object"
+    Attribute "budget_s" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:634:28 - error: Cannot access attribute "initial_carry" for class "object"
+    Attribute "initial_carry" is unknown (reportAttributeAccessIssue)
+  /tmp/opencode/wt-land/src/taskq/workflows/api/_validate.py:640:41 - error: Cannot access attribute "initial_carry" for class "object"
+    Attribute "initial_carry" is unknown (reportAttributeAccessIssue)
+4 errors, 0 warnings, 0 informations
