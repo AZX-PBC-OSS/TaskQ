@@ -167,7 +167,6 @@ class Chain:
         *,
         payload: dict[str, object] | None,
         map_index: int | None,
-        trace_id: str | None,
     ) -> ChildSpec | None:
         """The router's decision for ONE step's outcome — the fork's child
         spec (or ``None`` = the chain ends here). Raises
@@ -178,7 +177,14 @@ class Chain:
         step-ledger's arbiter both discriminate siblings by it — the
         record's index rides EVERY row of its chain, and the child
         carries it forward. Without it, two records' children of one step
-        collide onto one row (the spike's 198 UniqueViolations)."""
+        collide onto one row (the spike's 198 UniqueViolations).
+
+        THE TRACE IS THE FORK'S OWN DOOR (the accept-and-ignore hunt's
+        cure): ``next_child`` once accepted ``trace_id=`` and consumed
+        nothing — the trace actually propagates through
+        :func:`chain_fork`'s ``trace_id=`` (the caller passes both legs
+        the same row value). The decorative kwarg is GONE; the fork's
+        door is the trace's only home."""
         step = self.steps[step_key]
         if step.route is None:
             return None

@@ -844,7 +844,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         if position >= len(params):
             return raw
         param = params[position]
-        return coerce_arg(raw, param=param, position=position, params=params)
+        return coerce_arg(raw, param=param)
 
     async def cancel_workflow(
         self,

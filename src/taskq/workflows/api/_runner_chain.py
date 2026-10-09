@@ -77,7 +77,6 @@ class ChainOps(_ChainHost):
                 outcome,
                 payload=payload_doc,
                 map_index=row["map_index"],
-                trace_id=row.get("trace_id"),
             )
         except RouterNotTotal as exc:
             logger.warning(

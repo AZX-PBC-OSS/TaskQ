@@ -197,8 +197,6 @@ def coerce_arg(
     raw: Any,
     *,
     param: Any,
-    position: int,
-    params: list[object],
 ) -> object:
     # The ANY params are the walk's declared contract: the caller's
     # body_hints walk is the Any-contract's boundary (the annotations are
@@ -206,7 +204,12 @@ def coerce_arg(
     """The payload codec walk: the body's declared param annotation
     re-validates the jsonb round-trip's value (the decode once, typed
     end to end). A BARE model is the fast path; a LIST/union/generic
-    annotation walks the TypeAdapter."""
+    annotation walks the TypeAdapter. THE POSITION IS THE CALLER'S
+    GUARD (the accept-and-ignore hunt's cure): the caller owns the
+    position arithmetic (``position >= len(params)`` is its early
+    return) — this walk takes the RESOLVED annotation, nothing else;
+    the ``position``/``params`` kwargs it once accepted were consumed
+    by nothing."""
     if param is object or param is Any:
         return raw
     if isinstance(param, type) and issubclass(param, BaseModel):

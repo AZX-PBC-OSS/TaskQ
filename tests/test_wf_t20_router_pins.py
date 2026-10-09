@@ -281,7 +281,6 @@ async def test_t20_chain_routes_through_the_certified_fork(
             outcome,
             payload=item,
             map_index=int(rec["map_index"]),
-            trace_id=f"trace-{rec['map_index']}",
         )
         fork = _fork(child, trace_id=f"trace-{rec['map_index']}")
         res = await finalize_node(
@@ -418,7 +417,7 @@ async def test_t20_router_not_total_fails_the_row_loudly(
 
     async def _run() -> None:
         try:
-            chain.next_child("screen", "corrupted", payload={}, map_index=9, trace_id="trace-9")
+            chain.next_child("screen", "corrupted", payload={}, map_index=9)
         except RouterNotTotal as exc:
             # THE RUNNER'S LOUD REFUSAL (the runner's chain path): the
             # step terminal-FAILS with the defect's name — never a

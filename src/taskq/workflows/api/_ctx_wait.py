@@ -346,7 +346,6 @@ class CtxWaitOps(_WaitHost):
                 call_id=f"call:{new_uuid()}",
                 payload_schema=schema_ref,
                 timeout_s=timeout_s,
-                is_loop_node=self._is_loop,
                 context={"reason": reason, "tool": tool, "args": args},
                 redact=self._redact,
             )

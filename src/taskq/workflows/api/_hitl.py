@@ -381,7 +381,6 @@ async def register_hold(
     call_id: str,
     payload_schema: dict[str, object] | None,
     timeout_s: float | None,
-    is_loop_node: bool,
     context: dict[str, object] | None = None,
     redact: Callable[[str], str] | None = None,
 ) -> JobId:
@@ -399,6 +398,15 @@ async def register_hold(
     insert — no second statement after the commit, no context-less hold,
     and the row never carries a canary (REDACT-BEFORE-PERSIST extended
     to the hold row).
+
+    THE LOOP'S BUDGET PAUSE IS DERIVED, NEVER ARGUED (the accept-and-
+    ignore hunt's cure): register_hold once took ``is_loop_node=`` — the
+    caller's belief — and the INSERT ignored it: the pause rode the SQL's
+    own marker (``metadata @> '{"kind": "loop"}'``), the row's KIND
+    deciding. The kwarg was the accepted-and-ignored class exactly (a
+    param consumed by nothing, its promise kept by something else); the
+    param is GONE — the row's own kind marker is the only voice, and the
+    held-loop pause's pins drill the behavior on the row's kind.
 
     THE CONTRACT IS MANDATORY (attack-4 F-P4-UNTYPED-COLD-DOOR's cure,
     the mint's half): ``payload_schema`` must carry at least one declared
