@@ -1,3 +1,4 @@
+# ruff: noqa: S608  # Why: the schema is identifier-validated by the runner under test; every value is $-bound — the guide runs the same statements the product ships.
 """THE VERIFICATION HARNESS for the staged migrating-from-langgraph guide.
 
 Runs the guide's code blocks against the BUILT TaskQflow surface (the

@@ -1,3 +1,4 @@
+# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
 """T20's EMIT BACKPRESSURE pins — DH9's cure (the ticket's decision 7).
 
 THE DECLARED HOME (the design law — one home): the max-in-flight bound
@@ -19,7 +20,7 @@ pause): before the emit tx, the emit admits its WHOLE page — the
 outstanding non-terminal row count (the ledger's truth, one query) plus
 the page's width must fit under the bound, or the pager BLOCKS (a
 bounded poll; no tx, no connection held while waiting). A stall past the
-wait's deadline is the LOUD refusal (:class:`EmitBackpressureTimeout`) —
+wait's deadline is the LOUD refusal (:class:`EmitBackpressureTimeoutError`) —
 and the certified ladder owns it: the source re-pends with backoff, the
 re-claim resumes FROM THE CURSOR, and the blocked page emits fresh (it
 never ran — nothing was written). The degradation is the dispatch band's
@@ -45,7 +46,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows._emit import (
     EMIT_MAX_IN_FLIGHT_DEFAULT,
-    EmitBackpressureTimeout,
+    EmitBackpressureTimeoutError,
     emit_batch,
 )
 from taskq.workflows.chain import DONE, Chain, Route, Step
@@ -167,7 +168,7 @@ async def test_t20_emit_blocks_at_the_declared_bound(
 
     # Page 1: does NOT fit — the pager blocks, bounded, loudly.
     t0 = time.perf_counter()
-    with pytest.raises(EmitBackpressureTimeout) as excinfo:
+    with pytest.raises(EmitBackpressureTimeoutError) as excinfo:
         await emit_batch(
             module_pg_pool,
             wf_sql,
@@ -424,7 +425,7 @@ async def test_t20_max_in_flight_is_declared_at_the_workflow(
     assert compiled.max_in_flight == 3, "the declared bound rides the compile"
 
     runner = FlowRunner(compiled, module_pg_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
 
     rows = await wf_conn.fetch(

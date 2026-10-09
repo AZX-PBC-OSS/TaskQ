@@ -96,19 +96,23 @@ def rehydrate_carry(declared: object, raw: object) -> object:
     """
     if declared is None:
         return raw
-    declared_type = type(declared)
+    # THE TYPED SPLIT (the ergonomic tail's cure): the declared face may
+    # arrive as the CLASS itself (the loop's ``carry_type=`` declaration
+    # — the spec's own field since the split) or as an INSTANCE (the
+    # initial carry's value — the derivation's other face). The class is
+    # the contract's home; the instance contributes its type.
+    declared_type: type[object] = declared if isinstance(declared, type) else type(declared)
     if isinstance(raw, declared_type):
         return raw
-    if isinstance(declared, BaseModel):
-        model_type: type[BaseModel] = type(declared)
+    if issubclass(declared_type, BaseModel):
         if not isinstance(raw, dict):
             raise LoopCarryContractError(
                 f"the loop's declared carry ({declared_type.__name__}) arrived "
                 f"as {type(raw).__name__!r} — the jsonb value cannot be "
                 "re-hydrated through the declared type's validator"
             )
-        return model_type.model_validate(raw)
-    if isinstance(declared, dict):
+        return declared_type.model_validate(raw)
+    if issubclass(declared_type, dict):
         if not isinstance(raw, dict):
             raise LoopCarryContractError(
                 f"the loop's declared carry ({declared_type.__name__}) arrived "
@@ -121,7 +125,7 @@ def rehydrate_carry(declared: object, raw: object) -> object:
         # targeted ignore is the declared laundering (the constructor's
         # own contract — Counter({"acc": 3}) is the shape).
         return declared_type(raw)  # pyright: ignore[reportCallIssue]  # Why: the type[dict] face's overload set is the base ctor's; the subclass builds from its mapping.
-    if isinstance(declared, dict | list | str | int | float | bool):
+    if declared_type in (dict, list, str, int, float, bool):
         return raw
     raise LoopCarryContractError(
         f"the loop's declared carry type {declared_type.__name__!r} cannot "

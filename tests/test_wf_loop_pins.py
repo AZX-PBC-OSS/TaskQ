@@ -62,7 +62,7 @@ def _loop_app(
     *,
     max_iterations: int | None = None,
     budget_s: float | None = None,
-    carry: object | None = None,
+    initial: object | None = None,
 ) -> tuple[WorkflowApp, str]:
     app = WorkflowApp()
 
@@ -74,7 +74,7 @@ def _loop_app(
                 body,
                 max_iterations=max_iterations,
                 budget_s=budget_s,
-                initial=carry,
+                initial=initial,
             )
         )
 

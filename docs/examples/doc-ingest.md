@@ -201,7 +201,9 @@ async def summarize_body(ctx: StepContext, enriched: list[Summary | Unreadable])
     return [k for it in enriched if (k := _summary_doc(it)) is not None]
 
 
-async def extract_entities_body(ctx: StepContext, enriched: list[Summary | Unreadable]) -> list[str]:
+async def extract_entities_body(
+    ctx: StepContext, enriched: list[Summary | Unreadable]
+) -> list[str]:
     """The entity pass — the second REQUIRED consumer (its own queue):
     it too runs where the text was readable; the walk is its own."""
     return [k for it in enriched if (k := _summary_doc(it)) is not None]

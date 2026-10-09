@@ -26,8 +26,6 @@ rows are the same rows a worker process would drive.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import enum
 from collections.abc import AsyncIterator
 from typing import Any
 

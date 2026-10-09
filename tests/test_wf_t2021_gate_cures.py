@@ -93,7 +93,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
         return build(step(lax_body, Ingest(doc_id="d1"), key="lax", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_validated_dump"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     node = await wf_conn.fetchval(

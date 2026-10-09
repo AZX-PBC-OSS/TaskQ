@@ -463,9 +463,7 @@ def register_actions(router: APIRouter) -> None:
             raise HTTPException(status_code=400, detail="map_index must be >= 0")
         async with pool.acquire() as conn:
             if map_index is None:
-                node = await conn.fetchrow(
-                    _NODE_PANEL_SQL.format(schema=schema), node_key, run_id
-                )
+                node = await conn.fetchrow(_NODE_PANEL_SQL.format(schema=schema), node_key, run_id)
             else:
                 node = await conn.fetchrow(
                     _NODE_PANEL_CHILD_SQL.format(schema=schema), node_key, run_id, map_index

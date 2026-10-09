@@ -44,7 +44,7 @@ count and the insert serialize on the same lock, so two concurrent
 emitters of one run cannot both admit past the bound; a lost admission
 rolls the tx back WHOLE and the wait retries — a guard, never a timing
 argument). A stall past the wait's deadline is the LOUD refusal
-(:class:`EmitBackpressureTimeout`) — and the certified ladder owns it:
+(:class:`EmitBackpressureTimeoutError`) — and the certified ladder owns it:
 the source re-pends with backoff, the re-claim resumes FROM THE CURSOR,
 the blocked page emits fresh (it never ran — nothing was written). The
 degradation is the dispatch band's latency, never unbounded
@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EMIT_CURSOR_KEY",
     "EMIT_MAX_IN_FLIGHT_DEFAULT",
-    "EmitBackpressureTimeout",
+    "EmitBackpressureTimeoutError",
     "EmitFencedError",
     "MapIndexExhaustedError",
     "PageDivergedError",
@@ -161,7 +161,7 @@ class MapIndexExhaustedError(RuntimeError):
     column's own domain)."""
 
 
-class EmitBackpressureTimeout(RuntimeError):
+class EmitBackpressureTimeoutError(RuntimeError):
     """THE MAX-IN-FLIGHT BOUND STALLED (DH9): the run's outstanding
     non-terminal rows plus the page's width did not fit under the
     declared bound for the whole wait's term — the LOUD refusal, never a
@@ -171,7 +171,7 @@ class EmitBackpressureTimeout(RuntimeError):
     is BEFORE the tx, nothing was written)."""
 
 
-class _AdmissionLost(Exception):
+class _AdmissionLostError(Exception):
     """The admission re-check INSIDE the tx (under the flow's admission
     lock) found the bound taken by a concurrent emitter — the tx aborts
     (nothing partial) and the wait loop retries. Never escapes."""
@@ -348,7 +348,7 @@ async def emit_batch(
 
     Returns the minted child ids (uuid7 via the seam). Raises
     :class:`EmitFencedError` when the claim was superseded (nothing
-    written). Raises :class:`EmitBackpressureTimeout` when the declared
+    written). Raises :class:`EmitBackpressureTimeoutError` when the declared
     bound stalled the whole wait's term (nothing written). Raises
     :class:`PageDivergedError` when the page's rows already exist (the
     cursor diverged from the row history — the tx rolled back, nothing
@@ -418,7 +418,7 @@ async def emit_batch(
                 count = await _outstanding(conn, wsql, flow_id, source_id)
             if count + len(valid) > max_in_flight:
                 if loop.time() > deadline:
-                    raise EmitBackpressureTimeout(
+                    raise EmitBackpressureTimeoutError(
                         f"the emit backpressure bound (max_in_flight="
                         f"{max_in_flight}) stalled the run for "
                         f"{backpressure_timeout_s}s: {count} non-terminal "
@@ -438,7 +438,7 @@ async def emit_batch(
                     await conn.execute(wsql.emit_admission_lock, str(flow_id))
                     inside = await _outstanding(conn, wsql, flow_id, source_id)
                     if inside + len(valid) > max_in_flight:
-                        raise _AdmissionLost(
+                        raise _AdmissionLostError(
                             f"the admission was taken between the wait and "
                             f"the tx (outstanding {inside} + "
                             f"{len(valid)} > {max_in_flight})"
@@ -468,9 +468,9 @@ async def emit_batch(
                 if poison:
                     _raise_poison(flow_id, source_id, poison)
                 return tuple(child_ids)
-            except _AdmissionLost:
+            except _AdmissionLostError:
                 if loop.time() > deadline:
-                    raise EmitBackpressureTimeout(
+                    raise EmitBackpressureTimeoutError(
                         f"the emit backpressure bound (max_in_flight="
                         f"{max_in_flight}) stalled the run for "
                         f"{backpressure_timeout_s}s (the admission kept "

@@ -570,6 +570,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
+            # THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's declared
+            # admission control, handed to every ctx.emit_batch — the
+            # workflow-level declare's runtime wiring.
+            max_in_flight=getattr(self.compiled, "max_in_flight", None),
             # THE RUNTIME INFO (the context contract — the observability
             # primitive the body asserts on).
             flow_name=self.compiled.name,
