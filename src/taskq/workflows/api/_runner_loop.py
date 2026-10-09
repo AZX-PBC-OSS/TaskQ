@@ -103,9 +103,11 @@ class LoopOps(_LoopHost):
         BODY's exceptions never reach this wrapper — the body boundary
         routes them first (a body cannot forge an infra fault by raising
         ConnectionError)."""
-        from taskq.workflows.api._loop import LoopSpec
 
-        spec = cast("LoopSpec", node.loop_spec)  # the driver's own declaration
+        # The attachment is TYPED on the NodeDecl field (the lazy-Any
+        # correction): the driver reads the field's own type, no cast.
+        spec = node.loop_spec
+        assert spec is not None  # the loop driver runs only on loop nodes
 
         try:
             return await self._drive_loop(
@@ -566,7 +568,7 @@ class LoopOps(_LoopHost):
             state_name = ITERATION_STATE_CAP_EXHAUSTED
         policy = "escalate"
         if node_spec := self.compiled.nodes.get(row["step_key"]):
-            loop_spec = getattr(node_spec, "loop_spec", None)
+            loop_spec = node_spec.loop_spec
             if loop_spec is not None:
                 policy = loop_spec.on_exhausted
         async with self.pool.acquire() as conn, conn.transaction():

@@ -429,7 +429,6 @@ def _register_bodies(
     declaring DIFFERENT escalation bodies is the refused shadow."""
     from taskq.workflows.api._loop import (
         ESCALATION_STEP_KEY,
-        LoopSpec,
         default_escalation_body,
     )
     from taskq.workflows.definitions import (
@@ -454,8 +453,8 @@ def _register_bodies(
             bodies[f"{node.key}.item"] = node.map_item
         if node.loop_spec is not None:
             # The loop attachment's declared type (the compile-visible
-            # LoopSpec — the NodeDecl field is the object-typed carrier).
-            spec = cast("LoopSpec", node.loop_spec)  # pyright: ignore[reportUnknownVariableType]  # Why: the NodeDecl's loop attachment is the object-typed carrier; the driver's own declaration is the LoopSpec.
+            # LoopSpec — the NodeDecl field IS typed).
+            spec = node.loop_spec
             loop_policies[node.key] = spec.on_exhausted
             if spec.on_exhausted == "escalate":
                 candidate: StepBody = cast(

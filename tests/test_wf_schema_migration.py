@@ -23,7 +23,6 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
 
 import asyncpg
 import pytest
@@ -39,12 +38,12 @@ _WF_COLUMNS = ("parent_id", "deps_pending", "map_index", "step_key", "code_versi
 _SEED_ROWS = 10_000
 
 
-def _write_measurement(name: str, payload: object) -> None:
+def _write_measurement(name: str, payload: dict[str, object]) -> None:
     """THE APPEND-ONLY CONVERSION: the band artifact is RUN-SCOPED (the
     in-place rewrite is the torn-write race; the newest CITED wins)."""
     from tests._wf_fixtures import write_band_artifact
 
-    write_band_artifact(name, payload)  # type: ignore[arg-type]
+    write_band_artifact(name, payload)
 
 
 # ── Structural pins: the single-lock-class split (family 1's form) ──────
@@ -456,7 +455,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             clone,
         )
         assert len(partials) >= 2, [dict(r) for r in partials]
-        partial_sizes: dict[str, Any] = {}
+        partial_sizes: dict[str, object] = {}
         for rec in partials:
             idx = rec["indexname"]
             row = await conn.fetchrow(

@@ -490,11 +490,7 @@ def _rule_eternal_loop(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         spec = node.loop_spec
         if spec is None:
             continue
-        if (  # pyright: ignore[reportAttributeAccessIssue]  # Why: the LoopSpec's object-typed attachment on NodeDecl — the loop module's own declaration is the type's source (the E8 rule's own seam).
-            node.loop_until is None
-            and spec.max_iterations is None  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-            and spec.budget_s is None  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-        ):
+        if node.loop_until is None and spec.max_iterations is None and spec.budget_s is None:
             diagnostics.append(
                 WorkflowValidationError(
                     "W3-eternal-loop",
@@ -578,7 +574,7 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         # carries its own type); a dict/list/scalar carry declares NO
         # model — the check is skipped, never guessed (the old silent
         # no-check was the conflation's gap).
-        carry_model = spec.carry_type  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]  # Why: the LoopSpec's declared carry_type rides the object-typed loop_spec attachment on NodeDecl — the loop module's own declaration is the type's source (the E8 rule's subject).
+        carry_model = spec.carry_type
         if carry_model is None:
             continue  # no declared model — nothing to enforce against
         hints = body_hints(node.loop_body)
@@ -635,14 +631,13 @@ def _rule_loop_promise_carry(compiled: CompiledWorkflow) -> list[WorkflowValidat
         spec = node.loop_spec
         if spec is None:
             continue
-        if isinstance(spec.initial_carry, Promise):  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # Why: the LoopSpec's object-typed attachment on NodeDecl — the loop module's own declaration is the type's source (the E8 rule's own seam).
-            handle: Promise[Any] = spec.initial_carry  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]
+        if isinstance(spec.initial_carry, Promise):
             diagnostics.append(
                 WorkflowValidationError(
                     "E11-loop-promise-carry",
                     "error",
                     f"loop {node.key!r}'s initial= is a promise handle "
-                    f"(wired from {handle.key!r}) — the loop's "
+                    f"(wired from {spec.initial_carry.key!r}) — the loop's "
                     "initial carry is a VALUE, never a handle: the handle "
                     "cannot ride the row (the first claim died "
                     "UnencodableValue mid-flow), and the loop takes no "

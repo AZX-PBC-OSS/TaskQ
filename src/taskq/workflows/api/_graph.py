@@ -33,6 +33,12 @@ from taskq.workflows.chain import Chain
 if TYPE_CHECKING:
     from typing import Never
 
+    # THE LOOP ATTACHMENT'S TYPE (the validator's door — no object-typed
+    # poke crosses modules): _loop imports _graph's wiring verbs at
+    # runtime, so the import rides TYPE_CHECKING here; the annotation is
+    # lazy (``from __future__ import annotations``) and pyright binds it.
+    from taskq.workflows.api._loop import LoopSpec
+
 __all__ = [
     "Exit",
     "GateDecl",
@@ -180,8 +186,10 @@ class NodeDecl:
     map_aggregate: Callable[[list[Any]], object] | None = None
     # THE LOOP ATTACHMENT (T19): the loop node's spec + the iteration
     # body + the awaited until-predicate. ``loop_spec is not None`` IS
-    # the loop-node marker.
-    loop_spec: object | None = None
+    # the loop-node marker. TYPED (the lazy-Any correction): the spec is
+    # the loop module's own declared dataclass — the validator and the
+    # runner consume the FIELD's type, never an object-shaped cast.
+    loop_spec: LoopSpec | None = None
     loop_body: BodyFn | None = None
     loop_until: Callable[[], Awaitable[bool]] | None = None
     # THE CHAIN ATTACHMENT (T20): a chain SOURCE node owns its declared
