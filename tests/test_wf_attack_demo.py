@@ -154,7 +154,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
         await asyncio.sleep(1.0)  # land the cancel inside the first drive pass
         task.cancel()
         deadline = time.monotonic() + _CANCEL_BOUND_S
-        while not task.done() and time.monotonic() < deadline:
+        while not task.done() and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the bounded-window poll IS the pin's subject (the cancel's measured completion, the clock's bound asserted after)
             await asyncio.sleep(0.05)
         assert task.done(), (
             f"the drive task was still ticking {_CANCEL_BOUND_S:.0f}s after "
@@ -205,7 +205,9 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     # succeeded — the observation the README promises.
     doomed: Any = None
     deadline = time.monotonic() + 90
-    while doomed is None and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the condition-not-clock poll IS the cure's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
+    while (
+        doomed is None and time.monotonic() < deadline
+    ):  # Why: the condition-not-clock poll IS the cure's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
         await runner.tick(run_id)
         doomed = await wf_conn.fetchrow(
             f'SELECT map_index, attempt FROM "{wf_schema}".jobs '
