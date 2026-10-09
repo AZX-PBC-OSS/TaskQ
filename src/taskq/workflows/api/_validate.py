@@ -33,7 +33,14 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   (attack-3 M3's smuggle): under a colliding key it builds a silently
   WRONG edge to this app's own same-named node; the verbs record the
   smuggle, this rule convicts it.
-* E8 carrier-type — the loop's declared ``carry=`` model vs the body's
+* E9 ctx-annotation (F3-1) — the body's ``ctx`` annotation must BE
+  StepContext (or a subclass), or the declared-unchecked Any/object: the
+  fabricated stand-in is the build refusal (the annotation is
+  verification, not documentation).
+* E10 arity (F3-2) — the body's params (beyond ctx) must match the
+  wired sources' count: the mismatch is a build refusal, never a
+  mid-flow ladder discovery.
+* E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
   on a guess.
@@ -50,7 +57,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -95,6 +102,8 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_edgeless_join(compiled)
     diagnostics += _rule_annotations(compiled)
     diagnostics += _rule_consumer_compat(compiled)
+    diagnostics += _rule_ctx_annotation(compiled)
+    diagnostics += _rule_arity(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
     diagnostics += _rule_eternal_wait(compiled)
     diagnostics += _rule_cross_graph(compiled)
@@ -219,6 +228,28 @@ def _rule_annotations(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     return diagnostics
 
 
+def _join_produced_shape(compiled: CompiledWorkflow, join_node: object) -> type[BaseModel] | None:
+    """The BODYLESS join's produced ELEMENT shape (the gather's
+    ``Promise[list[R]]``): the model EVERY one of its sources declares
+    as its return — ``None`` when the sources disagree, produce
+    non-models, or the join stands alone (no shape to enforce; the skip
+    is honest). The union-of-models case returns ``None`` too: the
+    element contract is ONE model or nothing (the runtime codec owns
+    unions)."""
+    shapes: set[type[BaseModel]] = set()
+    parents: list[str] = getattr(join_node, "parents", []) or []
+    for source_key in parents:
+        source = compiled.nodes.get(source_key)
+        if source is None:
+            continue
+        produced = body_hints(source.body).get("return") if source.body is not None else None
+        if isinstance(produced, type) and issubclass(produced, BaseModel):
+            shapes.add(produced)
+    if len(shapes) == 1:
+        return shapes.pop()
+    return None
+
+
 def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E5: a producer's declared data type and a consumer's param type —
     both pydantic models, unrelated — refuse at compile (the checker-
@@ -230,47 +261,181 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
             continue
         hints = body_hints(node.body)
         params = [v for k, v in hints.items() if k not in ("return", "ctx")]
-        for parent_key in node.parents:
-            parent = compiled.nodes.get(parent_key)
-            if parent is None or parent.body is None:
+        # THE SIGNATURE-ORDERED WALK (F3-4's cure — the zero-false-
+        # positive doctrine): the body's params map to the wired SOURCES
+        # IN ORDER (the wiring's own rule — node.args records the sources
+        # in signature order). The CROSS-PRODUCT convicted the legitimate
+        # mixed signature — step(body, p, 3) for body(ctx, item: Report,
+        # page: int) — the page param compared against p's Report and
+        # refused, told to annotate the param that IS annotated. The real
+        # mismatches still refuse; the DATA sources (the literals) need
+        # no compatibility check (the runtime codec coerces them).
+        wired = [a for a in node.args if a[0] == "p"]
+        # strict=True: a wiring with MORE promise sources than the
+        # body's params is E10's own refusal (the rule below); the zip
+        # never silently truncates.
+        for (_kind, parent_key), param in zip(wired, params, strict=False):
+            parent = compiled.nodes.get(str(parent_key))
+            if parent is None:
                 continue
-            produced = body_hints(parent.body).get("return")
+            # THE BODYLESS JOIN'S EDGE (the ergonomic tail's cure): the
+            # join/collect node has NO body — its produced shape is the
+            # ELEMENT model its own sources declare (the gather's
+            # ``Promise[list[R]]`` shape). E5 skipping the bodyless
+            # parent both directions was the probed hole: a consumer's
+            # ``list[Other]`` param under a join of ``Report`` sources
+            # crossed unvalidated. The shape is DERIVED here; no sources
+            # → no shape → the skip is honest.
+            if parent.body is None:
+                produced = _join_produced_shape(compiled, parent)
+            else:
+                produced = body_hints(parent.body).get("return")
             if not (isinstance(produced, type) and issubclass(produced, BaseModel)):
                 continue
-            for param in params:
-                if not (isinstance(param, type) and issubclass(param, BaseModel)):
-                    # THE DUCK-SHAPED HOLE (attack-3 M4's cure): the
-                    # producer declares a MODEL; the consumer's param
-                    # carries NO model annotation (``Any``, a plain
-                    # dict, a duck) — the payload crosses UNVALIDATED
-                    # and UNCHECKED (the runner's codec hook skips
-                    # it too). The wiring's totality claim covers the
-                    # consumer's declared params only: an undeclared
-                    # one is the same promise-break, convicted here.
+            # THE LIST-PARAM ARM (the bodyless-join edge's other half): a
+            # ``list[Model]`` param under a bodyless join is the GATHER's
+            # own shape — the ELEMENT model is the comparison. Under a
+            # MODEL-PRODUCING body parent it is a real mismatch (one
+            # model cannot feed a list param — the runtime codec's
+            # TypeAdapter reds it there; the compile names it here).
+            if get_origin(param) is list:
+                (elem,) = get_args(param)
+                if not (isinstance(elem, type) and issubclass(elem, BaseModel)):
+                    continue  # list[non-model] — the codec's TypeAdapter owns it
+                if parent.body is not None:
                     diagnostics.append(
                         WorkflowValidationError(
                             "E5-incompatible-consumer",
                             "error",
                             f"{node.key!r} consumes {parent_key!r}'s "
-                            f"{produced.__name__} through a param the "
-                            "compile cannot see a model on — annotate "
-                            "the param with the payload's model (the "
-                            "annotation IS the wiring; a duck-typed "
-                            "param consumes any producer unseen)",
+                            f"{produced.__name__} as {param!r} — a "
+                            "single-model producer cannot feed a list "
+                            "param (the gather's shape is the join's: "
+                            "wire the consumer under the bodyless "
+                            "collect, or take the model bare)",
                         )
                     )
                     continue
-                if produced is not param and not issubclass(produced, param):
+                if produced is not elem and not issubclass(produced, elem):
                     diagnostics.append(
                         WorkflowValidationError(
                             "E5-incompatible-consumer",
                             "error",
                             f"{node.key!r} consumes {parent_key!r}'s "
-                            f"{produced.__name__} as {param.__name__} — "
-                            "unrelated payload models: the wiring promises "
-                            "data the consumer cannot accept",
+                            f"list[{produced.__name__}] as {param!r} — "
+                            "unrelated payload models: the join's "
+                            "element and the consumer's element are "
+                            "different models",
                         )
                     )
+                continue
+            if not (isinstance(param, type) and issubclass(param, BaseModel)):
+                # THE DUCK-SHAPED HOLE (attack-3 M4's cure): the PAIRED
+                # param carries NO model annotation (``Any``, a plain
+                # dict, a duck) — the payload crosses UNVALIDATED and
+                # UNCHECKED. The signature-ordered map's own caveat: a
+                # mixed signature's non-model params (the ``page: int``
+                # arm) sit at the DATA sources' positions — never paired
+                # here.
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E5-incompatible-consumer",
+                        "error",
+                        f"{node.key!r} consumes {parent_key!r}'s "
+                        f"{produced.__name__} through a param the "
+                        "compile cannot see a model on — annotate "
+                        "the param with the payload's model (the "
+                        "annotation IS the wiring; a duck-typed "
+                        "param consumes any producer unseen)",
+                    )
+                )
+                continue
+            if produced is not param and not issubclass(produced, param):
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E5-incompatible-consumer",
+                        "error",
+                        f"{node.key!r} consumes {parent_key!r}'s "
+                        f"{produced.__name__} as {param.__name__} — "
+                        "unrelated payload models: the wiring promises "
+                        "data the consumer cannot accept",
+                    )
+                )
+    return diagnostics
+
+
+def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+    must BE :class:`StepContext` (or a subclass), or the
+    declared-unchecked Any/object. A FABRICATED ctx annotation (a
+    stand-in that CLAIMS the type it does not have) is the wiring-site
+    erasure: the checker verifies the body's ``ctx.*`` reads against the
+    LIE, every face reports clean. The conformance is verified at BUILD
+    — the annotation is verification, not documentation."""
+    from taskq.workflows.api._ctx import StepContext
+
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.body is None:
+            continue
+        hints = body_hints(node.body)
+        ctx_ann = hints.get("ctx")
+        if ctx_ann is None:
+            continue  # the annotation's ABSENCE is honest (E4 owns the return's law)
+        if ctx_ann is Any or ctx_ann is object:
+            continue  # THE DECLARED-UNCHECKED: Any/object HONESTLY declare
+            # the absence of verification — never a lie.
+        if ctx_ann is StepContext or (
+            isinstance(ctx_ann, type) and issubclass(ctx_ann, StepContext)
+        ):
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E9-ctx-annotation",
+                "error",
+                f"{node.key!r}'s body declares its context as {ctx_ann!r} — "
+                "the ctx annotation must BE StepContext (or a subclass), "
+                "or the declared-unchecked Any/object: the checker "
+                "verifies the body's ctx.* reads against the REAL "
+                "surface; a fabricated stand-in verifies a lie",
+            )
+        )
+    return diagnostics
+
+
+def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E10 (F3-2's cure — THE ARITY GAP): the body's params (beyond ctx)
+    must match the wired sources' count. A body taking MORE params than
+    wired compiled + validated clean and the mismatch rode the RETRY
+    LADDER MID-FLOW (the TypeError at the body's invocation — the
+    run-time discovery of a wiring-time lie). The mismatch is a BUILD
+    refusal; the ladder never sees it."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.body is None:
+            continue
+        hints = body_hints(node.body)
+        if not hints:
+            # THE UNRESOLVABLE ANNOTATIONS (the zero-false-positive
+            # doctrine's own pin: a function-scope model the body's code
+            # never names — the resolved hints are {}): the arity is a
+            # GUESS on an unresolvable signature — skip (a guess is
+            # never convicted; E4's own pin spells the doctrine).
+            continue
+        params = [k for k in hints if k not in ("return", "ctx")]
+        if len(params) != len(node.args):
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E10-arity",
+                    "error",
+                    f"{node.key!r}'s body takes {len(params)} param(s) "
+                    f"({', '.join(params)}) but the wiring wired "
+                    f"{len(node.args)} argument(s) — the arity is the "
+                    "wiring's own promise: a body param with no wired "
+                    "source is a TypeError mid-flow (the ladder's "
+                    "discovery of a wiring-time lie)",
+                )
+            )
     return diagnostics
 
 
@@ -357,11 +522,13 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E8: the loop's CARRIER-TYPE declaration, ENFORCED (T19's pin 5 —
     the attack-audit's "recorded, never enforced" finding): the declared
-    ``carry=`` value's type and the body's ``Refine[...]`` feedback type
-    are both pydantic models and unrelated — the loop threads a carry
-    the body cannot receive. Unenforceable when undeclarable (no
-    ``carry=`` value, or an unresolvable body hint): the zero-false-
-    positive doctrine — a guess is never convicted."""
+    ``carry_type=`` (or the model instance passed as ``initial=``, whose
+    own type IS the declaration) vs the body's ``Refine[...]`` feedback
+    type — both pydantic models and unrelated means the loop threads a
+    carry the body cannot receive. Unenforceable when undeclarable (no
+    model declared — a scalar/dict initial, or an unresolvable body
+    hint): the zero-false-positive doctrine — a guess is never
+    convicted."""
     from types import UnionType
     from typing import get_args, get_origin
 
@@ -372,15 +539,15 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         spec = node.loop_spec
         if spec is None or node.loop_body is None:
             continue
-        carry = cast("object", spec.carry_type)  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]  # Why: the LoopSpec's declared carry rides the object-typed loop_spec attachment on NodeDecl — the loop module's own declaration is the type's source.
-        # The carry is DECLARED AS A VALUE (the initial carry — an
-        # instance or a JSON-scalar default); the model it names is the
-        # instance's type when the value is a model.
-        if isinstance(carry, BaseModel):
-            carry_model = type(carry)
-        elif isinstance(carry, type) and issubclass(carry, BaseModel):
-            carry_model = carry
-        else:
+        # THE CARRY'S TYPED SPLIT (the ergonomic tail's cure): the
+        # CARRIER-TYPE is its own declared field — the model the body's
+        # Refine[Feedback] must match. It is DERIVED from the initial
+        # carry when the author passed a model instance (the instance
+        # carries its own type); a dict/list/scalar carry declares NO
+        # model — the check is skipped, never guessed (the old silent
+        # no-check was the conflation's gap).
+        carry_model = spec.carry_type  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]  # Why: the LoopSpec's declared carry_type rides the object-typed loop_spec attachment on NodeDecl — the loop module's own declaration is the type's source (the E8 rule's subject).
+        if carry_model is None:
             continue  # no declared model — nothing to enforce against
         hints = body_hints(node.loop_body)
         returned = hints.get("return")

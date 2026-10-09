@@ -91,11 +91,11 @@ def test_registered_loop_policy_reads_the_declared_policy_and_the_body_fallback(
 
     @app.workflow("attack4_policy_declared")
     def declared() -> object:
-        return build(loop("review", iteration, carry=0, max_iterations=2, on_exhausted="fail"))
+        return build(loop("review", iteration, initial=0, max_iterations=2, on_exhausted="fail"))
 
     @app.workflow("attack4_policy_escalate")
     def escalate() -> object:
-        return build(loop("review", iteration, carry=0, max_iterations=2, on_exhausted="escalate"))
+        return build(loop("review", iteration, initial=0, max_iterations=2, on_exhausted="escalate"))
 
     app.get("attack4_policy_declared")
     app.get("attack4_policy_escalate")

@@ -115,7 +115,7 @@ async def test_the_loop_ctx_carries_the_budget_wall(wf_pool: Any, wf_schema: str
 
     @app.workflow("ctx_budget")
     def ctx_budget() -> object:
-        return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+        return build(loop("the_loop", loop_body, initial=0, budget_s=3600.0))
 
     runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id  # no input — ctx.input is None (the honest zero)

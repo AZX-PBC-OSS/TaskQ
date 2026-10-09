@@ -1,0 +1,40 @@
+unformatted: File would be reformatted
+   --> src/taskq/web/admin/_wf_rows.py:182:16
+    |
+181 |     # node lines).
+    -     progress = summarize_map_children(
+    -         await conn.fetch(wsql.workflow_map_progress_sources, node_ids)
+    -     ) if node_ids else {}
+182 +     progress = (
+183 +         summarize_map_children(await conn.fetch(wsql.workflow_map_progress_sources, node_ids))
+184 +         if node_ids
+185 +         else {}
+186 +     )
+187 |     return _run_view_from_rows(
+    |
+
+unformatted: File would be reformatted
+  --> tests/test_wf_api_fixround_pins.py:71:19
+   |
+70 |     compiled = app.get("e9_lying_ctx")
+   -     diagnostics = validate_compiled.__wrapped__(compiled) if hasattr(validate_compiled, "__wrapped__") else None
+71 +     diagnostics = (
+72 +         validate_compiled.__wrapped__(compiled)
+73 +         if hasattr(validate_compiled, "__wrapped__")
+74 +         else None
+75 +     )
+76 |     from taskq.workflows.api._validate import _run_rules
+   |
+
+unformatted: File would be reformatted
+   --> tests/typeprobe/wf_gather_negative_types.py:95:22
+   |
+94 |         sink(other)
+   -         return build(p_report, other)  # MUST_ERROR(reportArgumentType, invalid-argument-type): the residual slot wants a produces-nothing handle — a real promise never fits
+95 +         return build(
+96 +             p_report, other
+97 +         )  # MUST_ERROR(reportArgumentType, invalid-argument-type): the residual slot wants a produces-nothing handle — a real promise never fits
+98 |
+   |
+
+3 files would be reformatted, 1456 files already formatted

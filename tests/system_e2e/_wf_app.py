@@ -246,7 +246,7 @@ def deep_research() -> object:
     review = loop(
         "review",
         review_iteration,
-        carry=0,
+        initial=0,
         max_iterations=3,
         budget_s=600.0,
         on_exhausted="escalate",
@@ -467,7 +467,7 @@ async def drain_loop_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
 
 @matrix_app.workflow("drain_loop")
 def drain_loop() -> object:
-    carried = loop("carry_loop", drain_loop_iteration, carry=0, max_iterations=5)
+    carried = loop("carry_loop", drain_loop_iteration, initial=0, max_iterations=5)
     after = step(downstream_body, carried, key="after")
     return build(after)
 

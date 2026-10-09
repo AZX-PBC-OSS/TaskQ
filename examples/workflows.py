@@ -246,7 +246,7 @@ def doc_ingest() -> object:
     review = loop(
         "review",
         review_iteration,
-        carry=0,
+        initial=0,
         max_iterations=3,
         budget_s=3600.0,
         on_exhausted="escalate",

@@ -162,14 +162,16 @@ class LoopOps(_LoopHost):
         assert isinstance(meta, dict)  # the Any-contract walk (the seed wrote the shape)
         meta_doc = cast(dict[str, object], meta)  # the walk's boundary
         # THE INIT (first claim): the budget wall starts HERE (PG's
-        # clock); the iteration counter + the initial carry are set. The
-        # initial carry is serialized through its OWN codec (jsonable —
-        # a model dumps to its dict, a Counter to its mapping): the
-        # DECLARED TYPE is re-applied at the read below (the carry's
+        # clock); the iteration counter + the initial carry are set.
+        # THE CARRY'S TYPED SPLIT: the initial VALUE rides the spec's
+        # own field (the declared split — no isinstance re-derivation
+        # here; the type check is the validator's subject). It is
+        # serialized through the codec (a model dumps to its dict) and
+        # the DECLARED TYPE is re-applied at the read below (the carry's
         # typed contract — the body receives the declared type at
         # iteration 0 AND after every resume).
         initial_carry: object = (
-            jsonable(cast(object, spec.carry_type)) if spec.carry_type is not None else None
+            jsonable(cast(object, spec.initial_carry)) if spec.initial_carry is not None else None
         )
         if "iteration" not in meta_doc:
             init_meta: dict[str, object] = {

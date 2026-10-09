@@ -642,14 +642,14 @@ async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
 
 
 def test_carrier_type_mismatch_is_convicted() -> None:
-    """T19 pin 5's teeth: a loop declaring ``carry=Counter`` whose body
+    """T19 pin 5's teeth: a loop declaring ``initial=Counter`` whose body
     refines with an UNRELATED model is the compile's refusal (the
     recorded declaration is now ENFORCED)."""
     app = WorkflowApp()
 
     @app.workflow("a3cure_carrier_flow")
     def carrier() -> object:
-        return build(loop("counter", _refines_wrong, carry=Counter(acc=0)))
+        return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_carrier_flow"))]
     assert "E8-carrier-type" in rules, (
@@ -671,7 +671,7 @@ def test_carrier_type_match_is_clean() -> None:
 
     @app.workflow("a3cure_carrier_ok_flow")
     def carrier_ok() -> object:
-        return build(loop("counter", refines_right, carry=Counter(acc=0), max_iterations=2))
+        return build(loop("counter", refines_right, initial=Counter(acc=0), max_iterations=2))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_carrier_ok_flow"))]
     assert "E8-carrier-type" not in rules, rules

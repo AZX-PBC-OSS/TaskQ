@@ -1,0 +1,209 @@
+S608 Possible SQL injection vector through string-based query construction
+   --> examples/workflows.py:433:9
+    |
+431 |       spammed every 0.5 s forever."""
+432 |       rows = await pool.fetch(
+433 | /         f"SELECT id, metadata->>'workflow' AS workflow FROM \"{schema}\".jobs "
+434 | |         "WHERE step_key = '__flow__' "
+435 | |         "AND status = 'running' ORDER BY id LIMIT 5"  # Why: the schema is the app's settings-validated identifier; every value is …
+    | |____________________________________________________^
+436 |       )
+437 |       for row in rows:
+    |
+
+F821 Undefined name `Final`
+   --> src/taskq/web/admin/_wf_actions.py:163:25
+    |
+161 | #: but a row written by ANY other path — or a hostile DB write — served
+162 | #: unbounded through this endpoint, a 15MB response from a foreign row).
+163 | _PANEL_FIELD_CAP_CHARS: Final[int] = 10_000
+    |                         ^^^^^
+164 | _PANEL_SUFFIX_RESERVE: Final[int] = 80
+    |
+
+F821 Undefined name `Final`
+   --> src/taskq/web/admin/_wf_actions.py:164:24
+    |
+162 | #: unbounded through this endpoint, a 15MB response from a foreign row).
+163 | _PANEL_FIELD_CAP_CHARS: Final[int] = 10_000
+164 | _PANEL_SUFFIX_RESERVE: Final[int] = 80
+    |                        ^^^^^
+
+F821 Undefined name `Callable`
+   --> src/taskq/web/admin/_wf_actions.py:314:23
+    |
+312 |     run_id: uuid.UUID,
+313 |     cursor: int,
+314 |     session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    |                       ^^^^^^^^
+315 | ) -> AsyncGenerator[str, None]:
+316 |     """The feed: snapshot-on-revision, full replacement each frame (the
+    |
+
+F821 Undefined name `Awaitable`
+   --> src/taskq/web/admin/_wf_actions.py:314:36
+    |
+312 |     run_id: uuid.UUID,
+313 |     cursor: int,
+314 |     session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    |                                    ^^^^^^^^^
+315 | ) -> AsyncGenerator[str, None]:
+316 |     """The feed: snapshot-on-revision, full replacement each frame (the
+    |
+
+F821 Undefined name `Callable`
+   --> src/taskq/web/admin/_wf_actions.py:499:27
+    |
+497 |         schema: str = Depends(get_schema),
+498 |         settings: TaskQSettings = Depends(get_settings),
+499 |         session_verifier: Callable[[Request], Awaitable[bool]] | None = Depends(
+    |                           ^^^^^^^^
+500 |             get_session_verifier
+501 |         ),
+    |
+
+F821 Undefined name `Awaitable`
+   --> src/taskq/web/admin/_wf_actions.py:499:47
+    |
+497 |         schema: str = Depends(get_schema),
+498 |         settings: TaskQSettings = Depends(get_settings),
+499 |         session_verifier: Callable[[Request], Awaitable[bool]] | None = Depends(
+    |                                               ^^^^^^^^^
+500 |             get_session_verifier
+501 |         ),
+    |
+
+F821 Undefined name `Callable`
+   --> src/taskq/web/admin/_wf_actions.py:542:28
+    |
+540 |         # with; a session revoked mid-stream fails the re-check at the
+541 |         # next tick even though those bytes are unchanged.
+542 |         _session_verifier: Callable[[], Awaitable[bool]] | None = (
+    |                            ^^^^^^^^
+543 |             (lambda: session_verifier(request)) if session_verifier is not None else None
+544 |         )
+    |
+
+F821 Undefined name `Awaitable`
+   --> src/taskq/web/admin/_wf_actions.py:542:41
+    |
+540 |         # with; a session revoked mid-stream fails the re-check at the
+541 |         # next tick even though those bytes are unchanged.
+542 |         _session_verifier: Callable[[], Awaitable[bool]] | None = (
+    |                                         ^^^^^^^^^
+543 |             (lambda: session_verifier(request)) if session_verifier is not None else None
+544 |         )
+    |
+
+RUF002 Docstring contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+   --> src/taskq/workflows/api/_validate.py:262:32
+    |
+260 |     wiring's own rule — ``node.args`` records the sources in signature
+261 |     order; a promise source's position ↔ the param's position). The
+262 |     cross-product (every param × every parent) CONVICTED THE LEGITIMATE
+    |                                ^
+263 |     MIXED SIGNATURE — ``step(body, p, 3)`` for ``body(ctx, item: Report,
+264 |     page: int)`` — the ``page: int`` param compared against ``p``'s
+    |
+
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/taskq/workflows/api/_validate.py:279:42
+    |
+277 |         # param at the source's position is the one it feeds.
+278 |         wired = [a for a in node.args if a[0] == "p"]
+279 |         for (kind, parent_key), param in zip(wired, params):
+    |                                          ^^^^^^^^^^^^^^^^^^
+280 |             if kind != "p":
+281 |                 continue
+    |
+help: Add explicit value for parameter `strict=`
+
+RUF100 [*] Unused `noqa` directive (unused: `S608`)
+ --> tests/test_wf_api_fixround_pins.py:1:1
+  |
+1 | # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
+  | ^^^^^^^^^^^^^^^^^^
+2 | """THE API LANE'S FIX-ROUND PINS (the fresh reviewer's F3 findings):
+  |
+help: Remove unused `noqa` directive
+  |
+  - # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
+1 + # Why: the schema is a fixture-derived test identifier; every value is $-bound.
+2 | """THE API LANE'S FIX-ROUND PINS (the fresh reviewer's F3 findings):
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/test_wf_api_fixround_pins.py:19:1
+   |
+17 |   """
+18 |
+19 | / from __future__ import annotations
+20 | |
+21 | | from typing import Any
+22 | |
+23 | | import pytest
+24 | | from pydantic import BaseModel
+25 | |
+26 | | from taskq.workflows import StepContext, WorkflowApp, build, step
+27 | | from taskq.workflows.api._runner_errors import WorkflowRunError
+28 | | from taskq.workflows.api._validate import WorkflowValidationError
+29 | | from taskq.workflows.api._validate import validate_compiled
+   | |___________________________________________________________^
+help: Organize imports
+   |
+27 | from taskq.workflows.api._runner_errors import WorkflowRunError
+   - from taskq.workflows.api._validate import WorkflowValidationError
+   - from taskq.workflows.api._validate import validate_compiled
+28 + from taskq.workflows.api._validate import WorkflowValidationError, validate_compiled
+29 |
+   |
+
+F401 [*] `taskq.workflows.api._runner_errors.WorkflowRunError` imported but unused
+  --> tests/test_wf_api_fixround_pins.py:27:48
+   |
+26 | from taskq.workflows import StepContext, WorkflowApp, build, step
+27 | from taskq.workflows.api._runner_errors import WorkflowRunError
+   |                                                ^^^^^^^^^^^^^^^^
+28 | from taskq.workflows.api._validate import WorkflowValidationError
+29 | from taskq.workflows.api._validate import validate_compiled
+   |
+help: Remove unused import: `taskq.workflows.api._runner_errors.WorkflowRunError`
+   |
+26 | from taskq.workflows import StepContext, WorkflowApp, build, step
+   - from taskq.workflows.api._runner_errors import WorkflowRunError
+27 | from taskq.workflows.api._validate import WorkflowValidationError
+   |
+
+F841 Local variable `diagnostics` is assigned to but never used
+  --> tests/test_wf_api_fixround_pins.py:71:5
+   |
+70 |     compiled = app.get("e9_lying_ctx")
+71 |     diagnostics = validate_compiled.__wrapped__(compiled) if hasattr(validate_compiled, "__wrapped__") else None
+   |     ^^^^^^^^^^^
+72 |     from taskq.workflows.api._validate import _run_rules
+   |
+help: Remove assignment to unused variable `diagnostics`
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/typeprobe/wf_gather_negative_types.py:17:1
+   |
+15 |   """
+16 |
+17 | / from __future__ import annotations
+18 | |
+19 | | from typing import Any
+20 | |
+21 | | from pydantic import BaseModel
+22 | |
+23 | | from taskq.workflows import Promise, WorkflowApp, build, gather, step, sink
+   | |___________________________________________________________________________^
+help: Organize imports
+   |
+22 |
+   - from taskq.workflows import Promise, WorkflowApp, build, gather, step, sink
+23 + from taskq.workflows import Promise, WorkflowApp, build, gather, sink, step
+24 |
+   |
+
+Found 16 errors.
+[*] 4 fixable with the `--fix` option (2 hidden fixes can be enabled with the `--unsafe-fixes` option).

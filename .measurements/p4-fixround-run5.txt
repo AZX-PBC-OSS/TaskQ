@@ -1,0 +1,75 @@
+..F.F.                                                                   [100%]
+=================================== FAILURES ===================================
+_____________________ test_e9_the_honest_annotation_greens _____________________
+
+    def test_e9_the_honest_annotation_greens() -> None:
+        """The HONEST annotation: ``ctx: StepContext`` (the documented
+        annotation) greens — the rule refuses lies, never the truth."""
+        from taskq.workflows import StepContext
+    
+        app = WorkflowApp()
+    
+        async def honest_body(ctx: StepContext, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e9_honest_ctx")
+        def e9_honest_ctx() -> object:
+            return build(step(honest_body, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e9_honest_ctx")
+>       compiled.validate()  # zero findings
+        ^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:94: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e9_honest_ctx', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E10-arity: 'solo''s body takes 0 param(s) () but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+__________________ test_e5_the_genuine_mismatch_still_refuses __________________
+
+    def test_e5_the_genuine_mismatch_still_refuses() -> None:
+        """The genuine mismatch still refuses (the signature-ordered
+        comparison sees it): the consumer's param model is unrelated to its
+        OWN wired parent's product."""
+        app = WorkflowApp()
+    
+        class Other(BaseModel):
+            n: int
+    
+        async def source_body(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        async def mismatched(ctx: Any, item: Other) -> str:
+            return item.n.__str__()
+    
+        @app.workflow("e5_mismatch")
+        def e5_mismatch() -> object:
+            p = step(source_body, Ingest(doc_id="d1"), key="src")
+            return build(step(mismatched, p, key="tail"))
+    
+>       with pytest.raises(WorkflowValidationError, match="E5-incompatible-consumer"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'E5-incompatible-consumer'
+E         Actual message: "[error] validate: 1 error(s) — E10-arity: 'tail''s body takes 0 param(s) () but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)"
+
+tests/test_wf_api_fixround_pins.py:176: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_honest_annotation_greens
+FAILED tests/test_wf_api_fixround_pins.py::test_e5_the_genuine_mismatch_still_refuses
+2 failed, 4 passed in 0.31s

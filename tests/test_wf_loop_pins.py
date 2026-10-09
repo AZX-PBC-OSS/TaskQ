@@ -74,7 +74,7 @@ def _loop_app(
                 body,
                 max_iterations=max_iterations,
                 budget_s=budget_s,
-                carry=carry,
+                initial=carry,
             )
         )
 
@@ -114,7 +114,7 @@ async def test_carry_advanced_exactly_once_per_iteration(
             return Done(Counter(acc=acc))
         return Refine(Counter(acc=acc))
 
-    app, name = _loop_app(counting_body, max_iterations=3, carry=Counter())
+    app, name = _loop_app(counting_body, max_iterations=3, initial=Counter())
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
@@ -340,7 +340,7 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
         return Done(Counter(acc=acc)) if acc >= 2 else Refine(Counter(acc=acc))
 
     with patch.object(ledger_module, "memoized_step_result", killing_memo):
-        app3, name3 = _loop_app(done_at_two, max_iterations=5, carry=Counter())
+        app3, name3 = _loop_app(done_at_two, max_iterations=5, initial=Counter())
         runner3 = await _runner_of(app3, name3, wf_pool, wf_schema)
         flow_id3 = (await runner3.create_flow()).flow_id
         await runner3.drive(flow_id3, max_ticks=10)
@@ -618,7 +618,7 @@ async def test_declared_carry_arrives_typed_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """THE CARRY'S DECLARED TYPE IS THE CONTRACT: a loop declared
-    ``carry=Counter(...)`` hands the body a REAL ``Counter`` at iteration
+    ``initial=Counter(...)`` hands the body a REAL ``Counter`` at iteration
     0 — not the jsonb dict the init's dump produced. The pre-cure truth:
     the typed carry NEVER reached the body (the init serialized it
     typeless; the pins' isinstance fallbacks masked the lie)."""
@@ -632,7 +632,7 @@ async def test_declared_carry_arrives_typed_at_iteration_zero(
         )
         return Done(Counter(acc=carry.acc + 1))
 
-    app, name = _loop_app(typed_body, max_iterations=3, carry=Counter(acc=41))
+    app, name = _loop_app(typed_body, max_iterations=3, initial=Counter(acc=41))
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
@@ -686,7 +686,7 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
         return Refine(Counter(acc=acc))
 
     with patch.object(ledger_module, "memoized_step_result", killing_memo):
-        app, name = _loop_app(counting_body, max_iterations=5, carry=Counter())
+        app, name = _loop_app(counting_body, max_iterations=5, initial=Counter())
         runner = await _runner_of(app, name, wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         assert await runner.drive(flow_id, max_ticks=30) == "terminal"

@@ -50,6 +50,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
+from pydantic import BaseModel
+
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 from taskq.workflows.api._graph import (
     BodyFn,
@@ -125,7 +127,13 @@ class LoopSpec:
     max_iterations: int | None
     budget_s: float | None
     on_exhausted: ExhaustionPolicy
-    carry_type: object  # the declared carry type (the CARRIER-TYPE check's subject)
+    carry_type: type[BaseModel] | None = None
+    #: THE CARRY'S TYPED SPLIT (the ergonomic tail's cure): the declared
+    #: CARRIER-TYPE (the model the body's ``Refine[Feedback]`` must
+    #: match — the W-rules' subject); ``None`` = no model declared (the
+    #: type check is skipped, never guessed). DERIVED from ``initial``
+    #: when it is a model instance and this is left unset.
+    initial_carry: object = None
     #: The REGISTERED ESCALATION STEP's body (attack-3 H1's cure): the
     #: author's ``escalates_to=`` when declared; the framework default
     #: otherwise. Registered under :data:`ESCALATION_STEP_KEY` at compile
@@ -222,7 +230,8 @@ def loop(
     name: str,
     body: BodyFn,
     *,
-    carry: object | None = None,
+    initial: object | None = None,
+    carry_type: type[BaseModel] | None = None,
     until: UntilPredicate | None = None,
     max_iterations: int | None = None,
     budget_s: float | None = None,
@@ -238,6 +247,20 @@ def loop(
     ``Refine(feedback)`` — a body whose union has an unconsumed member is
     the Never-residual red (the API's E-rules); a body returning anything
     else is the shape error at run time.
+
+    THE CARRY'S TYPED SPLIT (the ergonomic tail's cure — one param, two
+    meanings was the conflation): ``initial=`` is the initial carry
+    VALUE (a JSON scalar or a model instance) — the first iteration's
+    ``(ctx, carry)``. ``carry_type=`` is the DECLARED CARRIER-TYPE (the
+    model the body's ``Refine[Feedback]`` must match — the W-rules'
+    subject). When ``initial`` is a model INSTANCE the type is DERIVED
+    from it (the instance carries its own type — no double declaration);
+    an explicit ``carry_type=`` is for the type-only declaration (the
+    initial carry is ``None``) or an honest override. A dict/list carry
+    declares NO model — the type check is skipped, never guessed (the
+    old silent no-check is the named gap this split closes: the two
+    meanings resolved by distant isinstance branches were a dict carry
+    passing UNCHECKED).
 
     ``until=`` is AWAITED per iteration (``Callable[[], Awaitable[bool]]``
     — a sync closure returning a coroutine object is the convicted
@@ -284,7 +307,10 @@ def loop(
         max_iterations=max_iterations,
         budget_s=budget_s,
         on_exhausted=on_exhausted,
-        carry_type=carry,
+        carry_type=carry_type
+        if carry_type is not None
+        else (type(initial) if isinstance(initial, BaseModel) else None),
+        initial_carry=initial,
         escalation_body=escalates_to,
     )
     node = NodeDecl(

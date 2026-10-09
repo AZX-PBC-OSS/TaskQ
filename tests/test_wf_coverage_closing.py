@@ -307,7 +307,7 @@ async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
     @app.workflow("ctx_runtime_fields")
     def ctx_runtime_fields() -> object:
         first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
-        the_loop = loop("the_loop", loop_body, carry=0, budget_s=1800.0)
+        the_loop = loop("the_loop", loop_body, initial=0, budget_s=1800.0)
         return build(the_loop, first)
 
     runner = FlowRunner(app.get("ctx_runtime_fields"), wf_pool, wf_schema)
