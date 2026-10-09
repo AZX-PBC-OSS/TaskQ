@@ -144,7 +144,14 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         # The workflow columns (01.00.23): vanilla enqueues never set them
         # (the DDL defaults apply -- deps_pending DEFAULT 0, the rest NULL);
         # the workflow-row INSERT path is the engine's own statements.
-        "parent_id",
+        # parent_id is NOT omitted: it carries DUAL citizenship — the
+        # workflow round's mirror column AND LIB-2's fan-out ledger key —
+        # and the LEDGER half is written by the enqueue itself: a child
+        # enqueue under a parent's context stamps args.parent_id, the
+        # builder carries it trailing (after assignment_routed, the
+        # COPY_FROM_COLUMNS order), and omitting it would strand every
+        # batch-fast child's ledger stamp (the rebase's own arity pin
+        # caught the contradictory merge: 40-wide records, 39 columns).
         "deps_pending",
         "map_index",
         "step_key",
