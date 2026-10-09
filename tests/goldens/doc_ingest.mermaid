@@ -16,6 +16,7 @@ flowchart TD
     ingest -->|list[str]| ingest.join
     ingest.join -->|?| classify
     ingest.join -->|?| extract_entities
+    ingest.join -->|?| publish
     ingest.join -->|?| route
     ingest.join -->|?| summarize
     review -->|?| publish
