@@ -31,7 +31,7 @@ from taskq.workflows.engine import finalize_node
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["LadderOps"]
+__all__ = ["LadderOps", "is_deterministic_authoring_failure"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -101,27 +101,41 @@ class LadderOps(_LadderHost):
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
         terminal-fails (T06's propagation takes over). ``permanent`` retry
-        kinds fail immediately (cut #12's classifier knob)."""
+        kinds fail immediately (cut #12's classifier knob).
+
+        THE DETERMINISTIC ROUTE (the failure-class routing rule —
+        :func:`is_deterministic_authoring_failure`): a DETERMINISTIC
+        authoring failure finalizes immediately with the named class, the
+        ladder unburned — whatever the declared ``retry_kind`` (the rule
+        outranks the knob: a retry budget spent on a deterministic death
+        is the record's lie)."""
         max_attempts = node.max_attempts if node is not None else 3
         retry_kind = node.retry_kind if node is not None else "transient"
+        # THE DETERMINISTIC ROUTE (the failure-class routing rule):
+        # a deterministic authoring failure finalizes immediately — the
+        # ladder (the count read + the re-pend) is skipped entirely,
+        # whatever the declared retry_kind.
+        deterministic = is_deterministic_authoring_failure(exc)
         # RESUME-NOT-RETRY (cut #5): the LADDER counts the ledger's
         # 'failed' rows — the claim's attempt ordinal increments on EVERY
         # claim (holds' resumes included), so a hold-heavy node keeps its
         # full retry curve (the shared-counter variant — 2 holds +
         # max_attempts=3 = terminal failure with ZERO retries — is pin
         # 7's RED forever).
-        failed_count = int(
-            await wf_conn_fetchval(
-                self.pool,
-                self.schema,
-                "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
-                "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
-                "AND status = 'failed'",
-                flow_id,
-                row["step_key"],
-                row["map_index"],
+        failed_count = 0
+        if not deterministic:
+            failed_count = int(
+                await wf_conn_fetchval(
+                    self.pool,
+                    self.schema,
+                    "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
+                    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
+                    "AND status = 'failed'",
+                    flow_id,
+                    row["step_key"],
+                    row["map_index"],
+                )
             )
-        )
         # The attempt's OWN ledger row terminalizes 'failed' (the claim
         # inserted it — the arbiter's key is the attempt's identity): an
         # INSERT here would collide with the claim (the UniqueViolation
@@ -140,7 +154,11 @@ class LadderOps(_LadderHost):
                 None,
                 row["map_index"],
             )
-            if retry_kind != "permanent" and failed_count + 1 < max_attempts:
+            if (
+                not deterministic
+                and retry_kind != "permanent"
+                and failed_count + 1 < max_attempts
+            ):
                 await conn.execute(
                     render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                     row["id"],
