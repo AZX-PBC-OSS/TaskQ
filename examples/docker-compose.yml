@@ -27,6 +27,16 @@ services:
   # state. The image venv is already synced (`uv sync --locked --no-dev` in
   # examples/Dockerfile), so `--no-sync` starts instantly, offline, with
   # exactly the packages the image shipped.
+  # THE WORKERS SUBSCRIBE TO THE DEMO'S QUEUES — per worker, per the
+  # placement (the wiring in examples/workflows.py names one queue per
+  # step; the operator's deployment knob is WHICH worker carries WHICH
+  # queue). Each demo cohort lands on exactly ONE worker of this stack —
+  # the demo DEMONSTRATES the heterogeneous placement: a queue's node
+  # runs on ITS worker (demo-classify is the gpu-ish cohort; watch its
+  # rows run on worker-2 alone). The vanilla actors' queue (`examples`)
+  # stays on both. The workflow definitions ride the worker's import of
+  # `examples.workflows` (worker.py) — the D1 registry + the boot
+  # projection's cohorts — so a queue-routed claim can resolve its body.
   worker-1:
     # TASKQ_EXAMPLE_IMAGE pins a pre-built, content-hashed image (see
     # benchmarks/example_image_spec.py): when set and present locally, compose
@@ -52,7 +62,7 @@ services:
       TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
       TASKQ_REDIS_URL: redis://redis:6379
       TASKQ_ENVIRONMENT: dev
-      TASKQ_QUEUES: examples
+      TASKQ_QUEUES: examples,demo-enrich,demo-cpu,demo-publish
 
   worker-2:
     # See worker-1's pull-policy note: the default is `build` (fresh every
@@ -73,7 +83,7 @@ services:
       TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
       TASKQ_REDIS_URL: redis://redis:6379
       TASKQ_ENVIRONMENT: dev
-      TASKQ_QUEUES: examples
+      TASKQ_QUEUES: examples,demo-io,demo-classify,demo-screen
 
   app:
     # See worker-1's pull-policy note: the default is `build` (fresh every
