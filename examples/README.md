@@ -168,7 +168,12 @@ run's graph and patches it LIVE over SSE.
    enrichment fails through its ladder; the run NEVER re-runs the
    succeeded siblings; the failure surfaces in the typed report (the
    demo's report carries `failed: []` because the ladder HEALS the armed
-   child — watch the item's attempt go 1 → 2 in the node panel).
+   child — watch the item's attempt go 1 → 2 in the node panel: the
+   map's children are addressed by (step, `map_index`), so the doomed
+   child is `GET /taskq/api/runs/{run_id}/nodes/ingest.item?map_index=6`
+   (`ingest.item` #6 IS `doc-doomed`, the demo corpus's last id; its
+   attempt ledger shows both attempts, and the bare read carries the
+   whole children census to click through).
 2. **The budget-capped loop with the held approval** — the run HOLDS at
    the review (the held node renders AMBER with its countdown); the
    Resolve form (on the run page) delivers the typed `ReviewDecision`;
@@ -179,3 +184,12 @@ run's graph and patches it LIVE over SSE.
 3. **The admin graph view live** — the collapsed map hexagon (the
    done/total counter), the taken paths, the failure badge, the SSE
    patches: all demonstrated on a real run.
+
+### The four demonstrations (the capabilities, live)
+
+| Leg | What shows | How to run |
+|-----|-----------|------------|
+| **Cancellation** | a run cancelled mid-flight: the named states + the audit row in the explorer | `taskq flows cancel <run_id> --reason ...` while the run is mid-flight; watch the run page |
+| **Resumability** | a worker SIGKILLed mid-node; a fresh worker re-claims; the run COMPLETES | start `taskq worker --actors examples.workflows:ACTORS --queues demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default`, trigger, `kill -9` the worker mid-run, start a fresh one |
+| **Observability** | the wf gauge's LIVE scrape off the real `/metrics` endpoint (`taskq.wf_progress_nodes_total{workflow,state}` — rendered by the Prometheus bridge as `taskq_wf_progress_nodes_total`; the maintenance leader's sampler feeds it) | the capture: `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` (the endpoint's byte-verbatim response, never a hand-rendered transcript) |
+| **The conditional router** | the T20 chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |

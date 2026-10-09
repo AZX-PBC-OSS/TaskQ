@@ -45,7 +45,7 @@ from fastapi import FastAPI
 
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = pytest.mark.integration
@@ -60,6 +60,19 @@ class Approval(BaseModel):
 
 class Ingest(BaseModel):
     doc_id: str
+
+
+async def _map_source_body(ctx: Any, params: Ingest) -> list[str]:
+    return ["doc-a", "doc-b", "doc-doomed"]
+
+
+async def _map_item_body(ctx: Any, doc_id: str) -> str:
+    # THE DOOMED CHILD (the README's observation): armed on the FIRST
+    # attempt only — its attempt walks 1 → 2 while the siblings never
+    # re-run.
+    if doc_id == "doc-doomed" and ctx.attempt < 2:
+        raise RuntimeError("the armed transient failure")
+    return f"done:{doc_id}"
 
 
 @pytest.fixture
@@ -77,6 +90,12 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     @app_obj.workflow("admin_plain_flow")
     def plain_flow() -> object:
         return build(step(_plain_body, Ingest(doc_id="d1"), key="solo"))
+
+    @app_obj.workflow("admin_map_flow")
+    def map_flow() -> object:
+        src = step(_map_source_body, Ingest(doc_id="d1"), key="ingest")
+        items = map_source(src, _map_item_body, key="enrich", max_attempts=3)
+        return build(items)
 
     module.app = app_obj  # type: ignore[attr-defined]
     sys.modules[MODULE_NAME] = module
@@ -412,6 +431,63 @@ async def test_node_panel_unknown_node_is_a_404(
     ) as client:
         resp = await client.get("/api/runs/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f/nodes/nope")
     assert resp.status_code == 404
+
+
+async def test_node_panel_addresses_map_children_by_step_and_map_index(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    demo_app_module: Any,
+) -> None:
+    """THE MAP-INDEX ADDRESSING PIN (the README's observation made
+    reachable): a map's children share one step key (``ingest.item``) —
+    the panel addresses a CHILD by (step, ``map_index``). The demo's
+    signature observation — ``watch doc-doomed's attempt go 1 → 2`` —
+    is (step, map_index)-addressable, not step-key-arbitrary: the bare
+    read lands on the FIRST child in map order + carries the children
+    census, and ``?map_index=N`` reads THAT child."""
+    schema = module_pg_schema.schema_name
+    compiled = sys.modules[MODULE_NAME].app.get("admin_map_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema)
+    flow_id = await runner.create_flow()
+    outcome = await runner.drive(flow_id)
+    assert outcome == "terminal"
+    root = await module_pg_pool.fetchval(
+        f'SELECT status FROM "{schema}".jobs WHERE id = $1', flow_id
+    )
+    assert root == "succeeded", root
+
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # THE BARE READ: the FIRST child in map order + the children
+        # census (one row per child, in map order — the click-through).
+        bare = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item")
+        assert bare.status_code == 200
+        body = bare.json()
+        assert body["map_index"] == 0
+        assert [c["map_index"] for c in body["children"]] == [0, 1, 2]
+
+        # THE DOOMED CHILD, BY (step, map_index): its attempt walked
+        # 1 → 2 (the ladder re-ran IT alone), and the ledger carries the
+        # two attempts; a SIBLING's attempt stayed 1 — the reads are
+        # per-child, never an arbitrary row of the shared step key.
+        doomed = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=2")
+        assert doomed.status_code == 200
+        doomed_body = doomed.json()
+        assert doomed_body["map_index"] == 2
+        assert doomed_body["attempt"] == 2, doomed_body
+        assert len(doomed_body["timeline"]) == 2, doomed_body["timeline"]
+
+        sibling = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=0")
+        sibling_body = sibling.json()
+        assert sibling_body["attempt"] == 1, sibling_body
+
+        # AN OUT-OF-RANGE child is the named 404, never a neighbor's row.
+        missing = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=9")
+        assert missing.status_code == 404
+        negative = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=-1")
+        assert negative.status_code == 400
 
 
 async def test_run_page_renders_the_audit_trail_after_a_resolve(

@@ -105,14 +105,39 @@ _RUN_EXISTS_SQL = "SELECT 1 FROM \"{schema}\".jobs WHERE id = $1 AND step_key = 
 
 #: The node detail panel's read (the drill-down: status header, attempts,
 #: the trace id, captured error, one upstream hop — §10.3's causal chain
-#: via parent_id).
+#: via parent_id). MAP CHILDREN share one step key (``<src>.item``), so
+#: the panel addresses a child by (step, map_index): the bare read
+#: lands on the FIRST child in map order (deterministic), and the
+#: ``map_index=`` query param selects the row itself — the run page's
+#: observation surface (``watch this item's attempt go 1 → 2``) is
+#: (step, map_index)-addressable, not step-key-arbitrary.
 _NODE_PANEL_SQL = (
-    "SELECT id, step_key, status, attempt, max_attempts, retry_kind, "
+    "SELECT id, step_key, status, attempt, max_attempts, retry_kind, map_index, "
     "trace_id, error_class, error_message, error_traceback, "
     "metadata->>'error' AS captured_error, parent_id, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
-    "AND (metadata->>'flow_id')::uuid = $2 AND step_key <> '__flow__'"
+    "AND (metadata->>'flow_id')::uuid = $2 AND step_key <> '__flow__' "
+    "ORDER BY map_index LIMIT 1"
+)
+
+_NODE_PANEL_CHILD_SQL = (
+    "SELECT id, step_key, status, attempt, max_attempts, retry_kind, map_index, "
+    "trace_id, error_class, error_message, error_traceback, "
+    "metadata->>'error' AS captured_error, parent_id, "
+    "created_at, started_at, finished_at "
+    'FROM "{schema}".jobs WHERE step_key = $1 '
+    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3 "
+    "AND step_key <> '__flow__'"
+)
+
+#: The map's children census (the panel's addressing surface): one row
+#: per child, in map order — the operator clicks THROUGH to a child.
+_NODE_CHILDREN_SQL = (
+    "SELECT map_index, status, attempt, max_attempts, error_class "
+    'FROM "{schema}".jobs WHERE step_key = $1 '
+    "AND (metadata->>'flow_id')::uuid = $2 AND step_key <> '__flow__' "
+    "ORDER BY map_index"
 )
 
 _NODE_PARENT_SQL = (
@@ -424,16 +449,45 @@ def register_actions(router: APIRouter) -> None:
         node_key: str,
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
+        map_index: int | None = None,
     ) -> dict[str, Any]:
-        """The node detail panel's data (the click → panel surface)."""
+        """The node detail panel's data (the click → panel surface).
+
+        THE MAP-INDEX ADDRESSING: a map's children share one step key —
+        the panel addresses a child by (step, ``map_index``); the bare
+        read lands on the FIRST child in map order and carries the
+        ``children`` census, so the operator can click through to the
+        child whose story they are watching (the demo README's
+        observation: ``watch doc-doomed's attempt go 1 → 2``)."""
+        if map_index is not None and map_index < 0:
+            raise HTTPException(status_code=400, detail="map_index must be >= 0")
         async with pool.acquire() as conn:
-            node = await conn.fetchrow(_NODE_PANEL_SQL.format(schema=schema), node_key, run_id)
+            if map_index is None:
+                node = await conn.fetchrow(
+                    _NODE_PANEL_SQL.format(schema=schema), node_key, run_id
+                )
+            else:
+                node = await conn.fetchrow(
+                    _NODE_PANEL_CHILD_SQL.format(schema=schema), node_key, run_id, map_index
+                )
             if node is None:
                 raise HTTPException(status_code=404, detail="Node not found")
             parent = await conn.fetchrow(_NODE_PARENT_SQL.format(schema=schema), node["id"])
             ledger = await conn.fetch(_NODE_LEDGER_SQL.format(schema=schema), node["id"])
+            siblings = await conn.fetch(_NODE_CHILDREN_SQL.format(schema=schema), node_key, run_id)
+        children = [
+            {
+                "map_index": r["map_index"],
+                "status": r["status"],
+                "attempt": r["attempt"],
+                "max_attempts": r["max_attempts"],
+                "error_class": r["error_class"],
+            }
+            for r in siblings
+        ]
         return {
             "key": node["step_key"],
+            "map_index": node["map_index"],
             "status": node["status"],
             "attempt": node["attempt"],
             "max_attempts": node["max_attempts"],
@@ -453,6 +507,7 @@ def register_actions(router: APIRouter) -> None:
             ),
             "parent": dict(parent) | {"id": str(parent["id"])} if parent else None,
             "timeline": [dict(r) | {"created_at": _iso(r["created_at"])} for r in ledger],
+            "children": children if len(children) > 1 else [],
             "created_at": _iso(node["created_at"]),
             "started_at": _iso(node["started_at"]),
             "finished_at": _iso(node["finished_at"]),

@@ -154,7 +154,7 @@
   var panelError = panel ? panel.querySelector('[data-panel="error"]') : null;
   var panelBody = panel ? panel.querySelector('[data-panel="body"]') : null;
 
-  function openPanel(key) {
+  function openPanel(key, mapIndex) {
     if (!panel) return;
     panel.classList.remove("hidden");
     panelLoading.classList.remove("hidden");
@@ -167,8 +167,14 @@
       showPanelError("No row for node " + key + " — the run's node rows are the panel's source (source: jobs by metadata.flow_id).");
       return;
     }
+    var url = boot.streamUrl.replace(/stream$/, "") + "nodes/" + encodeURIComponent(key);
+    if (mapIndex !== undefined && mapIndex !== null) {
+      // THE MAP-INDEX ADDRESSING: a map's children share one step key —
+      // the child is addressed by (step, map_index).
+      url += "?map_index=" + encodeURIComponent(mapIndex);
+    }
     var t0 = performance.now();
-    fetch(boot.streamUrl.replace(/stream$/, "") + "nodes/" + encodeURIComponent(key))
+    fetch(url)
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -185,7 +191,8 @@
   function renderPanel(data) {
     panelLoading.classList.add("hidden");
     panelBody.classList.remove("hidden");
-    panelBody.querySelector('[data-panel="key"]').textContent = data.key;
+    panelBody.querySelector('[data-panel="key"]').textContent =
+      data.key + (data.map_index !== null && data.map_index !== undefined ? " #" + data.map_index : "");
     var lines = [
       "status: " + data.status,
       "attempt: " + data.attempt + "/" + data.max_attempts + (data.retry_kind ? " (" + data.retry_kind + ")" : ""),
@@ -196,20 +203,37 @@
       "started: " + (data.started_at || "—"),
       "finished: " + (data.finished_at || "—")
     ].filter(Boolean);
-    var timeline = (data.timeline || []).map(function (t) {
-      return t.created_at + "  " + t.status + (t.error_class ? "  " + t.error_class : "");
-    });
     panelBody.innerHTML = "";
     lines.forEach(function (line) {
       var div = document.createElement("div");
       div.textContent = line;
       panelBody.appendChild(div);
     });
-    if (timeline.length) {
+    var children = data.children || [];
+    if (children.length) {
+      // THE MAP'S CHILDREN CENSUS: one clickable row per child, in map
+      // order — the operator watches ONE child's story (its attempt
+      // ladder) by (step, map_index), never a step-key-arbitrary read.
       var h = document.createElement("div");
       h.className = "font-semibold mt-2";
-      h.textContent = "attempt ledger";
+      h.textContent = "map children (" + children.length + ")";
       panelBody.appendChild(h);
+      children.forEach(function (c) {
+        var div = document.createElement("div");
+        div.className = "font-mono text-xs cursor-pointer hover:underline text-blue-600 dark:text-blue-400";
+        div.textContent = "#" + c.map_index + "  " + c.status + "  attempt " + c.attempt + "/" + c.max_attempts + (c.error_class ? "  " + c.error_class : "");
+        div.addEventListener("click", function () { openPanel(data.key, c.map_index); });
+        panelBody.appendChild(div);
+      });
+    }
+    var timeline = (data.timeline || []).map(function (t) {
+      return t.created_at + "  " + t.status + (t.error_class ? "  " + t.error_class : "");
+    });
+    if (timeline.length) {
+      var h2 = document.createElement("div");
+      h2.className = "font-semibold mt-2";
+      h2.textContent = "attempt ledger";
+      panelBody.appendChild(h2);
       timeline.forEach(function (line) {
         var div = document.createElement("div");
         div.className = "font-mono text-xs";
