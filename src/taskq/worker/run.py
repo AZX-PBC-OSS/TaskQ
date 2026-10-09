@@ -111,6 +111,12 @@ if TYPE_CHECKING:
         _main as _main,
     )
 
+    # The execution record's static face (the runtime import stays inside
+    # the intercept's lazy seam — the §16.1 import law).
+    from taskq.workflows._worker_execution import (
+        FlowExecution as FlowExecution,
+    )
+
 
 def __getattr__(name: str) -> object:
     if name in (
@@ -715,7 +721,7 @@ async def _dispatch_flow_job(
         log=_consumer_log.bind(job_id=str(job.id), actor=job.actor, queue=job.queue),
     )
 
-    async def _run() -> str:
+    async def _run() -> "FlowExecution":
         return await flow_execute(
             pool=deps.dispatcher_pool,
             schema=deps.settings.schema_name,
@@ -726,7 +732,7 @@ async def _dispatch_flow_job(
     task = asyncio.create_task(_run(), name=f"flow-attempt:{job.id}")
     entry = await deps.active_jobs.register(job.id, task, ctx)
     try:
-        outcome = await task
+        execution = await task
     except asyncio.CancelledError:
         # Route by WHO was cancelled (the vanilla dispatch's own split):
         # this helper's caller cancelling (a shutdown signal's loop
@@ -754,7 +760,7 @@ async def _dispatch_flow_job(
         return "cancelled"
     finally:
         await deps.active_jobs.deregister(job.id, entry)
-    consumed = _FLOW_OUTCOME_TO_CONSUMED.get(outcome)
+    consumed = _FLOW_OUTCOME_TO_CONSUMED.get(execution.outcome)
     if consumed is not None:
         record_consumed_message(job.actor, job.queue, outcome=consumed)
     _consumer_log.info(
@@ -762,11 +768,17 @@ async def _dispatch_flow_job(
         job_id=str(job.id),
         actor=job.actor,
         queue=job.queue,
-        step_key=str(job.metadata.get("step_key", "")),
-        flow_id=str(job.metadata.get("flow_id", "")),
-        outcome=outcome,
+        # THE DOOR'S REAL VALUES (F2-5): the dispatch decode DROPS the
+        # workflow's step identity (the vanilla JobRow has no fields for
+        # it), so the metadata read here was always empty — the door's
+        # bounded read is where the truth is, and the record carries it
+        # back.
+        step_key=execution.step_key,
+        workflow=execution.workflow_name,
+        flow_id=execution.flow_id,
+        outcome=execution.outcome,
     )
-    return outcome
+    return execution.outcome
 
 
 async def consumer_loop_stub(
@@ -1109,6 +1121,39 @@ async def di_consumer_loop(
                                 "dispatch-workflow-unresolvable-release-noop",
                                 job_id=str(job.id),
                             )
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    continue
+                except SlotPoolAcquireError:
+                    # THE TRANSIENT ABSORPTION (F2-2, the vanilla leg's own
+                    # shape, mirrored): the door's pool acquire failed —
+                    # infrastructure, not a job outcome. The row is still
+                    # running under this worker's lock with no runner left
+                    # to move it: disown it (the heartbeat stops renewing
+                    # the lease, the reclaim sweep hands it back) exactly
+                    # as the vanilla leg disowns its own
+                    # SlotPoolAcquireError. THE LOOP MUST SURVIVE: an
+                    # uncaught transient here used to kill the whole
+                    # consumer loop (every co-resident job stalled behind
+                    # the corpse) and LEAKED the claim intent (the
+                    # hand-back fences kept firing forever).
+                    _disown_job(deps.disowned_jobs, job)
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    continue
+                except Exception:
+                    # The door's OTHER failures (the ledger claim's
+                    # transient, a finalize write's connection loss): the
+                    # vanilla leg's own generic arm, mirrored — counted,
+                    # logged, the claim resolved, the loop alive. The row
+                    # recovers by the same machinery that owns every
+                    # interrupted attempt (the reconcile's refund, the
+                    # reclaim sweep's re-claim; the ledger's arbiter
+                    # dedupes the completed side effects).
+                    _consumer_log.exception(
+                        "dispatch-flow-failed",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                    )
+                    deps.drain_failures += 1
                     deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
                 if _flow_outcome == "failed":

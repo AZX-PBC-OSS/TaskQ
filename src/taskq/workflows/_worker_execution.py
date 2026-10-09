@@ -47,7 +47,7 @@ workflows package, and a worker that never opens this seam pays nothing.
 from __future__ import annotations
 
 import weakref
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from uuid import UUID
 
 from taskq.actor_config import ActorConfig
@@ -72,6 +72,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "FlowExecution",
     "WorkflowActorQueueConflictError",
     "WorkflowBodyUnresolvableError",
     "execute_flow_job",
@@ -126,6 +127,20 @@ class WorkflowBodyUnresolvableError(WorkflowRunError):
     behavior is the actor-not-found semantics: the row parks at the
     snooze cadence, budget-free, the stranded-jobs detector surfaces it
     — LOUD, never a silent wedge."""
+
+
+class FlowExecution(NamedTuple):
+    """The door's execution record: the tail's outcome label + the REAL
+    identities the door resolved on the way (the row's step key, the
+    stamped workflow name, the flow id). The caller's log line reads
+    THESE — never the dispatch decode's metadata (the vanilla JobRow
+    decode drops the workflow's step identity; the door's bounded read
+    is where the truth is)."""
+
+    outcome: str
+    step_key: str
+    workflow_name: str
+    flow_id: str
 
 
 # ── the app registry + the compiled cache ───────────────────────────────
@@ -205,11 +220,20 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
     invisible actor population.
 
     THE ONE-QUEUE LAW: an actor name carrying TWO queues is refused
-    (``WorkflowActorQueueConflictError``) — per workflow at compile-cohesion
-    time here, and across the apps' workflows on the aggregated set. The
-    split placement (a source on ``default``, a chain on ``gpu``) is
-    expressed with DISTINCT actor names per queue; the override-warning
-    path (one queue silently winning) is dead.
+    (``WorkflowActorQueueConflictError``). TWO granularities, two arms:
+    a workflow whose OWN cohorts conflict — or whose build function
+    raises, or whose graph fails validation — skips THAT WORKFLOW
+    LOUDLY (``workflow-projection-skipped``: the app, the workflow, the
+    defect named) and the healthy workflows still project — ONE broken
+    build fn must not refuse the ENTIRE worker's boot (F2-3: the
+    healthy apps boot). The conflict across workflows/apps — two HEALTHY
+    declarations projecting the same actor name onto different queues —
+    is the remaining refusal: that is not a broken app to skip, it is
+    the drift the estate's guards exist to refuse (skipping one side
+    silently would make its rows unclaimable — the invisible cohort by
+    another door). The split placement (a source on ``default``, a chain
+    on ``gpu``) is expressed with DISTINCT actor names per queue; the
+    override-warning path (one queue silently winning) is dead.
 
     DETERMINISTIC ORDER (sorted): the sync's drift comparison and the
     event stream read the projection — a stable order is the readable
@@ -218,25 +242,54 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
     totals: dict[str, tuple[str, set[str]]] = {}
     for app in iter_imported_apps():
         workflow_app = cast("WorkflowAppFace", app)
+        app_face = f"{type(app).__module__}.{type(app).__name__}"
         for name in sorted(workflow_app.workflow_names()):
-            compiled = workflow_app.get(name)
-            record_compiled(name, compiled)
-            for actor, queue in sorted(_workflow_cohorts(compiled)):
+            try:
+                compiled = workflow_app.get(name)
+                record_compiled(name, compiled)
+                workflow_cohorts: dict[str, set[str]] = {}
+                for actor, queue in sorted(_workflow_cohorts(compiled)):
+                    seen = workflow_cohorts.setdefault(actor, set())
+                    seen.add(queue)
+                    if len(seen) > 1:
+                        raise WorkflowActorQueueConflictError(
+                            f"workflow actor {actor!r} is declared over queues "
+                            f"{sorted(seen)} — actor_config is keyed by actor "
+                            "(one queue per actor, the estate's own law). The "
+                            "split placement is expressed with DISTINCT actor "
+                            "names per queue: the chain's gpu step is a "
+                            "gpu-named actor (e.g. actor='wf-gpu', queue='gpu')."
+                        )
+            except Exception as exc:  # Why: the isolation IS the cure (F2-3) — one broken build fn (a raising builder, a validation refusal, the workflow's own cohort conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
+                logger.error(
+                    "workflow-projection-skipped",
+                    app=app_face,
+                    workflow=name,
+                    error_class=type(exc).__name__,
+                    error=str(exc)[:300],
+                    remedy=(
+                        "this workflow's cohorts are NOT projected and its "
+                        "rows will not claim until the declaration is fixed; "
+                        "the healthy workflows' cohorts project unchanged"
+                    ),
+                )
+                continue
+            for actor, seen in workflow_cohorts.items():
                 queues = totals.get(actor)
                 if queues is None:
-                    totals[actor] = (queue, {queue})
+                    totals[actor] = (next(iter(seen)), seen)
                     continue
-                _, seen = queues
-                seen.add(queue)
-                if len(seen) > 1:
+                merged = queues[1] | seen
+                if len(merged) > 1:
                     raise WorkflowActorQueueConflictError(
-                        f"workflow actor {actor!r} is declared over queues "
-                        f"{sorted(seen)} — actor_config is keyed by actor "
-                        "(one queue per actor, the estate's own law). The "
-                        "split placement is expressed with DISTINCT actor "
-                        "names per queue: the chain's gpu step is a "
-                        "gpu-named actor (e.g. actor='wf-gpu', queue='gpu')."
+                        f"workflow actor {actor!r} is projected over queues "
+                        f"{sorted(merged)} across workflows/apps — "
+                        "actor_config is keyed by actor (one queue per "
+                        "actor, the estate's own law); two HEALTHY "
+                        "declarations fighting over one cohort name is the "
+                        "drift the guards refuse, never a silent skip"
                     )
+                totals[actor] = (next(iter(merged)), merged)
     return [
         ActorConfig(
             actor=actor,
@@ -276,7 +329,7 @@ async def execute_flow_job(
     schema: str,
     worker_id: JobId,
     job: JobRow,
-) -> str:
+) -> FlowExecution:
     """Execute ONE claimed workflow row on THIS worker.
 
     *job* is the row the fleet's dispatch claimed (running, the attempt
@@ -289,8 +342,9 @@ async def execute_flow_job(
     claim, the emitter, the router, the ladder, the two-transaction
     finalize, the same fences. NOT a second execution semantics.
 
-    Returns the outcome label for the caller's log line (``succeeded`` /
-    ``laddered`` / ``held`` — the tail's terminal faces).
+    Returns the execution record (:class:`FlowExecution`) — the outcome
+    label (``succeeded`` / ``laddered`` / ``held`` — the tail's terminal
+    faces) beside the REAL identities the door resolved on the way.
 
     Raises :class:`WorkflowBodyUnresolvableError` when the stamped name
     or the step key resolves to nothing registered in this process —
@@ -338,7 +392,7 @@ async def execute_flow_job(
     from taskq.workflows.api._runner_errors import WorkflowRunError
 
     try:
-        return await runner.run_fleet_claimed_step(
+        outcome = await runner.run_fleet_claimed_step(
             JobId(cast(UUID, flow_raw)),
             row,
             attempt=job.attempt,
@@ -356,6 +410,11 @@ async def execute_flow_job(
         # caller's defined snooze/release handles it (the loud, budget-
         # free parking, never a crash).
         raise WorkflowBodyUnresolvableError(
-            f"row {job.id}'s step {read['step_key']!r} is unresolvable in "
-            f"this process: {exc}"
+            f"row {job.id}'s step {read['step_key']!r} is unresolvable in this process: {exc}"
         ) from exc
+    return FlowExecution(
+        outcome=outcome,
+        step_key=str(read["step_key"]),
+        workflow_name=workflow_name,
+        flow_id=str(flow_raw),
+    )

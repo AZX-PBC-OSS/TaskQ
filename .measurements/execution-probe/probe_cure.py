@@ -2,7 +2,7 @@
 re-run as the cures' greens).
 
 The deployment shape, real end to end: real migrations on a dedicated
-Postgres (:5710), real ``python -m taskq worker`` SUBPROCESSES, real
+Postgres (:5738), real ``python -m taskq worker`` SUBPROCESSES, real
 dispatch. The bodies record their own (pid, job_id) — every verdict
 below reads WHO EXECUTED, not who claims to have.
 
@@ -27,7 +27,7 @@ below reads WHO EXECUTED, not who claims to have.
   gpu worker's pid — each node on ITS pool, the §9.1 heterogeneous
   placement, end to end.
 
-Run: PROBE_DSN=postgresql://taskq:taskq@localhost:5710/taskq \\
+Run: PROBE_DSN=postgresql://taskq:taskq@localhost:5738/taskq \\
      python .measurements/execution-probe/probe_cure.py
 """
 
@@ -51,7 +51,7 @@ import asyncpg
 from taskq.migrate import apply_pending
 from taskq.workflows import FlowRunner
 
-DSN = os.environ.get("PROBE_DSN", "postgresql://taskq:taskq@localhost:5710/taskq")
+DSN = os.environ.get("PROBE_DSN", "postgresql://taskq:taskq@localhost:5738/taskq")
 BASE = Path("/tmp/opencode/execution-cure")
 EVENTS = BASE / "cure-events.log"
 PROBE_DIR = Path(__file__).parent
@@ -173,7 +173,7 @@ async def phase_a() -> None:
 
     compiled = wf_defs.app.get("cure_flow")
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id  # the runner's RunClaim (the API's own shape)
     print(f"== flow created: {flow_id}")
 
     rows = await dump_rows(conn, schema)
@@ -243,7 +243,7 @@ async def phase_b() -> None:
 
     compiled = wf_defs.app.get("cure_flow")
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id  # the runner's RunClaim (the API's own shape)
     print(f"== flow created: {flow_id}")
 
     capable = start_worker(schema, ["default", "gpu"], "wf_defs:registry")
@@ -289,7 +289,7 @@ async def phase_s() -> None:
 
     compiled = wf_defs.app.get("cure_flow")
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id  # the runner's RunClaim (the API's own shape)
     print(f"== flow created: {flow_id}")
 
     default_pool_worker = start_worker(schema, ["default"], "wf_defs:registry")

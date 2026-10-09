@@ -160,3 +160,51 @@ state), the snooze loop structurally gone. Capture:
   label is the record's echo.
 * Mixed-version fleets: an OLD worker's claim SQL predates the execution
   fence — the rolling-deploy reality every fence evolution shares.
+
+---
+
+## THE FIX ROUND (the fresh reviewer's findings F2-1..F2-6, cured on :5738)
+
+* **F2-1 (the receipts):** `tests/test_wf_execution_py.py` (NEW, 13
+  pins) — the Python half driven directly: the door's green (a claimed
+  row resolves via D1, executes ONCE, the ledger 'succeeded'), the fence
+  epoch's receipt (a STALE epoch's terminal write updates NOTHING — the
+  row stays running, the ledger 'fenced'), the resolution errors × the
+  five shapes (no flow_id / the row gone / the unstamped root / the
+  unimported workflow / the foreign step key — all the ONE typed
+  parking error), the boot projection (the healthy cohorts + the split
+  placement's pairs + the metadata stamp), the per-workflow isolation
+  (F2-3's pin: the broken build fn + the conflicted workflow skip
+  LOUDLY — `workflow-projection-skipped` naming app/workflow/remedy —
+  and the healthy workflows still project; the CROSS-app conflict still
+  refuses), the WeakSet registry (never pins an app) + the capability
+  marker's truth, the cancel-absorption arm (the child cancelled alone
+  absorbs — 'cancelled', the entry deregistered), and THE LOOP SURVIVES
+  (the real `di_consumer_loop` driven over a flow row + a witness: the
+  door's transient / the unresolvable parking / the slot-acquire disown
+  each leave the loop ALIVE and the next job processes).
+* **F2-2 (the loop's life):** the intercept mirrors the vanilla leg's
+  absorption — the door's `SlotPoolAcquireError` → disown + continue;
+  any other `Exception` → counted + logged (`dispatch-flow-failed`) +
+  the claim resolved + continue. The uncaught-transient loop-kill (and
+  the claim-intent leak with it) is the pin's red, kept dead by
+  `test_the_loop_survives_a_transient_from_the_door`.
+* **F2-3:** per-workflow isolation in the projection (see the pin
+  above); the ONE remaining refusal is the cross-workflow/app conflict —
+  two HEALTHY declarations fighting over one cohort name is the drift
+  the guards refuse, never a silent skip.
+* **F2-5:** the door returns `FlowExecution` (the outcome label beside
+  the REAL step_key / workflow_name / flow_id it resolved on the way);
+  `flow-step-executed` logs THOSE (the dispatch decode drops the step
+  identity — the metadata read was always empty).
+* **F2-6:** the EXPLAIN pin asserts the INDEX-SERVED PROPERTY (no Seq
+  Scan of jobs; the scheduled_at bound in an Index Cond), not the
+  planner's index name.
+* **THE GATES:** the wf/dispatch family 923 passed; the
+  actor-config/boot/worker mains green; pyright FULL 0/0/0; ruff
+  check+format ALL GREEN; the type gate 13 markers x2 checkers; mkdocs
+  strict clean; THE PLACEMENT PROOF re-run on :5738 — phases A/B/S all
+  GREEN (`cure-run-fixround.txt`, the probe updated for the runner's
+  RunClaim-returning create_flow). The one load-sensitive run (pin 5's
+  band) stays green from the cure round — this round touched no
+  dispatch SQL.
