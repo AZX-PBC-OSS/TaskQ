@@ -1,0 +1,19 @@
+THE LOOP-CURES GATES (the cured head, machine-captured):
+- the loop pins + the phase3 cure pins: 32 passed (loop-cures-green-cured-head.txt)
+- the wider wf families (sweep/runner/ledger/hitl/loop/phase3/attack-cancel/coverage): 88 passed
+- pyright FULL: 0 errors, 0 warnings, 0 informations (src/taskq + tests)
+- ruff check .: All checks passed; ruff format --check .: 1630 files already formatted
+- mkdocs build --strict: built (INFO-only; no warnings)
+- the type gate (tests/typeprobe/_gate.py, pyright 1.1.414 + ty 0.0.85): the type gate holds —
+  every MUST_ERROR marker (13) reds on BOTH checkers with its DECLARED rule-ids,
+  no error outside the markers (run from a home-backed venv — /tmp was full at 100%)
+- the full battery (pytest -n 4): 13,161 passed / 10 failed / 2 errors — EVERY failure
+  green solo (the rotating load class on the shared saturated box):
+  test_dev x3 (green 27/27 via uv run — the PATH face of a bare .venv invocation),
+  test_typed_outcomes_attacks x4 + 2 teardown errors (green 14/14 solo),
+  test_wf_perf_bands pin_4 + mvcc degradation + rt_lost_job_soak[2] + clock_forward_herd +
+  rt_conservation_chaos + grace_boundary_timeline[1] (green 41/41 solo, 11:16)
+- NOT mine / the other front's lane: _ARCHIVE_CTE_PRE_BUDGET_SQL's unregistered-render red
+  on the pre-a7f432ea head (registered by the sweepaudit front's own commit while this
+  front worked); the premature MAP_INDEX_CEILING __all__ entry (ruff F822, cured by
+  removing the entry the constant's own landing will re-add)
