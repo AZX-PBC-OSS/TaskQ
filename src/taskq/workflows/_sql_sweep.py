@@ -8,8 +8,13 @@ binding. See _sql.py for the bundle and the JSONB-landmine rule.
 from __future__ import annotations
 
 # The sweep's lock-first re-derive — ONE batched statement (the fanout cut #4
-# cure; the per-join round-trip variant measured p50 477 ms / p95 1.73 s @
-# ~340 live joins vs the set-based 14.9 ms @ 200). Lock FIRST (FOR UPDATE
+# cure; the per-join round-trip variant is the convicted shape — its
+# MEASURED conviction is P1's sweep-cost curve, 14.9 ms @ 200 joins vs the
+# unscoped seq-scan monster 83.7 ms @ 75k, in
+# /tmp/opencode/proto1/spike1/evidence/. An earlier revision of this comment
+# cited the per-join variant at "p50 477 ms / p95 1.73 s @ ~340 live joins"
+# — no capture with those numbers exists; the figure is DELETED —
+# provenance or silence). Lock FIRST (FOR UPDATE
 # SKIP LOCKED the join-wait children), then count un-terminal parents from
 # the edge ledger INSIDE the same transaction. In-flight decrements are
 # skipped this pass (the healthy worker wins); committed decrements are

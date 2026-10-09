@@ -340,9 +340,13 @@ queue** — the chain's gpu step is a gpu-named actor:
 
 ```python
 CHAIN = Chain(
-    name="gpu-chain", start="screen", steps={...},
-    actor="wf-gpu", queue="gpu",   # the chain's steps: a gpu-NAMED actor
+    name="gpu-chain",
+    start="screen",
+    steps={...},
+    actor="wf-gpu",
+    queue="gpu",  # the chain's steps: a gpu-NAMED actor
 )
+
 
 @app.workflow("ingest")
 def ingest() -> object:
@@ -424,9 +428,11 @@ and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 ## The ergonomic contract (T17 — the authoring session's paper cuts)
 
 The API's bar is **"first-try correct, no boilerplate, IDE
-autocompletion resolves the wiring."** The authoring session's 20 paper
-cuts (2 BLOCKER / 5 CRITICAL / 6 friction / 7 nit) are standing law; each
-cure's CONTRACT, and where to read it:
+autocompletion resolves the wiring."** The authoring session's paper
+cuts are standing law; the COUNTS HAVE ONE HOME —
+`.measurements/t17-dispositions.md`, the disposition ledger (its line
+is derived from its own table; this guide carries no arithmetic of its
+own). Each cure's CONTRACT, and where to read it:
 
 | Paper cut (the stumble) | The cure's contract | Landed in |
 | --- | --- | --- |
@@ -451,10 +457,10 @@ column, the registry is instance-owned, and the schema is
 settings-driven (`TaskQSettings.schema_name`, validated at render).
 
 The full disposition ledger — every cut, its confirmed severity, its
-disposition (applied 15 / declined-with-reason 1 / recorded 2 /
-verify-absent 2 / deferred 1), and the re-test that proves it closed —
-is `.measurements/t17-dispositions.md`; the session's own ledger
-(append-only) carries the same table.
+disposition, and the re-test that proves it closed — is
+`.measurements/t17-dispositions.md`, THE ONE HOME for the T17 counts
+(read the totals there; they are derived from its table, and the
+arithmetic lives nowhere else).
 
 ## §1 — The flow API: the concept (T09)
 
@@ -618,7 +624,9 @@ async def stage_b(ctx: StepContext, params: Ingest) -> Stats:
 
 
 @app.actor(queue="cpu")
-async def reduce(ctx: StepContext, a: Stats, b: Stats) -> Stats:  # the join's user body — the DECODED parents
+async def reduce(
+    ctx: StepContext, a: Stats, b: Stats
+) -> Stats:  # the join's user body — the DECODED parents
     return Stats(n=a.n + b.n)
 
 

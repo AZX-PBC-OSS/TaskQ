@@ -24,11 +24,18 @@ mark, ONE transaction (`finalize_node` tx1, chunked parallel-array inserts
 at 500 rows/statement — never a second transaction, which would break the
 fork atomicity rule):
 
-- **measured: 51.8 ms** → band **≤ 500 ms** (generous headroom by design —
-  the gate trips on a cost-CLASS regression — a per-row round-trip loop at
-  this width would pay 2000 round trips, the fanout proof's cut #4 crime
-  measured at p50 477 ms / p95 1.73 s @ ~340 live joins in the per-join
-  round-trip shape).
+- **measured: 66–120 ms across the six captured runs** (the artifact's
+  current head: 80.5 ms; `.measurements/runs/fanout-1000-tx-band-*.json`
+  carries every run beside the rolled artifact) → band **≤ 500 ms**
+  (generous headroom by design — the gate trips on a cost-CLASS
+  regression — a per-row round-trip loop at this width would pay 2000
+  round trips: the fanout proof's cut #4 crime, the per-join
+  round-trip shape the P1 sweep-cost curve convicts in the sweep-arm
+  section below. An earlier revision of this file cited that crime
+  "at p50 477 ms / p95 1.73 s @ ~340 live joins" — NO capture with
+  those numbers exists anywhere in the evidence tree (the P1 summary's
+  real numbers are the sweep curve below); the figure is DELETED —
+  provenance or silence).
 
 ## The join-fire latency
 
@@ -36,25 +43,33 @@ Last-parent-finalize → the joined row dispatchable (`deps_pending = 0` +
 one `wf_join_fire` row + the outbox rows), measured on the finalize call
 (tx1 + tx2 — the fire is inside tx2):
 
-- **measured: 5.2 ms** → band **≤ 50 ms**.
+- **measured: 9.0–23.0 ms across the six captured runs** (the
+  artifact's current head: 12.0 ms; the runs beside the rolled
+  artifact) → band **≤ 50 ms**.
 
 ## The sweep arm (the set-based re-derive)
 
 The shipped arm is ONE batched statement (lock the join-wait children
 `FOR UPDATE SKIP LOCKED` → count un-terminal parents from the edge ledger
 → reconcile the cache → block the orphans) + the set-based fire arm. The
-prototype's per-join round-trip variant measured p50 477 ms / p95 1.73 s @
-~340 live joins vs the set-based 14.9 ms @ 200 (P1's evidence, `60.4k
-nodes / 30k edges`, the scale curve 200 → 14.9 ms, 1000 → 23.8 ms, 5000 →
-39.3 ms; the unscoped monster 83.7 ms WITH SEQ SCANS at 75k rows). The
-scope pin convicts the seq-scan shape; the crash matrix + the storm +
-duplicate-finalize numbers are P1 FINAL's imported evidence
-(`/tmp/opencode/proto1/spike1/evidence/`).
+convicted alternative — the per-join round-trip shape (the fanout proof's
+cut #4 crime) — has its MEASURED conviction in P1's evidence, `60.4k
+nodes / 30k edges`, the sweep-cost scale curve 200 → 14.9 ms, 1000 →
+23.8 ms, 5000 → 39.3 ms, and the unscoped monster 83.7 ms WITH SEQ SCANS
+at 75k rows (`/tmp/opencode/proto1/spike1/evidence/` — `SUMMARY.txt`
+item 04). An earlier revision of this file and of the sweep's source
+comments cited the per-join variant at "p50 477 ms / p95 1.73 s @ ~340
+live joins" — no capture with those numbers exists in any evidence tree
+the repo names; the figure is DELETED (provenance or silence). The scope
+pin convicts the seq-scan shape; the crash matrix + the storm +
+duplicate-finalize numbers are P1 FINAL's imported evidence.
 
 ## CI minutes (DoD-4)
 
-The bands carry `load_sensitive` (the serial perf lane); measured cost
-~7 s per run warm; no new lane added.
+The bands carry `load_sensitive` (the serial perf lane); no new lane
+added. (An earlier revision claimed "measured cost ~7 s per run warm" —
+no capture backs the figure; deleted — provenance or silence. Each
+band pin's own runtime in CI is the record.)
 
 ## The hold→resume latency band (T10, G11c — the third workflow band)
 
@@ -91,9 +106,9 @@ The two-channel persistence's bands, re-proven on the BUILT code
 ## The click→panel latency band (T11, the admin workflow page)
 
 The node-detail panel's data path (the route's full read through the
-ASGI transport — the server half of the click→panel budget; the DOM
-patch is the P2 stack's 0.075 ms avg, 0.2 ms worst), measured on the
-local PG lane (the band's set-then-pin discipline — G11's method):
+ASGI transport — the server half of the click→panel budget), measured
+on the local PG lane (the band's set-then-pin discipline — G11's
+method):
 
 | metric | value | source |
 | --- | --- | --- |

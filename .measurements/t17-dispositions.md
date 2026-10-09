@@ -1,14 +1,25 @@
 # T17 — THE PAPER-CUT DISPOSITION LEDGER (PR-5 landing round)
 
 Every cut from `/tmp/opencode/authoring/PAPER-CUTS.md` (session
-ses_eeacd1f1dffe — 20 cuts: 2 BLOCKER / 5 CRITICAL / 6 friction / 7 nit),
+ses_eeacd1f1dffe — the table below carries **21 cuts**, #3b admitted
+when T10 landed: 2 BLOCKER / 5 CRITICAL / 6 friction / 8 nit),
 re-verified against the certified core (b4c0013d), dispositioned, and
 routed to its landing ticket. The triage rule stands: **the bar is
 "first-try correct, no boilerplate, IDE autocompletion resolves the
 wiring."**
 
-Count: 20 cuts — **applied 15 · declined-with-reason 1 · recorded-no-action
-2 · verify-absent 2 · deferred 0.**
+Count: **21 cuts** — applied **16** · declined-with-reason **1** ·
+recorded-no-action **2** · verify-absent **1** · deferred-with-ticket
+**1**. (THIS LINE IS THE ONE HOME for the T17 counts — every other
+document points here and carries no arithmetic of its own. The counts
+are derived FROM THE TABLE BELOW, not remembered: the table is the
+ledger, the line is its sum. Correction history: the line said
+"20 cuts … deferred 0" while the table carried 21 rows — #3b was
+admitted when T10 landed and #20's own disposition row says
+"deferred-with-ticket" — the drifted counts in
+`docs/guides/workflows.md` ("20 … deferred 1", which sums to 21) and
+`.measurements/ALIGNMENT-AUDIT.md` ("20 … four-way sum 20", which
+omits the deferred arm) were each REDUCED TO POINTERS here.)
 
 **RECORD-ROT NOTE (the phase-3 fixer round, 2026-10-07):** the Re-test
 column cited ≥7 test node names that did not exist in the tree (files

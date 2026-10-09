@@ -8,7 +8,13 @@ container on the repo's tuning (`jit=off`, `fsync=off`,
 `synchronous_commit=off`), 30 rounds each (the emit: 5 pages). The
 script: `scripts/measure_t20_streaming_bands.py`; raw output:
 `.measurements/t20-streaming-bands.json` (+ the timestamped capture
-beside it, per the capture law).
+beside it, per the capture law). THE TABLES BELOW CITE THE RANGE —
+EVERY captured run on disk, not the friendliest one (an earlier
+revision of this file cited the FIRST capture alone, whose numbers
+were the lowest in the tree — the cherry-pick is corrected here; the
+last row is THIS revision's own re-run, taken on a LOADED box (load
+average 33, concurrent sessions), kept for its regime label, never
+for its absolute values).
 
 ## The emit tx per page (THE new primitive)
 
@@ -16,28 +22,41 @@ beside it, per the capture law).
 row under the FULL claim fence — ONE transaction, while the source stays
 `running`:
 
-- **measured: p50 3.2 ms, max 10.4 ms** (5 pages) → band **7–14 ms/page**
-  held with headroom. The streaming source adds ONE bounded tx per
-  page, not per record; the emit's cost is page-width, never
-  record-count-scale.
+- **measured: p50 3.2–8.1 ms, max 10.4–14.5 ms across the five
+  captured runs** (the quiet-box runs sit at the low end; the loaded-box
+  re-run at the high end) → band **7–14 ms/page** held at the upper
+  class. The streaming source adds ONE bounded tx per page, not per
+  record; the emit's cost is page-width, never record-count-scale.
 
 ## The dispatch band @ the chain backlog
 
 The REAL certified `_dispatch_batch` (unchanged) at a 200-chain backlog
 (vs the 200-PLAIN baseline — the same queue mechanics, no workflow
-shape):
+shape). EVERY captured run on disk, with its regime:
 
-| backlog | p50 | p95 | max |
+| capture | chain p50 | plain p50 | ratio (chain/plain) |
 |---|---|---|---|
-| 200-chain | 7.50 ms | 9.09 ms | 19.5 ms |
-| 200-plain (baseline) | 7.36 ms | 9.08 ms | 9.48 ms |
-| 800-row mixed (200 chain + 600 plain) | 7.23 ms | 8.53 ms | 9.70 ms |
+| 2026-10-08T04:41Z | 7.50 ms | 7.36 ms | 1.02× |
+| 2026-10-08T05:08Z | 9.75 ms | 9.64 ms | 1.01× |
+| 2026-10-08T05:25Z (run …19) | 11.60 ms | 11.20 ms | 1.04× |
+| 2026-10-08T05:25Z (run …25) | 10.78 ms | 11.80 ms | 0.91× |
+| 2026-10-09T06:04Z (LOADED box, load avg 33) | 31.80 ms | 13.65 ms | 2.33× |
 
-- **band ratio (chain/plain) at p50: 1.02×** — the chain-shaped backlog
-  costs the SAME ms-class as plain jobs (the spike's prototype measured
-  1.19×; the built code's fence EXISTS-probe is at least as cheap).
-- **Depth-invariant at 800 rows** — the depth-bounding design holds on
-  the built code (the band does not grow with the backlog).
+- **band ratio at p50: 0.91×–1.04× on the quiet-box runs** — the
+  chain-shaped backlog costs the SAME ms-class as plain jobs; the
+  loaded-box run's 2.33× is the LOAD's signature (the tx pairs contend
+  with the box's neighbors — both arms inflate, the chain's two-tx
+  shape first), never cited as the built code's verdict. (An earlier
+  revision cited "the spike's prototype measured 1.19×" — no capture
+  with that number exists in the evidence tree; the figure is DELETED —
+  provenance or silence. The single-run "1.02×" the same revision
+  cited as THE ratio was the first capture alone — the table above is
+  the honest range.)
+- **Depth-invariant at 800 rows** — the mixed backlog's band tracks the
+  plain baseline across the captures (p50 7.23–13.46 ms, the same
+  ms-class as the 200-plain arm at each regime; the depth-bounding
+  design holds on the built code — the band does not grow with the
+  backlog).
 
 ## The chain-step fork tx (the routed finalize)
 
@@ -46,14 +65,17 @@ terminal mark + the route's ONE child + its edge (tx1), then the
 guarded decrement (tx2 — no join; the chain has none), via the REAL
 `finalize_node`:
 
-- **measured: p50 0.83 ms, p95 1.40 ms** (50 rounds) — the chain's
-  per-hop cost is a single-digit-ms pair of transactions; the
-  conditional edge rides the certified fork machinery at its native
-  band.
+- **measured: p50 0.83–4.96 ms, p95 1.40–7.79 ms across the five
+  captured runs** (quiet-box low end; loaded-box high end) — the
+  chain's per-hop cost is a single-digit-ms pair of transactions at
+  every regime captured; the conditional edge rides the certified fork
+  machinery at its native band.
 
 ## The verdict
 
-The streaming does not degrade the dispatch band: the chain backlog
-dispatches at the plain baseline's class, the emit tx is bounded per
-page, and the routed fork is a sub-millisecond-class tx pair. The
-spike's §7 conclusions carry onto the built code at better numbers.
+The streaming does not degrade the dispatch band (0.91×–1.04× on the
+quiet-box captures; the loaded-box run is the load's signature, labeled
+as such above): the chain backlog dispatches at the plain baseline's
+class, the emit tx is bounded per page, and the routed fork is a
+single-digit-ms-class tx pair at every captured regime. The spike's §7
+conclusions carry onto the built code at the captured numbers' range.

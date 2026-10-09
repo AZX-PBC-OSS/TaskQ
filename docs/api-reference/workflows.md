@@ -60,6 +60,60 @@ module → same compile, byte-stable).
 | `map_source(source, body, *, key=None, queue="default", on_failure="fail_closed", max_attempts=3)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
 | `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
+| `loop(name, body, *, carry=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
+
+## The loop (`wf.loop`, `Done`, `Refine`)
+
+`loop(name, body, ...)` wires a LOOP node: each iteration is FRESH jobs
+(the iteration-scoped step keys `<loop>.iter<i>` keep the idempotency
+ledger per-iteration). The body receives `(ctx, carry)` and returns the
+CONTROL UNION:
+
+- `Done(payload)` — the typed EXIT: the loop stops; the payload is the
+  loop node's result.
+- `Refine(feedback)` — the typed CONTINUE: the feedback threads the
+  carry into the NEXT iteration, advanced EXACTLY ONCE per iteration in
+  the ADVANCE statement — one atomic write shared with the CAP GUARD
+  (`iteration < max_iterations` is the same statement's WHERE leg); a
+  carry advanced at hold/retry time is the optimistic-apply dragon,
+  kept red forever.
+- **anything else is the TYPED SHAPE ERROR** — `LoopBodyShapeError`: the
+  iteration's ledger terminal records it FAILED (the ledger records the
+  truth; a wrong-shape return is never laundered into a succeeded row
+  the memo replay would re-thread as a Refine), the loop exhausts with
+  the named class, and the flow terminalizes.
+
+**THE CARRY'S TYPE IS THE CONTRACT**: the declared `carry=` value's type
+is re-applied at the ONE point a carry reaches the body — at iteration 0
+AND after EVERY resume and on the memo-replay path (the jsonb round-trip
+is typeless; the driver re-hydrates through the declared type's
+validator: a pydantic model, a dict subclass, or a JSON-native type). A
+declared type the jsonb boundary cannot honor is the loud
+`LoopCarryContractError` — a silent type change is refused. The compile
+side is E8 (the carrier-type check).
+
+**THE TWO WALLS ARE DIFFERENT**: `max_iterations` bounds TOTAL SPAWNS
+(the iteration cap); `budget_s` is the TIME wall — and it is BLIND while
+the loop holds on a human (`budget_paused` — holds are free). Exhaustion
+is NAMED, never silent: the cap or the budget wall terminates the loop
+into the `iteration_cap_exhausted` / `budget_exhausted` state (the
+metadata's `iteration_state` + the typed failure class
+`IterationLimitExhausted` / `LoopBudgetExhausted`) and the FLOW
+TERMINALIZES in the same transaction. The ADVANCE and EXHAUST statements
+carry the claim identity's fence (worker + attempt + claim_epoch — the
+same legs every other terminal write carries): a zombie driver's stale
+advance or exhaust is refused, never a killed healthy loop, never a
+backward counter.
+
+**`on_exhausted="escalate"`** (the default) enqueues the escalation
+through the same outbox the fired joins use, addressed to the
+workflow's REGISTERED escalation step (`loop.escalation` —
+`escalates_to=` declares the body, the framework's default warns and
+records otherwise). The escalation consumer is DISPATCHABLE after the
+flow's terminal: a flow's death must not orphan its pages-a-human duty
+(the dispatch fence's escalation-kind exemption — the ONE workflow row
+a terminal flow's claim still admits). `on_exhausted="fail"`
+terminal-fails the flow and enqueues NOTHING.
 
 The workflow declaration: `@app.workflow(name, *, capture="none" |
 "errors-only" | "all" = "errors-only", redact=None)` — §10.3's policies
@@ -76,7 +130,11 @@ invisible actor population). The vanilla path stays byte-identical.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the ~6 rules, each classified —
+Runs in pytest, CI, and at worker boot; the ELEVEN rules shipped (read
+from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E8, W1, and
+the two W2 faces; an earlier revision said "~6 rules" against a table
+that listed 7 — the reference now ships COMPLETE, from the code, not
+remembered), each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the
 compile's version of over-rejection.**
 
@@ -88,7 +146,11 @@ compile's version of over-rejection.**
 | `E4-unannotated-step` | error | a body without a return annotation — the annotation IS the wiring |
 | `E5-incompatible-consumer` | error | an unrelated payload model consumed (the checker-independent half of the typing story) |
 | `E6-fan-in-bound` | error | a join over `MAX_FAN_IN_PER_JOIN` (1000) parents |
+| `E7-cross-graph-promise` | error | a promise wired from ANOTHER app's recorder — two apps' graphs spliced invisibly |
+| `E8-carrier-type` | error | the loop's declared `carry=` model vs the body's `Refine[...]` feedback type — unrelated carrier models: the thread promises data the next iteration cannot receive |
 | `W1-eternal-wait` | warning | a gate with no declared timeout — "a workflow that waits forever on a human is a support ticket" |
+| `W2-unknown-queue` | warning | a node projected onto a queue this app cannot see (the actor-not-found parking shape, named at validate) |
+| `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |
 
 The report is ONE-PASS (tsc-style): every rule's verdict, not the first
 failure alone. The mutation matrix (each mutation flips exactly one

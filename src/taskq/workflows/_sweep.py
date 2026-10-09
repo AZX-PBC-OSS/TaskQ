@@ -14,9 +14,13 @@ the same transaction. In-flight decrements are skipped this pass (the
 healthy worker wins); committed decrements are visible to the count. Stale
 writes impossible by construction — there is no snapshot-derived counter
 write. SET-BASED, NOT N+1: ONE batched statement (the per-join round-trip
-variant measured p50 477 ms / p95 1.73 s @ ~340 live joins vs the
-set-based 14.9 ms @ 200; the scope pin convicts the unscoped seq-scan
-monster at 83.7 ms @ 75k).
+variant is the fanout proof's cut #4 crime; its MEASURED conviction is
+P1's sweep-cost curve — 14.9 ms @ 200 joins, the unscoped seq-scan monster
+83.7 ms @ 75k — ``/tmp/opencode/proto1/spike1/evidence/``; the scope pin
+convicts the unscoped shape. An earlier revision of this comment cited
+the per-join variant at "p50 477 ms / p95 1.73 s @ ~340 live joins" — no
+capture with those numbers exists; the figure is DELETED — provenance or
+silence).
 
 COUNTER-AS-CACHE / LEDGER-AS-TRUTH: the re-derive reconciles the CACHE
 (``jobs.deps_pending``) from THE EDGE LEDGER's truth — never from
