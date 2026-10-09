@@ -46,10 +46,26 @@ _FORBIDDEN = (
 @pytest.fixture(scope="module")
 def example_fence() -> str:
     """The example's code (ONE source of truth — the fence IS the
-    module; the smoke renders it, the full run executes it)."""
+    module; the smoke renders it, the full run executes it).
+
+    THE BENCH'S ONE ACCOMMODATION (the registry-collision cure): the
+    fence's workflow name is substituted ``doc_ingest`` →
+    ``doc_ingest_bench`` — the DEFINITIONS registry is ONE GLOBAL keyed
+    by workflow name, and the LIVE demo (``examples/workflows.py``) is a
+    genuinely DIFFERENT definition under the same name (the demo's armed
+    transient failure, the demo's status vocabulary — the doc's fence is
+    the simplified teaching shape). One process registering both is the
+    dispatch-ambiguity dragon the duplicate error exists for — the
+    ROTATING xdist flake's true mechanism (two modules sharing a worker
+    reded whichever registered second, on BOTH the pre- and post-guard
+    trees). The substitution touches the REGISTRY KEY only: the wiring,
+    the bodies, the graph — the doc's code as-written — run VERBATIM.
+    """
     examples = [e for e in iter_examples() if e.path == FENCE_PATH]
     assert examples, f"the fence at {FENCE_PATH} is not discovered by the docs lane"
-    return examples[0].code
+    return examples[0].code.replace(
+        'app.workflow("doc_ingest")', 'app.workflow("doc_ingest_bench")'
+    )
 
 
 @pytest.fixture(scope="module")
@@ -129,7 +145,7 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
     the same env the cold user sets). The main() driver is stripped —
     the smoke tests the WIRING, the full run is the other lane."""
     monkeypatch.setenv("TASKQ_QUEUES", "enrich,cpu,io,classify")
-    compiled = example_ns["app"].get("doc_ingest")
+    compiled = example_ns["app"].get("doc_ingest_bench")
     from taskq.workflows.api._validate import validate_compiled
 
     diagnostics = validate_compiled(compiled)
@@ -168,7 +184,7 @@ def test_fast_tier_the_mermaid_golden_is_byte_stable(
     wiring change that alters the graph reds until the golden is
     updated (the docs-truth discipline; the golden IS the reviewable
     diff of the graph's shape)."""
-    rendered = example_ns["app"].get("doc_ingest").mermaid()
+    rendered = example_ns["app"].get("doc_ingest_bench").mermaid()
     golden_path = Path(__file__).parent / "goldens" / "doc_ingest.mermaid"
     if not golden_path.exists():
         golden_path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +220,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
     app_obj = example_ns["app"]
 
     for round_no in range(3):
-        compiled = app_obj.get("doc_ingest")
+        compiled = app_obj.get("doc_ingest_bench")
         runner = FlowRunner(compiled, wf_pool, schema)
         run_id = (await runner.create_flow()).flow_id
         held = await runner.drive(run_id, until="held")
@@ -273,7 +289,7 @@ async def test_full_run_the_callers_input_is_the_corpus(
     await conn.close()
 
     app_obj = example_ns["app"]
-    compiled = app_obj.get("doc_ingest")
+    compiled = app_obj.get("doc_ingest_bench")
     runner = FlowRunner(compiled, wf_pool, schema)
     run_id = (
         await runner.create_flow(input=example_ns["IngestBatch"](doc_ids=["doc-000", "doc-003"]))
@@ -310,7 +326,7 @@ async def test_full_run_the_cron_slot_key_is_run_level_idempotent(
 
     app_obj = example_ns["app"]
 
-    compiled = app_obj.get("doc_ingest")
+    compiled = app_obj.get("doc_ingest_bench")
     runner = FlowRunner(compiled, wf_pool, schema)
     slot = "test-slot-00:00Z"
     first = (await runner.create_flow(run_key=f"doc_ingest:nightly:{slot}")).flow_id

@@ -1,21 +1,21 @@
 {
   "200": {
     "child_driven": false,
-    "rederive_ms": 7.586
+    "rederive_ms": 8.141
   },
   "1000": {
     "child_driven": false,
-    "rederive_ms": 5.872
+    "rederive_ms": 6.154
   },
   "5000": {
     "child_driven": true,
-    "rederive_ms": 13.05
+    "rederive_ms": 20.732
   },
   "refit": {
-    "marginal_us_per_edge": 1.138,
-    "base_ms": 7.358,
-    "refit_at_bound_ms": 8.497,
-    "outlier_residual_ms": -2.624,
+    "marginal_us_per_edge": 2.623,
+    "base_ms": 7.617,
+    "refit_at_bound_ms": 10.24,
+    "outlier_residual_ms": -4.086,
     "outlier": "1000",
     "big_edge_explain": "index-driven (no seq scan on jobs/wf_edge)"
   }

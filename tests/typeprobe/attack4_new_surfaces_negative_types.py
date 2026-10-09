@@ -9,7 +9,6 @@ the violation must red under (the gate's vocabulary). Run:
 
 from __future__ import annotations
 
-
 from pydantic import BaseModel
 
 from taskq.workflows._cli import (

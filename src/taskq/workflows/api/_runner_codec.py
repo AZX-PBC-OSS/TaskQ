@@ -124,7 +124,8 @@ def rehydrate_carry(declared: object, raw: object) -> object:
         # type[dict] face has no per-subclass ctor signature; the
         # targeted ignore is the declared laundering (the constructor's
         # own contract — Counter({"acc": 3}) is the shape).
-        return declared_type(raw)  # pyright: ignore[reportCallIssue]  # Why: the type[dict] face's overload set is the base ctor's; the subclass builds from its mapping.
+        dict_type = cast("type[dict[str, object]]", declared_type)
+        return dict_type(cast("dict[str, object]", raw))  # pyright: ignore[reportCallIssue]  # Why: the type[dict] face's overload set is the base ctor's; the subclass builds from its mapping — the raw IS a dict (the guard above).
     if declared_type in (dict, list, str, int, float, bool):
         return raw
     raise LoopCarryContractError(
