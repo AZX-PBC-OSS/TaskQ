@@ -97,7 +97,10 @@ def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
         consume_smuggled = step(_consumer, forged, key="consume2")
         return build(consume_mine, consume_smuggled)
 
-    compiled = app_a.get("a3_a")
+    # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
+    # purpose (the silently-wrong edge is the pin's subject) — the door
+    # would raise before the diagnostics could be read.
+    compiled = app_a._compile("a3_a")
     rules = [d.rule for d in _run_rules(compiled)]
     # The WRONG EDGE: consume2's parent is app A's own 'fetch', not app
     # B's node. validate must refuse (there is no rule that even looks):
@@ -190,7 +193,10 @@ def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         return build(step(_untyped_consumer, produced, key="consume"))
 
-    compiled = app.get("a3_e5_blind")
+    # the PROBE SEAM (app._compile): the untyped consumer's graph is
+    # INVALID on purpose (E5's conviction is the pin's subject) — the
+    # door would raise before the diagnostics could be read.
+    compiled = app._compile("a3_e5_blind")
     rules = [d.rule for d in _run_rules(compiled)]
     assert "E5-incompatible-consumer" in rules, (
         f"an UNANNOTATED consumer param consumes Report unseen — E5's "

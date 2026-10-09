@@ -434,7 +434,11 @@ ignore = [
 # perf-bands/ledger). S311: timing jitter in the race pins. S607: the
 # head-stamp law's head_sha() helper — a fixed-argv git probe of the
 # repo's own state (the evidence-integrity round; no user input).
-"tests/_wf_fixtures.py" = ["S608", "S607"]
+"tests/_wf_fixtures.py" = ["S608", "S607", "S603"]
+# The redlog guard's scoping probes git the same fixed-argv way (the
+# head-sha read + the off-by-one's diff probe + the captures'-home
+# trackability check — the repo's own state, never user input).
+"tests/test_fv_redlog_guard.py" = ["S603", "S607"]
 "tests/test_wf_schema_migration.py" = ["S608"]
 "tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_progress_emission.py" = ["S608"]

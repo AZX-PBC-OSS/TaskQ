@@ -60,7 +60,10 @@ def _clean_app() -> tuple[WorkflowApp, str]:
 
 
 def _compiled(name: str, app: WorkflowApp) -> CompiledWorkflow:
-    return app.get(name)
+    # The PROBE SEAM (app._compile): the door (app.get) validates — the
+    # mutation pins' subject IS the invalid graph's diagnostics, so the
+    # probes compile without the door's raise.
+    return app._compile(name)
 
 
 def _rules(compiled: CompiledWorkflow) -> set[str]:

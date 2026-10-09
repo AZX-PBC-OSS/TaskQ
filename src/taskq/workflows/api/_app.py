@@ -341,13 +341,44 @@ class WorkflowApp:
         return list(self._workflows)
 
     def get(self, name: str) -> CompiledWorkflow:
-        """Compile the NAMED workflow: run its build function under a
-        fresh recorder. Same module → same graph, every time.
+        """Compile the NAMED workflow and put it through the REGISTRATION
+        DOOR: compile, validate, register.
 
         The build function is SYNC and PURE — the wiring is compile-time
         dataflow spelling (the recorder's verbs); nothing async happens
         at compile. Its RETURN is the terminal promise (or an explicit
-        ``build(...)`` result)."""
+        ``build(...)`` result). This is the surface a fleet passes
+        through: an invalid graph raises here (the door), never at
+        first claim."""
+        compiled = self._compile(name)
+        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's cure —
+        # F-LOOP-7's finding): compile + register is the LAST compile-time
+        # seam a fleet passes through before rows exist; an invalid graph
+        # registered here is a fleet that refuses at first claim, never at
+        # compile — E8's own docstring's claim ("refuse at compile") made
+        # true. Errors raise; warnings report (the zero-warning-budget
+        # pins' teeth read them, the door never refuses on a warning).
+        from taskq.workflows.api._validate import validate_compiled
+
+        validate_compiled(compiled)
+        build_fn = self._workflows.get(name)
+        assert build_fn is not None  # _compile raised on a missing name already
+        _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
+        # THE COMPILED CACHE (the worker-hosted execution door's D1
+        # lookup): the compiled graph is recorded under its registered
+        # name — the SAME global namespace the definition registry keys.
+        from taskq.workflows._worker_execution import record_compiled
+
+        record_compiled(name, compiled)
+        return compiled
+
+    def _compile(self, name: str) -> CompiledWorkflow:
+        """Compile WITHOUT the registration door — the validator's own
+        probe seam. The door raises on an invalid graph (that is its
+        job); the validator's pins need the compiled graph OF an invalid
+        graph (the diagnostics are the pin's subject). Anything that
+        registers or runs a fleet goes through :meth:`get` — this seam
+        compiles and stops."""
         build_fn = self._workflows.get(name)
         if build_fn is None:
             raise KeyError(f"workflow {name!r} is not declared on this app")
@@ -363,7 +394,7 @@ class WorkflowApp:
                     "terminal promise (wire one, or return build(p))"
                 )
         channel = SignalChannel(name)
-        compiled = CompiledWorkflow(
+        return CompiledWorkflow(
             name=name,
             nodes=graph.nodes,
             sunk=graph.sunk,
@@ -376,24 +407,6 @@ class WorkflowApp:
             capture=getattr(build_fn, "__wf_capture__", "errors-only"),
             redact=getattr(build_fn, "__wf_redact__", None),
         )
-        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's cure —
-        # F-LOOP-7's finding): compile + register is the LAST compile-time
-        # seam a fleet passes through before rows exist; an invalid graph
-        # registered here is a fleet that refuses at first claim, never at
-        # compile — E8's own docstring's claim ("refuse at compile") made
-        # true. Errors raise; warnings report (the zero-warning-budget
-        # pins' teeth read them, the door never refuses on a warning).
-        from taskq.workflows.api._validate import validate_compiled
-
-        validate_compiled(compiled)
-        _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
-        # THE COMPILED CACHE (the worker-hosted execution door's D1
-        # lookup): the compiled graph is recorded under its registered
-        # name — the SAME global namespace the definition registry keys.
-        from taskq.workflows._worker_execution import record_compiled
-
-        record_compiled(name, compiled)
-        return compiled
 
     def _known_queues(self) -> frozenset[str]:
         """The app's declared queue universe: ``default`` + the workflow

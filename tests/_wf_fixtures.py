@@ -39,6 +39,35 @@ from taskq.workflows.engine import render_workflow_sql
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
 
 
+def source_changes_since(head_sha_value: str) -> bool:
+    """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
+    the in-suite guards): whether ANY commit since *head_sha_value*
+    touched anything OUTSIDE the measurements estate. A claim recorded
+    on H is fresh at H2 when H2 is H plus measurement-only changes —
+    the source tree the claim verifies is content-identical. An
+    unresolvable claimed head (not an ancestor) = stale by definition."""
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            f"{head_sha_value}..HEAD",
+            "--",
+            ".",
+            ":(exclude).measurements",
+        ],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return True
+    return bool(proc.stdout.strip())
+
+
 def head_sha() -> str:
     """THE HEAD-STAMP LAW (the evidence-integrity round, cure 5): every
     evidence artifact RECORDS ITS HEAD — the sha the verification

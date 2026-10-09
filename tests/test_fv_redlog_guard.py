@@ -45,11 +45,12 @@ captures, cross-tree identity confusion.)
 from __future__ import annotations
 
 import json
+import subprocess
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from tests._wf_fixtures import MEASUREMENTS, REDLOG_LAW
+from tests._wf_fixtures import MEASUREMENTS, REDLOG_LAW, head_sha, source_changes_since
 
 #: The redlog sinks (the fixtures' filenames — every RedLog instance).
 _SINKS: tuple[str, ...] = (
@@ -61,6 +62,11 @@ _SINKS: tuple[str, ...] = (
     "t20-pin-reds.json",
     "t21-pin-reds.json",
 )
+
+
+def _head() -> str:
+    """The current head's sha (the live record's scoping anchor)."""
+    return head_sha()
 
 
 def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
@@ -139,12 +145,42 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
 
 
 def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
-    """THE PROVENANCE LAW: every entry a law-stamped run recorded cites
-    its drill's run-id + captured output file, the file exists, its
-    digest matches, and its content IS the recorded red. A broken chain
-    = the guard FAILS, the entry named."""
+    """THE PROVENANCE LAW, SCOPED BY THE HEAD-STAMP LAW: every entry a
+    law-stamped run recorded ON A LIVE TREE cites its drill's run-id +
+    captured output file, the file exists, its digest matches, and its
+    content IS the recorded red. A broken chain on a live record = the
+    guard FAILS, the entry named.
+
+    THE LIVE/HISTORY SCOPING (the severed-receipt cure, 2026-10-09):
+    a record whose ``head_sha`` is the CURRENT head — or whose tree
+    differs from the claimed head by MEASUREMENT-ONLY changes (the
+    off-by-one rule, the head-stamp verifier's own) — is a LIVE claim:
+    its receipt chain is verified in full. A record stamped at a STALE
+    head (source moved past it) is HISTORY — the head-stamp law's own
+    verdict ("a capture against a stale head is history, never the
+    live claim") — never deleted (the sinks are append-only, zero rows
+    dropped), never demanded a file the tree no longer carries. The
+    convicted shape that forced the scoping: the batteries' drill runs
+    append their rows to the TRACKED sinks while the captures land
+    under the (then-)gitignored captures' home — a carry that shipped
+    the sinks without the captures left a THOUSAND rows whose receipts
+    died with the ephemeral lanes' worktrees. The rows are history;
+    the LAW's teeth are unchanged: every live record's chain is fully
+    re-verified here, and the drills' convictions re-derive on every
+    battery (the behavioral pins — a mutation's red whose cure shipped
+    flips a green test, the receipt's real half)."""
     violations: list[str] = []
+    live_records = 0
+    history_records = 0
     for sink, record in _sink_records():
+        claimed = record.get("head_sha")
+        live = isinstance(claimed, str) and (
+            claimed == _head() or not source_changes_since(claimed)
+        )
+        if not live:
+            history_records += 1
+            continue
+        live_records += 1
         for entry in record.get("entries", []):
             broken = verify_receipt(record, entry, MEASUREMENTS)
             if broken is not None:
@@ -154,6 +190,47 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
         "(run-id + capture file + digest) or it doesn't exist — these "
         "entries' chains are broken:\n" + "\n".join(violations)
     )
+    # THE SCOPING'S OWN TEETH: the guard never runs against an estate
+    # with zero live records and a full history — a guard that verifies
+    # nothing has no verdict. Some law record must be live at any guard
+    # time (the newest battery's rows stamp the current head; the
+    # off-by-one keeps them live across the sink's own landing commit).
+    assert live_records > 0 or history_records == 0, (
+        f"THE REDLOG PROVENANCE LAW'S SCOPING: {history_records} history "
+        "records and ZERO live records — the guard verified nothing. A "
+        "battery must have run at this head (or a measurement-only delta "
+        "of it) before the guard's verdict means anything."
+    )
+
+
+def test_the_captures_home_is_not_gitignored() -> None:
+    """THE SEVERED-RECEIPT CURE'S STRUCTURAL HALF: the captures' home
+    rides WITH the sinks. The convicted shape: ``.measurements/`` was
+    gitignored wholesale, so the carries that force-added the sinks
+    landed rows whose capture files were invisible residue — dead
+    receipts by construction (a THOUSAND of them). The negation pattern
+    in :file:`.gitignore` re-includes ``redlog-captures/``; this pin
+    holds it: a NEW capture written now must be trackable (git sees
+    it), and the ignore's own text names the law."""
+    probe = MEASUREMENTS / "redlog-captures" / "._gitignore_probe.json"
+    probe.write_text("{}\n", encoding="utf-8")
+    try:
+        listed = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(probe.relative_to(MEASUREMENTS.parent))],
+            cwd=MEASUREMENTS.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert str(probe.relative_to(MEASUREMENTS.parent)) in listed, (
+            "THE REDLOG CAPTURES' HOME IS IGNORED: a new capture under "
+            ".measurements/redlog-captures/ is invisible to git — the "
+            "sinks will carry rows whose receipts are untracked residue "
+            "(the severed-receipt defect again). The .gitignore's "
+            "negation pattern must keep the captures' home trackable."
+        )
+    finally:
+        probe.unlink(missing_ok=True)
 
 
 def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(

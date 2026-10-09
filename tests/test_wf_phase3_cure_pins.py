@@ -651,7 +651,10 @@ def test_carrier_type_mismatch_is_convicted() -> None:
     def carrier() -> object:
         return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
-    rules = [d.rule for d in _run_rules(app.get("a3cure_carrier_flow"))]
+    # the PROBE SEAM (app._compile): the carrier-mismatch graph is
+    # INVALID on purpose (E8's conviction is the pin's subject) — the
+    # door would raise before the diagnostics could be read.
+    rules = [d.rule for d in _run_rules(app._compile("a3cure_carrier_flow"))]
     assert "E8-carrier-type" in rules, (
         f"the CARRIER-TYPE declaration is not enforced: {rules} — a body "
         "refining an unrelated model compiles clean (the recorded-never-"
@@ -863,7 +866,10 @@ def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
             step(_refines_wrong, mine, key="keep"), step(_refines_wrong, foreign, key="smuggled")
         )
 
-    rules = [d.rule for d in _run_rules(app.get("a3cure_smuggle_flow"))]
+    # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
+    # purpose (E7's conviction is the pin's subject) — the door would
+    # raise before the diagnostics could be read.
+    rules = [d.rule for d in _run_rules(app._compile("a3cure_smuggle_flow"))]
     assert "E7-cross-graph-promise" in rules, rules
 
 
