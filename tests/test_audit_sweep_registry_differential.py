@@ -644,6 +644,10 @@ _WF_ARMS = (
     "wf_join_rederive",
     "wf_outbox_drain",
     "wf_signal_sweep",
+    # The D2 soak's cure: the hold-stamp reconcile (the SIGKILL-during-
+    # hold wedge's fleet arm — the hold's state decides). Pure append,
+    # same as the arms before it.
+    "wf_hold_stamp_reconcile",
     "wf_loop_budget",
     "wf_phantom_reap",
     "wf_progress_ring_prune",
