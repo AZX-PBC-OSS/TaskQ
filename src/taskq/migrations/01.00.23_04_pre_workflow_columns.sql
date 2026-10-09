@@ -12,7 +12,7 @@
 -- tests/test_migration_lock_scope_dead_index.py family 1, convicts the
 -- mixed form — the ACCESS EXCLUSIVE-across-everything shape).
 --
---   01.00.23_01_pre_workflow_columns.sql  THIS FILE: ONLY the metadata-only
+--   01.00.23_04_pre_workflow_columns.sql  THIS FILE: ONLY the metadata-only
 --                                         ALTER TABLE ... ADD COLUMN
 --                                         statements (ACCESS EXCLUSIVE,
 --                                         held for milliseconds on the
@@ -20,10 +20,10 @@
 --                                         column is NULL-able or NOT NULL
 --                                         with a constant default, so
 --                                         Postgres skips the rewrite).
---   01.00.23_02_pre_workflow_tables.sql   ONLY the CREATE TABLE statements
+--   01.00.23_05_pre_workflow_tables.sql   ONLY the CREATE TABLE statements
 --                                         (wf_edge, wf_join_fire, wf_outbox,
 --                                         wf_step_ledger).
---   01.00.23_03_pre_workflow_indexes.sql  ONLY the CREATE INDEX statements.
+--   01.00.23_06_pre_workflow_indexes.sql  ONLY the CREATE INDEX statements.
 --
 -- ALL WORKFLOW DDL IS ADDITIVE — no `post_` phase ever ships for v1 (a
 -- forever rule): a pre-workflow worker reads the row shape unchanged (the

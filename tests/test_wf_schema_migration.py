@@ -55,6 +55,15 @@ def _round_files() -> list[Path]:
     return _ROUND_FILES
 
 
+def _round_by_name(name: str) -> Path:
+    """The workflow round's file BY NAME (the family also carries LIB-2's
+    parent_id file at 01.00.23_01 — positional indices died with the
+    consolidation's four-file family)."""
+    found = [f for f in _round_files() if f.name == name]
+    assert found, f"{name} missing from the {WORKFLOW_ROUND} round"
+    return found[0]
+
+
 def test_round_is_split_into_single_lock_class_files() -> None:
     """The three files apply in order and each file is single-lock-class:
     the columns file ONLY metadata-only ALTERs, the tables file ONLY CREATE
@@ -64,9 +73,17 @@ def test_round_is_split_into_single_lock_class_files() -> None:
     lock-scope family's finding)."""
     names = [f.name for f in _round_files()]
     assert names == [
-        "01.00.23_01_pre_workflow_columns.sql",
-        "01.00.23_02_pre_workflow_tables.sql",
-        "01.00.23_03_pre_workflow_indexes.sql",
+        # LIB-2's fan-out ledger (main's own 01.00.23_01 identity — kept:
+        # deployed ledgers already carry it; the consolidation renumbers
+        # the WORKFLOW side instead). Its index is SPLIT out to 01.00.23_07
+        # by the single-lock-class law (ALTERs and CREATE INDEX are
+        # different lock classes — the family-1 pin convicted the mixed
+        # file on the consolidation's own first run).
+        "01.00.23_01_pre_jobs_parent_id.sql",
+        "01.00.23_04_pre_workflow_columns.sql",
+        "01.00.23_05_pre_workflow_tables.sql",
+        "01.00.23_06_pre_workflow_indexes.sql",
+        "01.00.23_07_pre_jobs_parent_pending_idx.sql",
     ], names
 
 
@@ -106,7 +123,7 @@ def _statement_kinds(sql: str) -> list[str]:
 
 
 def test_columns_file_holds_only_metadata_alters() -> None:
-    sql = _round_files()[0].read_text()
+    sql = (_round_by_name("01.00.23_04_pre_workflow_columns.sql")).read_text()
     kinds = _statement_kinds(sql)
     # COMMENT ON is metadata-only (a catalog write; the columns file's
     # documentation column comments ride the same instant lock) - allowed
@@ -120,7 +137,7 @@ def test_columns_file_holds_only_metadata_alters() -> None:
 
 
 def test_tables_file_holds_only_create_tables() -> None:
-    sql = _round_files()[1].read_text()
+    sql = (_round_by_name("01.00.23_05_pre_workflow_tables.sql")).read_text()
     kinds = _statement_kinds(sql)
     assert set(kinds) <= {"CREATE TABLE", "COMMENT ON"}, kinds
     for table in ("wf_edge", "wf_join_fire", "wf_outbox", "wf_step_ledger"):
@@ -128,7 +145,7 @@ def test_tables_file_holds_only_create_tables() -> None:
 
 
 def test_indexes_file_holds_only_create_indexes() -> None:
-    sql = _round_files()[2].read_text()
+    sql = (_round_by_name("01.00.23_06_pre_workflow_indexes.sql")).read_text()
     kinds = _statement_kinds(sql)
     assert set(kinds) == {"CREATE INDEX"}, kinds
     # THE PARTIAL-INDEX DOCTRINE: the workflow-scoped indexes are partial;
@@ -153,6 +170,15 @@ def test_workflow_ddl_ids_are_seam_only() -> None:
 
 def test_phase_obligations_header_present() -> None:
     for path in _round_files():
+        if path.name in (
+            "01.00.23_01_pre_jobs_parent_id.sql",
+            "01.00.23_07_pre_jobs_parent_pending_idx.sql",
+        ):
+            # LIB-2's own file (main's shipped identity, authored before
+            # the round-split discipline): its header documents its own
+            # lock classes in its own voice — the PHASE OBLIGATIONS
+            # header is the WORKFLOW round's convention.
+            continue
         header = path.read_text()[:2500].upper()
         assert "PHASE OBLIGATIONS" in header, path
 
@@ -491,5 +517,5 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
 
 def test_migrations_module_sees_the_round() -> None:
     keys = {m.key for m in migrate_mod.discover()}
-    for seq in ("01", "02", "03"):
+    for seq in ("01", "04", "05", "06", "07"):
         assert f"{WORKFLOW_ROUND}_{seq}:pre" in keys, keys

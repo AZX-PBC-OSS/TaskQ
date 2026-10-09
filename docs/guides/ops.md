@@ -1172,7 +1172,7 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(24 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+(25 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
 jobs, lock TTL, leader split-brain, dispatch latency, claim-latency degradation, progress failures, disabled cron,
 scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded
 tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget

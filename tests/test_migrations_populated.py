@@ -180,7 +180,9 @@ def _job_row(
         # 01.00.23's workflow columns: the seeder's rows are VANILLA rows
         # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
         # explicitly so the runtime column intersection never KeyErrors.
-        "parent_id": None,
+        # (parent_id is NOT here: it is the fan-out ledger's key below —
+        # the consolidation's two rounds share the column, the LIB-2
+        # conditional entry is the one that stands.)
         "deps_pending": 0,
         "map_index": None,
         "step_key": None,
