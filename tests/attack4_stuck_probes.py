@@ -61,9 +61,7 @@ async def test_the_retry_cycle_terminates_the_ladder_is_the_bound(
     flow_id = (await runner.create_flow()).flow_id
     outcome = await asyncio.wait_for(runner.drive(flow_id), timeout=60)
     assert outcome == "terminal"
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed"
     ledger = await wf_conn.fetch(
         f'SELECT status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1', flow_id
@@ -119,7 +117,10 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
         from taskq.workflows import cancel_workflow_run
 
         await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the deadlock probe",
+            wf_pool,
+            schema=wf_schema,
+            flow_id=flow_id,
+            reason="the deadlock probe",
             principal="attack4",
         )
         stop.set()
@@ -130,9 +131,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
         timeout=30,
     )
     await runner.drive(flow_id, max_ticks=200)
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root in ("cancelled", "failed", "succeeded"), root
 
 
@@ -169,7 +168,10 @@ async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
 
     async def the_cancel() -> None:
         await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the race probe",
+            wf_pool,
+            schema=wf_schema,
+            flow_id=flow_id,
+            reason="the race probe",
             principal="attack4",
         )
 

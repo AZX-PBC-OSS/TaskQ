@@ -224,9 +224,7 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         # THE RECLAIM: the lapsed lease re-pends the row (lock_expired);
         # a surviving pod re-claims; the run terminalizes. The bound: the
         # lease + the sweep + one poll, stretched.
-        status, measured = await wait_flow_terminal(
-            conn, schema, flow_id, bound_s=RECLAIM_BOUND_S
-        )
+        status, measured = await wait_flow_terminal(conn, schema, flow_id, bound_s=RECLAIM_BOUND_S)
         print(f"[cell-1] terminal: measured={measured:.2f}s bound={RECLAIM_BOUND_S}s")
         assert status == "complete", f"the reclaimed run derived {status!r}, not complete"
 
@@ -322,9 +320,7 @@ async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
         await conn.close()
 
 
-async def wait_for_map_children(
-    conn: asyncpg.Connection, schema: str, flow_id: str
-) -> float:
+async def wait_for_map_children(conn: asyncpg.Connection, schema: str, flow_id: str) -> float:
     """Wait until the run's map children exist (the fork fired) — the
     migration window must land on LIVE work."""
     start = time.monotonic()
@@ -562,9 +558,7 @@ async def test_cron_slot_fires_twice_one_run(
         await conn.close()
 
 
-async def _resolve_holds(
-    pool: asyncpg.Pool, schema: str, flow_id: str
-) -> None:
+async def _resolve_holds(pool: asyncpg.Pool, schema: str, flow_id: str) -> None:
     """Resolve every hold as it appears (approve) — the marches' human."""
     from taskq.workflows.api._hitl import HitlClient
 

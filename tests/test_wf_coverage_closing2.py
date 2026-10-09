@@ -42,7 +42,10 @@ def test_build_capture_truncates_the_multibyte_payload_under_the_cap() -> None:
 
     heavy = "冰" * 4000  # 12 000 bytes of payload
     capture = build_capture(
-        policy="errors-only", node_input=heavy, error="e", max_bytes=1024,
+        policy="errors-only",
+        node_input=heavy,
+        error="e",
+        max_bytes=1024,
         redact=lambda text: text,  # the identity hook: the raw text walks
     )
     assert capture is not None
@@ -87,15 +90,31 @@ async def test_insert_node_the_deps_guard(wf_conn: Any, wf_schema: str) -> None:
     wsql = WorkflowSql.build(wf_schema)
     with pytest.raises(ValueError, match="deps_pending must be >= 0"):
         await insert_node(
-            wf_conn, wsql,
-            NodeSpec(flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", step_key="n",
-                     actor="wf", queue="q", payload={}, parents=("p",), deps_pending=-1),
+            wf_conn,
+            wsql,
+            NodeSpec(
+                flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f",
+                step_key="n",
+                actor="wf",
+                queue="q",
+                payload={},
+                parents=("p",),
+                deps_pending=-1,
+            ),
         )
     with pytest.raises(ValueError, match="must equal the declared parent count"):
         await insert_node(
-            wf_conn, wsql,
-            NodeSpec(flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", step_key="n",
-                     actor="wf", queue="q", payload={}, parents=("p", "p2"), deps_pending=1),
+            wf_conn,
+            wsql,
+            NodeSpec(
+                flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f",
+                step_key="n",
+                actor="wf",
+                queue="q",
+                payload={},
+                parents=("p", "p2"),
+                deps_pending=1,
+            ),
         )
 
 
@@ -168,4 +187,6 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
     # The ADAPTER's defect: the 1-arg call — the TypeError IS the red.
     with _pytest.raises(TypeError, match="missing 1 required positional argument"):
         await body()
-    assert ran.get("join") is not True, "the body ran with a None ctx — the adapter's shape changed; RE-DERIVE THE PIN"
+    assert ran.get("join") is not True, (
+        "the body ran with a None ctx — the adapter's shape changed; RE-DERIVE THE PIN"
+    )

@@ -205,7 +205,9 @@ async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
         f"TOOTH T1: the canonical-attr patch did not land exactly one row: "
         f"{state} — the seam's routing recursioned or dropped the row"
     )
-    assert state["root"] == "cancelled" and state["signal"] == "cancelled", f"the cancel tore: {state}"
+    assert state["root"] == "cancelled" and state["signal"] == "cancelled", (
+        f"the cancel tore: {state}"
+    )
 
 
 async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
@@ -238,4 +240,6 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
         f"TOOTH T2: the shim-attr wrapper did not land exactly one row: "
         f"{state} — the seam's routing recursioned or dropped the row"
     )
-    assert state["root"] == "cancelled" and state["signal"] == "cancelled", f"the cancel tore: {state}"
+    assert state["root"] == "cancelled" and state["signal"] == "cancelled", (
+        f"the cancel tore: {state}"
+    )

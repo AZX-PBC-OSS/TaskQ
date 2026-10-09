@@ -23,9 +23,7 @@ class Ingest(BaseModel):
 # ── the ctx.step surface (context.py's branches) ─────────────────────────
 
 
-async def test_ctx_step_opts_out_of_idempotency_and_reruns(
-    wf_pool: Any, wf_schema: str
-) -> None:
+async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_schema: str) -> None:
     """``idempotent=False`` re-runs on redelivery (the body's declared
     harmlessness) — the step ledger records NOTHING for it."""
     calls = {"n": 0}
@@ -83,8 +81,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     rows = await wf_pool.fetch(
-        f'SELECT status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
-        "ORDER BY id",
+        f'SELECT status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 ORDER BY id',
         flow_id,
     )
     statuses = [r["status"] for r in rows]
@@ -217,13 +214,23 @@ def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None
     from taskq.workflows.api._hitl import HoldContext
 
     hold = HoldContext(
-        hold_id="h-9", run_id="r-1", node_key="review", signal_name="Approval",
-        hold_epoch=2, call_id="c", payload=None, payload_schema=None,
-        reason="waiting for the editor", created_at=None,
-        expires_at="soon", status="held",
+        hold_id="h-9",
+        run_id="r-1",
+        node_key="review",
+        signal_name="Approval",
+        hold_epoch=2,
+        call_id="c",
+        payload=None,
+        payload_schema=None,
+        reason="waiting for the editor",
+        created_at=None,
+        expires_at="soon",
+        status="held",
     )
     lines = format_flow_status(
-        run_id="r-1", workflow="wf", root_status="running",
+        run_id="r-1",
+        workflow="wf",
+        root_status="running",
         nodes=[FlowNodeRow(step_key="review", status="pending", hold=hold)],
     )
     joined = "\n".join(lines)

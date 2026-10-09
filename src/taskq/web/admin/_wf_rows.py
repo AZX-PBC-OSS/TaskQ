@@ -63,7 +63,7 @@ NOT_INSTALLED = "workflows not installed; run taskq migrate up to enable"
 _RUN_ROOT_SQL = (
     "SELECT id, actor, status, created_at, finished_at, cancel_requested_at, "
     "payload, error_class, error_message, metadata->>'workflow' AS workflow "
-    'FROM "{schema}".jobs WHERE id = $1 AND step_key = \'__flow__\''
+    "FROM \"{schema}\".jobs WHERE id = $1 AND step_key = '__flow__'"
 )
 
 _RUN_EDGES_SQL = 'SELECT parent_id, child_id FROM "{schema}".wf_edge WHERE child_id = ANY($1)'
@@ -125,9 +125,7 @@ class RunView:
         """THE derivation's output, cached onto the view (the report's
         status line and the G7 check read the same value)."""
         if not self.derived:
-            self.derived = derive_workflow_status(
-                tuple(n.view() for n in self.nodes)
-            )
+            self.derived = derive_workflow_status(tuple(n.view() for n in self.nodes))
         return self.derived
 
 
@@ -148,9 +146,7 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
 
-async def fetch_run_view(
-    conn: ConnLike, schema: str, run_id: uuid.UUID
-) -> RunView | None:
+async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunView | None:
     """The run's rows in one connection — the grouped read the page, the
     boot JSON, and every SSE frame share (one read, all renderers)."""
     # THE RENDERED BUNDLE (the render seam: the schema + the {terminal}
@@ -163,17 +159,18 @@ async def fetch_run_view(
         return None
     node_rows = await conn.fetch(wsql.workflow_nodes, run_id)
     node_ids = [r["id"] for r in node_rows]
-    edge_rows = (
-        await conn.fetch(_RUN_EDGES_SQL.format(schema=schema), node_ids) if node_ids else []
-    )
+    edge_rows = await conn.fetch(_RUN_EDGES_SQL.format(schema=schema), node_ids) if node_ids else []
     hold_rows = await conn.fetch(_RUN_HOLDS_SQL.format(schema=schema), run_id)
     progress = {
         r["step_key"]: (int(r["done"]), int(r["total"]))
         for r in await conn.fetch(wsql.workflow_map_progress, root["id"])
     }
     return _run_view_from_rows(
-        dict(root), [dict(r) for r in node_rows], [dict(r) for r in edge_rows],
-        [dict(r) for r in hold_rows], progress,
+        dict(root),
+        [dict(r) for r in node_rows],
+        [dict(r) for r in edge_rows],
+        [dict(r) for r in hold_rows],
+        progress,
     )
 
 
@@ -292,7 +289,9 @@ def status_class(status: str) -> str:
     return STATUS_CLASS.get(status, "wf-st-pending")
 
 
-def summarize_map_children(progress_rows: Sequence[Mapping[str, Any]]) -> dict[str, tuple[int, int]]:
+def summarize_map_children(
+    progress_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, tuple[int, int]]:
     """The per-map done/total pairs from ``WORKFLOW_MAP_PROGRESS_SQL``'s
     rows (the collapsed hexagon's counter — one read, no second
     instrument)."""

@@ -799,8 +799,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     assert row is not None and row["status"] == "running"
     assert row["iteration"] == "3", row["iteration"]
     assert json.loads(row["carry"]) == {"acc": 3}, (
-        "the zombie's stale carry payload moved the counter/carry — "
-        "the counter moved BACKWARD"
+        "the zombie's stale carry payload moved the counter/carry — the counter moved BACKWARD"
     )
 
     # THE NEW DRIVER advances (its own claim identity): EXACTLY ONCE —
@@ -854,7 +853,7 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     # THE LEDGER RECORDS THE TRUTH: the iteration's terminal is the typed
     # shape error, never a SUCCEEDED row carrying a laundered feedback.
     row = await wf_conn.fetchrow(
-        f"SELECT status, error_class, error_message FROM \"{wf_schema}\".wf_step_ledger "
+        f'SELECT status, error_class, error_message FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'counter.iter0'",
         flow_id,
     )
@@ -868,7 +867,7 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     # THE DIAGNOSIS NAMES IT: the loop node's own terminal carries the
     # typed class; the flow terminalized.
     node_row = await wf_conn.fetchrow(
-        f"SELECT status, error_class FROM \"{wf_schema}\".jobs "
+        f'SELECT status, error_class FROM "{wf_schema}".jobs '
         "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
         flow_id,
     )

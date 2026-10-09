@@ -163,7 +163,7 @@ async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
             ctx.job_id,
         )
     if failures_raw:
-        for item in (failures_raw if isinstance(failures_raw, list) else json.loads(failures_raw)):
+        for item in failures_raw if isinstance(failures_raw, list) else json.loads(failures_raw):
             if not isinstance(item, dict) or "node_key" not in item:
                 continue
             # THE MAP CHILD'S IDENTITY: the children share ONE step key
@@ -172,7 +172,9 @@ async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
             # source id (the report names the SOURCE, never the row).
             idx = item.get("map_index")
             failed.append(
-                str(_SOURCES[idx]) if isinstance(idx, int) and idx < len(_SOURCES) else str(item["node_key"])
+                str(_SOURCES[idx])
+                if isinstance(idx, int) and idx < len(_SOURCES)
+                else str(item["node_key"])
             )
     await ctx.progress(60, "triaged", {"fetched": len(ok), "failed": len(failed)})
     return {"fetched": ok, "failed": failed}
@@ -197,9 +199,7 @@ async def escalation_body(ctx: Any, carry: int) -> str:
     return f"escalated-at-iteration-{carry}"
 
 
-async def publish_body(
-    ctx: Any, triage: dict[str, object], review_note: str
-) -> ResearchReport:
+async def publish_body(ctx: Any, triage: dict[str, object], review_note: str) -> ResearchReport:
     # THE TIMEOUT FACE: the typed wait is BOUNDED; the expiry sweep's
     # abandonment RAISES SignalTimeoutError here — the body CATCHES it
     # and pivots (the degraded report), never wedges, never re-holds in
@@ -216,8 +216,10 @@ async def publish_body(
         approved = bool(approval.approve)
     except SignalTimeoutError:
         degraded = True
-        note = f"{note} (degraded: the publish approval timed out)" if note else (
-            "degraded: the publish approval timed out"
+        note = (
+            f"{note} (degraded: the publish approval timed out)"
+            if note
+            else ("degraded: the publish approval timed out")
         )
     # An explicit DISAPPROVAL is also the degraded pivot (the operator
     # said no — the report says so, named).
@@ -239,9 +241,7 @@ research_app = WorkflowApp()
 @research_app.workflow("deep_research")
 def deep_research() -> object:
     sources = step(kickoff_body, Kickoff(query="the march's query"), key="sources")
-    fetched = map_source(
-        sources, fetch_source_body, key="fetch", on_failure="collect"
-    )
+    fetched = map_source(sources, fetch_source_body, key="fetch", on_failure="collect")
     triage = step(triage_body, fetched, key="triage")
     review = loop(
         "review",
@@ -400,17 +400,13 @@ ingest_app = WorkflowApp()
 @ingest_app.workflow("doc_ingest_march")
 def doc_ingest_march() -> object:
     ingested = step(ingest_body, IngestBatch(doc_ids=["d1", "d2", "d3", "d4"]), key="ingest")
-    enriched = map_source(
-        ingested, enrich_body, key="enrich", aggregate=_sum_aggregate
-    )
+    enriched = map_source(ingested, enrich_body, key="enrich", aggregate=_sum_aggregate)
     summaries = step(summarize_body, enriched, key="summarize")
     entities = step(extract_entities_body, enriched, key="extract_entities")
     barrier = gather([summaries, entities], on_failure="fail_closed")
     labels = step(classify_body, enriched, key="classify")
     maybe_labels = gather([labels], on_failure="maybe")
-    published = step(
-        ingest_publish_body, barrier, maybe_labels, key="publish"
-    )
+    published = step(ingest_publish_body, barrier, maybe_labels, key="publish")
     return build(published)
 
 
@@ -436,9 +432,7 @@ matrix_app = WorkflowApp()
 
 @matrix_app.workflow("reclaim_target")
 def reclaim_target() -> object:
-    long_node = step(
-        long_node_body, Kickoff(query="30"), key="long", max_attempts=3
-    )
+    long_node = step(long_node_body, Kickoff(query="30"), key="long", max_attempts=3)
     after = step(downstream_body, long_node, key="after")
     return build(after)
 
@@ -498,9 +492,7 @@ def drift_target() -> object:
     serves after the operator re-routes it — the node enters `blocked`
     with the blocking reason naming the unserved queue."""
     long_node = step(long_node_body, Kickoff(query="1"), key="long")
-    gone = step(
-        downstream_body, long_node, key="gone", actor="wf-drift", queue="nowhere_queue"
-    )
+    gone = step(downstream_body, long_node, key="gone", actor="wf-drift", queue="nowhere_queue")
     return build(gone)
 
 
