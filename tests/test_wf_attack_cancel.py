@@ -170,3 +170,72 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
         "the workflows engine imports the admin package (the fastapi extra) — "
         "the cancel path breaks on a base install: " + "; ".join(offenders)
     )
+
+
+async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """TOOTH T1 — the CANONICAL module attr's patch (the red-team's 1e):
+    a test double rebinds ``taskq.audit.record_admin_action`` itself (a
+    newcomer's natural first reach) with the classic delegating spy
+    (capture the original, call it), while the shim is loaded. The
+    pre-cure guard compared the shim's attr against the MUTABLE module
+    global — the rebind made the comparison never match: the body routed
+    to the shim's attr (the original), whose body's global lookup saw
+    the SPY again — unbounded recursion, the whole cancel poisoned on
+    the five same-tx engine sites. THE LAW: exactly ONE row lands."""
+    import taskq.audit as audit_core
+    import taskq.web.admin._audit as audit_mod  # the shim loaded — the fastapi install's state
+
+    flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_tooth_canonical")
+
+    real = audit_core.record_admin_action
+
+    async def delegating_spy(conn: Any, **kwargs: Any) -> None:
+        await real(conn, **kwargs)  # the spy's own shape: delegate to the captured original
+
+    audit_core.record_admin_action = delegating_spy
+    try:
+        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t1", principal="attacker")
+    finally:
+        audit_core.record_admin_action = real
+    assert stopped >= 1
+    state = await _cancel_state(wf_conn, wf_schema, flow_id)
+    assert state["audit_rows"] == 1, (
+        f"TOOTH T1: the canonical-attr patch did not land exactly one row: "
+        f"{state} — the seam's routing recursioned or dropped the row"
+    )
+    assert state["root"] == "cancelled" and state["signal"] == "cancelled", f"the cancel tore: {state}"
+
+
+async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """TOOTH T2 — the delegating wrapper ON THE SHIM's attr (the
+    red-team's 1c): the plausible host instrumentation rebinds
+    ``taskq.web.admin._audit.record_admin_action`` with a pass-through
+    that calls the canonical body. The pre-cure seam routed to the
+    wrapper, the wrapper called the canonical, the canonical's resolver
+    saw the shim's attr (still the wrapper) and routed AGAIN — unbounded
+    recursion. THE LAW: exactly ONE row lands."""
+    import taskq.web.admin._audit as audit_mod
+
+    flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_tooth_shim")
+
+    real = audit_mod.record_admin_action
+
+    async def instrumenting_wrapper(conn: Any, **kwargs: Any) -> None:
+        await real(conn, **kwargs)  # the host's plausible instrumentation: a pass-through
+
+    audit_mod.record_admin_action = instrumenting_wrapper
+    try:
+        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t2", principal="attacker")
+    finally:
+        audit_mod.record_admin_action = real
+    assert stopped >= 1
+    state = await _cancel_state(wf_conn, wf_schema, flow_id)
+    assert state["audit_rows"] == 1, (
+        f"TOOTH T2: the shim-attr wrapper did not land exactly one row: "
+        f"{state} — the seam's routing recursioned or dropped the row"
+    )
+    assert state["root"] == "cancelled" and state["signal"] == "cancelled", f"the cancel tore: {state}"
