@@ -1,0 +1,34 @@
+{
+  "leg": "4 \u2014 the conditional router (the T20 chain)",
+  "run_id": "01a11df1-989a-74d0-a711-f017a341e885",
+  "rows": {
+    "__flow__": [
+      "succeeded"
+    ],
+    "index": [
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded"
+    ],
+    "screen": [
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded",
+      "succeeded"
+    ],
+    "screen_source": [
+      "succeeded"
+    ]
+  },
+  "the_route": {
+    "screen": "READABLE \u2192 index \u00b7 UNREADABLE \u2192 dead_letter",
+    "fence": "a non-total route is refused at declaration; a body outcome with no arm is the loud RouterNotTotal"
+  }
+}

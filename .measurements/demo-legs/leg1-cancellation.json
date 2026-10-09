@@ -1,0 +1,24 @@
+{
+  "leg": "1 \u2014 the cancellation",
+  "run_id": "01a11df2-3d03-7f82-871c-764a59e36a72",
+  "root_status": "cancelled",
+  "derived_status": "cancelled",
+  "nodes": {
+    "ingest": "succeeded",
+    "classify": "cancelled",
+    "extract_entities": "cancelled",
+    "gather": "cancelled",
+    "gather:1": "cancelled",
+    "publish": "cancelled",
+    "route": "cancelled",
+    "summarize": "cancelled",
+    "ingest.item": "cancelled",
+    "review": "cancelled",
+    "ingest.join": "cancelled"
+  },
+  "audit_row": {
+    "principal": "cli:demo",
+    "action": "workflow.cancel",
+    "reason": "the demo's cancellation leg"
+  }
+}

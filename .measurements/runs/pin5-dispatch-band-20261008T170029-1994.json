@@ -1,0 +1,12 @@
+{
+  "pin": "dispatch-claim-band",
+  "exclusion_clause": "AND deps_pending = 0",
+  "p50_us": 6144,
+  "p99_us": 13317,
+  "budget_us": 50000,
+  "samples": 60,
+  "red_drill": {
+    "plan": "seq-scan-forced",
+    "p50_us": 2221740
+  }
+}
