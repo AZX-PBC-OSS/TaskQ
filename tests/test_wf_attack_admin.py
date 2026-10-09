@@ -96,7 +96,9 @@ _HUGE_CHARS = 200_000
 #: SHIPPED CONSTANT ITSELF (pin the constant, not a copy — a copy
 #: drifts from the served truth; the sweepaudit's own precedent).
 _PANEL_FIELD_BOUND = (  # Why: the constant must ride the shipped module — pin the shipped value, never a copy.
-    __import__("taskq.web.admin._wf_actions", fromlist=["_PANEL_FIELD_CAP_CHARS"])._PANEL_FIELD_CAP_CHARS
+    __import__(
+        "taskq.web.admin._wf_actions", fromlist=["_PANEL_FIELD_CAP_CHARS"]
+    )._PANEL_FIELD_CAP_CHARS
 )
 
 
