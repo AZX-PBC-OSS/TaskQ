@@ -97,6 +97,16 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_backoff",
     "retry_jitter",
     "assignment_routed",
+    "deps_pending",
+    "map_index",
+    "step_key",
+    "code_version",
+    # 01.00.27 (the loop-budget round) / 01.00.31 (its archive mirror):
+    # the loop node's budget state. The same mirror parity as the block
+    # above — the archive sweep cannot archive a column it doesn't name.
+    "budget_deadline",
+    "budget_paused",
+    "budget_remaining_ms",
     # THE WORKFLOW ROUND (01.00.24): the archive-mirror columns, THE
     # MERGED LINES' ONE parent_id (the workflow edge's wiring parent AND
     # the LIB-2 fan-out ledger — the same nullable column, two writers:
@@ -108,16 +118,6 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     # (test_copy_from_columns_match_jobs_table_exactly) needs them here;
     # the workflow-aware pruner (T18) defines their retention.
     "parent_id",
-    "deps_pending",
-    "map_index",
-    "step_key",
-    "code_version",
-    # 01.00.27 (the loop-budget round) / 01.00.31 (its archive mirror):
-    # the loop node's budget state. The same mirror parity as the block
-    # above — the archive sweep cannot archive a column it doesn't name.
-    "budget_deadline",
-    "budget_paused",
-    "budget_remaining_ms",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
