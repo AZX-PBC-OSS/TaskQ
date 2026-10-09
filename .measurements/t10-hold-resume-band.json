@@ -1,4 +1,4 @@
-{"hold_to_resume_ms": 4.265, "band_ms": 50}{"run": "eb0b0fee", "hold_to_resume_ms": 4.011, "band_ms": 50}
+{"run": "eb0b0fee", "hold_to_resume_ms": 4.011, "band_ms": 50}
 {"run": "61641d04", "hold_to_resume_ms": 5.726, "band_ms": 50}
 {"run": "7d83eece", "hold_to_resume_ms": 5.015, "band_ms": 50}
 {"run": "f61083ef", "hold_to_resume_ms": 3.873, "band_ms": 50}
@@ -32,9 +32,7 @@
 {"run": "598badab", "hold_to_resume_ms": 4.276, "band_ms": 50}
 {"run": "8750be98", "hold_to_resume_ms": 4.952, "band_ms": 50}
 {"run": "604c25e9", "hold_to_resume_ms": 4.221, "band_ms": 50}
-<<<<<<< HEAD
 {"run": "074e3464", "hold_to_resume_ms": 2.48, "band_ms": 50}
-=======
 {"run": "6de8e625", "hold_to_resume_ms": 5.46, "band_ms": 50}
 {"run": "7695fc61", "hold_to_resume_ms": 13.573, "band_ms": 50}
 {"run": "63ebb609", "hold_to_resume_ms": 6.18, "band_ms": 50}
@@ -42,4 +40,47 @@
 {"run": "81b75978", "hold_to_resume_ms": 4.703, "band_ms": 50}
 {"run": "46b258cb", "hold_to_resume_ms": 28.882, "band_ms": 50}
 {"run": "f62bf197", "hold_to_resume_ms": 10.071, "band_ms": 50}
->>>>>>> 8f5c9013 (fix(validate): THE API LANE'S FIX ROUND — E9/E10 + the signature-ordered E5 + the gather truth + the marker grammar)
+{"hold_to_resume_ms": 4.265, "band_ms": 50}
+{"run": "eb0b0fee", "hold_to_resume_ms": 4.011, "band_ms": 50}
+{"run": "61641d04", "hold_to_resume_ms": 5.726, "band_ms": 50}
+{"run": "7d83eece", "hold_to_resume_ms": 5.015, "band_ms": 50}
+{"run": "f61083ef", "hold_to_resume_ms": 3.873, "band_ms": 50}
+{"run": "ec735988", "hold_to_resume_ms": 19.876, "band_ms": 50}
+{"run": "915309ba", "hold_to_resume_ms": 6.73, "band_ms": 50}
+{"run": "81f45130", "hold_to_resume_ms": 4.247, "band_ms": 50}
+{"run": "fff2d870", "hold_to_resume_ms": 8.898, "band_ms": 50}
+{"run": "c5c94e94", "hold_to_resume_ms": 5.754, "band_ms": 50}
+{"run": "f2a8e7eb", "hold_to_resume_ms": 5.743, "band_ms": 50}
+{"run": "2af63c02", "hold_to_resume_ms": 2.537, "band_ms": 50}
+{"run": "aa69593d", "hold_to_resume_ms": 8.828, "band_ms": 50}
+{"run": "176ece7e", "hold_to_resume_ms": 8.265, "band_ms": 50}
+{"run": "60aaf2dc", "hold_to_resume_ms": 6.912, "band_ms": 50}
+{"run": "9096743f", "hold_to_resume_ms": 7.269, "band_ms": 50}
+{"run": "d54e357e", "hold_to_resume_ms": 6.327, "band_ms": 50}
+{"run": "f0520479", "hold_to_resume_ms": 2.999, "band_ms": 50}
+{"run": "e392316b", "hold_to_resume_ms": 1.848, "band_ms": 50}
+{"run": "06fa349e", "hold_to_resume_ms": 2.12, "band_ms": 50}
+{"run": "1f05aee6", "hold_to_resume_ms": 2.691, "band_ms": 50}
+{"run": "7ebb4fc5", "hold_to_resume_ms": 5.119, "band_ms": 50}
+{"run": "c3a30ee6", "hold_to_resume_ms": 3.853, "band_ms": 50}
+{"run": "ae67650a", "hold_to_resume_ms": 4.405, "band_ms": 50}
+{"run": "215676a4", "hold_to_resume_ms": 2.533, "band_ms": 50}
+{"run": "6edfeb86", "hold_to_resume_ms": 2.663, "band_ms": 50}
+{"run": "b412439c", "hold_to_resume_ms": 1.7, "band_ms": 50}
+{"run": "2fc1a3f8", "hold_to_resume_ms": 2.419, "band_ms": 50}
+{"run": "30e6799f", "hold_to_resume_ms": 1.514, "band_ms": 50}
+{"run": "e1554317", "hold_to_resume_ms": 2.678, "band_ms": 50}
+{"run": "eb9d85cd", "hold_to_resume_ms": 2.246, "band_ms": 50}
+{"run": "c7d47a98", "hold_to_resume_ms": 2.431, "band_ms": 50}
+{"run": "598badab", "hold_to_resume_ms": 4.276, "band_ms": 50}
+{"run": "8750be98", "hold_to_resume_ms": 4.952, "band_ms": 50}
+{"run": "604c25e9", "hold_to_resume_ms": 4.221, "band_ms": 50}
+{"run": "6de8e625", "hold_to_resume_ms": 5.46, "band_ms": 50}
+{"run": "7695fc61", "hold_to_resume_ms": 13.573, "band_ms": 50}
+{"run": "63ebb609", "hold_to_resume_ms": 6.18, "band_ms": 50}
+{"run": "3b7a0050", "hold_to_resume_ms": 7.154, "band_ms": 50}
+{"run": "81b75978", "hold_to_resume_ms": 4.703, "band_ms": 50}
+{"run": "46b258cb", "hold_to_resume_ms": 28.882, "band_ms": 50}
+{"run": "f62bf197", "hold_to_resume_ms": 10.071, "band_ms": 50}
+{"run": "32fee7bc", "hold_to_resume_ms": 17.285, "band_ms": 50}
+{"run": "fd75db93", "hold_to_resume_ms": 11.929, "band_ms": 50}
