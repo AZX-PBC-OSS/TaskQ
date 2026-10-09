@@ -448,7 +448,7 @@ async def test_node_panel_addresses_map_children_by_step_and_map_index(
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("admin_map_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(flow_id)
     assert outcome == "terminal"
     root = await module_pg_pool.fetchval(
@@ -675,7 +675,11 @@ async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
     import httpx as _httpx
 
     schema = module_pg_schema.schema_name + "_nowf"
-    conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+    # The DDL is SCHEMA-scoped — the throwaway schema lives in the
+    # module's OWN database (the old "/taskq" hardcode assumed the
+    # lane's own container's default db; the cluster's admin db is
+    # wherever the DSN points, the fixture owns that lifecycle).
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     from taskq.migrate import apply_pending
 
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

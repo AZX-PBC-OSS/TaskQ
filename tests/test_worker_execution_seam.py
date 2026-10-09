@@ -152,7 +152,12 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
 def test_the_projection_refuses_one_actor_over_two_queues() -> None:
     """THE ONE-QUEUE LAW: one actor name declared over TWO queues is the
     refused defect (``actor_config`` is keyed by actor) — the split
-    placement is expressed with DISTINCT actor names per queue."""
+    placement is expressed with DISTINCT actor names per queue. TWO
+    granularities (the F2-3 isolation's law): a workflow whose OWN
+    cohorts conflict skips THAT WORKFLOW LOUDLY (the healthy apps boot);
+    the conflict ACROSS workflows/apps is the raise (skipping one side
+    silently would make its rows unclaimable — the invisible cohort by
+    another door)."""
     seam.reset_app_registry_for_tests()
     try:
         app = WorkflowApp()
@@ -163,10 +168,41 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
             second = step(_observed_body, node, key="two", actor="wf-split", queue="gpu")
             return build(second)
 
+        # THE WORKFLOW'S OWN CONFLICT: the skip-loudly arm (F2-3) — the
+        # boot survives, the defect is NAMED, the broken workflow's
+        # cohorts project NOTHING (the isolation pin owns the log's
+        # shape; here the seam's contract: the projection does NOT
+        # raise on the workflow's own conflict).
+        configs = seam.project_workflow_actor_configs()
+        assert all(c.actor != "wf-split" for c in configs), (
+            "the conflicting workflow's cohorts projected NOTHING"
+        )
+
+        # THE CROSS-WORKFLOW CONFLICT: the raise — two HEALTHY
+        # declarations fighting over one cohort name is the drift the
+        # guards refuse, never a silent skip.
+        healthy = WorkflowApp()
+
+        @healthy.workflow("seam_conflict_other")
+        def seam_conflict_other() -> object:
+            third = step(
+                _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q1"
+            )
+            return build(third)
+
+        second_app = WorkflowApp()
+
+        @second_app.workflow("seam_conflict_rival")
+        def seam_conflict_rival() -> object:
+            fourth = step(
+                _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q2"
+            )
+            return build(fourth)
+
         with pytest.raises(seam.WorkflowActorQueueConflictError) as excinfo:
             seam.project_workflow_actor_configs()
         assert "wf-split" in str(excinfo.value)
-        assert "DISTINCT actor names" in str(excinfo.value)
+        assert "across workflows/apps" in str(excinfo.value)
     finally:
         seam.reset_app_registry_for_tests()
 
@@ -250,7 +286,7 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
         await _capable_worker_row(wf_conn, wf_schema, worker_id)
 
         runner = FlowRunner(app.get("seam_door_flow"), module_pg_pool, wf_schema)
-        flow_id = await runner.create_flow(input={"doc_id": "claimed"})
+        flow_id = (await runner.create_flow(input={"doc_id": "claimed"})).flow_id
 
         # THE QUEUE ROUTING: the node row sits on the projected cohort's
         # queue and the fleet's dispatch claims it for the CAPABLE worker.
@@ -274,7 +310,12 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
             worker_id=JobId(worker_id),
             job=job,
         )
-        assert outcome == "succeeded", outcome
+        # THE DOOR'S RECORD (the fleet-truth law): the execution returns
+        # the FlowExecution record — the outcome label AND the REAL
+        # identities the door resolved on the way; the assert reads the
+        # Record, never a bare string.
+        assert outcome.outcome == "succeeded", outcome
+        assert outcome.step_key == "solo" and outcome.workflow_name == "seam_door_flow"
         assert _EXECUTIONS == ["claimed"], (
             f"the body ran {len(_EXECUTIONS)}x — the door's exactly-once law broke"
         )

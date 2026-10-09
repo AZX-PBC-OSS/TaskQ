@@ -273,11 +273,11 @@ async def test_full_run_the_callers_input_is_the_corpus(
     await conn.close()
 
     app_obj = example_ns["app"]
-    compiled = app_obj.get("doc_ingest_bench")
+    compiled = app_obj.get("doc_ingest")
     runner = FlowRunner(compiled, wf_pool, schema)
-    run_id = await runner.create_flow(
-        input=example_ns["IngestBatch"](doc_ids=["doc-000", "doc-003"])
-    )
+    run_id = (
+        await runner.create_flow(input=example_ns["IngestBatch"](doc_ids=["doc-000", "doc-003"]))
+    ).flow_id
     held = await runner.drive(run_id, until="held")
     assert held == "held", f"the run never held (the review gate): {held}"
     client = HitlClient(wf_pool, schema=schema)

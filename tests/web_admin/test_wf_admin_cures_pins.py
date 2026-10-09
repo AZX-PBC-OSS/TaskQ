@@ -144,7 +144,7 @@ def _make_admin_app(pool: asyncpg.Pool, schema: str, wf_app: Any = None) -> Fast
 async def _seed_run(pool: asyncpg.Pool, schema: str, *, name: str = "cure_hold_flow") -> str:
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # THE HOLD FLOW stops at its hold (a drive to terminal would burn
     # max_ticks against the 120s hold deadline); the map flows run to
     # terminal.

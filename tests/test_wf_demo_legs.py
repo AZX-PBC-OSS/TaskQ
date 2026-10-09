@@ -65,7 +65,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     app = WorkflowAppFixture()
 
     runner = FlowRunner(app.get("doc_ingest"), wf_pool, wf_schema)
-    run_id = await runner.create_flow()
+    run_id = (await runner.create_flow()).flow_id
     await runner.drive(run_id, until="held", max_ticks=300)  # mid-flight: the review holds
 
     # THE CANCELLATION (the operator's action — the CLI's own form):
@@ -157,7 +157,7 @@ async def test_leg2_the_kill_and_resume_drill(
 
     compiled = wf_app.get("doc_screen_router")
     drill_runner = FlowRunner(compiled, module_pg_pool, schema)
-    run_id = str(await drill_runner.create_flow())
+    run_id = str((await drill_runner.create_flow()).flow_id)
     run_id_uuid = __import__("uuid").UUID(run_id)
 
     # The kill-and-resume: the demo's own worker processes.
@@ -282,7 +282,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
     schema = module_pg_schema.schema_name
     from examples.workflows import trigger_run
 
-    run_id = await trigger_run(module_pg_pool, schema)
+    run_id = str((await trigger_run(module_pg_pool, schema)).flow_id)
     run_id_uuid = __import__("uuid").UUID(run_id)
     # Drive the run to its hold (a real mid-flight state for the gauge).
     from taskq.workflows import FlowRunner
@@ -376,7 +376,7 @@ async def test_leg4_the_conditional_router_routes_live(
     assert "doc-doomed" in _DOC_SOURCE  # the demo's corpus is intact
     compiled = wf_app_fixture().get("doc_screen_router")
     runner = FlowRunner(compiled, wf_pool, wf_schema)
-    run_id = await runner.create_flow()
+    run_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(run_id, max_ticks=500)
     assert outcome == "terminal"
 
@@ -461,7 +461,7 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
     # THE VICTIMS: the demo's own workflows, behind the poison in the
     # ORDER BY (uuid7 = the claim sequence).
     router_run = await trigger_router_run(module_pg_pool, schema)
-    victim = await trigger_run(module_pg_pool, schema)
+    victim = str((await trigger_run(module_pg_pool, schema)).flow_id)
 
     # ONE pass — the old shape aborted HERE on the poison's first tick.
     await _drive_pending(module_pg_pool, schema)
@@ -521,7 +521,7 @@ async def test_the_drive_loop_stops_on_cancel_within_the_bound(
     from examples.workflows import drive_loop, trigger_run
 
     schema = module_pg_schema.schema_name
-    run_id = await trigger_run(module_pg_pool, schema)
+    run_id = str((await trigger_run(module_pg_pool, schema)).flow_id)
 
     task = asyncio.create_task(drive_loop(module_pg_pool, schema))
     # Wait until the pass is MID-DRIVE (a node row 'running' = the drive

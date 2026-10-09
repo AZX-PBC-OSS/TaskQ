@@ -117,3 +117,9 @@
 {"run": "20261009T003338-140891-a60a272e", "ts": "2026-10-09T00:33:38", "entries": []}
 {"run": "20261009T003338-140891-d7bf62ff", "ts": "2026-10-09T00:33:38", "entries": []}
 {"run": "20261009T003338-140891-b3b426a5", "ts": "2026-10-09T00:33:38", "entries": []}
+{"run": "20261009T011509-327269-16fbc007", "ts": "2026-10-09T01:15:09", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": []}
+{"run": "20261009T011509-327265-2b6732f7", "ts": "2026-10-09T01:15:09", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11fba-f8b7-71c2-ac29-f81e77e8a0a3\"], \"step_keys\": [\"__flow__\"]}", "run": "20261009T011509-327265-2b6732f7", "capture": "redlog-captures/20261009T011509-327265-2b6732f7/pin_dispatch_never_claims_the_flow_root.json", "sha256": "27f3697634b3392b6bf922044f22797a7d6d9582a2ff6c436b66f688eaf03b49"}]}
+{"run": "20261009T011509-327276-619aef42", "ts": "2026-10-09T01:15:09", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": []}
+{"run": "20261009T011509-327272-2974d548", "ts": "2026-10-09T01:15:09", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": []}
+{"run": "20261009T011509-327269-d7346c25", "ts": "2026-10-09T01:15:09", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": []}
+{"run": "20261009T011509-327265-27db1f87", "ts": "2026-10-09T01:15:10", "law": "provenance-1", "head_sha": "4c89432a4c58b1a4010e790a49107843e2ad5232", "entries": []}

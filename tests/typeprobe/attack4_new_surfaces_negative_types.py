@@ -36,14 +36,12 @@ def probe_the_cli_rows() -> None:
     print(row)
 
     # The report kwarg's typo: a keyword the function does not declare.
-    lines = (
-        format_flow_status(  # MUST_ERROR(reportArgumentType, invalid-argument-type)
-            run_id="r",
-            workflow="w",
-            root_status="running",
-            nodes=[],
-            cancel_in_flight="yes-not-a-bool",
-        )
+    lines = format_flow_status(  # MUST_ERROR(reportArgumentType, invalid-argument-type)
+        run_id="r",
+        workflow="w",
+        root_status="running",
+        nodes=[],
+        cancel_in_flight="yes-not-a-bool",
     )
     print(lines)
 
@@ -54,9 +52,7 @@ def probe_the_cli_rows() -> None:
 def probe_the_parse_boundary() -> None:
     parsed = parse_decision('{"verdict": "approve"}')
     # The parse's return is a dict — indexing it as a list is a type error.
-    first = parsed[
-        0
-    ]  # MUST_ERROR(reportArgumentType, invalid-argument-type)
+    first = parsed[0]  # MUST_ERROR(reportArgumentType, invalid-argument-type)
     print(first)
 
 
@@ -69,4 +65,3 @@ def probe_the_gate_decl() -> None:
         nonexistent_kwarg=True,
     )
     print(gate)
-
