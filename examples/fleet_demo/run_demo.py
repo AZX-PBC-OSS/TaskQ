@@ -441,7 +441,91 @@ def act7_insights() -> None:
     )
 
 
+SCHEMA_NAME = "taskq"
+_pool: Any = None
+
+
+async def _get_pool() -> Any:
+    """The act-8 shared pool (one pool per act; closed by act_cleanup)."""
+    global _pool
+    if _pool is None:
+        import asyncpg
+
+        _pool = await asyncpg.create_pool(PG_DSN, min_size=1, max_size=3)
+    return _pool
+
+
+def act8_workflow() -> None:
+    """ACT 8 — THE WORKFLOW (the doc_ingest shape's smallest leg): the
+    source + ONE conditional chain + ONE hold resolved — the fleet's own
+    worker executes it (the intercept's door)."""
+    _banner("ACT 8 — the workflow: the doc-ingest shape's smallest leg")
+
+    async def body() -> None:
+        from examples.fleet_demo.workflows import resolve_any_hold, wf_app
+        from taskq.workflows import FlowRunner
+
+        compiled = wf_app.get("fleet_doc_ingest")
+        runner = FlowRunner(compiled, await _get_pool(), SCHEMA_NAME)
+        run_id = str(await runner.create_flow())
+        print(f"  run {run_id[:8]}… created (the fleet worker executes the rows)")
+        print("  waiting for the review hold…")
+
+        import uuid as uuid_mod
+
+        parsed = uuid_mod.UUID(run_id)
+        hold_id = None
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            async with (await _get_pool()).acquire() as conn:
+                hold_id = await conn.fetchval(
+                    f'SELECT id FROM "{SCHEMA_NAME}".wf_signals '  # noqa: S608  # Why: the schema is the demo's own constant; every value is $-bound.
+                    "WHERE workflow_id = $1 AND status = 'held' LIMIT 1",
+                    parsed,
+                )
+            if hold_id:
+                break
+            await asyncio.sleep(1.0)
+        if not hold_id:
+            raise SystemExit("the run never held (the review gate)")
+        print(f"  HELD at the review (hold {str(hold_id)[:8]}…) — the typed resolve:")
+        status = await resolve_any_hold(PG_DSN, SCHEMA_NAME, run_id)
+        print(f"  resolve → {status}")
+        print("  waiting for the completion…")
+        root = "?"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            async with (await _get_pool()).acquire() as conn:
+                root = await conn.fetchval(
+                    f'SELECT status::text FROM "{SCHEMA_NAME}".jobs WHERE id = $1',  # noqa: S608  # Why: the demo's own constant schema; the id is $-bound.
+                    parsed,
+                )
+            if root in ("succeeded", "failed", "cancelled"):
+                break
+            await asyncio.sleep(1.0)
+        print(f"  run → {root}")
+        if root != "succeeded":
+            raise SystemExit("the fleet's workflow run did not succeed")
+        print(
+            "\n  the operator's surfaces for this run:\n"
+            f"    taskq flows status {run_id}\n"
+            f"    taskq flows holds {run_id}\n"
+            "    the admin's run page: the graph + the holds + the audit trail"
+        )
+
+    asyncio.run(body())
+
+
+async def _pool_close() -> None:
+    if _pool is not None:
+        await _pool.close()
+
+
 def act_cleanup() -> None:
+    if _pool is not None:
+        import asyncio
+
+        asyncio.run(_pool_close())
     _banner("CLEANUP — compose down -v (leave no volume behind)")
     print("  docker compose -p taskq-fleet-demo down -v …")
     _run([*COMPOSE, "down", "-v"])
@@ -503,7 +587,11 @@ def main() -> None:
     act0_infra()
     _run_cli(["taskq", "migrate", "up"])  # idempotent
 
-    _banner("starting the fleet worker (TASKQ_QUEUES=fleet)")
+    _banner("starting the fleet worker (TASKQ_QUEUES=fleet + the workflow cohort)")
+
+    wf_env = dict(BASE_ENV)
+    wf_env["TASKQ_QUEUES"] = BASE_ENV["TASKQ_QUEUES"] + "," + "fleetwf"
+    BASE_ENV.update(wf_env)
     log_file = open(log_path, "w")  # noqa: SIM115 — the worker subprocess owns it for the whole run
     # S607: fixed literal argv (uv + taskq), nothing operator-supplied.
     worker = subprocess.Popen(
@@ -535,6 +623,7 @@ def main() -> None:
         act5_sigterm_deploy(log_path)
         act6_doctor()
         act7_insights()
+        act8_workflow()
         act_cleanup()
     finally:
         log_file.close()

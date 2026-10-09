@@ -38,6 +38,7 @@ their homes WITHOUT the tax:
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
+    GateDecl,
     Promise,
     WorkflowApp,
     WorkflowBuildError,
@@ -48,6 +49,7 @@ from taskq.workflows.api import (
     sink,
     step,
 )
+from taskq.workflows.api._hitl import DeliveryResult, HitlClient
 from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._run import WorkflowRunResult, run
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
@@ -66,9 +68,12 @@ __all__ = [
     "DONE",
     "Chain",
     "CompiledWorkflow",
+    "DeliveryResult",
     "Done",
     "Exit",
     "FlowRunner",
+    "GateDecl",
+    "HitlClient",
     "Promise",
     "Refine",
     "Route",

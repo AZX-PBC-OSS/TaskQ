@@ -3,7 +3,7 @@
 A document-ingestion pipeline: documents arrive, get enriched, pass an
 editorial review, and publish — with the failures REPORTED, never
 swallowed. This page is the minimal copy-paste form; the
-[demo app](../../../examples/) runs the SAME graph live with
+[demo app](https://github.com/#/examples) runs the SAME graph live with
 the admin's run explorer attached.
 
 The example demonstrates the nine load-bearing shapes of the flow API:
@@ -198,7 +198,7 @@ def doc_ingest() -> object:
     review = loop(
         "review",
         review_iteration,
-        carry=0,
+        initial=0,
         max_iterations=3,
         budget_s=3600.0,
         on_exhausted="escalate",
@@ -236,7 +236,7 @@ async def main() -> None:
     import os
 
     from taskq.migrate import apply_pending
-    from taskq.workflows.api._hitl import HitlClient
+    from taskq.workflows import HitlClient
 
     schema = os.environ["TASKQ_SCHEMA_NAME"]
     dsn = os.environ["TASKQ_PG_DSN"]
@@ -253,7 +253,10 @@ async def main() -> None:
     print("hold:", hold.hold_id, "-", hold.signal_name)
     result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": "ship it"})
     print("resolve:", result.status)
-    await runner.drive(flow_id)  # the resume → the terminal
+    from taskq.workflows import FlowRunner
+
+    resume_runner = FlowRunner(app.get("doc_ingest"), pool, schema)
+    await resume_runner.drive(flow_id)  # the resume → the terminal
 
     # The SAME slot again → the SAME run (the run-key's claim).
     same = await run_nightly_refresh(schema, pool, slot="2026-10-08T00:00Z")
@@ -281,9 +284,42 @@ What each shape shows (and where to look):
 | 9 | cron-slot run key | `run_nightly_refresh`'s `run_key=f"doc_ingest:nightly:{slot}"` |
 
 **Run it live**: the demo app wires this same graph behind HTTP with the
-admin's run explorer — see `examples/admin_app.py` (the fastapi_app's
-workflow routes) and the admin guide's run-explorer section. **The verify
-loop**: the
+admin's run explorer — see the demo's README. **The verify loop**: the
 example's fence executes in CI (`make test-docs-examples`), the fast tier
 runs its `build()` + `validate()` without containers, and the compiled
 Mermaid is byte-pinned.
+
+---
+
+## The four demonstrations (the capabilities, live)
+
+Each leg is a RUNNABLE path in the demo (`tests/test_wf_demo_legs.py` —
+the evidence-matrix's demo work order; every run's output is captured
+verbatim under `.measurements/demo-legs/`):
+
+| # | Capability | The runnable path | The captured evidence |
+|---|-----------|-------------------|-----------------------|
+| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | `.measurements/demo-legs/leg1-cancellation.json` |
+| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | `.measurements/demo-legs/leg2-kill-resume.json` |
+| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the PROMETHEUS TEXT captured | `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` |
+| 4 | **The conditional router (the T20 chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | `.measurements/demo-legs/leg4-router.json` |
+
+**The two doors' contracts differ — stated AT the example (the pick:
+document, don't shim):** the `step(...)` door COERCES — the example's
+`IngestBatch(doc_ids=...)` (a pydantic model) re-validates at the
+boundary (the dict round-trips as the model; the body sees the type it
+declared). The `ctx.emit_batch(...)` door REFUSES pydantic models
+LOUDLY — its payloads are DICTS/BYTES (the emit path's zero-copy
+discipline: the emission rides the wire's own vocabulary, never a
+model-shaped second encoding; a wrong shape is the raised refusal, the
+authoring error is the body's problem). The pattern this example
+teaches: pass `model.model_dump()` at emit; hand the MODEL to `step`
+(the door coerces). (The small coercion shim at emit was considered and
+DECLINED: hiding the wire's vocabulary behind a shim moves the
+zero-copy discipline from the contract to the accident; the ergonomics
+cure is the T20 lane's ledger.)
+
+The demo's worker subscription: the workers must SUBSCRIBE to the
+workflow cohorts' queues (`TASKQ_QUEUES=demo-screen,demo-cpu,...` — the
+boot projection declares the cohorts in `actor_config`; the
+subscription is the operator's deployment knob).

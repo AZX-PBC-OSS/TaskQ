@@ -158,6 +158,19 @@ taskq insights   # wait · balance · drain · cron
 - **cron** — the digest schedule's fan-out ledger (fires vs cleared) for
   the schedule acts 4's budget and catch-up acts drove.
 
+## Act 8 — The workflow: the doc-ingest shape's smallest leg
+
+The **conditional router + the typed hold**, live on the fleet's own
+worker: the chain source emits each document (ONE emit tx per page), the
+SCREEN step's typed outcome routes — `READABLE → enrich`,
+`UNREADABLE → DONE` — and the enrich step **HOLDS** on the typed
+`ReviewDecision` until the act resolves it (`HitlClient.resolve` — the
+operator's stand-in).
+
+The workflow definitions ride the module's import (the D1 registry); the
+worker's boot projection declares the workflow cohort's queue
+(`fleetwf`) — the same worker, one more subscription.
+
 ## What this demo does NOT cover
 
 - **The observability plumbing** — structlog JSON is what you've been
@@ -165,6 +178,9 @@ taskq insights   # wait · balance · drain · cron
   `examples/otel_setup.py` (Jaeger / any OTLP collector).
 - **The admin UI** — the same run, browsable: `examples/app.py` /
   `examples/admin_app.py` (`docker compose up` in `examples/`).
+- **The admin UI's workflow explorer** — the run pages, the graph, the
+  holds: `examples/app.py` (`docker compose up` in `examples/`; the
+  workflow runs render at `/taskq/workflows/{id}`).
 - **Storage modes beyond vanilla** — doctor detects TimescaleDB modes
   from the server (`timescale-apache`, `timescale-tsl`); point
   `TASKQ_PG_DSN` at a TimescaleDB instance to see that report line

@@ -347,7 +347,7 @@ async def test_resolve_through_the_typed_door_delivers_and_audits(
     pydantic refusal and moves nothing."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema)
-    from taskq.workflows.api._hitl import HitlClient
+    from taskq.workflows import HitlClient
 
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(run_id)
@@ -427,7 +427,7 @@ async def test_run_page_renders_the_audit_trail_after_a_resolve(
         before = await http.get(f"/workflows/{run_id}")
         assert "No operator actions recorded" in before.text
         # The resolve (the action):
-        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows import HitlClient
 
         client = HitlClient(module_pg_pool, schema=schema)
         (hold,) = await client.list(run_id)

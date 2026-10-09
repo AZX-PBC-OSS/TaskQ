@@ -1,0 +1,55 @@
+S608 Possible SQL injection vector through string-based query construction
+   --> examples/fleet_demo/run_demo.py:478:21
+    |
+476 |               async with (await _get_pool()).acquire() as conn:
+477 |                   hold_id = await conn.fetchval(
+478 | /                     f'SELECT id FROM "{SCHEMA_NAME}".wf_signals '
+479 | |                     "WHERE workflow_id = $1 AND status = 'held' LIMIT 1",
+    | |________________________________________________________________________^
+480 |                       parsed,
+481 |                   )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> examples/fleet_demo/run_demo.py:495:21
+    |
+493 |             async with (await _get_pool()).acquire() as conn:
+494 |                 root = await conn.fetchval(
+495 |                     f'SELECT status::text FROM "{SCHEMA_NAME}".jobs WHERE id = $1', parsed
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+496 |                 )
+497 |             if root in ("succeeded", "failed", "cancelled"):
+    |
+
+S603 `subprocess` call: check for execution of untrusted input
+   --> tests/test_wf_cli_pins.py:468:12
+    |
+467 |     repo = Path(__file__).parent.parent
+468 |     proc = subprocess.run(
+    |            ^^^^^^^^^^^^^^
+469 |         ["/usr/bin/grep", "-rn", "from taskq.workflows.api._hitl import HitlClient", str(repo / "docs")],
+470 |         capture_output=True, text=True,
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+   --> tests/test_wf_cli_pins.py:480:5
+    |
+478 |       target file's mkdocs-slugified headings — a renumbered section
+479 |       without its link reds this sweep."""
+480 | /     import os
+481 | |     import re as re_mod
+482 | |
+483 | |     from pathlib import Path
+    | |____________________________^
+484 |
+485 |       docs_root = (Path(__file__).parent.parent / "docs").resolve()
+    |
+help: Organize imports
+    |
+481 |     import re as re_mod
+    -
+482 |     from pathlib import Path
+    |
+
+Found 4 errors.
+[*] 1 fixable with the `--fix` option.
