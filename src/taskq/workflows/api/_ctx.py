@@ -48,6 +48,7 @@ def build_step_context(
     worker_id: JobId | None = None,
     progress: ProgressEmitter | None = None,
     claim_epoch: int = 0,
+    max_in_flight: int | None = None,
     flow_name: str | None = None,
     queue: str | None = None,
     claimed_at: datetime | None = None,
@@ -71,6 +72,7 @@ def build_step_context(
         _redact=redact,
         _worker_id=worker_id,
         _progress=progress,
+        _max_in_flight=max_in_flight,
         claim_epoch=claim_epoch,
         flow_name=flow_name,
         queue=queue,
@@ -110,6 +112,10 @@ class StepContext(CtxWaitOps):
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
+    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the workflow's DECLARED
+    #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
+    #: the explicit unbounded).
+    _max_in_flight: int | None = None
     # THE EMISSION OP's buffer (T21): the attempt's own ProgressEmitter —
     # the runner wires it at the claim seam. None when unwired (direct
     # testing): ctx.progress then VALIDATES the shape (the typed door is
@@ -172,6 +178,7 @@ class StepContext(CtxWaitOps):
         children: Sequence[EmitChild],
         *,
         cursor: dict[str, object],
+        backpressure_timeout_s: float = 30.0,
     ) -> tuple[JobId, ...]:
         """THE STREAMING SOURCE'S EMIT (T20): this page's chain starts +
         the edges + THIS node's cursor checkpoint, ONE transaction, while
@@ -197,6 +204,8 @@ class StepContext(CtxWaitOps):
             claim_epoch=self.claim_epoch,  # the claim view's fence epoch
             children=children,
             cursor=cursor,
+            max_in_flight=self._max_in_flight,
+            backpressure_timeout_s=backpressure_timeout_s,
         )
 
     async def progress(
@@ -239,10 +248,17 @@ class StepContext(CtxWaitOps):
         # around the gate.
         await emitter.emit(pct, message, data)
 
-    async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
+    async def substep(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
         result (the re-execution doctrine's cheap side: pre-wait side
-        effects are ctx.step-ledgered and replay cheap)."""
+        effects are substep-ledgered and replay cheap).
+
+        THE GLOSSARY LAW (the ergonomic tail's cure): this was
+        ``ctx.step`` — the wiring verb ``step()`` already owns that name
+        with DIFFERENT semantics (a graph NODE's declaration vs a node's
+        INNER ledgered effect). The lesser noun renamed: the substep is
+        the step-ledger's own vocabulary (``wf_step_ledger`` rows are
+        what make it exactly-once)."""
         async with self._pool.acquire() as conn:
             steps = WorkflowSteps(
                 conn,

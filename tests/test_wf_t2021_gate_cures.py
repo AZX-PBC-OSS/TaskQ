@@ -14,7 +14,7 @@ cured in src and pinned here):
   persisted (the migration's comment claimed a CHECK constraint that
   did not exist). THE CURE: the buffer write is PRIVATE (``_submit`` —
   the public op is :meth:`emit`/``ctx.progress`` and it validates);
-  the CHECK is REAL (``wf_node_progress_pct_domain``, 01.00.31_01 —
+  the CHECK is REAL (``wf_node_progress_pct_domain``, 01.00.32_01 —
   the comment's promise shipped).
 * THE AUTO-CLASS DISCARDED RECEIPT: ``project_auto_event`` threw the
   append's drop count away — the user class's receipt discipline

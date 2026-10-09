@@ -29,7 +29,7 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_sche
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> int:
-        inner = await ctx.step("side-effect", _count, idempotent=False)
+        inner = await ctx.substep("side-effect", _count, idempotent=False)
         return inner
 
     async def _count() -> int:
@@ -65,7 +65,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> int:
-        return await ctx.step("doomed-step", _explode)
+        return await ctx.substep("doomed-step", _explode)
 
     async def _explode() -> int:
         calls["n"] += 1
@@ -96,7 +96,7 @@ async def test_ctx_step_the_memoized_replay_returns_the_record(
     calls = {"n": 0}
 
     async def body(ctx: Any, params: Ingest) -> dict[str, int]:
-        value = await ctx.step("once", _count)
+        value = await ctx.substep("once", _count)
         if calls["once_seen"] == 0:
             calls["once_seen"] = 1
             raise RuntimeError("the transient between the step and the node's terminal")

@@ -246,6 +246,26 @@ RETURNING id
 """
 
 
+# THE MAX-IN-FLIGHT BOUND'S COUNTER (T20 / DH9): the run's non-terminal
+# row count (the ledger's truth), excluding the source's own claim row —
+# the admission's arithmetic input, read INSIDE the tx under the lock.
+EMIT_IN_FLIGHT_SQL = """\
+SELECT count(*) FROM {schema}.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND metadata ? 'flow_id'
+  AND step_key <> '__flow__'
+  AND id <> $2::uuid
+  AND status IN ('pending', 'scheduled', 'running')
+"""
+
+
+# THE ADMISSION LOCK: one run's emitters serialize on this transaction-scoped
+# advisory lock — the concurrent emitters' count+insert is atomic per run.
+EMIT_ADMISSION_LOCK_SQL = """\
+SELECT pg_advisory_xact_lock(hashtext($1::text))
+"""
+
+
 FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,

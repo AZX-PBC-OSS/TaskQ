@@ -23,6 +23,7 @@ __all__ = [
     "ChildSpec",
     "ConsumerBinding",
     "DecrementHit",
+    "EdgeFailurePolicy",
     "EmitChild",
     "FailureInfo",
     "FailurePolicy",
@@ -73,6 +74,16 @@ FailurePolicy = Literal["fail_closed", "collect"]
 #: envelope's policy marker can never claim it (the typed door: the
 #: envelope must not lie about which policy ran, T07's C).
 AbsorbingPolicy = Literal["collect", "maybe"]
+
+
+#: THE EDGE POLICY (the wiring verbs' ``on_failure=``): the FULL runtime
+#: vocabulary — :data:`taskq.workflows.definitions.FAILURE_POLICIES`, the
+#: build-time validator's own door. The wiring verbs annotate with THIS
+#: (never a bare ``str``): a wrong literal is a checker error at the
+#: call site, not a surprise at build. (``FailurePolicy`` above is the
+#: engine-envelope's subset spelling; ``AbsorbingPolicy`` the absorbing
+#: pair; both are sub-vocabularies of this one.)
+EdgeFailurePolicy = Literal["fail_closed", "collect", "maybe"]
 
 
 @dataclass(frozen=True, slots=True)

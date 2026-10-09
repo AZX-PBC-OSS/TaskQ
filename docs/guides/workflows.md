@@ -227,7 +227,7 @@ The step ledger's claim is ONE round trip
 (`INSERT … ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1),
 attempt) DO UPDATE … RETURNING`) — the ledger row IS the claim, the
 arbiter physically blocks double-recording, and map children of one step
-key are DIFFERENT claims. `ctx.step("name", fn)` is the user-facing
+key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
 Run-level idempotency claims against
@@ -523,7 +523,7 @@ the §22.6 redispatch row 3 — "the ladder then manual"): the operator's
 audited, CAS-guarded re-arm of a TERMINAL-FAILED node. The attempt
 ordinal CONTINUES (never resets — the ladder's own 'failed' count is
 the budget, so each manual retry buys exactly ONE more attempt); the
-re-run is safe by the step ledger (`ctx.step` returns recorded
+re-run is safe by the step ledger (`ctx.substep` returns recorded
 results); the cascade's blocked closure re-opens (the stamps return to
 join-wait — the sweep's re-derive re-derives them, a stamp is the
 cache); a terminal-FAILED flow root returns to `running` (a CANCELLED
@@ -962,7 +962,7 @@ single-payload form is the one-member overload.
 **THE RESUME CONTRACT, stated as a feature** (cut #18's disposition):
 the body re-executes **FROM THE TOP** on resume — there is NO
 determinism requirement on the body; pre-wait side effects are
-`ctx.step`-ledgered and replay cheap. The delivered holds are the
+`ctx.substep`-ledgered and replay cheap. The delivered holds are the
 node's ANSWER QUEUE: each attempt's wait sequence consumes them in
 epoch order (the per-attempt cursor) — a RETRY replays the answers (the
 operator never re-answers); a wait past the queue's end registers a NEW
