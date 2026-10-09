@@ -142,6 +142,27 @@ def _superseded_by(path: Path) -> str | None:
     return _text_field(path, "SUPERSEDED-BY")
 
 
+def _cited_import(path: Path) -> bool:
+    """Whether the artifact DECLARES itself a CITED-IMPORT (the imported
+    provenance record — the primary drill's session evidence gone, the
+    import IS the provenance). JSON: the ``kind`` key's exact value; text:
+    a ``kind: CITED-IMPORT`` line. Such an artifact is history by its own
+    declaration — never a live claim of the current tree, never
+    re-recordable."""
+    if path.suffix == ".json":
+        try:
+            data: object = json.loads(path.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            return False
+        if isinstance(data, dict):
+            record = cast("dict[str, object]", data)
+            kind = record.get("kind")
+            return isinstance(kind, str) and kind.startswith("CITED-IMPORT")
+        return False
+    field = _text_field(path, "kind")
+    return field == "CITED-IMPORT"
+
+
 def verify(runs_dir: Path, head: str) -> list[str]:
     """The stale live claims, named (empty = the estate holds)."""
     if not runs_dir.is_dir():
@@ -173,6 +194,15 @@ def verify(runs_dir: Path, head: str) -> list[str]:
                     f"{stem}: {live.name} is marked SUPERSEDED-BY {marked} but the "
                     "target does not exist — the link is dead"
                 )
+            continue
+        if _cited_import(live):
+            # THE CITED-IMPORT DECLARATION (the docs-numbers round's own
+            # marker): the artifact is an IMPORTED provenance record — the
+            # primary drill's session evidence is GONE, the imported record
+            # IS the provenance (``_sweep.py``'s curve cites it as such).
+            # It is not a live claim of THIS tree and cannot be re-recorded;
+            # the SOURCE claim built on it is a doc claim whose substance is
+            # owned by the scope pin. History by its own declaration.
             continue
         failures.append(
             f"{stem}: the LIVE CLAIM {live.name} is "

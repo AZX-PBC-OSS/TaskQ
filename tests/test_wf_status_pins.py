@@ -38,6 +38,7 @@ from tests._wf_fixtures import (
     seed_flow,
     seed_join,
     seed_running_node,
+    write_band_artifact,
 )
 
 
@@ -712,44 +713,42 @@ async def test_t08_rollup_cost_gate_index_driven(
         "review, never edit it silently"
     )
 
-    from tests._wf_fixtures import MEASUREMENTS
-
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "wf-rollup-band.json").write_text(
-        json.dumps(
-            {
-                "shape": {
-                    "fleet_rows": n_vanilla + n_flows * (n_nodes + 1),
-                    "runs": n_flows,
-                    "nodes_per_run": n_nodes,
-                    "measured_flow": str(measured_flow),
-                },
-                "p50_ms": round(p50, 3),
-                "samples_ms": [round(s, 3) for s in samples],
-                "recorded_band_ms": band_budget_ms,
-                "argument": (
-                    "the pin REWRITTEN for the fleet shape (the phase-2 "
-                    "attack's H3b): the pre-rewrite shape measured a table "
-                    "containing ONLY the measured flow's rows — the "
-                    "measured flow WAS the whole table, so the plan assert "
-                    "could not fail on a seq scan. At the fleet shape the "
-                    "pre-cure index (01.00.26_01's raw-TEXT key) served NO "
-                    "flow-scoped read: the rollup read p50 21.2 ms and the "
-                    "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
-                    "fleet table (.measurements/fix2/index-before-text-"
-                    "index.txt). The cure (01.00.26_02: the uuid-cast "
-                    "expression + the metadata?'flow_id' partial, the "
-                    "reads carrying the proving clauses) puts every "
-                    "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
-                    "O(the run's own node count). The plan gate is the "
-                    "load-bearing assert; the band is set from THIS "
-                    "measurement. The fleet-wide gauge sampler ("
-                    "_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY "
-                    "DESIGN (no run id to key); its band is recorded in "
-                    "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
-                ),
-                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02)",
+    # THE APPEND-ONLY CONVERSION (the stale-evidence hunt's source cure):
+    # the band is a RUN-SCOPED, head-stamped artifact — the in-place
+    # write_text was the torn-write race + the unstamped rumor.
+    write_band_artifact(
+        "wf-rollup-band.json",
+        {
+            "shape": {
+                "fleet_rows": n_vanilla + n_flows * (n_nodes + 1),
+                "runs": n_flows,
+                "nodes_per_run": n_nodes,
+                "measured_flow": str(measured_flow),
             },
-            indent=2,
-        )
+            "p50_ms": round(p50, 3),
+            "samples_ms": [round(s, 3) for s in samples],
+            "recorded_band_ms": band_budget_ms,
+            "argument": (
+                "the pin REWRITTEN for the fleet shape (the phase-2 "
+                "attack's H3b): the pre-rewrite shape measured a table "
+                "containing ONLY the measured flow's rows — the "
+                "measured flow WAS the whole table, so the plan assert "
+                "could not fail on a seq scan. At the fleet shape the "
+                "pre-cure index (01.00.26_01's raw-TEXT key) served NO "
+                "flow-scoped read: the rollup read p50 21.2 ms and the "
+                "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
+                "fleet table (.measurements/fix2/index-before-text-"
+                "index.txt). The cure (01.00.26_02: the uuid-cast "
+                "expression + the metadata?'flow_id' partial, the "
+                "reads carrying the proving clauses) puts every "
+                "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
+                "O(the run's own node count). The plan gate is the "
+                "load-bearing assert; the band is set from THIS "
+                "measurement. The fleet-wide gauge sampler ("
+                "_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY "
+                "DESIGN (no run id to key); its band is recorded in "
+                "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
+            ),
+            "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02)",
+        },
     )

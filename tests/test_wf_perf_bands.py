@@ -24,7 +24,6 @@ from taskq.backend._protocol import JobId
 from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
-    MEASUREMENTS,
     claim_view,
     fire_count,
     node_state,
@@ -32,6 +31,7 @@ from tests._wf_fixtures import (
     seed_flow,
     seed_join,
     seed_running_node,
+    write_band_artifact,
 )
 
 # ── The measured gates: the fan-out tx band + the join-fire latency ─────
@@ -84,19 +84,20 @@ async def test_fan_out_tx_band_1000_children(
     assert int(children) == 1001  # 1000 children + the join node
     outbox = await wf_conn.fetchval(f'SELECT count(*) FROM "{wf_schema}".wf_outbox')
     assert int(outbox) == 0  # the join has deps 1000: nothing fired yet
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "fanout-1000-tx-band.json").write_text(
-        json.dumps(
-            {
-                "pin": "fanout-1000-tx-band",
-                "elapsed_ms": elapsed_ms,
-                "children": 1000,
-                "band_ms": 500,
-                "method": "wall clock of finalize_node tx1+tx2, 1000-child fork, "
-                "chunked parallel-array inserts (500/chunk), one tx",
-            },
-            indent=2,
-        )
+    # THE APPEND-ONLY CONVERSION + THE HEAD-STAMP LAW (the stale-evidence
+    # hunt's source cure): the band is a RUN-SCOPED, head-stamped file
+    # (the in-place write_text was the torn-write race + the unstamped
+    # rumor the verifier refuses).
+    write_band_artifact(
+        "fanout-1000-tx-band.json",
+        {
+            "pin": "fanout-1000-tx-band",
+            "elapsed_ms": elapsed_ms,
+            "children": 1000,
+            "band_ms": 500,
+            "method": "wall clock of finalize_node tx1+tx2, 1000-child fork, "
+            "chunked parallel-array inserts (500/chunk), one tx",
+        },
     )
     assert elapsed_ms < 500, f"the 1000-child fan-out tx took {elapsed_ms:.1f} ms"
 
@@ -133,12 +134,11 @@ async def test_join_fire_latency_band(
     assert result.applied
     state = await node_state(wf_conn, wf_schema, join_id)
     assert state["deps_pending"] == 0 and await fire_count(wf_conn, wf_schema, join_id) == 1
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / "join-fire-latency.json").write_text(
-        json.dumps(
-            {"pin": "join-fire-latency", "elapsed_ms": elapsed_ms, "band_ms": 50},
-            indent=2,
-        )
+    # THE APPEND-ONLY CONVERSION (the writer's own law — see the fan-out
+    # band's note): run-scoped + head-stamped, never the in-place rewrite.
+    write_band_artifact(
+        "join-fire-latency.json",
+        {"pin": "join-fire-latency", "elapsed_ms": elapsed_ms, "band_ms": 50},
     )
     assert elapsed_ms < 50, f"join-fire latency {elapsed_ms:.1f} ms exceeds the band"
 
@@ -155,8 +155,12 @@ def _percentile(data: list[int], pct: float) -> int:
 
 
 def _write_measurement(name: str, payload: object) -> None:
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / name).write_text(json.dumps(payload, indent=2, default=str))
+    """The run-scoped + head-stamped writer (the append-only conversion's
+    own helper, :func:`write_band_artifact`) — the module's remaining
+    in-place writer converted at the source (the stale-evidence hunt's
+    class 7: the unstamped in-place write was the torn-write race AND
+    the verifier's unstamped-rumor)."""
+    write_band_artifact(name, payload if isinstance(payload, dict) else {"payload": payload})
 
 
 @pytest.mark.slow
