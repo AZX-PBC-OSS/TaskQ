@@ -901,4 +901,6 @@ async def test_the_finalize_registers_the_flow_reducers_for_the_cold_process(
     # process's registry, keyed by the run's JobId): the memo answers for
     # an anonymous flow (no stamped workflow name).
     resolved = resolve_flow_reducer(flow_id, "reg_join", workflow_name=None)
-    assert resolved is the_reducer, "the finalize did not register the reducer for the fire's arm"
+    assert resolved.body is the_reducer, (
+        "the finalize did not register the reducer for the fire's arm"
+    )

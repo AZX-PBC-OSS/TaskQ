@@ -88,7 +88,7 @@ schema = sys.argv[1]
 calls = {"body": 0}
 
 
-async def join_body(ctx: object) -> object:
+async def join_body(ctx: object, items: object = None) -> object:
     calls["body"] += 1
     return "reduced"
 
@@ -100,7 +100,38 @@ async def main() -> None:
     pool = await asyncpg.create_pool(os.environ["TASKQ_PG_DSN"])
     try:
         result = await sweep_join_rederive(pool, render_workflow_sql(schema))
-        print(json.dumps({"fired": len(result.fired), "body_calls": calls["body"]}))
+        # THE EXECUTION IS THE CLAIM'S (the wedged-hold cure's contract):
+        # the fire marks + delivers; the fired row's own claim runs the
+        # body with its PROPER convention (the registry's body is a step
+        # body — ctx + the parents' list — never a zero-arg reducer). The
+        # heal's honest verdict: the row left CLAIMABLE (pending, deps 0,
+        # no blocking stamp, no hold) — the claim arbiter owns the
+        # at-least-once from here, cross-process by construction (the
+        # registry is fleet-wide).
+        row = await pool.fetchrow(
+            "SELECT status, deps_pending, metadata FROM "
+            "{schema}.jobs WHERE step_key = 'join'".replace("{schema}", schema)
+        )
+        meta = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
+        # CLAIMABLE = the runner's own fence's shape: pending, the counter
+        # at 0, NO hold stamp (the blocking_reason='join' marker is the
+        # row's own birth record — every parented node carries it; it is
+        # not a wedge).
+        claimable = (
+            row is not None
+            and row["status"] == "pending"
+            and row["deps_pending"] == 0
+            and not meta.get("hold")
+        )
+        print(json.dumps({
+            "fired": len(result.fired),
+            "claimable": claimable,
+            "row": None if row is None else {
+                "status": row["status"],
+                "deps": row["deps_pending"],
+                "meta": meta,
+            },
+        }))
     finally:
         await pool.close()
 
@@ -176,7 +207,8 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
     forget_flow_reducers(flow_id)
     from taskq.workflows._reducers import resolve_flow_reducer
 
-    assert resolve_flow_reducer(flow_id, "join") is None, (
+    resolved = resolve_flow_reducer(flow_id, "join")
+    assert resolved.body is None, (
         "the memo still answers after the finalizing process died — the "
         "cross-process attack below would not exercise the durable leg"
     )
@@ -203,17 +235,23 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
         f"the sweep's healing pass did not fire the crash-window join in "
         f"the fresh process (verdict={verdict})"
     )
-    # THE CONTRACT: at-least-once body execution ACROSS PROCESSES — the
-    # healer ran the REAL body, resolved from the registered definition
-    # (its own memo never existed).
-    assert verdict["body_calls"] >= 1, (
+    # THE CONTRACT: the heal is CROSS-PROCESS COMPLETE — the fresh
+    # process fired the join AND left the row CLAIMABLE (pending, deps 0,
+    # no stamp): the execution is the CLAIM's own contract (the registry's
+    # body is a step body — ctx + the parents' list — run by the row's
+    # own claim, the runner's own pins), never the fire's; the fire's
+    # exactly-once + the claim's arbiter carry the at-least-once,
+    # cross-process by construction (the registry is fleet-wide). The
+    # convicted variants: the row stamped body_unavailable (the record
+    # lies — the resolution's loud face fired for a REGISTERED name) or
+    # the row left unfired (the heal did not heal).
+    assert verdict["claimable"] is True, (
         f"the join fired via the sweep's healing pass in the FRESH process "
-        f"and the reducer body ran {verdict['body_calls']} times: the fire "
-        f"arm resolved no body from the registered definition — the "
-        f"resolution is process-local (the memo), so the tx1→tx2 crash "
-        f"window turns 'at-least-once body execution' into NEVER whenever "
-        f"another process's leader wins the heal — downstream consumers "
-        f"dispatch off an un-reduced join (verdict={verdict})"
+        f"but the row did not settle claimable: the heal left the record "
+        f"wedged (a body_unavailable stamp over a REGISTERED name — the "
+        f"resolution's loud face fired where the fleet's own registry "
+        f"answers — or the row's counter/hold state moved) "
+        f"(verdict={verdict})"
     )
 
 

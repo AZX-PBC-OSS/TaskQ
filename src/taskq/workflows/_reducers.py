@@ -131,20 +131,24 @@ def resolve_flow_reducer(
     if memo is not None:
         return FlowReducerResolution(body=memo, loud=False)
     if workflow_name:
-        from taskq.workflows._worker_execution import get_compiled_workflow
+        from taskq.workflows.definitions import get_registry
 
-        try:
-            get_compiled_workflow(workflow_name)
-        except KeyError:
-            return FlowReducerResolution(body=None, loud=True)
-        # The graph resolves in THIS process — the process knows the
-        # workflow: a node WITH a body is a step (the row's own claim
-        # executes it, the wired args); a node WITHOUT one is a join (the
-        # identity packer's); a fork-spawned key (no compiled decl — the
-        # '<src>.item' shape) is the definition's own step body (the
-        # claim's again). EVERY face is the claim's, never the fire's:
-        # the fire delivers, the row fires, the record is healthy.
-        return FlowReducerResolution(body=None, loud=False)
+        # THE FLEET'S OWN STORE: the definition REGISTRY is what every
+        # worker process imports (the fleet convention — the registry
+        # content is schema-level by construction); the compiled cache is
+        # per-process compile state and a healer that imported the
+        # definitions but never compiled the workflow in-process is still
+        # a healthy member of the fleet. A name the registry resolves is
+        # the healthy face: a node WITH a body is a step (the row's own
+        # claim executes it, the wired args); a node WITHOUT one is a
+        # join (the identity packer's); a fork-spawned key (no compiled
+        # decl — the '<src>.item' shape) is the definition's own step
+        # body (the claim's again). EVERY face is the claim's, never the
+        # fire's: the fire delivers, the row fires, the record is
+        # healthy.
+        if workflow_name in get_registry():
+            return FlowReducerResolution(body=None, loud=False)
+        return FlowReducerResolution(body=None, loud=True)
     # No stamp and no memo: the pre-stamp/anonymous root — the R2-2 loud
     # face (the record must not look healthy while the resolution could
     # not even name the workflow to ask).
