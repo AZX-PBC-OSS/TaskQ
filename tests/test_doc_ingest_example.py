@@ -174,8 +174,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
     the TYPED verdict."""
     import asyncpg
 
-    from taskq.workflows import FlowRunner
-    from taskq.workflows.api._hitl import HitlClient
+    from taskq.workflows import FlowRunner, HitlClient
 
     schema = module_pg_schema.schema_name
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)

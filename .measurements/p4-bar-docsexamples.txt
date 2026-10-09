@@ -1,0 +1,323 @@
+.....F........F......................F...................F.............. [ 78%]
+....................                                                     [100%]
+=================================== FAILURES ===================================
+________ test_docs_example[docs/guides/migrating-from-langgraph.md:152] ________
+
+example = DocsExample(example_id='docs/guides/migrating-from-langgraph.md:152', path='docs/guides/migrating-from-langgraph.md', ..., enrich_one_body)  # the join: <key>.join\n    return build(enriched)  # the join collects list[dict] — ALL children')
+docs_pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/6'
+example_schema = 'docs_migrating_from_langgraph_7587680411'
+
+    @pytest.mark.parametrize("example", _EXECUTED_EXAMPLES, ids=lambda e: e.example_id)
+    async def test_docs_example(
+        example: DocsExample,
+        docs_pg_dsn: str,
+        redis_url: str,
+        example_schema: str,
+    ) -> None:
+        """One ```python fence from the docs runs green against the real package."""
+>       await _run_example(example, example_schema, docs_pg_dsn, redis_url)
+
+tests/test_docs_examples.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+example = DocsExample(example_id='docs/guides/migrating-from-langgraph.md:152', path='docs/guides/migrating-from-langgraph.md', ..., enrich_one_body)  # the join: <key>.join\n    return build(enriched)  # the join collects list[dict] — ALL children')
+schema = 'docs_migrating_from_langgraph_7587680411'
+pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/6'
+
+    async def _run_example(example: DocsExample, schema: str, pg_dsn: str, redis_url: str) -> None:
+        """Execute one fence in a subprocess; fail with its stderr on any exit."""
+        try:
+            script = render_script(example.code)
+        except SyntaxError as exc:
+            pytest.fail(
+                f"{example.example_id}: example does not compile: {exc.msg} "
+                f"(line {exc.lineno}); fix it or tag the fence 'python no-exec'"
+            )
+        with tempfile.TemporaryDirectory(prefix="docs-example-") as tmp:
+            source = Path(tmp) / "example.py"
+            source.write_text(script, encoding="utf-8")
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_REDIS_URL": redis_url,
+                # Hermetic: the developer's .env must not satisfy an example.
+                "DOTENV_DIR": tmp,
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(source),
+                cwd=tmp,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=EXAMPLE_TIMEOUT_S)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                pytest.fail(
+                    f"{example.example_id}: no exit within {EXAMPLE_TIMEOUT_S}s — an "
+                    "example must terminate; tag it 'python no-exec' if long-running"
+                )
+            if proc.returncode != 0:
+                fence = f"{REPO_ROOT / example.path}:{example.open_line}"
+>               pytest.fail(
+                    f"{example.example_id} (fence at {fence}) failed with exit code "
+                    f"{proc.returncode}:\n{stderr.decode(errors='replace')[-3000:]}"
+                )
+E               Failed: docs/guides/migrating-from-langgraph.md:152 (fence at /tmp/opencode/wt-taskqflow-p4/docs/guides/migrating-from-langgraph.md:152) failed with exit code 1:
+E               Traceback (most recent call last):
+E                 File "/tmp/docs-example-pnkeb_ds/example.py", line 13, in <module>
+E                   @app.workflow("batch_ingest")
+E                    ^^^
+E               NameError: name 'app' is not defined
+
+tests/test_docs_examples.py:141: Failed
+______________ test_docs_example[docs/examples/doc-ingest.md:30] _______________
+
+example = DocsExample(example_id='docs/examples/doc-ingest.md:30', path='docs/examples/doc-ingest.md', open_line=30, close_line=...key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())')
+docs_pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/15'
+example_schema = 'docs_doc_ingest_588a84e78d'
+
+    @pytest.mark.parametrize("example", _EXECUTED_EXAMPLES, ids=lambda e: e.example_id)
+    async def test_docs_example(
+        example: DocsExample,
+        docs_pg_dsn: str,
+        redis_url: str,
+        example_schema: str,
+    ) -> None:
+        """One ```python fence from the docs runs green against the real package."""
+>       await _run_example(example, example_schema, docs_pg_dsn, redis_url)
+
+tests/test_docs_examples.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+example = DocsExample(example_id='docs/examples/doc-ingest.md:30', path='docs/examples/doc-ingest.md', open_line=30, close_line=...key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())')
+schema = 'docs_doc_ingest_588a84e78d'
+pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/15'
+
+    async def _run_example(example: DocsExample, schema: str, pg_dsn: str, redis_url: str) -> None:
+        """Execute one fence in a subprocess; fail with its stderr on any exit."""
+        try:
+            script = render_script(example.code)
+        except SyntaxError as exc:
+            pytest.fail(
+                f"{example.example_id}: example does not compile: {exc.msg} "
+                f"(line {exc.lineno}); fix it or tag the fence 'python no-exec'"
+            )
+        with tempfile.TemporaryDirectory(prefix="docs-example-") as tmp:
+            source = Path(tmp) / "example.py"
+            source.write_text(script, encoding="utf-8")
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_REDIS_URL": redis_url,
+                # Hermetic: the developer's .env must not satisfy an example.
+                "DOTENV_DIR": tmp,
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(source),
+                cwd=tmp,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=EXAMPLE_TIMEOUT_S)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                pytest.fail(
+                    f"{example.example_id}: no exit within {EXAMPLE_TIMEOUT_S}s — an "
+                    "example must terminate; tag it 'python no-exec' if long-running"
+                )
+            if proc.returncode != 0:
+                fence = f"{REPO_ROOT / example.path}:{example.open_line}"
+>               pytest.fail(
+                    f"{example.example_id} (fence at {fence}) failed with exit code "
+                    f"{proc.returncode}:\n{stderr.decode(errors='replace')[-3000:]}"
+                )
+E               Failed: docs/examples/doc-ingest.md:30 (fence at /tmp/opencode/wt-taskqflow-p4/docs/examples/doc-ingest.md:30) failed with exit code 1:
+E               Traceback (most recent call last):
+E                 File "/tmp/docs-example-zwe8zakh/example.py", line 236, in <module>
+E                   main_task = asyncio.run(main())
+E                 File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 196, in run
+E                   return runner.run(main)
+E                          ~~~~~~~~~~^^^^^^
+E                 File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 119, in run
+E                   return self._loop.run_until_complete(task)
+E                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+E                 File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+E                   return future.result()
+E                          ~~~~~~~~~~~~~^^
+E                 File "/tmp/docs-example-zwe8zakh/example.py", line 226, in main
+E                   await runner.drive(flow_id)  # the resume → the terminal
+E                         ^^^^^^
+E               NameError: name 'runner' is not defined
+
+tests/test_docs_examples.py:141: Failed
+_______________ test_docs_example[docs/guides/workflows.md:297] ________________
+
+example = DocsExample(example_id='docs/guides/workflows.md:297', path='docs/guides/workflows.md', open_line=297, close_line=311,...   src = chain_source(CHAIN, source_body, key="doc_source")  # actor \'wf\', queue \'default\'\n    return build(src)')
+docs_pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/37'
+example_schema = 'docs_workflows_0b22c92eb9'
+
+    @pytest.mark.parametrize("example", _EXECUTED_EXAMPLES, ids=lambda e: e.example_id)
+    async def test_docs_example(
+        example: DocsExample,
+        docs_pg_dsn: str,
+        redis_url: str,
+        example_schema: str,
+    ) -> None:
+        """One ```python fence from the docs runs green against the real package."""
+>       await _run_example(example, example_schema, docs_pg_dsn, redis_url)
+
+tests/test_docs_examples.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+example = DocsExample(example_id='docs/guides/workflows.md:297', path='docs/guides/workflows.md', open_line=297, close_line=311,...   src = chain_source(CHAIN, source_body, key="doc_source")  # actor \'wf\', queue \'default\'\n    return build(src)')
+schema = 'docs_workflows_0b22c92eb9'
+pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/37'
+
+    async def _run_example(example: DocsExample, schema: str, pg_dsn: str, redis_url: str) -> None:
+        """Execute one fence in a subprocess; fail with its stderr on any exit."""
+        try:
+            script = render_script(example.code)
+        except SyntaxError as exc:
+            pytest.fail(
+                f"{example.example_id}: example does not compile: {exc.msg} "
+                f"(line {exc.lineno}); fix it or tag the fence 'python no-exec'"
+            )
+        with tempfile.TemporaryDirectory(prefix="docs-example-") as tmp:
+            source = Path(tmp) / "example.py"
+            source.write_text(script, encoding="utf-8")
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_REDIS_URL": redis_url,
+                # Hermetic: the developer's .env must not satisfy an example.
+                "DOTENV_DIR": tmp,
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(source),
+                cwd=tmp,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=EXAMPLE_TIMEOUT_S)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                pytest.fail(
+                    f"{example.example_id}: no exit within {EXAMPLE_TIMEOUT_S}s — an "
+                    "example must terminate; tag it 'python no-exec' if long-running"
+                )
+            if proc.returncode != 0:
+                fence = f"{REPO_ROOT / example.path}:{example.open_line}"
+>               pytest.fail(
+                    f"{example.example_id} (fence at {fence}) failed with exit code "
+                    f"{proc.returncode}:\n{stderr.decode(errors='replace')[-3000:]}"
+                )
+E               Failed: docs/guides/workflows.md:297 (fence at /tmp/opencode/wt-taskqflow-p4/docs/guides/workflows.md:297) failed with exit code 1:
+E               Traceback (most recent call last):
+E                 File "/tmp/docs-example-4bltxnwu/example.py", line 1, in <module>
+E                   CHAIN = Chain(
+E                           ^^^^^
+E               NameError: name 'Chain' is not defined
+
+tests/test_docs_examples.py:141: Failed
+________ test_docs_example[docs/guides/migrating-from-langgraph.md:54] _________
+
+example = DocsExample(example_id='docs/guides/migrating-from-langgraph.md:54', path='docs/guides/migrating-from-langgraph.md', o... END)\ncheckpointer = MemorySaver()  # per-session; dies with the pod\napp = graph.compile(checkpointer=checkpointer)')
+docs_pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/56'
+example_schema = 'docs_migrating_from_langgraph_a310097429'
+
+    @pytest.mark.parametrize("example", _EXECUTED_EXAMPLES, ids=lambda e: e.example_id)
+    async def test_docs_example(
+        example: DocsExample,
+        docs_pg_dsn: str,
+        redis_url: str,
+        example_schema: str,
+    ) -> None:
+        """One ```python fence from the docs runs green against the real package."""
+>       await _run_example(example, example_schema, docs_pg_dsn, redis_url)
+
+tests/test_docs_examples.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+example = DocsExample(example_id='docs/guides/migrating-from-langgraph.md:54', path='docs/guides/migrating-from-langgraph.md', o... END)\ncheckpointer = MemorySaver()  # per-session; dies with the pod\napp = graph.compile(checkpointer=checkpointer)')
+schema = 'docs_migrating_from_langgraph_a310097429'
+pg_dsn = 'postgresql://taskq:taskq@localhost:5697/tq_db_e5f6d99a3eeb'
+redis_url = 'redis://localhost:48092/56'
+
+    async def _run_example(example: DocsExample, schema: str, pg_dsn: str, redis_url: str) -> None:
+        """Execute one fence in a subprocess; fail with its stderr on any exit."""
+        try:
+            script = render_script(example.code)
+        except SyntaxError as exc:
+            pytest.fail(
+                f"{example.example_id}: example does not compile: {exc.msg} "
+                f"(line {exc.lineno}); fix it or tag the fence 'python no-exec'"
+            )
+        with tempfile.TemporaryDirectory(prefix="docs-example-") as tmp:
+            source = Path(tmp) / "example.py"
+            source.write_text(script, encoding="utf-8")
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_REDIS_URL": redis_url,
+                # Hermetic: the developer's .env must not satisfy an example.
+                "DOTENV_DIR": tmp,
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(source),
+                cwd=tmp,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=EXAMPLE_TIMEOUT_S)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                pytest.fail(
+                    f"{example.example_id}: no exit within {EXAMPLE_TIMEOUT_S}s — an "
+                    "example must terminate; tag it 'python no-exec' if long-running"
+                )
+            if proc.returncode != 0:
+                fence = f"{REPO_ROOT / example.path}:{example.open_line}"
+>               pytest.fail(
+                    f"{example.example_id} (fence at {fence}) failed with exit code "
+                    f"{proc.returncode}:\n{stderr.decode(errors='replace')[-3000:]}"
+                )
+E               Failed: docs/guides/migrating-from-langgraph.md:54 (fence at /tmp/opencode/wt-taskqflow-p4/docs/guides/migrating-from-langgraph.md:54) failed with exit code 1:
+E               Traceback (most recent call last):
+E                 File "/tmp/docs-example-e5mmeh8r/example.py", line 2, in <module>
+E                   from langgraph.graph import StateGraph, END
+E               ModuleNotFoundError: No module named 'langgraph'
+
+tests/test_docs_examples.py:141: Failed
+=========================== short test summary info ============================
+FAILED tests/test_docs_examples.py::test_docs_example[docs/guides/migrating-from-langgraph.md:152]
+FAILED tests/test_docs_examples.py::test_docs_example[docs/examples/doc-ingest.md:30]
+FAILED tests/test_docs_examples.py::test_docs_example[docs/guides/workflows.md:297]
+FAILED tests/test_docs_examples.py::test_docs_example[docs/guides/migrating-from-langgraph.md:54]
+4 failed, 88 passed in 63.97s (0:01:03)

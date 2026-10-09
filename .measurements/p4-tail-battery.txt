@@ -1,0 +1,13 @@
+ImportError while loading conftest '/tmp/opencode/wt-taskqflow-p4/tests/conftest.py'.
+tests/conftest.py:134: in <module>
+    from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
+tests/_wf_fixtures.py:35: in <module>
+    from taskq.workflows._sql import WorkflowSql
+src/taskq/workflows/__init__.py:37: in <module>
+    from taskq.workflows.api import (
+src/taskq/workflows/api/__init__.py:31: in <module>
+    from taskq.workflows.api._app import (
+E     File "/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/api/_app.py", line 298
+E       ALSO satisfies ``Callable[[], object]`` — nothing is refused.
+E                                               ^
+E   SyntaxError: invalid character '—' (U+2014)

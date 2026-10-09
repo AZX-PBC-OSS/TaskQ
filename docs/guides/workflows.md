@@ -317,7 +317,7 @@ own law. A flow's heterogeneous placement (§9.1 — a source on `default`,
 a chain on `gpu`) is therefore expressed with **distinct actor names per
 queue** — the chain's gpu step is a gpu-named actor:
 
-```python
+```python no-exec — not executed: fragment, the author's bodies (screen_app, enrich_app, score_app) are the workflow's own
 CHAIN = Chain(
     name="gpu-chain",
     start="screen",
