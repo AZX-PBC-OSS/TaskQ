@@ -505,7 +505,7 @@ The **prune sweep** (Sweep 5) runs once daily and moves terminal jobs from `jobs
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_PRUNE_SCHEDULE_UTC` | `str` | `03:00` | Daily fire time for the prune sweep in `HH:MM` UTC format. Ignored when `TASKQ_PRUNE_CRON_EXPR` is set. | n/a |
-| `TASKQ_PRUNE_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron expression for the prune sweep. Takes precedence over `TASKQ_PRUNE_SCHEDULE_UTC`. | n/a |
+| `TASKQ_PRUNE_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron expression for the prune sweep. Takes precedence over `TASKQ_PRUNE_SCHEDULE_UTC`. A DAILY (or slower) expression runs the once-per-day prune with the day-latch; a SUB-DAILY expression (`*/5 * * * *` and friends) is a **retention policy, not a daily appointment**: the arm checks the retention thresholds every leader sweep tick (`TASKQ_SWEEP_INTERVAL`) instead of waiting for the next cron fire, and the day-latch never gates it (a sub-daily retention that silently pruned at most once a day is the D2-soak conviction this decoupling cures). Each deferral the day-latch does make is logged (`prune-skipped-day-latch`) — never silent. | n/a |
 | `TASKQ_PRUNE_BATCH_SIZE` | `int` | `10000` | Rows processed per CTE batch. The sweep repeats until no rows remain. | Min: 1 |
 
 #### Per-status retention
