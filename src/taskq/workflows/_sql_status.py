@@ -63,15 +63,17 @@ GROUP BY status
 # The PER-NODE variant (the admin page's read, bounded by the run's own
 # node count): the node's derived view fields ride the row — the join
 # counter (join-wait), the blocked-with-reason stamp, the hold shape (the
-# future scheduled_at + the unresolved signal), and the ABSORPTION record
+# future scheduled_at + the unresolved signal), the ABSORPTION record
 # (the edge ledger's declared policy for this node's failure + the
 # absorbing join's failures array — the derivation reads the record, never
-# a heuristic). The absorption record is _absorbed_exists's POLICY-vs-
+# a heuristic), and the PARENT LINK (the map-child mark's input — the
+# admin run view collapses a row parented at another run node into its
+# source's hexagon; static nodes are parented at NULL). The absorption record is _absorbed_exists's POLICY-vs-
 # FENCE predicate — the edge's declaration alone absorbs nothing (the
 # envelope never lies, T07's C).
 WORKFLOW_NODES_SQL = (
     """\
-SELECT j.id, j.step_key, j.status, j.deps_pending,
+SELECT j.id, j.step_key, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'blocking_reason' AS blocking_reason,
        j.attempt, j.max_attempts,
        """
@@ -112,6 +114,34 @@ FROM {schema}.jobs c
 LEFT JOIN {schema}.wf_node_progress p ON p.node_id = c.id AND p.channel = 'progress'
 WHERE c.parent_id = $1::uuid
 GROUP BY c.step_key
+"""
+
+
+# The PER-SOURCE variant (the admin run-explorer's collapse feed — the
+# dead map-collapse's cure, Q1d): the same done/total aggregate, grouped
+# by the children's TRUE parent — the map-source node the fork/emit
+# parented every child at (the fork/emit INSERT binds the SOURCE's job
+# id, never the run root; the root's own id matches NOTHING). The fan-in
+# JOIN row is NOT a counted child: it is born parented at the source
+# too, but it is a NODE (the joined-row family's blocking_reason marker
+# carries on its metadata) — counting it read the hexagon 3/4 for a
+# 3-item map. The admin view passes THE RUN'S NODE IDS and gets one row
+# per source node: the hexagon collapse renders per source, and the
+# ROOT's counter is the SUM across sources (assembled in _wf_rows). One
+# bound statement (ANY($1)), computed IN the query — never a per-source
+# round trip (the fan-out tx band's shape), never a second instrument
+# (the single-source read above keeps its own signature: it answers ONE
+# source's id, this one MANY).
+WORKFLOW_MAP_PROGRESS_SOURCES_SQL = """\
+SELECT p.id AS source_id,
+       p.step_key AS source_key,
+       count(*) AS total,
+       count(*) FILTER (WHERE c.status IN {terminal}) AS done
+FROM {schema}.jobs c
+JOIN {schema}.jobs p ON p.id = c.parent_id
+WHERE c.parent_id = ANY($1::uuid[])
+  AND c.metadata->>'blocking_reason' IS NULL
+GROUP BY p.id, p.step_key
 """
 
 

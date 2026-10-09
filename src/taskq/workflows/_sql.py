@@ -78,6 +78,7 @@ from taskq.workflows._sql_progress import (
     PROGRESS_STREAM_APPEND_TRIM_SQL,
 )
 from taskq.workflows._sql_status import (
+    WORKFLOW_MAP_PROGRESS_SOURCES_SQL,
     WORKFLOW_MAP_PROGRESS_SQL,
     WORKFLOW_NODES_SQL,
     WORKFLOW_ROLLUP_SQL,
@@ -174,6 +175,7 @@ class WorkflowSql:
     workflow_rollup: str
     workflow_nodes: str
     workflow_map_progress: str
+    workflow_map_progress_sources: str
     workflow_root_maintain: str
     # T21's progress surface (the two-channel persistence + the faces).
     progress_state_upsert: str
@@ -253,6 +255,7 @@ class WorkflowSql:
             workflow_rollup=render(WORKFLOW_ROLLUP_SQL),
             workflow_nodes=render(WORKFLOW_NODES_SQL),
             workflow_map_progress=render(WORKFLOW_MAP_PROGRESS_SQL),
+            workflow_map_progress_sources=render(WORKFLOW_MAP_PROGRESS_SOURCES_SQL),
             workflow_root_maintain=render(WORKFLOW_ROOT_MAINTAIN_SQL),
             progress_state_upsert=render(PROGRESS_STATE_UPSERT_SQL),
             progress_stream_append=render(PROGRESS_STREAM_APPEND_TRIM_SQL),

@@ -24,7 +24,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import asyncpg
 import structlog
@@ -102,6 +102,35 @@ def _field_of(payload: object, field_name: str) -> str | int | float | bool | No
     return value if isinstance(value, str | int | float | bool) else None
 
 
+#: The refusal banner's closed vocabulary (the redirect the action
+#: routes carry — the operator lands on the DEFINED refused-op state,
+#: never a 400 wall: the extra conviction — a refusal redirect that the
+#: page's own reject_unknown_query_params 400s is the teach-them-to-
+#: retry mutation trap).
+REFUSAL_BANNERS: Final[dict[str, str]] = {
+    "cancel-not-applied": (
+        "Cancel not applied — the run was already terminal (or a cancel "
+        "is in flight); nothing changed."
+    ),
+}
+_REFUSAL_PARAM: Final[str] = "error"
+
+
+def _refusal_banner(request: Request) -> str | None:
+    """The refused-op banner's text for the redirect's ``?error=``
+    param (None when absent). The VALUE is closed-vocabulary: a known
+    key renders its named refusal; an unknown value still renders the
+    defined refusal line naming the key (autoescaped) — the redirect
+    must never dead-end on a 400 wall."""
+    value = request.query_params.get(_REFUSAL_PARAM)
+    if value is None:
+        return None
+    known = REFUSAL_BANNERS.get(value)
+    if known is not None:
+        return known
+    return f"The last action was refused ({value}); nothing changed."
+
+
 def register(router: APIRouter) -> None:
     """Attach the explorer's pages + the machine routes to *router*."""
     register_actions(router)
@@ -157,7 +186,10 @@ def register(router: APIRouter) -> None:
         csrf_token: str = Depends(get_csrf_token),
         settings: Any = Depends(get_settings),
     ) -> HTMLResponse:
-        reject_unknown_query_params(request, ())
+        # The refusal banner's param is DECLARED (the cancel route's 303
+        # carries it — the operator lands on the refused-op banner, the
+        # defined state, never the 400 wall the empty allowed-set built).
+        reject_unknown_query_params(request, (_REFUSAL_PARAM,))
         installed = True
         view: RunView | None = None
         events: list[asyncpg.Record] = []
@@ -223,7 +255,11 @@ def register(router: APIRouter) -> None:
                 "map_children": n.map_children,
                 "error_class": n.error_class,
             }
+            # THE COLLAPSE (Q1d): the map children render through their
+            # source's hexagon — the page's node projection is the
+            # collapsed one, the derivation reads every row.
             for n in view.nodes
+            if not n.map_child
         ]
         holds = [
             {
@@ -255,6 +291,10 @@ def register(router: APIRouter) -> None:
             derived=view.derive(),
             nodes=nodes,
             holds=holds,
+            # THE REFUSED-OP BANNER (the extra conviction's cure): the
+            # cancel route's redirect lands HERE, on the named refusal —
+            # never on a 400 wall.
+            refusal_banner=_refusal_banner(request),
             events=[dict(e) | {"occurred_at": _iso(e["occurred_at"])} for e in events],
             boot=boot,
             csrf_token=csrf_token,
