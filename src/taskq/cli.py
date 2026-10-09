@@ -4263,6 +4263,7 @@ def _validate_through_gate(
     from pydantic import ValidationError
 
     from taskq.workflows._cli import gate_models_for
+    from taskq.workflows.api._validate import WorkflowValidationError
 
     try:
         models = gate_models_for(app_obj, workflow, node_key)
@@ -4278,6 +4279,20 @@ def _validate_through_gate(
             f"validate signal {signal_name!r} against this app; pass the "
             "--app module that declares the run's workflow (the stale-"
             "deploy shape: the app moved since the run started)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    except WorkflowValidationError as exc:
+        # THE DOOR'S OWN REPORT IS THE REFUSAL (the registration door's
+        # CLI face — found by THIS lane's attack round: app.get() validates
+        # since the F-LOOP-7 cure, so an INVALID graph's compile error
+        # escaped the typed door as a rich traceback — the diagnostics-
+        # first law's own violation). The validation report NAMES the rule
+        # + the fix; the operator's terminal carries it, exit 1.
+        typer.echo(
+            f"the run's workflow {workflow!r} does not validate on this "
+            f"app — {exc} (fix the definition and redeploy; the typed "
+            "door cannot resolve its gates on an invalid graph)",
             err=True,
         )
         raise typer.Exit(code=1) from None

@@ -53,7 +53,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, gather, step
+from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
@@ -355,18 +355,10 @@ async def _wait_body(ctx: StepContext, params: _WarnIn) -> str:
     return "ok"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-ERGO-7 @ af1b8779: the ergonomics contract's 'zero-warning "
-        "budget' is inflated — CompiledWorkflow.validate() raises only on "
-        "severity=='error', so a warning-severity regression sails green (the "
-        "doc-ingest pin's 'validate() reports ZERO findings' claim validates nothing "
-        "at warning severity). The cure (validate() refuses a warning-carrying graph, "
-        "or the claim is re-worded to errors) flips this to XPASS-strict — remove the "
-        "marker WITH the cure."
-    ),
-)
+async def _unannotated_body(ctx: Any, params: Any):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingReturnType, reportUnknownReturnType]  # Why: THE PROBE — the unannotated return IS the mutation under test (E4's carrier); the root pyproject's tests relaxation would mute it.
+    return "ok"
+
+
 def test_validate_refuses_a_warning_carrying_graph() -> None:
     """The zero-warning budget, made real: a graph carrying ANY
     warning-severity finding must FAIL validate(). The carrier is a W1
@@ -394,24 +386,18 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     # PINS' ``diagnostics == ()`` teeth (test_wf_ergonomics_contract's
     # own asserts), not by a raise. The pin now holds the honest shape:
     # the warning REPORTS (never silently swallowed) AND the error
-    # REFUSES.
+    # REFUSES. The error carrier is a graph that BUILDS and FAILS
+    # VALIDATION (E4's unannotated param — the arity lie the door owns);
+    # the build-refused shapes (the empty gather) refuse at the VERB,
+    # a different seam with its own pins.
     error_carrier_app = WorkflowApp()
 
     @error_carrier_app.workflow("att_demopin_error_flow")
     def _err_wf() -> object:
-        # THE ERROR CARRIER: a join with NO user body and no upstreams'
-        # promise — the build-refused shape family... the door's real
-        # error face: an edge-less join is diagnosed + refused (E-rule).
-        return build(gather([]))
-
-    error_app = WorkflowApp()
-
-    @error_app.workflow("att_demopin_error_flow")
-    def _err_wf2() -> object:
-        return build(gather([]))  # the empty gather: the ERROR-severity rule
+        return build(step(_unannotated_body, _WarnIn(doc_id="d"), key="produce"))
 
     with pytest.raises(WorkflowValidationError):
-        error_app.get("att_demopin_error_flow").validate()
+        error_carrier_app.get("att_demopin_error_flow").validate()
 
 
 # ── GREEN GUARD: the two-driver one-schema drive race ────────────────────

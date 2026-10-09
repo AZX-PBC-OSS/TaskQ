@@ -102,6 +102,7 @@ def demo_env(tmp_path_factory: pytest.TempPathFactory) -> Any:
     sys.modules[MODULE_NAME] = module
     app_dir = tmp_path_factory.mktemp("attack4-app")
     (app_dir / f"{MODULE_NAME}.py").write_text(
+        "from typing import Any\n\n"
         "from pydantic import BaseModel\n\n"
         "from taskq.workflows import WorkflowApp, build, step\n"
         "from taskq.workflows.api import GateDecl\n\n\n"
@@ -110,12 +111,12 @@ def demo_env(tmp_path_factory: pytest.TempPathFactory) -> Any:
         '    note: str = ""\n\n\n'
         "class Ingest(BaseModel):\n"
         "    doc_id: str\n\n\n"
-        "async def _wait(ctx, params) -> str:\n"
+        "async def _wait(ctx: Any, params: Ingest) -> str:\n"
         "    await ctx.wait_signal((Approval,), reason='editorial approval', timeout_s=120.0)\n"
         "    return 'published'\n\n\n"
-        "async def _explode(ctx, params):\n"
+        "async def _explode(ctx: Any, params: Ingest) -> str:\n"
         "    raise RuntimeError('the upstream blew up')\n\n\n"
-        "async def _downstream(ctx, up):\n"
+        "async def _downstream(ctx: Any, up: str) -> str:\n"
         "    return up\n\n\n"
         "app = WorkflowApp()\n\n\n"
         '@app.workflow("attack4b_hold_flow")\n'
