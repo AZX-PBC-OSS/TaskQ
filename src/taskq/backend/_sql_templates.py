@@ -97,17 +97,6 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_backoff",
     "retry_jitter",
     "assignment_routed",
-    # THE WORKFLOW ROUND (01.00.24): the archive-mirror columns, THE
-    # MERGED LINES' ONE parent_id (the workflow edge's wiring parent AND
-    # the LIB-2 fan-out ledger — the same nullable column, two writers:
-    # the engine's node inserts stamp the wiring parent, the enqueue
-    # contextvar stamps the fan-out parent; plain column, no FK — see
-    # 01.00.23_01_pre_jobs_parent_id.sql). The archive sweep's INSERT
-    # names every column explicitly (the positional `SELECT j.*` doctrine
-    # died with 01.00.03), so the mirror parity the pin enforces
-    # (test_copy_from_columns_match_jobs_table_exactly) needs them here;
-    # the workflow-aware pruner (T18) defines their retention.
-    "parent_id",
     "deps_pending",
     "map_index",
     "step_key",
@@ -118,6 +107,21 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "budget_deadline",
     "budget_paused",
     "budget_remaining_ms",
+    # THE WORKFLOW ROUND (01.00.24): the archive-mirror columns, THE
+    # MERGED LINES' ONE parent_id (the workflow edge's wiring parent AND
+    # the LIB-2 fan-out ledger — the same nullable column, two writers:
+    # the engine's node inserts stamp the wiring parent, the enqueue
+    # contextvar stamps the fan-out parent; plain column, no FK — see
+    # 01.00.23_01_pre_jobs_parent_id.sql). The archive sweep's INSERT
+    # names every column explicitly (the positional `SELECT j.*` doctrine
+    # died with 01.00.03), so the mirror parity the pin enforces
+    # (test_copy_from_columns_match_jobs_table_exactly) needs them here;
+    # the workflow-aware pruner (T18) defines their retention.
+    # THE TRAILING LAW (93b255ff's restoration, carried): parent_id is
+    # the LIST'S LAST member — the record builder writes it last (the
+    # ARITY pin's coherence: 40-wide records against 40 columns), the
+    # pin test_copy_from_columns_carries_parent_id holds the position.
+    "parent_id",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is

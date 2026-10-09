@@ -6,7 +6,7 @@
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE INDEX STATEMENTS (SHARE lock class —
 -- blocks writes for each build's duration, never reads; no ALTERs and no
--- CREATE TABLEs mixed into the window). See 01.00.23_01's header for the
+-- CREATE TABLEs mixed into the window). See 01.00.24_01's header for the
 -- round's three-file split and the deployment sequence.
 --
 -- THE PARTIAL-INDEX DOCTRINE (§16.4, the measured truth): every workflow

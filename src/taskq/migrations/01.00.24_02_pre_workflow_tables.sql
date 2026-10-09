@@ -7,7 +7,7 @@
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE TABLE STATEMENTS (each takes its own
 -- relation lock on a NEW table — no ALTERs, no index builds mixed in).
--- See 01.00.23_01's header for the round's three-file split and the
+-- See 01.00.24_01's header for the round's three-file split and the
 -- deployment sequence. All DDL is additive (no post_ phase, the v1 forever
 -- rule); the tables are new, so the lock class is CREATE TABLE's own.
 --
@@ -71,7 +71,7 @@ CREATE TABLE "{schema}".wf_outbox (
 
 -- ── wf_step_ledger: the step ledger (the exactly-once attempt record) ────
 -- The ledger `attempt` increments at claim, the only grant of work; the
--- claim arbiter (the CREATE UNIQUE INDEX in 01.00.23_03,
+-- claim arbiter (the CREATE UNIQUE INDEX in 01.00.24_03,
 -- wf_step_ledger_claim_uniq) physically blocks double-recording (P3 rule 2).
 -- THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
 -- are DIFFERENT claims per T05's key contract — a bare

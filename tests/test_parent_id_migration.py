@@ -68,7 +68,17 @@ def test_migration_creates_index_non_concurrently() -> None:
 
 
 def test_copy_from_columns_carries_parent_id() -> None:
-    """The COPY column list is the single source the archive CSVs and the
-    enqueue COPY both derive from; parent_id joins it (trailing)."""
+    """THE TRAILING LAW: parent_id is COPY_FROM_COLUMNS' LAST member.
+
+    The list is the single source the archive CSVs and the enqueue COPY
+    both derive from, and the record builder writes parent_id LAST (the
+    ARITY pin's coherence — the batch record's trailing member matches
+    the list's trailing member). The position DIED in the consolidation
+    (the budget trio appended past it) and was RESTORED (93b255ff's
+    resolution, carried here): the trio sits BEFORE parent_id, the
+    archive-mirror parity intact. This pin holds the position — both
+    omission-set comments cite it as the trailing law's enforcement;
+    membership alone would let the trio's next append strand the
+    builder's 40-wide record against a 39-column list again."""
     assert "parent_id" in COPY_FROM_COLUMNS
     assert COPY_FROM_COLUMNS[-1] == "parent_id"

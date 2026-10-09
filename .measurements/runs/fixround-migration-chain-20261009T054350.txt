@@ -1,0 +1,3 @@
+the chain applied CLEAN: 57 migrations on a fresh schema
+the round's identities in the applied chain: ['01.00.23_01_pre_jobs_parent_id.sql', '01.00.24_01_pre_workflow_columns.sql', '01.00.24_02_pre_workflow_tables.sql', '01.00.24_03_pre_workflow_indexes.sql']
+VERDICT: the swept files' identities apply in the chain; no phantom name is required

@@ -37,6 +37,7 @@ from tests._wf_fixtures import (
 # ── The measured gates: the fan-out tx band + the join-fire latency ─────
 
 
+@pytest.mark.load_sensitive
 @pytest.mark.integration
 async def test_fan_out_tx_band_1000_children(
     wf_conn: asyncpg.Connection,
@@ -100,6 +101,7 @@ async def test_fan_out_tx_band_1000_children(
     assert elapsed_ms < 500, f"the 1000-child fan-out tx took {elapsed_ms:.1f} ms"
 
 
+@pytest.mark.load_sensitive
 @pytest.mark.integration
 async def test_join_fire_latency_band(
     wf_conn: asyncpg.Connection,
