@@ -196,7 +196,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
         (hold,) = await client.list(run_id)
         result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
         assert result.status == "delivered"
-        outcome = await runner.drive(run_id)
+        outcome = await runner.drive(run_id)  # the resume → the terminal
         # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
         # corrupted-terminal probe's lesson: a failed run is terminal
         # too; asserting "terminal" alone was the vacuous assertion the
