@@ -144,11 +144,19 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "claim_epoch",
         # 01.00.24's workflow columns: vanilla enqueues never set them (the
         # DDL defaults apply); the engine's own statements write them.
-        "parent_id",
+        # parent_id is NOT omitted: the LIB-2 fan-out ledger's trailing
+        # member rides the COPY (the enqueue contextvar stamps it; the
+        # merge's ONE parent_id — two writers, one column).
         "deps_pending",
         "map_index",
         "step_key",
         "code_version",
+        # The loop-budget trio (01.00.27/01.00.31): vanilla enqueues never
+        # set them either (the DDL defaults: NULL / False / NULL; only the
+        # loop driver's INIT statement writes them).
+        "budget_deadline",
+        "budget_paused",
+        "budget_remaining_ms",
     }
     assert set(COPY_ENQUEUE_COLUMNS) == set(COPY_FROM_COLUMNS) - omitted
     assert list(COPY_ENQUEUE_COLUMNS) == [c for c in COPY_FROM_COLUMNS if c not in omitted]
