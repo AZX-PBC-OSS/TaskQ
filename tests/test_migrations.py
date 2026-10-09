@@ -144,7 +144,11 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "claim_epoch",
         # 01.00.24's workflow columns: vanilla enqueues never set them (the
         # DDL defaults apply); the engine's own statements write them.
-        "parent_id",
+        # parent_id is NOT in this omission set: the LIB-2 fan-out ledger's
+        # trailing member rides the COPY (the enqueue contextvar stamps
+        # current_parent_id(); the record builder carries it last and the
+        # ARITY PIN (test_enqueue_copy_record_arity_matches_columns) holds
+        # the builder-vs-columns coherence from the records' side).
         "deps_pending",
         "map_index",
         "step_key",
@@ -227,7 +231,12 @@ async def test_enqueue_copy_record_arity_matches_columns(
     ) -> str:
         captured.append((tuple(columns), tuple(records[0])))
         result = await orig(
-            self, table, records=records, columns=columns, schema_name=schema_name, **kw  # pyright: ignore[reportUnknownArgumentType]  # Why: the probe mirrors asyncpg's own signature; the pass-through is the real call.
+            self,
+            table,
+            records=records,
+            columns=columns,
+            schema_name=schema_name,
+            **kw,  # pyright: ignore[reportUnknownArgumentType]  # Why: the probe mirrors asyncpg's own signature; the pass-through is the real call.
         )
         return result  # pyright: ignore[reportReturnType]  # Why: asyncpg's COPY returns a COPY-status str; the stub's declared str matches the real call's shape.
 
