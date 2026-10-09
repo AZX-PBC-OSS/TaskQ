@@ -319,9 +319,13 @@ queue** — the chain's gpu step is a gpu-named actor:
 
 ```python
 CHAIN = Chain(
-    name="gpu-chain", start="screen", steps={...},
-    actor="wf-gpu", queue="gpu",   # the chain's steps: a gpu-NAMED actor
+    name="gpu-chain",
+    start="screen",
+    steps={...},
+    actor="wf-gpu",
+    queue="gpu",  # the chain's steps: a gpu-NAMED actor
 )
+
 
 @app.workflow("ingest")
 def ingest() -> object:
@@ -597,7 +601,9 @@ async def stage_b(ctx: StepContext, params: Ingest) -> Stats:
 
 
 @app.actor(queue="cpu")
-async def reduce(ctx: StepContext, a: Stats, b: Stats) -> Stats:  # the join's user body — the DECODED parents
+async def reduce(
+    ctx: StepContext, a: Stats, b: Stats
+) -> Stats:  # the join's user body — the DECODED parents
     return Stats(n=a.n + b.n)
 
 

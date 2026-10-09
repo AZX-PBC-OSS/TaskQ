@@ -162,7 +162,9 @@ def _setup_lifecycle_stubs(
     monkeypatch.setattr("taskq.worker._bootstrap.PostgresBackend", lambda *a, **kw: object())  # type: ignore[arg-type] # Why: replacing PostgresBackend with a plain object stub; only lifecycle ordering is under test, not backend behaviour.
     _worker_id = new_uuid()
 
-    async def _stub_register_worker(pool: asyncpg.Pool, settings: WorkerSettings, **kwargs: object) -> UUID:
+    async def _stub_register_worker(
+        pool: asyncpg.Pool, settings: WorkerSettings, **kwargs: object
+    ) -> UUID:
         return _worker_id
 
     monkeypatch.setattr("taskq.worker.run.register_worker", _stub_register_worker)

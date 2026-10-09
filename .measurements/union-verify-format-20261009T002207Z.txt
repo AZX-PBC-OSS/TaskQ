@@ -1,0 +1,2 @@
+# the union verify: the format pass (the mechanical, ruff 0.16.9's own output) — union head 9676ab2d
+1625 files already formatted

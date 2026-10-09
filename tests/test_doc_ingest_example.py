@@ -88,12 +88,14 @@ def test_the_abstraction_contract_grep_gate() -> None:
         if proc.returncode == 0:  # 0 = matches found = RED
             hits.extend(proc.stdout.splitlines())
         assert proc.returncode != 0, (
-            "the abstraction contract is BROKEN in the SHIPPED workflow "
-            f"surfaces: {hits[:10]}"
+            f"the abstraction contract is BROKEN in the SHIPPED workflow surfaces: {hits[:10]}"
         )
     proc = subprocess.run(
         [
-            "/usr/bin/grep", "-riE", "|".join(_FORBIDDEN), str(REPO_ROOT / "tests"),
+            "/usr/bin/grep",
+            "-riE",
+            "|".join(_FORBIDDEN),
+            str(REPO_ROOT / "tests"),
             "--exclude=test_doc_ingest_example.py",
             "--exclude=test_wf_ergonomics_contract.py",
             "--exclude=test_di_solver.py",
@@ -109,8 +111,7 @@ def test_the_abstraction_contract_grep_gate() -> None:
     if proc.returncode == 0:
         hits.extend(proc.stdout.splitlines())
     assert not hits, (
-        "the abstraction contract is BROKEN — case-study strings in the "
-        f"tests tree: {hits[:10]}"
+        f"the abstraction contract is BROKEN — case-study strings in the tests tree: {hits[:10]}"
     )
 
 
@@ -125,8 +126,16 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
     compiled.validate()  # zero findings — a new example defect reds HERE
     keys = set(compiled.node_keys())
     # The nine shapes' node census (the graph carries them ALL).
-    assert {"ingest", "ingest.join", "route", "summarize", "extract_entities",
-            "classify", "review", "publish"} <= keys, keys
+    assert {
+        "ingest",
+        "ingest.join",
+        "route",
+        "summarize",
+        "extract_entities",
+        "classify",
+        "review",
+        "publish",
+    } <= keys, keys
     # The duality is IN the wiring: the barrier's REQUIRED edges + the
     # MAYBE path's gather.
     assert compiled.nodes["ingest.join"].kind == "map_join"
@@ -193,9 +202,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
         # too; asserting "terminal" alone was the vacuous assertion the
         # cursored fence's first green hid behind).
         assert outcome == "terminal"
-        root = await wf_conn.fetchval(
-            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
-        )
+        root = await wf_conn.fetchval(f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id)
         assert root == "succeeded", (
             f"round {round_no}: the run terminalized as {root!r} — the "
             "corrupted-terminal class (the work was wrong; the record "

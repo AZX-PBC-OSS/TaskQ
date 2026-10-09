@@ -323,9 +323,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "doesn't see the fence is a window with no bars)",
     ),
     "taskq.backend._dispatch_sql:_WF_PROBE_FENCE_TEMPLATE": (
-        (
-            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
-        ),
+        ("taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",),
         "-- THE DISPATCH FENCE, P3 leg only",
         "the claimable probe's P3-only fence (the probe statement carries "
         "no worker identity, so the execution leg has nothing to read), a "

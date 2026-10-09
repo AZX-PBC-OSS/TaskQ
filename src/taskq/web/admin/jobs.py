@@ -1109,13 +1109,9 @@ def register(router: APIRouter) -> None:
             async for frame in progress_stream_generator(
                 pool.pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
             ):
-                yield ServerSentEvent(
-                    event=frame["event"], id=frame["id"], data=frame["data"]
-                )
+                yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
 
         return _EventSourceResponse(
-            release_after(
-                sse_slot, _frames(), "flow-progress-stream", surface="admin"
-            ),
+            release_after(sse_slot, _frames(), "flow-progress-stream", surface="admin"),
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

@@ -64,7 +64,7 @@ _RUNS_PAGE_SIZE = 200
 _RUNS_SQL = (
     "SELECT id, actor, status, created_at, finished_at, cancel_requested_at, "
     "metadata->>'workflow' AS workflow "
-    'FROM "{schema}".jobs WHERE step_key = \'__flow__\' '
+    "FROM \"{schema}\".jobs WHERE step_key = '__flow__' "
     "ORDER BY created_at DESC LIMIT $1"
 )
 

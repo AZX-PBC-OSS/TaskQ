@@ -688,12 +688,8 @@ _DB_NOW_SQL = "SELECT clock_timestamp()"
 #: The workflow-era columns the LOOP-BUDGET round added (01.00.27 jobs,
 #: 01.00.31 the archive mirror): the columns the PRE-BUDGET schemas (the
 #: rolling-deploy tolerance's own target, 01.00.24_01) do not carry.
-_BUDGET_ERA_JOBS_COLUMNS = frozenset(
-    {"budget_deadline", "budget_paused", "budget_remaining_ms"}
-)
-_JOBS_PRE_BUDGET_COLUMNS = tuple(
-    c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS
-)
+_BUDGET_ERA_JOBS_COLUMNS = frozenset({"budget_deadline", "budget_paused", "budget_remaining_ms"})
+_JOBS_PRE_BUDGET_COLUMNS = tuple(c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS)
 
 #: The archive write's PRE-BUDGET variant (the rolling-deploy tolerance's
 #: write half): identical statement, the column lists minus the budget
@@ -702,14 +698,12 @@ _JOBS_PRE_BUDGET_COLUMNS = tuple(
 #: columns BOTH sides carry) makes the variant the honest write there.
 #: The qualified list replaces FIRST (the ``j.`` prefixes make it
 #: unambiguous), the plain list second.
-_ARCHIVE_CTE_PRE_BUDGET_SQL = (
-    _ARCHIVE_CTE_SQL.replace(
-        _JOBS_COLUMNS_QUALIFIED_CSV,
-        ", ".join(f"j.{c}" for c in _JOBS_PRE_BUDGET_COLUMNS),
-    ).replace(
-        _JOBS_COLUMNS_CSV,
-        ", ".join(_JOBS_PRE_BUDGET_COLUMNS),
-    )
+_ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
+    _JOBS_COLUMNS_QUALIFIED_CSV,
+    ", ".join(f"j.{c}" for c in _JOBS_PRE_BUDGET_COLUMNS),
+).replace(
+    _JOBS_COLUMNS_CSV,
+    ", ".join(_JOBS_PRE_BUDGET_COLUMNS),
 )
 
 

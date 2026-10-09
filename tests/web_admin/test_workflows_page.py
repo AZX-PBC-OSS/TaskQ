@@ -109,9 +109,7 @@ def _make_admin_app(pool: asyncpg.Pool, schema: str, wf_app: Any = None) -> Fast
     return app
 
 
-async def _seed_run(
-    pool: asyncpg.Pool, schema: str, *, name: str = "admin_hold_flow"
-) -> str:
+async def _seed_run(pool: asyncpg.Pool, schema: str, *, name: str = "admin_hold_flow") -> str:
     """A REAL run driven to its hold (the rows the page renders)."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
@@ -143,7 +141,9 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
     assert 'http-equiv="refresh"' not in html
     # The boot JSON: the rows-alone mermaid + the state.
     assert 'id="wf-boot"' in html
-    boot = json.loads(html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0])
+    boot = json.loads(
+        html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
+    )
     assert boot["runId"] == run_id
     assert "review" in boot["mermaid"]
     assert boot["state"]["status"] == "blocked"  # the §17.5 derivation over the rows
@@ -306,9 +306,7 @@ async def test_sse_unknown_run_streams_the_empty_snapshot(
     """THE STATES MATRIX (3): a stream for an unknown/not-yet-inserted
     run emits the snapshot with ZERO nodes — a defined state, not a
     hang, not a blank."""
-    frames = await _stream_frames(
-        module_pg_schema, "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
-    )
+    frames = await _stream_frames(module_pg_schema, "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f")
     assert frames
     assert frames[0]["nodes"] == []
 
@@ -405,9 +403,7 @@ async def test_node_panel_unknown_node_is_a_404(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(
-            "/api/runs/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f/nodes/nope"
-        )
+        resp = await client.get("/api/runs/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f/nodes/nope")
     assert resp.status_code == 404
 
 
@@ -522,7 +518,9 @@ async def test_g7_rows_equal_the_rendered_state(
     ) as client:
         resp = await client.get(f"/workflows/{run_id}")
     html = resp.text
-    boot = json.loads(html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0])
+    boot = json.loads(
+        html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
+    )
     # THE ROWS==DOM CHECK: every node row's status appears on the page's
     # snapshot, node for node.
     rendered = {n["key"]: n["status"] for n in boot["state"]["nodes"]}
@@ -574,9 +572,7 @@ def test_the_page_js_carries_the_keyboard_contract() -> None:
     forms (the Resolve form is a real <form> — Enter submits it)."""
     from pathlib import Path
 
-    js = Path(__file__).parents[2].joinpath(
-        "src/taskq/web/static/workflows.js"
-    ).read_text()
+    js = Path(__file__).parents[2].joinpath("src/taskq/web/static/workflows.js").read_text()
     assert 'ev.key !== "Enter"' in js and 'ev.key !== " "' in js
     assert 'setAttribute("tabindex", "0")' in js
     assert 'setAttribute("role", "button")' in js
@@ -615,9 +611,7 @@ async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
     ) as client:
         listed = await client.get("/workflows")
         assert listed.status_code == 200  # jobs exists: the list renders (empty)
-        detail = await client.get(
-            "/workflows/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
-        )
+        detail = await client.get("/workflows/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f")
         assert detail.status_code == 200
         assert "workflows not installed" in detail.text
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

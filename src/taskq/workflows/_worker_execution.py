@@ -356,6 +356,5 @@ async def execute_flow_job(
         # caller's defined snooze/release handles it (the loud, budget-
         # free parking, never a crash).
         raise WorkflowBodyUnresolvableError(
-            f"row {job.id}'s step {read['step_key']!r} is unresolvable in "
-            f"this process: {exc}"
+            f"row {job.id}'s step {read['step_key']!r} is unresolvable in this process: {exc}"
         ) from exc

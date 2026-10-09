@@ -65,6 +65,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
         else:
             SEEN.setdefault("map_indexes", []).append(ctx.map_index)
         return doc_id
+
     # (the asserting body returns the LIST the map fans over)
 
     app_obj = app
@@ -72,6 +73,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
     @app_obj.workflow("context_contract")
     def context_contract() -> object:
         first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+
         async def tail(ctx: Any, items: list[str]) -> int:
             return len(items)
 
@@ -81,9 +83,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
     runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
     flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
     await runner.drive(flow_id)
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     if root != "succeeded":
         errors = await wf_conn.fetch(
             f'SELECT step_key, error_class, error_message FROM "{wf_schema}".jobs '
@@ -91,8 +91,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
             flow_id,
         )
         pytest.fail(
-            f"the run failed: {root} — "
-            + json.dumps([dict(r) for r in errors], default=str)
+            f"the run failed: {root} — " + json.dumps([dict(r) for r in errors], default=str)
         )
     assert SEEN.get("step") is True, json.dumps(SEEN, default=str)
     assert sorted(SEEN.get("map_indexes", [])) == [0, 1, 2], json.dumps(SEEN, default=str)
@@ -100,9 +99,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
     assert sorted(SEEN.get("map_indexes", [])) == [0, 1, 2], json.dumps(SEEN, default=str)
 
 
-async def test_the_loop_ctx_carries_the_budget_wall(
-    wf_pool: Any, wf_schema: str
-) -> None:
+async def test_the_loop_ctx_carries_the_budget_wall(wf_pool: Any, wf_schema: str) -> None:
     """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
     number, not None — the wall EXISTS when budget_s is set)."""
     from taskq.workflows import Done
