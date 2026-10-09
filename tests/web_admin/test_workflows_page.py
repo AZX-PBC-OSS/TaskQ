@@ -94,7 +94,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     @app_obj.workflow("admin_map_flow")
     def map_flow() -> object:
         src = step(_map_source_body, Ingest(doc_id="d1"), key="ingest")
-        items = map_source(src, _map_item_body, key="enrich", max_attempts=3)
+        items = map_source(src, _map_item_body, max_attempts=3)
         return build(items)
 
     module.app = app_obj  # type: ignore[attr-defined]

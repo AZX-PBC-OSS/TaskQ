@@ -86,7 +86,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
     @app.workflow("attack4c_self_cancel")
     def self_cancel() -> object:
         ingested = step(suicidal_source, Ingest(doc_id="d1"), key="src")
-        children = map_source(ingested, per_item, key="kid")
+        children = map_source(ingested, per_item)
         return build(children)
 
     runner = FlowRunner(app.get("attack4c_self_cancel"), module_pg_pool, schema)

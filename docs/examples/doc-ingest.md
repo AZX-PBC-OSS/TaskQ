@@ -285,7 +285,7 @@ def doc_ingest() -> object:
     # Shape 4 — the ITEM LADDER's knob, named where the ladder lives:
     # `max_attempts` on the map (each child re-runs ALONE up to this
     # bound; the siblings and the succeeded items never re-run).
-    enriched = map_source(ingested, enrich_item, key="enrich", queue="enrich", max_attempts=3)
+    enriched = map_source(ingested, enrich_item, queue="enrich", max_attempts=3)
 
     # The collect's consumers: the router (dead-letters, sunk) + the three
     # enrichers (one queue each — shape 1's heterogeneous placement).

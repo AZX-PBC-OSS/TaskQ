@@ -345,7 +345,10 @@ def doc_ingest() -> object:
     # The item ladder's knob, named where the ladder lives (each child
     # re-runs ALONE up to this bound — doc-doomed's attempt walks 1 → 2
     # against it, the siblings never re-run).
-    enriched = map_source(ingested, enrich_item, key="enrich", queue="demo-enrich", max_attempts=3)
+    # the join key is DERIVED (ingest.join — the engine's fork addresses
+    # the map join by the source's own key); the map's children ride the
+    # demo-enrich cohort.
+    enriched = map_source(ingested, enrich_item, queue="demo-enrich", max_attempts=3)
     routed = step(_route_body, enriched, key="route", actor="wf-demo-cpu", queue="demo-cpu")
 
     summaries = step(

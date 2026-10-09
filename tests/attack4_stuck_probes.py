@@ -94,7 +94,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
     @app.workflow("attack4_deadlock")
     def attack4_deadlock() -> object:
         first = step(holds_then_works, Ingest(doc_id="d1"), key="gate")
-        mapped = map_source(first, item, key="enrich")
+        mapped = map_source(first, item)
         return build(mapped)
 
     runner = FlowRunner(app.get("attack4_deadlock"), wf_pool, wf_schema)

@@ -77,7 +77,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
         async def tail(ctx: Any, items: list[str]) -> int:
             return len(items)
 
-        mapped = map_source(first, map_item, key="enrich")
+        mapped = map_source(first, map_item)
         return build(step(tail, mapped, key="tail"))
 
     runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)

@@ -116,14 +116,14 @@ def cure_app_module() -> Iterator[types.ModuleType]:
     @app_obj.workflow("cure_map_flow")
     def map_flow() -> object:
         source = step(_src, Ingest(doc_id="d1"), key="src")
-        mapped = map_source(source, _item_ok, key="map1")
+        mapped = map_source(source, _item_ok)
         del mapped
         return build(step(_tail, source, key="tail"))
 
     @app_obj.workflow("cure_map_doomed_flow")
     def map_doomed_flow() -> object:
         source = step(_doomed_src, Ingest(doc_id="d1"), key="src")
-        mapped = map_source(source, _item_doomed, key="map1")
+        mapped = map_source(source, _item_doomed)
         del mapped
         return build(step(_tail, source, key="tail"))
 

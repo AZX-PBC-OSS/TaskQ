@@ -155,7 +155,7 @@ async def main() -> dict[str, Any]:
     @app2.workflow("t21_map_numbers")
     def t21_map_numbers() -> object:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
-        return build(map_source(source, item, key="proc", aggregate=risk_mean))
+        return build(map_source(source, item, aggregate=risk_mean))
 
     runner_m = FlowRunner(app2.get("t21_map_numbers"), pool, schema)
     flow_m = (await runner_m.create_flow()).flow_id

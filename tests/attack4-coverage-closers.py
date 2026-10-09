@@ -550,7 +550,7 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
         from taskq.workflows import map_source
 
         ingested = step(src, Ingest(doc_id="d1"), key="src")
-        return build(map_source(ingested, child, key="kid"))
+        return build(map_source(ingested, child))
 
     runner = FlowRunner(app.get("attack4_cursor_flow"), module_pg_pool, schema)
     flow_id = (await runner.create_flow()).flow_id

@@ -136,7 +136,7 @@ async def probe_map_promise_where_data_is_wanted() -> None:
     @app.workflow("probe_map_direct")
     async def probe_map_direct() -> object:
         src = step(_body, Ingest(doc_id="d"), key="src")
-        mapped = map_source(src, _map_body, key="m")
+        mapped = map_source(src, _map_body)
         return await _map_tail_exit_body()(
             None, mapped
         )  # MUST_ERROR(reportArgumentType, invalid-argument-type): not the list

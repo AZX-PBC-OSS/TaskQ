@@ -79,7 +79,7 @@ async def _map_flow(
     @app.workflow(name)
     def map_flow() -> object:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
-        items = map_source(source, item, key="proc", aggregate=aggregate)
+        items = map_source(source, item, aggregate=aggregate)
         return build(items)
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
@@ -483,7 +483,7 @@ async def test_sunk_join_for_progress_warns_at_validate(
     @app.workflow("t21_w2_flow")
     def w2_flow() -> object:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
-        items = map_source(source, item, key="proc")
+        items = map_source(source, item)
         sink(items)  # the display-only reader, declared
         return build(source)
 

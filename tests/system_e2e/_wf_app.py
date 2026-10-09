@@ -241,7 +241,7 @@ research_app = WorkflowApp()
 @research_app.workflow("deep_research")
 def deep_research() -> object:
     sources = step(kickoff_body, Kickoff(query="the march's query"), key="sources")
-    fetched = map_source(sources, fetch_source_body, key="fetch", on_failure="collect")
+    fetched = map_source(sources, fetch_source_body, on_failure="collect")
     triage = step(triage_body, fetched, key="triage")
     review = loop(
         "review",
@@ -400,7 +400,7 @@ ingest_app = WorkflowApp()
 @ingest_app.workflow("doc_ingest_march")
 def doc_ingest_march() -> object:
     ingested = step(ingest_body, IngestBatch(doc_ids=["d1", "d2", "d3", "d4"]), key="ingest")
-    enriched = map_source(ingested, enrich_body, key="enrich", aggregate=_sum_aggregate)
+    enriched = map_source(ingested, enrich_body, aggregate=_sum_aggregate)
     summaries = step(summarize_body, enriched, key="summarize")
     entities = step(extract_entities_body, enriched, key="extract_entities")
     barrier = gather([summaries, entities], on_failure="fail_closed")
@@ -443,7 +443,7 @@ def drain_map() -> object:
     mid-iteration when the drain lands; the retried child's map slot is
     preserved (retry-in-place), the items are applied exactly once."""
     sources = step(kickoff_body, Kickoff(query="drain"), key="sources")
-    fetched = map_source(sources, fetch_source_body, key="fetch")
+    fetched = map_source(sources, fetch_source_body)
     after = step(downstream_body, fetched, key="after")
     return build(after)
 
