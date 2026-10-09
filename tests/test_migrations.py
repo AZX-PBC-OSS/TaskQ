@@ -144,11 +144,12 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "claim_epoch",
         # 01.00.24's workflow columns: vanilla enqueues never set them (the
         # DDL defaults apply); the engine's own statements write them.
-        # parent_id is NOT in this omission set: the LIB-2 fan-out ledger's
-        # trailing member rides the COPY (the enqueue contextvar stamps
-        # current_parent_id(); the record builder carries it last and the
-        # ARITY PIN (test_enqueue_copy_record_arity_matches_columns) holds
-        # the builder-vs-columns coherence from the records' side).
+        # parent_id is NOT omitted: DUAL citizenship — the workflow mirror
+        # AND LIB-2's fan-out ledger key, and the LEDGER half is written
+        # by the enqueue itself (the child stamp rides args.parent_id
+        # through the COPY builder, trailing LAST in COPY_FROM_COLUMNS —
+        # the trailing position test_copy_from_columns_carries_parent_id
+        # holds).
         "deps_pending",
         "map_index",
         "step_key",
