@@ -55,6 +55,7 @@ intercept, ``_resolve_body('__flow__', None)`` raises the plain
 intercept catches — and the row churns.
 """
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against the fixtures' _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
 from __future__ import annotations
 
 import json
@@ -174,9 +175,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     for _ in range(3):
         await sweep_join_rederive(wf_pool, wf_sql)
         await reap_phantom_ledger(wf_pool, wf_sql)
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed", (
         f"the wedged run is hidden, not surfaced: the root is {root!r} after 3 "
         "maintenance passes — the budget-exhausted crashed node is reclaim's "

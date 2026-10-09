@@ -468,7 +468,120 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
         f"the escalation body ran WITHOUT the exhaustion record: {esc_after['result']!r}"
     )
 
-    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [f_loop_5 (the sweep counts EVERY exhaustion — the fail-policy exhaustion lands on the count)]; the marker is removed per the designed flip (the confirmation receipt).
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="LIVE FINDING (af1b8779): a stale driver's unfenced exhaust killed a "
+    "healthy RECLAIMED loop mid-drive (flow failed/LoopBodyFailure, the live "
+    "driver's succeeded iterations orphaned, the escalation row written BY THE "
+    "ZOMBIE). The cure (the claim fence on the exhaust/advance) leaves the live "
+    "loop's counter and carry intact — this pin flips XPASS-strict then; remove "
+    "the marker WITH the cure.",
+)
+async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The live interleave (the front's a1c, gated deterministically):
+    A claims (attempt 1) and parks in iter0's body past its lease; the
+    estate reclaim re-pends the row; B (a fresh driver identity)
+    re-claims, runs iter0, advances, parks mid-iter1; A wakes and its
+    stale body raises — A's exhaust must update NOTHING. SAFE: the loop
+    row still running at iteration 1 with B's carry, the flow root live,
+    NO escalation row written; B then completes the loop with its own
+    count."""
+    gate_a = asyncio.Event()
+    gate_b = asyncio.Event()
+    parked_a = asyncio.Event()
+    parked_b = asyncio.Event()
+    spawns: list[tuple[int, int]] = []
+
+    async def gated_body(ctx: StepContext, carry: object) -> Done[Carry] | Refine[Carry]:
+        c = carry if isinstance(carry, Carry) else Carry()
+        if ctx.attempt == 1:
+            # THE ZOMBIE's stale iteration-0 body: parked past the lease,
+            # then its timed-out dependency finally errors.
+            parked_a.set()
+            await gate_a.wait()
+            raise ValueError("the stale attempt's dependency timed out")
+        iteration = c.acc
+        spawns.append((ctx.attempt, iteration))
+        if iteration == 1:
+            parked_b.set()
+            await gate_b.wait()  # B parks MID-LOOP, healthy, the row running
+        if iteration >= 2:
+            return Done(Carry(acc=iteration + 1, by="B"))
+        return Refine(Carry(acc=iteration + 1, by="B"))
+
+    app = WorkflowApp()
+
+    @app.workflow("aloop_zombie")
+    def _wf() -> object:
+        return build(loop("counter", gated_body, max_iterations=5))
+
+    runner_a = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
+    flow_id = await runner_a.create_flow()
+    drive_a = asyncio.create_task(runner_a.drive(flow_id, max_ticks=10))
+    await asyncio.wait_for(parked_a.wait(), timeout=10)
+    loop_id = await wf_conn.fetchval(
+        f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' "
+        "AND (metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    # THE ESTATE RECLAIM (the lease expired — the zombie lost the row):
+    # the re-pend shape, claimable again.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', locked_by_worker = NULL, "
+        "scheduled_at = now() WHERE id = $1",
+        loop_id,
+    )
+    # B — the healthy re-claimer (a FRESH driver identity).
+    runner_b = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
+    drive_b = asyncio.create_task(runner_b.drive(flow_id, max_ticks=60))
+    await asyncio.wait_for(parked_b.wait(), timeout=10)
+    mid = await wf_conn.fetchrow(
+        f"SELECT status, (metadata->>'iteration')::int AS it, metadata->>'carry' AS carry "
+        f'FROM "{wf_schema}".jobs WHERE id = $1',
+        loop_id,
+    )
+    assert mid is not None and mid["status"] == "running" and mid["it"] == 1, (
+        f"the interleave setup failed (B not mid-loop): {dict(mid) if mid else None}"
+    )
+
+    # THE ZOMBIE WAKES: its stale body raises; its exhaust must not land.
+    gate_a.set()
+    verdict_a: object
+    try:
+        verdict_a = await asyncio.wait_for(drive_a, timeout=30)
+    except Exception as exc:
+        verdict_a = f"raised {type(exc).__name__}: {exc}"
+    strike = await wf_conn.fetchrow(
+        f"SELECT status, error_class, (metadata->>'iteration')::int AS it, "
+        f"metadata->>'carry' AS carry FROM \"{wf_schema}\".jobs WHERE id = $1",
+        loop_id,
+    )
+    strike_root = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    strike_outbox = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_outbox WHERE flow_id = $1', flow_id
+    )
+    # Let B finish; capture everything, assert at the end (the teardown
+    # stays clean on the red path).
+    gate_b.set()
+    verdict_b = await asyncio.wait_for(drive_b, timeout=30)
+    final_root = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    result = await runner_b.result(flow_id) if final_root == "succeeded" else None
+
+    assert strike is not None
+    assert strike["status"] == "running" and strike["it"] == 1 and "B" in (strike["carry"] or ""), (
+        f"F-LOOP-2: the zombie's stale strike LANDED on the live loop — the row is "
+        f"{strike['status']}/{strike['error_class']} at iteration {strike['it']} with "
+        f"carry {strike['carry']} (B was mid-drive, healthy). The exhaust accepted a "
+        f"writer that had lost the claim (strike root: {strike_root}, outbox rows "
+        f"written by the zombie: {strike_outbox}, drive_a: {verdict_a})"
+    )
     assert strike_root == "running", strike_root
     assert strike_outbox == 0, "the zombie's refused exhaust still wrote the escalation row"
     assert verdict_b == "terminal" and final_root == "succeeded", (verdict_b, final_root)

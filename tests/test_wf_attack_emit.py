@@ -32,6 +32,7 @@ backend at exactly the ``emit:3`` window and drives the real reclaim +
 resume to the zero-re-emitted/zero-lost verdict. Not duplicated.
 """
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against the fixtures' _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
 from __future__ import annotations
 
 import json
@@ -60,9 +61,7 @@ _LEASE = timedelta(milliseconds=250)
 # alone — the attack-file discipline) ─────────────────────────────────────
 
 
-async def make_source(
-    conn: asyncpg.Connection, wf_sql: WorkflowSql, flow_id: JobId
-) -> JobId:
+async def make_source(conn: asyncpg.Connection, wf_sql: WorkflowSql, flow_id: JobId) -> JobId:
     """The source node: a normal workflow node (the real ``insert_node``
     shape)."""
     from taskq.workflows.engine import insert_node
@@ -172,7 +171,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
             children=page_children([0, 1, 2]),
             cursor={"page": 0},
         )
-    except Exception as exc:  # noqa: BLE001 — the pin discriminates the class below
+    except Exception as exc:
         raised = exc
     assert raised is not None, "F-EMIT-1: a re-emitted committed page LANDED — a silent double-emit"
     assert "asyncpg" not in type(raised).__module__, (
@@ -227,7 +226,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
             children=page_children([0, 1, 2, 3, 4, 5]),
             cursor={"page": 0, "width": 6},
         )
-    except Exception as exc:  # noqa: BLE001 — the pin discriminates the class below
+    except Exception as exc:
         raised = exc
     assert raised is not None, (
         "F-EMIT-1: a re-paged divergent emit LANDED — the emitted history meant nothing"
@@ -284,7 +283,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
             children=page_children([32767, 32768]),
             cursor={"page": 0},
         )
-    except Exception as exc:  # noqa: BLE001 — the pin discriminates the class below
+    except Exception as exc:
         raised = exc
     assert raised is not None, "F-EMIT-2: map_index=32768 LANDED — the smallint ceiling is gone?!"
     assert "asyncpg" not in type(raised).__module__, (
@@ -316,7 +315,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         "chain.py docstring": chain_mod.__doc__ or "",
         "EmitChild docstring": EmitChild.__doc__ or "",
     }
-    guide = Path(__file__).resolve().parents[1] / "docs" / "guides" / "workflows.md"
+    guide = Path(__file__).resolve().parents[1] / "docs" / "guides" / "workflows.md"  # noqa: ASYNC240  # Why: the doc corpus's one read at the pin's setup — the file is static documentation, never a hot-path artifact
     guide_text = guide.read_text() if guide.exists() else ""
     documented = any("32767" in text for text in surfaces.values()) or any(
         "map_index" in guide_text[max(0, m.start() - 200) : m.start() + 200]

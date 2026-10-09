@@ -45,7 +45,6 @@ import asyncio
 import json
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +74,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     demo's own run still advances, and the skip is NAMED in the log —
     a silent skip is the next mystery (the drive loop's own docstring:
     a silently-dead driver looks exactly like a wedged run)."""
-    from examples.workflows import _drive_pending, trigger_run, wf_app
+    from examples.workflows import _drive_pending, trigger_run
 
     class TheForeignInput(BaseModel):
         doc: str
@@ -145,6 +144,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     every drive pass span the full max_ticks — the cancel lands INSIDE
     ``runner.drive``, exactly where the suppress sits."""
     from examples.workflows import drive_loop
+
     from tests._wf_fixtures import seed_flow
 
     await seed_flow(wf_conn, wf_schema, status="running")
@@ -193,9 +193,9 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
     httpx = pytest.importorskip("httpx", reason="the panel pin needs the fastapi lane's client")
+    from examples.workflows import wf_app
     from fastapi import FastAPI
 
-    from examples.workflows import wf_app
     from taskq.web.admin import create_router, setup_admin_state
 
     runner = FlowRunner(wf_app.get("doc_ingest"), wf_pool, wf_schema)
@@ -205,7 +205,7 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     # succeeded — the observation the README promises.
     doomed: Any = None
     deadline = time.monotonic() + 90
-    while doomed is None and time.monotonic() < deadline:
+    while doomed is None and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the condition-not-clock poll IS the cure's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
         await runner.tick(run_id)
         doomed = await wf_conn.fetchrow(
             f'SELECT map_index, attempt FROM "{wf_schema}".jobs '
@@ -278,7 +278,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
             if _PROM_LINE_RE.match(stripped) is None:
                 violations.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {stripped!r}")
         try:
-            from prometheus_client.parser import (  # noqa: PLC0415  # Why: optional-extra import inside the check.
+            from prometheus_client.parser import (  # Why: optional-extra import inside the check.
                 text_string_to_metric_families,
             )
         except ImportError:
@@ -407,6 +407,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     duplicate (step_key, map_index, attempt) ledger groups, EXACTLY ONE
     wf_join_fire row per join, the root succeeded."""
     from examples.workflows import wf_app
+
     from taskq.workflows.api._hitl import HitlClient
 
     compiled = wf_app.get("doc_ingest")

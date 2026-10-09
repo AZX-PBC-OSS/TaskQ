@@ -45,6 +45,7 @@ so the case folds into F-RUNKEY-4's xfail (above), per the doctrine's
 "otherwise".
 """
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against the fixtures' _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
 from __future__ import annotations
 
 from pathlib import Path
@@ -56,7 +57,6 @@ from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
 from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
-from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
 
@@ -133,8 +133,7 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
         conflict_error = exc
 
     flow_id = await wf_conn.fetchval(
-        f'SELECT id FROM "{wf_schema}".jobs WHERE step_key = '
-        "'__flow__' AND idempotency_key = $1",
+        f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__' AND idempotency_key = $1",
         key,
     )
     assert flow_id is not None  # the interrupted create's root row exists

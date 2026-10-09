@@ -245,11 +245,9 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
         + f"\n  (the table's own counts: {table})"
     )
 
+    # ── DOCS-5: the reference surface vs the shipped surface ───────────────
 
-# ── DOCS-5: the reference surface vs the shipped surface ───────────────
-
-
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
+    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
     assert not drift, "the API reference's validate surface drifted:\n  - " + "\n  - ".join(drift)
 
 

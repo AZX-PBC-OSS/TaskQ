@@ -445,8 +445,13 @@ async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
             compiled = wf_app.get(name)
         except KeyError:
             # THE FOREIGN RUN: shared schema, not this app's workflow —
-            # skip loudly ONCE per workflow name, never per pass.
-            if name not in _LOUD_ONCE:
+            # skip loudly ONCE PER RUN (the dedup key is the RUN, not the
+            # workflow name: a second foreign run on a different workflow
+            # still gets its own named skip — the operator sees EVERY
+            # refused run's story, never a silent one).
+            run_skip_sig = f"foreign:{run_sig}"
+            if run_skip_sig not in _LOUD_ONCE:
+                _LOUD_ONCE.add(run_skip_sig)
                 _LOUD_ONCE.add(name)
                 log.warning(
                     "workflow-drive-foreign-run-skipped",

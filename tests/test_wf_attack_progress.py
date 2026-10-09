@@ -33,6 +33,7 @@ RECEIPTS.md):
   before terminal-failing.
 """
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against the fixtures' _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
 from __future__ import annotations
 
 import json
