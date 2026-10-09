@@ -165,6 +165,16 @@ def progress_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
+@pytest.fixture
+def wedge_redlog() -> Iterator[RedLog]:
+    """The red sink for the crashed-terminal wedge pins (the pre-cure
+    tree's corpse-greens: the reconstruction's running, the maintenance
+    pass's non-heal, the G7 blind spot)."""
+    log = RedLog("wedge-pin-reds.json")
+    yield log
+    log.flush()
+
+
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in
@@ -223,7 +233,19 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     * a LIVE root ('running'/'pending') may lag the rows' terminal
       verdict by one sweep pass — the maintenance leg's lag window (the
       H1 cure heals it in one pass; the H1 pin carries that teeth).
-    """
+
+    THE WEDGE LEG (the crashed-terminal wedge's red-drill — the
+    attacker's proof was G7 staying green ON THE CORPSE): a live root
+    whose rows reconstruct a TERMINAL verdict contradicts the rows.
+    The lag window is ONE pass, so the check RUNS the maintenance leg
+    itself (the same statement the sweep drives) and re-reads: the
+    reported state must now equal the rows' terminal verdict. A root
+    that still disagrees is THE WEDGE — a run the reported state claims
+    is live while the rows say it terminalized and nothing will ever
+    change either side (the corpse that reports 'running' forever). The
+    drill pin (tests/test_wf_t20_crashed_terminal_wedge.py) reds this
+    leg against a no-op maintenance mutant — the assertion can fail on
+    a wedge, it is not a decoration."""
     from taskq.workflows._status import reconstruct_workflow_status
 
     flows = await wf_conn.fetch(
@@ -245,6 +267,55 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
                 f"the reported status drifted from the rows: flow {flow['id']} "
                 f"reports 'failed' but the rows reconstruct 'complete' — "
                 "the wrong verdict on a completed run (G7)"
+            )
+        elif status in ("running", "pending") and reconstructed in (
+            "failed",
+            "cancelled",
+            "complete",
+        ):
+            # THE WEDGE LEG: the rows have spoken a TERMINAL verdict; the
+            # lag window is one sweep pass — run it, re-read, and the
+            # root must agree. (The maintain statement's own derivation
+            # re-derives the root from the node rows — a disagreement
+            # AFTER the pass is the two derivations' drift or a wedging
+            # sweep.) ONE HONEST LAG SURVIVES the leg: the §17.5
+            # cancelled/failed PRECEDENCE derives a terminal verdict OVER
+            # live rows (a fired-but-unclaimed join row is claimable
+            # work the derivation's cancelled row outranks) — the root
+            # legitimately waits for it. THE WEDGE is the ALL-TERMINAL
+            # corpse: no live-class row exists anywhere and the root
+            # still reports live — nothing will ever change either side.
+            await wf_conn.execute(wf_sql.workflow_root_maintain, 200)
+            healed = await wf_conn.fetchval(
+                f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow["id"]
+            )
+            expected = G7_DERIVED_TO_ROOT[reconstructed]
+            if healed == expected:
+                continue
+            remaining = await wf_conn.fetchval(
+                f"""SELECT count(*) FROM "{wf_schema}".jobs
+                    WHERE (metadata->>'flow_id')::uuid = $1
+                      AND metadata ? 'flow_id'
+                      AND step_key <> '__flow__'
+                      AND status IN ('pending', 'scheduled', 'running')""",
+                flow["id"],
+            )
+            if remaining:
+                # THE HONEST PRECEDENCE LAG: the terminal verdict derives
+                # OVER live rows (the fired-but-unclaimed join is
+                # claimable work) — the root waits for them, the law's
+                # lag window covers it.
+                continue
+            assert healed == expected, (
+                f"THE WEDGE (G7's terminal-contradiction leg): flow "
+                f"{flow['id']} reports {healed!r} while the rows "
+                f"reconstruct {reconstructed!r} with NO live-class row "
+                f"left on the run — a TERMINAL verdict the one-pass heal "
+                f"(the maintenance leg) did not land. The run's reported "
+                "state contradicts its own rows AND the heal: a wedged "
+                "run — the operator must notice forever (the "
+                "crashed-terminal wedge's signature: the corpse reports "
+                "'running' over a deterministic death)"
             )
 
 
