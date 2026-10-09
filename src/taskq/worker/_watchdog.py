@@ -60,6 +60,7 @@ import structlog
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq._reaper import reap_cancelled_child
 from taskq.constants import WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
 from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
 from taskq.worker._stall_tally import (
@@ -623,8 +624,7 @@ class ShutdownWatchdog:
     async def cancel(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            await reap_cancelled_child(self._task)
             if self._started_at is not None:
                 anchored = self._started_at()
                 if anchored is not None:
@@ -646,8 +646,7 @@ class ShutdownWatchdog:
                 for t in (shutdown_started, shutdown_task):
                     if not t.done():
                         t.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await t
+                        await reap_cancelled_child(t)
         else:
             await self._shutdown_event.wait()
         t0 = self._clock()

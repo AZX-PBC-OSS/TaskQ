@@ -660,17 +660,32 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
     root = pathlib.Path(__file__).parent.parent / "src" / "taskq"
     offenders: list[str] = []
     for path in root.rglob("*.py"):
+        if path.name == "_reaper.py":
+            continue  # the one legal home's own docstring
         text = path.read_text()
-        for i, line in enumerate(text.splitlines(), 1):
-            if "suppress(asyncio.CancelledError)" in line:
-                # the helper's own module is the one legal home IF the
-                # suppress guards a stub-detour that RE-RAISES after (the
-                # cancel-contained-then-reraised shape) — allow only the
-                # lines that carry the re-raise discipline within the
-                # next 4 lines.
-                window = "\n".join(text.splitlines()[i : i + 4])
-                if "raise" not in window:
-                    offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
+        tl = text.splitlines()
+        for i, line in enumerate(tl, 1):
+            if "suppress(asyncio.CancelledError)" not in line:
+                continue
+            # THE CLASS LAW: a suppress(CancelledError) whose BODY awaits
+            # (the suppress spans an await) swallows whatever cancel
+            # lands DURING that await — the convicted shape — unless the
+            # body (or its immediate tail) RE-RAISES. A suppress whose
+            # body is an INSTANT retrieve (``task.exception()`` — no
+            # await inside) cannot swallow a landing cancel: nothing
+            # yields inside it. The block's extent: until the dedent.
+            block = [line]
+            for j in range(i, len(tl)):
+                l2 = tl[j]
+                if l2.strip() and not l2.startswith((" ", "\t", ")")):
+                    break
+                block.append(l2)
+            body = "".join(block)
+            if "await" not in body:
+                continue  # the instant retrieve: nothing yields, nothing swallows
+            if "raise" in body or "raise" in " ".join(tl[i : i + 4]):
+                continue  # the re-raise discipline present
+            offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
     assert not offenders, (
         "the silent-swallow class's seats (a CancelledError suppressed "
         "without the re-raise discipline — the shutdown's cancel dies in "
