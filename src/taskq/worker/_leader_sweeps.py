@@ -164,10 +164,24 @@ async def _sleep_until_next_attempt(
     shutdown: asyncio.Event,
     next_fire: datetime,
     retry_backoff: float | None,
+    *,
+    tick_period_secs: float | None = None,
 ) -> bool:
     """Sleep until the next scheduled cron fire, or, after a failed
     attempt, the next backoff retry, whichever is earlier; interruptible
     by shutdown.
+
+    ``tick_period_secs`` (the RETENTION-CHECK LANE's cadence, the
+    cron-granularity coupling's cure): when set, a SCHEDULED wake (no
+    retry pending) sleeps no longer than the tick period, so a sub-daily
+    retention policy is CHECKED every leader tick instead of waiting for
+    the next cron fire — the D2 soak's conviction (a ``*/5`` cron with a
+    180 s retention sat on its hands between fires while the hot table
+    grew unbounded under a LIVE-LOOKING policy). The retry ladder is
+    untouched: a pending retry still governs the wake, and the
+    retry-vs-scheduled classification reads the TRUE fire horizon, never
+    the tick-bounded wake, so the ladder's semantics are identical on
+    both lanes.
 
     Returns True when the wake was a backoff retry (the failure sequence
     continues from its current rung); False when the scheduled fire
@@ -175,10 +189,41 @@ async def _sleep_until_next_attempt(
     carry into today's attempt).
     """
     until_fire = max(0.0, (next_fire - datetime.now(UTC)).total_seconds())
-    secs = until_fire if retry_backoff is None else min(retry_backoff, until_fire)
+    if retry_backoff is not None:
+        secs = min(retry_backoff, until_fire)
+    elif tick_period_secs is not None:
+        secs = min(until_fire, tick_period_secs)
+    else:
+        secs = until_fire
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(shutdown.wait(), timeout=secs)
     return retry_backoff is not None and retry_backoff < until_fire
+
+
+def _sub_daily(cron_expr: str) -> bool:
+    """Whether *cron_expr* fires more than once per UTC day — the
+    RETENTION-CHECK LANE's predicate.
+
+    The day-latch (``last_pruned_date``) exists for the genuinely-daily
+    lane: a day that pruned is done. On a SUB-DAILY schedule the latch
+    was a silent at-most-daily conversion (the D2 soak's P1: 80+ minutes
+    with ``*/5`` + a 180 s retention produced zero prunes and zero log
+    lines — the hot table grew unbounded under a policy that said 180 s).
+    The cure decouples the two: a sub-daily schedule is a RETENTION
+    POLICY (the thresholds live in the per-status retention fields), so
+    the arm checks EVERY tick and the latch does not gate it; a daily-or-
+    slower schedule keeps the once-per-day policy untouched.
+
+    A croniter parse that fails (the loop's own fire computation raises
+    on the same expression moments later) conservatively answers False —
+    the daily lane's behavior, never an unvalidated fast lane."""
+    try:
+        it = cr.croniter(cron_expr, datetime.now(UTC))
+        first: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        second: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+    except (ValueError, KeyError):  # pragma: no cover - the loop's own parse fires first
+        return False
+    return (second - first) < timedelta(hours=24)
 
 
 def _batch_drain_gate(
@@ -1245,13 +1290,32 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Daily prune with intra-day retry on failure.
+    """Retention prune: TWO lanes, one policy scaffold.
 
-    The once-per-SUCCESSFUL-prune-per-day guard (``last_pruned_date``) is
-    deliberate policy: a day that pruned is done. The failure half
-    retries with backoff (60 s doubling, capped) until success or the
-    next scheduled fire, so a prune that keeps failing under load does
-    not wait for tomorrow, see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
+    THE RETENTION-CHECK LANE (sub-daily schedules): a ``prune_cron_expr``
+    that fires more than once per UTC day is a RETENTION POLICY, not a
+    daily appointment — the arm wakes EVERY leader tick
+    (``sweep_interval``) with its own interval/threshold pair (the tick is
+    the interval, the per-status retention fields are the threshold) and
+    checks, so a 180 s retention is honored on a 180 s horizon, never
+    converted to at-most-daily by the day-latch (the D2 soak's P1: a
+    ``*/5`` cron + 180 s retention + 88k eligible rows pruned NOTHING for
+    80+ minutes, silently — the hot table grew unbounded under a
+    live-looking policy; the direct call purged 89,383 rows in seconds,
+    so the defect was the ARM). The day-latch does not gate this lane,
+    and the check is cheap when idle: the candidate statement returns
+    nothing, no batch runs.
+
+    THE DAILY LANE (daily-or-slower schedules): the once-per-SUCCESSFUL-
+    prune-per-day guard (``last_pruned_date``) is deliberate policy: a
+    day that pruned is done — and the latch's truth is SURFACED (the
+    ``prune-skipped-day-latch`` event names every deferral; silence read
+    as "nothing to prune" is the convicted operator signal).
+
+    The failure half of BOTH lanes retries with backoff (60 s doubling,
+    capped) until success or the next scheduled fire, so a prune that
+    keeps failing under load does not wait for tomorrow, see
+    ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
     Every batch is a committed, server-side-bounded statement
     (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
     drain stops between batches on shutdown or once ``leading()`` is
@@ -1302,8 +1366,20 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        # THE RETENTION-CHECK LANE (the cron-granularity coupling's cure):
+        # a sub-daily schedule is a RETENTION POLICY, not a daily
+        # appointment — the arm checks every leader tick (the sweep
+        # interval, well under any sane sub-daily retention) instead of
+        # sleeping to the next cron fire. The day-latch below does not
+        # gate this lane.
+        check_lane = _sub_daily(cron_expr)
 
-        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
+        woke_for_retry = await _sleep_until_next_attempt(
+            shutdown,
+            next_fire,
+            retry_backoff,
+            tick_period_secs=ctx.deps.settings.sweep_interval if check_lane else None,
+        )
         if shutdown.is_set():
             break
         if not woke_for_retry:
@@ -1331,10 +1407,23 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
             continue
         today_utc = datetime.now(UTC).date()
-        if last_pruned_date == today_utc:
-            # The day's prune is done, so a ladder armed by an earlier miss
-            # or failure has nothing left to retry; clearing it here keeps
-            # the loop from waking at the rung cadence until the next fire.
+        if not check_lane and last_pruned_date == today_utc:
+            # THE DAY-LATCH'S TRUTH, SURFACED: the deferral is a NAMED
+            # event, never silence (the D2 soak's conviction — the latch
+            # deferred every sub-daily fire for 80+ minutes with ZERO log
+            # lines, so silence read as "nothing to prune"). The record
+            # states WHEN the latch defers and WHAT it defers to.
+            log.info(
+                "prune-skipped-day-latch",
+                kind="prune",
+                worker_id=str(ctx.worker_id),
+                pruned_date=today_utc.isoformat(),
+                next_fire=next_fire.isoformat(),
+            )
+            # The day's prune is done, so a ladder armed by an earlier
+            # miss or failure has nothing left to retry; clearing it
+            # keeps the loop from waking at the rung cadence until the
+            # next fire.
             retry_backoff = None
             continue
 
@@ -1529,8 +1618,17 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        # THE RETENTION-CHECK LANE (the same sub-daily rule as
+        # _prune_loop): a sub-daily archive-expiry schedule checks every
+        # leader tick; the day-latch below does not gate this lane.
+        check_lane = _sub_daily(cron_expr)
 
-        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
+        woke_for_retry = await _sleep_until_next_attempt(
+            shutdown,
+            next_fire,
+            retry_backoff,
+            tick_period_secs=ctx.deps.settings.sweep_interval if check_lane else None,
+        )
         if shutdown.is_set():
             break
         if not woke_for_retry:
@@ -1552,7 +1650,17 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             )
             continue
         today_utc = datetime.now(UTC).date()
-        if last_expiry_date == today_utc:
+        if not check_lane and last_expiry_date == today_utc:
+            # THE DAY-LATCH'S TRUTH, SURFACED (the same named-deferral
+            # event as _prune_loop's): the record states WHEN the latch
+            # defers and WHAT it defers to — never silence.
+            log.info(
+                "archive-expiry-skipped-day-latch",
+                kind="archive_expiry",
+                worker_id=str(ctx.worker_id),
+                expired_date=today_utc.isoformat(),
+                next_fire=next_fire.isoformat(),
+            )
             # The day's expiry is done, same ladder-clearing rule as
             # _prune_loop's date gate.
             retry_backoff = None

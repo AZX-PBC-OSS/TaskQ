@@ -1826,8 +1826,34 @@ async def test_prune_terminal_jobs_actor_override_longer_retention_skipped() -> 
 # ── Date guard prevents double-prune on same UTC day ────────────────
 
 
+class _SpacedCroniter:
+    """The croniter stand-in whose two-fire SPACING is configurable: the
+    loop's own fire computation calls get_next ONCE per wake (the next
+    fire — ``spacing`` seconds away, so the loop wakes immediately in
+    tests); ``_sub_daily``'s lane probe calls it TWICE on its own
+    instance, and the second call adds ``lane_spacing`` days — the
+    interval the lane predicate reads. A ``lane_spacing`` of 2 days makes
+    the schedule DAILY-or-slower (the latched lane); 0 days (the default)
+    makes it sub-daily (the retention-check lane)."""
+
+    spacing_secs: float = 0.05
+    lane_spacing_days: float = 0.0
+
+    def __init__(self, expr: str, start_time: object) -> None:
+        self._calls = 0
+
+    def get_next(self, dt_type: type[datetime]) -> datetime:
+        self._calls += 1
+        extra = timedelta(days=self.lane_spacing_days) if self._calls >= 2 else timedelta(0)
+        return datetime.now(UTC) + timedelta(seconds=self.spacing_secs) + extra
+
+
 async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """_prune_loop skips when last_pruned_date == today (UTC)."""
+    """The DAILY lane: _prune_loop skips when last_pruned_date == today
+    (UTC) — AND THE SKIP IS SURFACED (the D2 soak's P1 cure (a): the
+    latch's deferral is a NAMED event, never silence — 80+ minutes of
+    ``*/5`` fires deferred silently read as "nothing to prune" while 88k
+    eligible rows sat unpruned)."""
     import croniter as croniter_mod
 
     prune_result_rows = [
@@ -1846,43 +1872,108 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
         monkeypatch=monkeypatch,
     )
 
-    class _InstantCroniter:
-        def __init__(self, expr: str, start_time: object) -> None:
-            pass
+    class _DailyCroniter(_SpacedCroniter):
+        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → DAILY lane
 
-        def get_next(self, dt_type: type[datetime]) -> datetime:
-            return datetime.now(UTC) + timedelta(seconds=0.05)
-
-    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _DailyCroniter)
 
     settings = deps.settings
-    settings.prune_cron_expr = "* * * * *"
+    settings.prune_cron_expr = "0 3 * * *"
 
-    task = asyncio.create_task(leader._prune_loop(shutdown))
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    # Bounded poll for the first lock acquisition (no event exists on the
-    # fake's recording).
-    await wait_for_condition(
-        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
-        description="the prune loop must attempt its first advisory lock",
-    )
+        # Bounded poll for the first lock acquisition (no event exists on the
+        # fake's recording).
+        await wait_for_condition(
+            lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+            description="the prune loop must attempt its first advisory lock",
+        )
 
-    lock_calls_after_first = len(
-        [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
-    )
-    assert lock_calls_after_first == 1
-
-    for _ in range(200):
-        lock_calls_now = len(
+        lock_calls_after_first = len(
             [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
         )
-        if lock_calls_now > lock_calls_after_first:
-            pytest.fail("date guard should have prevented second lock acquisition on same day")
-        await asyncio.sleep(0.01)
+        assert lock_calls_after_first == 1
+
+        for _ in range(200):
+            lock_calls_now = len(
+                [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
+            )
+            if lock_calls_now > lock_calls_after_first:
+                pytest.fail("date guard should have prevented second lock acquisition on same day")
+            await asyncio.sleep(0.01)
 
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+    # THE SURFACED LATCH: the deferral is named — the loop's own log
+    # states WHEN the latch deferred and WHAT it deferred to.
+    latched = [e for e in captured if e["event"] == "prune-skipped-day-latch"]
+    assert latched, (
+        "the day-latch deferred the second fire SILENTLY — the D2 soak's "
+        "conviction (the surfaced truth: the skip-reason states the latch "
+        "and the next fire)"
+    )
+    assert latched[0]["next_fire"]
+
+
+async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """THE RETENTION-CHECK LANE (the D2 soak's P1 cure (b) — the
+    at-most-daily class is DEAD): a SUB-DAILY prune cron with a 180 s
+    retention and rows past retention is CHECKED EVERY LEADER TICK — the
+    arm attempts (and prunes) on successive wakes within the observation
+    window, the deleted count DROPS with each check, and the day-latch
+    never gates it. The D2 shape (a ``*/5`` cron + 180 s retention + 88k
+    eligible rows) sat on its hands for 80+ minutes under the old
+    latch-everything arm; this pin convicts the latch-gated variant as
+    its red."""
+    import croniter as croniter_mod
+
+    # Every attempt answers one prunable batch: the eligible rows exist
+    # (the D2's 88k class), so a LIVE arm drains on every wake.
+    leader_conn = _FakeConnForPrune(
+        batch_rows=[[_FakeRecord({"actor": "a", "status": "succeeded", "cnt": 500})]],
+        fetchval_result=True,
+        actor_config_rows=[],
+    )
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    monkeypatch.setattr(croniter_mod, "croniter", _SpacedCroniter)  # sub-daily spacing
+
+    settings = deps.settings
+    settings.prune_cron_expr = "*/5 * * * *"  # the D2's exact expression
+    settings.prune_retention_succeeded = timedelta(seconds=180)
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    await wait_for_condition(
+        lambda: (
+            len([sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql])
+            >= 3
+        ),
+        description="the retention-check lane must attempt on EVERY tick, not once per day",
+        timeout=10.0,
+    )
+    shutdown.set()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    attempts = len([sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql])
+    assert attempts >= 3, (
+        f"the sub-daily retention lane attempted {attempts} time(s) — the "
+        "day-latch converted a */5 retention policy to at-most-daily (the "
+        "D2 soak's P1, kept red forever by this pin)"
+    )
+    # THE COUNT DROPS (measured): each attempt drained its batch — the
+    # archive write consumed the eligible window.
+    assert any("WITH locked AS MATERIALIZED" in sql for sql, _ in leader_conn.fetch_calls), (
+        "the retention check never ran an archive batch — nothing pruned"
+    )
 
 
 async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
@@ -1903,43 +1994,47 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
         monkeypatch=monkeypatch,
     )
 
-    class _InstantCroniter:
-        def __init__(self, expr: str, start_time: object) -> None:
-            pass
+    class _DailyCroniter(_SpacedCroniter):
+        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → DAILY lane
 
-        def get_next(self, dt_type: type[datetime]) -> datetime:
-            return datetime.now(UTC) + timedelta(seconds=0.05)
-
-    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _DailyCroniter)
 
     settings = deps.settings
-    settings.archive_expiry_cron_expr = "* * * * *"
+    settings.archive_expiry_cron_expr = "0 4 * * *"
 
-    task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
 
-    # Bounded poll for the first lock acquisition (no event exists on the
-    # fake's recording).
-    await wait_for_condition(
-        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
-        description="the archive expiry loop must attempt its first advisory lock",
-    )
+        # Bounded poll for the first lock acquisition (no event exists on the
+        # fake's recording).
+        await wait_for_condition(
+            lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+            description="the archive expiry loop must attempt its first advisory lock",
+        )
 
-    lock_calls_after_first = len(
-        [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
-    )
-    assert lock_calls_after_first == 1
-
-    for _ in range(200):
-        lock_calls_now = len(
+        lock_calls_after_first = len(
             [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
         )
-        if lock_calls_now > lock_calls_after_first:
-            pytest.fail("date guard should have prevented second lock acquisition on same day")
-        await asyncio.sleep(0.01)
+        assert lock_calls_after_first == 1
+
+        for _ in range(200):
+            lock_calls_now = len(
+                [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
+            )
+            if lock_calls_now > lock_calls_after_first:
+                pytest.fail("date guard should have prevented second lock acquisition on same day")
+            await asyncio.sleep(0.01)
 
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+    # THE SURFACED LATCH (the same named-deferral event as the prune
+    # loop's — one policy scaffold, one operator signal).
+    assert any(e["event"] == "archive-expiry-skipped-day-latch" for e in captured), (
+        "the archive expiry's day-latch deferred the second fire SILENTLY "
+        "— the surfaced-truth law covers both loops"
+    )
 
 
 # ── Archive expiry loop gates on is_leader ──────────────────────────
