@@ -1,0 +1,16 @@
+# THE FENCE'S FIRST HOUR — the cold-user path, as written (the capture law: the file that gets READ)
+# fresh venv + 'taskq-py[fastapi]' built from this tree; the fence copied VERBATIM out of docs/examples/doc-ingest.md;
+# the prerequisites block's env, nothing else; a FRESH schema (the page's disposable first hour).
+
+$ TASKQ_PG_DSN=... TASKQ_SCHEMA_NAME=fence_first_hour TASKQ_QUEUES=enrich,cpu,io,classify python fence-first-hour-demo.py
+the run is now held — resolve the hold below to resume
+hold: 01a11f3b-de3a-7692-9f0d-9689ff159400 - ReviewDecision
+resolve: delivered
+dead-lettered: ['doc-999']
+report: {'published': ['doc-000', 'doc-001', 'doc-002', 'doc-003', 'doc-004', 'doc-005', 'doc-006', 'doc-007', 'doc-008', 'doc-009', 'doc-010', 'doc-011'], 'dead_lettered': ['doc-999'], 'failed': [], 'review_note': 'ship it'}
+done: 01a11f3b-dd22-7dd2-9a74-f8a965318af0
+exit: 0
+
+# without the DSN — the named error, not a bare KeyError:
+TASKQ_PG_DSN is not set — the fence drives a real Postgres (see the prerequisites block at the top of this page)
+exit: 1
