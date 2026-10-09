@@ -691,7 +691,8 @@ async def test_pin_22_reaped_flow_forgets_its_reducer_cache(
     # ...the reap (a terminal flow's ledger rows are phantoms) drops it.
     reaped = await reap_phantom_ledger(module_pg_pool, wf_sql)
     assert reaped >= 1, reaped
-    assert resolve_flow_reducer(flow_id, "join") is None, (
+    resolved = resolve_flow_reducer(flow_id, "join")
+    assert resolved is not None and resolved.body is None, (
         "the terminal flow's reducer-cache entry survived the reaper's "
         "pass — the per-process cache is unbounded (one entry per flow run "
         "ever finalized here, forever)"

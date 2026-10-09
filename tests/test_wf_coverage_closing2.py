@@ -148,18 +148,21 @@ def test_encode_step_result_the_model_and_the_plain_form() -> None:
     assert '"n"' in encoded_plain
 
 
-# ── _reducers.py: the definition fallback's adapter ─────────────────────
+# ── _reducers.py: the resolution's verdict (the adapter's cure) ─────────
 
 
 async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
-    """The DEFINITION FALLBACK's adapter is the phase-3 DEFECT (reported
-    for the fixer): the adapter calls the join's body with ONE argument
-    (``definition_body(None)``) — a 2-arg join body (ctx, items) raises
-    TypeError — a healed join's reducer can NEVER run in another
-    process. The fixer's cure: the adapter threads the fire's parent
-    results (the fire site has them). The pin is strict-xfail until the
-    cure lands; the RED evidence: this test's observed TypeError."""
-    import pytest as _pytest
+    """THE ADAPTER'S DEFECT, CURED AT THE SOURCE (the wedged-hold cure,
+    2026-10-09): the old adapter called the registry's body with ONE
+    argument (``definition_body(None)``) — a step body (ctx + params)
+    raised TypeError, the fire's tx rolled back, and the sweep re-fired
+    FOREVER (the wedged arm, the drive's max_ticks). THE CURE'S VERDICT:
+    the registry's bodies are STEP bodies — never reducers — so the
+    resolution returns NO body for a graph that resolves (the row's own
+    claim owns the execution, the wired args), and the LOUD face is
+    reserved for the name that resolves NOWHERE (the R2-2 deployment
+    defect). The RED evidence (the pin's own recorded history): the
+    adapter's observed TypeError."""
 
     del wf_pool, wf_schema  # the registry is process-level; no DB here
     from taskq.workflows import WorkflowApp, build, step
@@ -180,13 +183,21 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
 
     from taskq.workflows._reducers import resolve_flow_reducer
 
-    body = resolve_flow_reducer(
+    resolved = resolve_flow_reducer(
         "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", "solo", workflow_name="reducer_fallback_xf"
     )
-    assert body is not None
-    # The ADAPTER's defect: the 1-arg call — the TypeError IS the red.
-    with _pytest.raises(TypeError, match="missing 1 required positional argument"):
-        await body()
+    # THE CURE'S VERDICT: the registered STEP body is NEVER adapted to
+    # the reducer convention — no body (the claim's own execution), and
+    # the graph RESOLVED (the name is registered here) so the face is
+    # the healthy one, never the loud stamp.
+    assert resolved.body is None, (
+        "the resolution adapted a STEP body to the reducer convention — "
+        "the TypeError machine is back"
+    )
+    assert resolved.loud is not True, (
+        "a graph that RESOLVES in this process stamped the loud "
+        "deployment-defect face — the healthy shape's record would lie"
+    )
     assert ran.get("join") is not True, (
-        "the body ran with a None ctx — the adapter's shape changed; RE-DERIVE THE PIN"
+        "the resolution RAN the step body itself — the claim owns the execution; RE-DERIVE THE PIN"
     )

@@ -42,6 +42,16 @@ WHERE id = $1
     OR (status = 'scheduled' AND scheduled_at <= now())
   )
   AND deps_pending = 0
+  -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
+  -- wedged-hold cure, the same leg the worker's claimable fence carries
+  -- since the D2 soak's wedge): the claimable SELECT's snapshot can
+  -- PREDATE the hold's mint (the other driver's body minted the hold
+  -- between this driver's SELECT and this WRITE) — a stamp that rides
+  -- the mint's OWN transaction (the signal row + the held representation
+  -- are ONE tx) means the row is HELD: re-claiming it strands the
+  -- re-claimer's body parked on a delivery this driver can never see
+  -- (the parked-forever review row the two-drivers pin convicted).
+  AND NOT metadata ? 'hold'
 RETURNING attempt
 """
 

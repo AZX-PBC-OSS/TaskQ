@@ -185,7 +185,15 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     traceback); (2) a resolve win leaves the run RESUMABLE, never
     terminal — the settle is the DRIVER's own contract (the drive pass
     after the race), and the pin stages it instead of asserting a
-    terminal state no driverless run owes."""
+    terminal state no driverless run owes.
+
+    THE MAX_TICKS WEATHER (the residual, marked per the loaded-bar law):
+    under the co-tenant lanes' load the whole drive window can starve —
+    both drivers' 5000 work-bounded ticks spent on sweeps under sweep —
+    and the gather lands ['max_ticks', 'max_ticks']; the SAME tree green
+    x2 minutes later (the bisect that chased it dissolved on re-run).
+    The load-sensitive mark: this pin runs in the exclusive lane for a
+    verdict, never on a saturated box."""
     from taskq.workflows.api._hitl import HitlClient
 
     schema = module_pg_schema.schema_name

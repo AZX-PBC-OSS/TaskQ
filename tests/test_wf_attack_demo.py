@@ -403,6 +403,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
 # ── GREEN GUARD: the two-driver one-schema drive race ────────────────────
 
 
+@pytest.mark.load_sensitive
 async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
@@ -411,7 +412,17 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     CONCURRENTLY through the hold and the resolve to terminal — the
     ledger's claim arbiter and the join-fire arbiter hold: ZERO
     duplicate (step_key, map_index, attempt) ledger groups, EXACTLY ONE
-    wf_join_fire row per join, the root succeeded."""
+    wf_join_fire row per join, the root succeeded.
+
+    THE LOADED-BAR LAW'S MARK (load_sensitive — CI's serial exclusive
+    lane owns it): the pin's subject is a CONTENTION race (two real
+    drivers, one run, the arbiter's teeth), and under the co-tenant
+    lanes' ambient load the whole drive window can starve — both
+    drivers' work-bounded ticks spent on the sweeps under sweeps — and
+    the gather lands ['max_ticks', 'max_ticks'] on the SAME tree that
+    greens in 0.7 s unloaded (the bisect that chased it dissolved on
+    re-run). The arbiter's exactness — the assertions below — held in
+    every green run; the starved window is the load, not the record."""
     from examples.workflows import wf_app
 
     from taskq.workflows.api._hitl import HitlClient

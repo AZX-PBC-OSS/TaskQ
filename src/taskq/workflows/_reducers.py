@@ -45,15 +45,55 @@ the ledger.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from taskq.backend._protocol import JobId
 
-__all__ = ["forget_flow_reducers", "register_flow_reducers", "resolve_flow_reducer"]
+__all__ = [
+    "FlowReducerResolution",
+    "forget_flow_reducers",
+    "register_flow_reducers",
+    "resolve_flow_reducer",
+]
 
 #: The flow-run reducer CACHE: flow_id → (join step_key → body). Warmed by
 #: the finalizing process only — never the source of truth (the module
 #: docstring states the resolution order).
 _flow_reducers: dict[JobId, dict[str, Callable[[], Awaitable[None]]]] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class FlowReducerResolution:
+    """The fired join's body resolution's VERDICT (the three faces the
+    sweep's fire arm must distinguish — the wedged-hold cure's own
+    contract):
+
+    * ``body`` set: the engine-level reducer (the tx2's own dict, warmed
+      into the memo) — the healer re-runs it INSIDE the fire's tx (the
+      B3 window's at-least-once body execution).
+    * ``body`` None, ``loud`` False: the join HAS no body BY DESIGN —
+      the identity packer (the compiled node's own body is None: the
+      join/gather kinds) or a STEP body (whose execution is the CLAIM's,
+      the wired args — never the fire's). The row fires, the consumers
+      deliver, the row's own claim executes it. NO stamp: the record is
+      healthy — ``body_unavailable`` over an identity join is the stamp
+      that lies.
+    * ``body`` None, ``loud`` True: the stamped workflow name resolves to
+      NO compiled graph in this process (the R2-2 deployment-defect
+      class: the definitions not imported here) — the delivery continues
+      and the record goes LOUD (the stamp + the warning).
+
+    THE CONVICTED VARIANT this contract replaces: the registry leg that
+    adapted ANY registered body to the reducer convention
+    (``definition_body(None)``) — the registry's bodies are STEP bodies
+    (ctx + params), so the adapter was the TypeError machine: a crash-
+    window heal of a parented STEP row fired it, resolved the step's
+    body, called it with the reducer's arity, rolled the fire's tx back,
+    and re-fired FOREVER — the sweep arm wedged, the drive max_ticks
+    (the two-drivers pin's conviction, 2026-10-09)."""
+
+    body: Callable[[], Awaitable[None]] | None
+    loud: bool
 
 
 def register_flow_reducers(
@@ -73,29 +113,42 @@ def resolve_flow_reducer(
     step_key: str,
     *,
     workflow_name: str | None = None,
-) -> Callable[[], Awaitable[None]] | None:
-    """The body for a fired join, DURABLY: the REGISTERED DEFINITION of the
-    workflow named on the flow root's metadata (D1 — the registry every
-    process carries) first; the process-local cache second (a flow the
-    registry cannot resolve, warmed by this process's own finalize).
-    ``None`` = no resolvable body anywhere — the fire delivers the
-    declared consumers; nothing else runs."""
+) -> FlowReducerResolution:
+    """The fired join's body resolution's VERDICT (see
+    :class:`FlowReducerResolution` for the three faces).
+
+    The memo (the tx2's warmed cache) is the only body source: the
+    registry's bodies are STEP bodies — a step's execution is the
+    CLAIM's (the wired args), a join's the identity packer's — neither
+    is ever a zero-arg reducer, and the adapter that called one as the
+    other was the wedged-hold TypeError machine. The compiled graph's
+    own truth decides the LOUD face: a stamped workflow name that
+    resolves to NO compiled graph in this process is the R2-2
+    deployment-defect class (the definitions not imported here) — the
+    delivery continues and the record goes loud; a graph that resolves
+    is the healthy shape, whatever the node's kind."""
+    memo = _flow_reducers.get(flow_id, {}).get(step_key)
+    if memo is not None:
+        return FlowReducerResolution(body=memo, loud=False)
     if workflow_name:
-        from taskq.workflows.definitions import resolve_step_body
+        from taskq.workflows._worker_execution import get_compiled_workflow
 
         try:
-            definition_body = resolve_step_body(workflow_name, step_key)
+            get_compiled_workflow(workflow_name)
         except KeyError:
-            definition_body = None
-        if definition_body is not None:
-
-            async def _definition_adapter() -> None:
-                await definition_body(None)
-
-            return _definition_adapter
-    # The cache answers ONLY when the registry could not: it never
-    # shadows the definition (D1).
-    return _flow_reducers.get(flow_id, {}).get(step_key)
+            return FlowReducerResolution(body=None, loud=True)
+        # The graph resolves in THIS process — the process knows the
+        # workflow: a node WITH a body is a step (the row's own claim
+        # executes it, the wired args); a node WITHOUT one is a join (the
+        # identity packer's); a fork-spawned key (no compiled decl — the
+        # '<src>.item' shape) is the definition's own step body (the
+        # claim's again). EVERY face is the claim's, never the fire's:
+        # the fire delivers, the row fires, the record is healthy.
+        return FlowReducerResolution(body=None, loud=False)
+    # No stamp and no memo: the pre-stamp/anonymous root — the R2-2 loud
+    # face (the record must not look healthy while the resolution could
+    # not even name the workflow to ask).
+    return FlowReducerResolution(body=None, loud=True)
 
 
 def forget_flow_reducers(flow_id: JobId) -> None:

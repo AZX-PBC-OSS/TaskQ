@@ -172,18 +172,19 @@ async def sweep_join_rederive(
                     w["step_key"],
                     workflow_name=w["workflow_name"],
                 )
-                if body is not None:
-                    await body()
-                else:
-                    # THE LOUDNESS ASYMMETRY (R2-2): a fired join with no
-                    # resolvable body still delivers its declared consumers
-                    # (the delivery contract — never a crash), but the
-                    # record must not look healthy while the work was
-                    # wrong: the join row is stamped
-                    # ``blocking_reason='body_unavailable'`` and a WARNING
-                    # names it. A stamped name that fails registry
-                    # resolution is the deployment defect class (the
-                    # definitions not imported in this process — the
+                if body.body is not None:
+                    await body.body()
+                elif body.loud:
+                    # THE LOUDNESS ASYMMETRY (R2-2): a fired join whose
+                    # resolution went LOUD (the stamped name resolves to no
+                    # compiled graph here — the deployment-defect class)
+                    # still delivers its declared consumers (the delivery
+                    # contract — never a crash), but the record must not
+                    # look healthy while the work was wrong: the join row is
+                    # stamped ``blocking_reason='body_unavailable'`` and a
+                    # WARNING names it. An unresolvable name that fails the
+                    # registry resolution is the deployment defect class
+                    # (the definitions not imported in this process — the
                     # fleet's every worker carries them); an anonymous root
                     # or a cold memo is the same silence by another door.
                     # Both are loud here; neither wedges the delivery.
