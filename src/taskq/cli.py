@@ -52,6 +52,7 @@ from taskq._doctor import (
 from taskq._forkguard import guarded_connection_class
 from taskq._humantime import humanize_age
 from taskq._json import loads as json_loads
+from taskq._reaper import reap_cancelled_child
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
@@ -2156,8 +2157,7 @@ async def _ui_credential_rotation(
         if sighup_registered:
             loop.remove_signal_handler(signal.SIGHUP)
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await reap_cancelled_child(task)
 
 
 def _ui_serve(

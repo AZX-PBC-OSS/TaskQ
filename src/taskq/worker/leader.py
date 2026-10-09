@@ -97,6 +97,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._json import dumps_str
+from taskq._reaper import reap_cancelled_child
 from taskq.backend._protocol import Backend
 from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
@@ -484,8 +485,7 @@ class MaintenanceLeader:
             for task in (sleep_task, stop_task, wake_task):
                 if not task.done():
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    await reap_cancelled_child(task)
             woken = wake.is_set()
             wake.clear()
         return woken
@@ -1630,8 +1630,7 @@ class MaintenanceLeader:
                 for task in (leader_wait, shutdown_wait):
                     if not task.done():
                         task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await task
+                        await reap_cancelled_child(task)
             if shutdown.is_set():
                 return
             while not shutdown.is_set() and self._deps.is_leader.is_set():

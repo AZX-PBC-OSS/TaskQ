@@ -8,9 +8,11 @@ routed to its landing ticket. The triage rule stands: **the bar is
 "first-try correct, no boilerplate, IDE autocompletion resolves the
 wiring."**
 
-Count: **21 cuts** — applied **16** · declined-with-reason **1** ·
-recorded-no-action **2** · verify-absent **1** · deferred-with-ticket
-**1**. (THIS LINE IS THE ONE HOME for the T17 counts — every other
+Count: 21 cuts — applied 16 · declined-with-reason 1 ·
+recorded-no-action 2 · verify-absent 1 · deferred 1
+(the deferred-with-ticket class). The counts are machine-parseable on
+this line (the pin's own contract — test_wf_attack_loop_docs.py's
+three-homes family). (THIS LINE IS THE ONE HOME for the T17 counts — every other
 document points here and carries no arithmetic of its own. The counts
 are derived FROM THE TABLE BELOW, not remembered: the table is the
 ledger, the line is its sum. Correction history: the line said

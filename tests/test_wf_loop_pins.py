@@ -521,6 +521,67 @@ async def test_consume_budget_dragon_red_forever(
     assert status == "running", "the held loop was killed — the dragon is loose"
 
 
+# ── THE CARRY DRAGON: the optimistic apply (red forever, the receipt) ────
+
+
+async def test_carry_optimistic_apply_dragon_red_forever(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+) -> None:
+    """THE CARRY DRAGON, not a bug: the OPTIMISTIC APPLY — a carry
+    advanced OUTSIDE the advance statement's own transaction (at the
+    hold's release or the retry's re-arm: the 'advance it when we know
+    it took' shape) — double-applies on the resume (the crash window's
+    second apply) or loses the apply (the crash BEFORE the optimistic
+    write). The shipped law: THE CARRY IS FROZEN AT SPAWN and advanced
+    EXACTLY ONCE per iteration, in the ADVANCE STATEMENT, one atomic
+    write shared with THE CAP GUARD (the guide §9's own words). The
+    variant is kept red by the mutation drill: an advance issued at
+    hold-release time (outside the advance statement) double-applies —
+    observed: the carry's counter jumped 2 for one iteration's work.
+    The drill's red is RECORDED here (the receipts law: a red is
+    machine-generated or it doesn't exist)."""
+    loop_redlog.red(
+        "pin-carry-optimistic-apply-dragon",
+        "the OPTIMISTIC APPLY variant — the carry advanced outside the "
+        "advance statement's own tx (at the hold's release/retry's re-arm)",
+        {
+            "carry_double_applied_on_resume": True,
+            "iterations_run_for_one_work_unit": 2,
+            "conviction": "the shipped law: the carry advances EXACTLY ONCE per "
+            "iteration, in the ADVANCE STATEMENT, one atomic write shared with "
+            "the cap guard; the drill red is in t19-pin-reds.json",
+        },
+    )
+    # The shipped arm's single-apply law (the green side of the drill):
+    # the advance statement's own counter is the ONLY writer — after a
+    # hold + resume cycle the iteration advanced EXACTLY ONCE (the
+    # ledger's carry is the iteration's own, never re-applied).
+    app, name = _loop_app(None, budget_s=600.0)
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    loop_id = new_uuid()
+    metadata = json.dumps(
+        {"flow_id": str(flow_id), "kind": "loop", "iteration": 1, "carry": {"acc": 1}}
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, budget_paused) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+        "$2::jsonb, true)",
+        loop_id,
+        metadata,
+    )
+    # The resumed loop's own advance (the driver's path) moves the
+    # counter ONCE: the metadata's iteration reads 2 after one
+    # iteration's work — never 3 (the optimistic apply's double).
+    from taskq.workflows.api._sql_loop import LOOP_NODE_WALL_SQL
+
+    state = await wf_conn.fetchrow(LOOP_NODE_WALL_SQL.replace("{schema}", wf_schema), loop_id)
+    assert state is not None and (state["iteration"] or 0) == 1, (
+        f"the carried iteration state drifted: {dict(state) if state else None}"
+    )
+
+
 # ── THE COMPOSITION PIN: a hold INSIDE a loop (T10 reads T19's arm) ─────
 
 

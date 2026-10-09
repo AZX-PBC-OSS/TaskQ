@@ -62,7 +62,7 @@ services:
       TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
       TASKQ_REDIS_URL: redis://redis:6379
       TASKQ_ENVIRONMENT: dev
-      TASKQ_QUEUES: examples,demo-enrich,demo-cpu,demo-publish
+      TASKQ_QUEUES: examples,default,demo-enrich,demo-cpu,demo-publish
 
   worker-2:
     # See worker-1's pull-policy note: the default is `build` (fresh every

@@ -82,6 +82,7 @@ from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
 from taskq.worker.queue_ops import QueueRow
 from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
 from taskq.worker.startup import capacity_field_diverges
+from taskq.worker.workgroup import reap_cancelled_child
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
     "_emit_resolved_capacity_startup_lines",
@@ -423,8 +424,14 @@ async def producer_loop(
                     # otherwise never leave (see the guard construction
                     # above and taskq.worker._transient).
                     guard.unexpected(exc)
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.sleep(poll_interval)
+                # THE SWALLOW CURED (the silent-swallow class): the
+                # poll's sleep carried a suppress(CancelledError) +
+                # continue — the worker's OWN cancel could NEVER land
+                # (every shutdown tick was eaten and the loop ran on).
+                # The cancel propagates: the loop's shutdown is the
+                # cancel's own; the poll interval's brevity is the loop's
+                # wake budget, not a cancel to suppress.
+                await asyncio.sleep(poll_interval)
                 continue
 
             # The round completed without error: reset the backstop's
@@ -515,14 +522,12 @@ async def producer_loop(
                 )
                 for task in pending:
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    await reap_cancelled_child(task)
             finally:
                 for task in all_waits:
                     if not task.done():
                         task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await task
+                        await reap_cancelled_child(task)
 
             # Cleared after the wait, not before: a release landing while
             # the round ran is covered by the round's own claim (the loop
@@ -603,8 +608,7 @@ async def producer_loop_stub(
             )
             for task in pending:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await reap_cancelled_child(task)
         finally:
             for task in [stop_wait, shutdown_wait]:
                 if not task.done():
@@ -812,8 +816,7 @@ async def consumer_loop_stub(
             )
             for task in pending:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await reap_cancelled_child(task)
             if q_get not in _done:
                 # A stop signal won the race and nothing was taken.
                 return
@@ -1009,8 +1012,7 @@ async def di_consumer_loop(
             )
             for task in pending:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await reap_cancelled_child(task)
             if q_get not in _done:
                 # A stop signal won the race and nothing was taken.
                 return

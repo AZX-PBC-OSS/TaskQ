@@ -412,6 +412,10 @@ families:
 | `tests/test_workflows_ledger_pins.py` | the ledger family: the double-run (1), the lost-completion window (2), the concurrent claim (3), the run-key replay (4), the claim-atomic window (5), the terminal-atomic split-write (6), the map-children arbiter (7) |
 | `tests/test_wf_engine_units.py` | the in-process pins: the seam-only generation (10), redact-before-persist (11), the canonical hash (12), the deadlock budget (14), body-from-definition (16) |
 | `tests/test_wf_propagation_pins.py` | the T06 propagation family: the stranded join (pin 1), the peer-cancel record (pin 2), the collect exhaustion fan-in + the ts ordering (pin 3), the skip's zero ledger rows (pin 4), the mid-ladder composition (pin 5), the sweep's crash-window heal (pin 6), the policy validator (pin 7) |
+| `tests/test_wf_loop_pins.py` | the T19 loop family: the two walls (the budget's paused-blind arm, the iteration cap's advance-shared guard), the carry's frozen-at-spawn single-apply (the typed carry at iteration 0, the resume's exact sequence), the advance/exhaust statements' claim fence (the zombie strike), the union return's named failure, the exhaustion's honest count, the waits-forever warning, the carrier-type's registration refusal, the held iteration's invisibility |
+| `tests/test_wf_hitl_pins.py` | the T10 HITL family: the hold/resume contract, the deliver's CAS, the timed hold's expiry, the cancel cascade's hold leg |
+| `tests/test_wf_phase3_cure_pins.py` | the phase-3 fix round's family: the typed early-exit sentinel, the manual resume, the map-join consumption door, the T10/T19 blockers' cures |
+| `tests/test_wf_progress_emission.py` + `test_wf_progress_faces.py` + `test_wf_progress_persistence.py` | the T21 progress family: the emission op's typed gate (the validated dump is the record), the coalesce cadence + the constant rows, the auto projections' counted trims, the two-channel persistence, the faces' contracts |
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
 
@@ -669,9 +673,15 @@ decoded item results for the downstream body.
 
 ## §9 — Loops & back-edges (T19)
 
-`wf.loop(name, body, carry, until, max_iterations, budget,
-on_exhausted)` — the loop is v1 (the maintainer's ruling: *"you do not
-cut must haves"*). Each iteration is FRESH jobs: the iteration-scoped
+`wf.loop(name, body, *, initial, carry_type, until, max_iterations,
+budget_s, on_exhausted, escalates_to, gates)` — the loop is v1 (the
+maintainer's ruling: *"you do not cut must haves"*); the signature is
+the SHIPPED verb's own, every parameter spelled: `initial` seeds the
+carry at iteration 0, `carry_type` declares the carry's model
+(revalidated at every boundary), `until` is awaited per iteration,
+`budget_s` bounds the loop's wall clock, and the exhaustion takes
+`on_exhausted` (`"fail"` | `"escalate"` — the escalation step via
+`escalates_to=`, with `gates=`'s HOLD gates). Each iteration is FRESH jobs: the iteration-scoped
 step keys `(workflow, loop_key, iteration, step)` keep the idempotency
 ledger per-iteration (T05's contract unchanged). The body returns the
 CONTROL UNION:

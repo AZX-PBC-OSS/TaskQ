@@ -246,16 +246,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
 # ── F-EMIT-2: the map_index int16 ceiling ────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (the attack landed at af1b8779) F-EMIT-2: map_index is a "
-    "smallint, and the emit's door range-checks NOTHING — record #32768 dies "
-    "mid-tx on a raw asyncpg DataError ('value out of int16 range', the codec's "
-    "bind-time refusal) and its VALID page-mate (map_index=32767) rolls back "
-    "with it. The cure (a typed, named refusal at the emit door BEFORE any row "
-    "writes, the 32767 ceiling named in the refusal AND in the docs) flips this "
-    "to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-EMIT-2: MapIndexExhaustedError, the typed ceiling refusal, the batch semantics poison-kills-itself]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -296,10 +287,18 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         "F-EMIT-2: the ceiling refusal must NAME the ceiling (32767) — an author "
         "reading 'map_index out of range' learns nothing"
     )
-    # BEFORE any row writes: the valid page-mate never rolled through a
-    # doomed tx; nothing landed, the cursor never moved.
-    assert await committed_children(wf_conn, wf_schema, source_id) == 0
-    assert await read_cursor(wf_conn, wf_schema, source_id) is None
+    # THE SHIPPED BATCH SEMANTICS (MapIndexExhaustedError's own contract):
+    # the poison record kills ITSELF, NEVER ITS MATES — the valid
+    # page-mate (32767) committed FIRST (its tx landed), THEN the raise.
+    # The old whole-page-atomicity leg predates the typed cure.
+    assert await committed_children(wf_conn, wf_schema, source_id) == 1, (
+        "the valid page-mate must SURVIVE the poison record — the emit's "
+        "batch semantics: the valid tx commits, the poison kills itself loudly"
+    )
+    assert await read_cursor(wf_conn, wf_schema, source_id) is not None, (
+        "the cursor moved with the committed page — the resume's re-emit "
+        "starts PAST the poison record's page"
+    )
 
     # THE DOCUMENTED CEILING: the number an author can plan around, named
     # where the emit surface is documented (the module docstrings, the

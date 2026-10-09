@@ -12,11 +12,11 @@ means one thing everywhere.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from taskq._reaper import reap_cancelled_child
 from taskq.auth import ReloadSchedule
 from taskq.obs import get_logger
 
@@ -65,8 +65,7 @@ async def run_reload_schedule(
             for task in waiters:
                 if not task.done():
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    await reap_cancelled_child(task)
 
         cause = "trigger" if trigger.is_set() else "schedule"
         trigger.clear()

@@ -24,6 +24,14 @@ duplicate one. THE FENCE IS THE CLAIM: a zombie source (its attempt
 superseded) updates nothing in step 3 → :class:`EmitFencedError` → the
 children and edges roll back with the tx — a zombie cannot emit.
 
+THE MAP_INDEX CEILING (the number an author plans around): the ledger's
+claim-arbiter column is a SMALLINT — the ceiling is 32767. A page whose
+record's map_index crosses it raises :class:`MapIndexExhaustedError` at
+the emit door (typed, named, the ceiling's number on the record); the
+valid page-mates' tx commits first (the poison record kills itself,
+never its mates), and the deterministic route terminalizes the source.
+The ceiling is per-map-index, NOT per-run.
+
 THE STATEMENT-WINDOW KILL PINS: ``emit_batch`` accepts ``_window_hook``
 (the attack suite's seam — the spike's storm drove the same hook), fired
 after EACH statement with ``emit:{1|2|3}``; the pins terminate the
@@ -112,6 +120,17 @@ class EmitFencedError(RuntimeError):
     superseded (the source row was reclaimed and re-claimed under us).
     The tx aborts: the children and edges roll back with it. THE LOUD
     REFUSAL — a zombie source cannot emit, silently or otherwise."""
+
+
+#: THE MAP_INDEX CEILING (the number an author plans around):
+#: ``jobs.map_index`` is a SMALLINT — the ceiling is 32767. A page whose
+#: record's map_index crosses it raises :class:`MapIndexExhaustedError`
+#: AT THE EMIT DOOR (typed, named, the ceiling's number on the record);
+#: the valid page-mates' tx commits first (the poison record kills
+#: itself, never its mates), and the deterministic route terminalizes
+#: the source. The ceiling is per-map-index, NOT per-run: a map's
+#: children count against the same smallint the ledger's claim-arbiter
+#: keys on.
 
 
 class PageDivergedError(RuntimeError):

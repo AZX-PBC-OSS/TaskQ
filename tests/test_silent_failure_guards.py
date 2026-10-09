@@ -639,3 +639,40 @@ class TestProgressFlushFailureIsCounted:
             "a total pool outage and a single-job flush failure share the same "
             f"log kind: {loop_kinds & job_kinds}"
         )
+
+
+# ── THE SILENT-SWALLOW CLASS (the CancelledError suppress sweep) ────────
+
+
+def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
+    """THE CLASS PIN: ``contextlib.suppress(asyncio.CancelledError)`` is
+    legal in exactly ONE shape — the REAPER (``task.cancel()`` then
+    ``await reap_cancelled_child(task)``), whose helper suppresses only
+    THE CHILD'S cancel and re-raises the reaper's own (the uncancel
+    accounting). Any direct ``suppress(asyncio.CancelledError)`` in
+    ``src/`` is the convicted swallow (the F-DEMO-2 class: the lifespan's
+    cancel eaten, the task alive 12 s later; the run loop's poll that
+    could never receive its own shutdown). The grep gate sweeps every
+    seat: a new suppress must ride the reaper helper or name its own
+    re-raise discipline."""
+    import pathlib
+
+    root = pathlib.Path(__file__).parent.parent / "src" / "taskq"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        for i, line in enumerate(text.splitlines(), 1):
+            if "suppress(asyncio.CancelledError)" in line:
+                # the helper's own module is the one legal home IF the
+                # suppress guards a stub-detour that RE-RAISES after (the
+                # cancel-contained-then-reraised shape) — allow only the
+                # lines that carry the re-raise discipline within the
+                # next 4 lines.
+                window = "\n".join(text.splitlines()[i : i + 4])
+                if "raise" not in window:
+                    offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "the silent-swallow class's seats (a CancelledError suppressed "
+        "without the re-raise discipline — the shutdown's cancel dies in "
+        "the suppress):\n  " + "\n  ".join(offenders)
+    )

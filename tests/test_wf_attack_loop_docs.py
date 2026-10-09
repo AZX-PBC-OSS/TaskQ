@@ -22,8 +22,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[1]
 MEASUREMENTS = REPO / ".measurements"
 PERF_DOC = REPO / "perf-evidence-workflows.md"
@@ -192,14 +190,7 @@ def _t17_table_counts(ledger: str) -> dict[str, int]:
     return counts
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the T17 disposition counts drift three ways — "
-    "the ledger's table reads verify-absent 1 / deferred 1 (cuts #13/#20), the "
-    "ledger's own header reads 2/0, the guide reads 2/1. The cure (one count, one "
-    "home — the prose homes regenerated from the table) flips this XPASS-strict — "
-    "remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the T17 counts: the ledger header to the pin's contract + the guide's one-home doctrine enforced (the pointer present, the arithmetic absent)]; the marker is removed per the designed flip.
 def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
@@ -212,33 +203,29 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
 
     header_match = re.search(
         r"applied (\d+).*?declined-with-reason (\d+).*?recorded-no-action\s*(\d+).*?"
-        r"verify-absent (\d+).*?deferred (\d+)",
+        r"verify-absent (\d+).*?deferred\s+(\d+)",
         ledger,
         re.S,
     )
-    guide_match = re.search(
-        r"\(applied\s+(\d+)\s*/\s*declined-with-reason\s+(\d+)\s*/\s*recorded\s+(\d+)\s*/\s*"
-        r"verify-absent\s+(\d+)\s*/\s*deferred\s+(\d+)\)",
-        guide,
-    )
     assert header_match is not None, "the ledger header's count line is gone"
-    assert guide_match is not None, "the guide's disposition parenthetical is gone"
     keys = ("applied", "declined", "recorded", "verify-absent", "deferred")
     header = dict(zip(keys, (int(v) for v in header_match.groups()), strict=True))
-    guide_counts = dict(zip(keys, (int(v) for v in guide_match.groups()), strict=True))
 
     drift: list[str] = []
-    for cls in ("verify-absent", "deferred"):
+    for cls in keys:
         if header[cls] != table[cls]:
             drift.append(f"{cls}: the ledger header says {header[cls]}, the table has {table[cls]}")
-        if guide_counts[cls] != table[cls]:
-            drift.append(f"{cls}: the guide says {guide_counts[cls]}, the table has {table[cls]}")
-    for cls in keys:
-        if header[cls] != guide_counts[cls]:
-            drift.append(
-                f"{cls}: the two prose homes disagree (ledger header {header[cls]} "
-                f"vs guide {guide_counts[cls]})"
-            )
+    # THE GUIDE'S ONE-HOME LAW (the doc-honesty round's own cure, which
+    # REPLACED this pin's old two-prose-homes contract): the guide
+    # carries NO arithmetic — it POINTS at the ledger (the one home).
+    # The pin now enforces the pointer + the absence: the counts live
+    # in exactly one place.
+    if re.search(r"applied\s+\d+\s*/", guide):
+        drift.append(
+            "the guide carries its own count arithmetic — the one-home law says the ledger is the only home"
+        )
+    if ".measurements/t17-dispositions.md" not in guide:
+        drift.append("the guide lost its pointer to the disposition ledger (the one home)")
     assert not drift, (
         "T17 disposition count drift (one count, one home):\n  - "
         + "\n  - ".join(drift)
@@ -264,15 +251,7 @@ def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the guide §9 loop signature is stale — it "
-    "spells (name, body, carry, until, max_iterations, budget, on_exhausted); the "
-    "shipped verb takes (name, body, *, initial, carry_type, until, "
-    "max_iterations, budget_s, on_exhausted, escalates_to, gates). The cure (the "
-    "guide spells the shipped signature) flips this XPASS-strict — remove the "
-    "marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature cure]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     """The guide's spelled signature must carry every parameter the
     shipped verb takes (a param the guide never names — carry_type,
@@ -293,14 +272,7 @@ def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the guide's pin inventory omits the pin files "
-    "its own sections rely on — test_wf_loop_pins.py (§9), test_wf_hitl_pins.py "
-    "(§5), test_wf_phase3_cure_pins.py, and the test_wf_progress_* family. The "
-    "cure (the inventory names every family) flips this XPASS-strict — remove "
-    "the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the inventory names the loop/HITL/phase3-cure/progress families]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None:
     """ "Every invariant above is pinned by a test that can fail (the pin
     inventory at the foot of this page)" — the inventory is the map; a
@@ -328,15 +300,7 @@ def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None
 # ── DOCS-6: the carry dragon's "red forever" claim has no receipt ──────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): guide §9 and LOOP_ADVANCE_SQL's own comment "
-    "claim the carry's optimistic-apply dragon is 'kept red forever' by the drill "
-    "— but .measurements/t19-pin-reds.json carries receipts for pin1/pin2/pin4 "
-    "ONLY. A red is machine-generated or it doesn't exist. The cure (run the "
-    "carry drill, record the receipt — or delete the claim) flips this "
-    "XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the carry dragon's drill receipt recorded (the machine-generated red)]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
     """The receipts law, applied to the carry dragon: the claim stands
     in two homes (the guide's §9 carry paragraph and the advance
