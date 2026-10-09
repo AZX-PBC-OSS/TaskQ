@@ -444,6 +444,21 @@ def map_source[S, R](
             f"node {source.key!r} already carries a map — a node finalizes "
             "once (one fork); wire the second map from a distinct source"
         )
+    if key is not None:
+        # THE ACCEPT-AND-IGNORE CLASS'S CURE (the key param consumed or
+        # refused, never ignored): the map's join key is DERIVED — the
+        # engine's fork + the runner address the map join by the SOURCE's
+        # own key + '.join' (the addressing is load-bearing across the
+        # fork's atomic write set and the consumption door), so a custom
+        # key cannot be honored without a second addressing scheme. The
+        # param's presence names the author's intent to control the key —
+        # a silent ignore would let them believe they had.
+        raise WorkflowBuildError(
+            f"map_source(key={key!r}) — the map's join key is DERIVED from "
+            f"the source ({source.key!r}.join): the engine's fork addresses "
+            "the map join by the source's own key; a custom join key is "
+            "refused, never silently ignored"
+        )
     source_node.map_item = body
     source_node.map_queue = queue
     source_node.map_max_attempts = max_attempts

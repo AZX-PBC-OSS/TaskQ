@@ -153,7 +153,7 @@ async def test_sequenced_maps_depth3_one_flow(
     @app.workflow("seq_flow")
     def seq_flow() -> object:
         source = step(_items_source, Ingest(doc_id="d1"), key="src")
-        mapped = map_source(source, _per_item, key="map1")  # THE MAP: per-item fresh jobs
+        mapped = map_source(source, _per_item)  # THE MAP: per-item fresh jobs
         del mapped
         return build(step(_map_tail, source, key="tail"))
 
@@ -358,7 +358,7 @@ async def test_map_children_ledger_identity_and_max_attempts(
     @app.workflow("map_children_flow")
     def map_children_flow() -> object:
         source = step(_items_source, Ingest(doc_id="d"), key="src")
-        mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+        mapped = map_source(source, flaky_child, max_attempts=3)
         return build(mapped)
 
     runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)

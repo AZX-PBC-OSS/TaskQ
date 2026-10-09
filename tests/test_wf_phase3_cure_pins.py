@@ -718,7 +718,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     @app.workflow("a3cure_map_tail_flow")
     def map_tail() -> object:
         src = step(_map_items_source, Ingest(doc_id="d1"), key="src")
-        mapped = map_source(src, _map_per_item, key="m")
+        mapped = map_source(src, _map_per_item)
         tail = step(_map_tail, mapped, key="tail")
         return build(step(tail_tail, tail, key="tail_tail"))
 
