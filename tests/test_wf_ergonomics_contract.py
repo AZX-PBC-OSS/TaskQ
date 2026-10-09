@@ -29,6 +29,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api._runner import FlowRunner
+from taskq.workflows.api._validate import validate_compiled
 
 # ── the ABSTRACTION CONTRACT's banned vocabulary (the campaign domain) ──
 #: The repo-bound surfaces ship in the abstract ``doc_ingest`` domain; the
@@ -157,10 +158,23 @@ def test_bar_walk() -> None:
         return build(step(_summarize, both, key="summarize"))
 
     compiled = app.get("bar_walk_doc_ingest")
-    assert compiled is not None
+    # THE REAL ASSERTS (the API RAISES on an unknown name — it never
+    # returns None, so `assert compiled is not None` was a dead check):
+    # the compiled graph's own properties — the node census, the edges,
+    # the terminal, the sunk declaration.
+    assert compiled.name == "bar_walk_doc_ingest"
     keys = set(compiled.node_keys())
-    assert {"_fetch", "_embed", "summarize"} <= keys
-    compiled.validate()  # the zero-false-positive bar: the ORIGINAL graph is clean
+    assert {"_fetch", "_embed", "summarize"} <= keys, keys
+    assert compiled.parents_of("_embed") == ["_fetch"], keys
+    assert compiled.terminal == "summarize"
+    assert "_embed" in compiled.sunk, "the fire-and-forget declaration is missing"
+    # THE ZERO-WARNING BUDGET, ENFORCED AT BOTH SEVERITIES: validate()
+    # raises on ERROR severity only — a WARNING regression (W1, W2)
+    # sails a bare validate() green. The budget reads the REPORT.
+    diagnostics = validate_compiled(compiled)
+    assert diagnostics == (), (
+        f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
+    )
 
 
 def test_paper_cut_1_join_user_body() -> None:
@@ -176,12 +190,21 @@ def test_paper_cut_1_join_user_body() -> None:
         return build(step(_tail, reducer, key="tail"))
 
     compiled = app.get("join_body_walk")
-    assert compiled is not None
-    # the reducer node fans in BOTH stages; `tail` consumes the reducer's
-    # promise — the cascade spelled in the wiring.
+    # THE REAL ASSERTS (the API raises, never returns None — the dead
+    # `is not None` check is gone): the reducer node fans in BOTH
+    # stages; `tail` consumes the reducer's promise — the cascade
+    # spelled in the wiring, the census closed.
+    assert compiled.name == "join_body_walk"
+    assert set(compiled.node_keys()) == {"stage_a", "stage_b", "reducer", "tail"}
     assert compiled.parents_of("reducer") == ["stage_a", "stage_b"]
     assert compiled.parents_of("tail") == ["reducer"]
-    compiled.validate()
+    assert compiled.terminal == "tail"
+    # THE ZERO-WARNING BUDGET at BOTH severities (a WARNING regression
+    # sails a bare validate() green — the budget reads the REPORT).
+    diagnostics = validate_compiled(compiled)
+    assert diagnostics == (), (
+        f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
+    )
 
 
 def test_paper_cut_7_create_flow_takes_input() -> None:
@@ -194,7 +217,16 @@ def test_paper_cut_7_create_flow_takes_input() -> None:
         return build(step(_tail, step(_stage_a, DocIngest(doc_id="d"), key="a"), key="tail"))
 
     compiled = app.get("input_walk")
-    assert compiled is not None
+    # THE REAL ASSERTS: the graph's own shape (the API raises on an
+    # unknown name — `is not None` could never fire).
+    assert compiled.name == "input_walk"
+    assert set(compiled.node_keys()) == {"a", "tail"}
+    assert compiled.parents_of("tail") == ["a"]
+    assert compiled.terminal == "tail"
+    diagnostics = validate_compiled(compiled)
+    assert diagnostics == (), (
+        f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
+    )
     # the signature exists and accepts the input (the runtime behavior is
     # T09's runner pins; this walk pins the ERGONOMIC SHAPE: the parameter
     # is there, IDE-discoverable).
@@ -222,11 +254,22 @@ def test_paper_cut_4_dispatch_time_predicate() -> None:
         return build(step(_branch_b, pick, key="branch_b"))
 
     compiled = app.get("dispatch_guard_walk")
-    assert compiled is not None
-    # the guard is stored as a CALLABLE on the node's definition — decided
-    # when the node dispatches, against the flow's state.
+    # THE REAL ASSERTS: the guard is stored as a CALLABLE on the node's
+    # definition — decided when the node dispatches, against the flow's
+    # state; the skipped branch's drop is EXPLICIT (sunk), the census
+    # and the edges named.
+    assert compiled.name == "dispatch_guard_walk"
+    assert set(compiled.node_keys()) == {"pick", "branch_a", "branch_b"}
     assert callable(compiled.skip_predicate("branch_a"))
-    compiled.validate()
+    assert compiled.skip_predicate("branch_b") is None
+    assert "branch_a" in compiled.sunk, "the skipped branch's explicit drop is missing"
+    assert compiled.parents_of("branch_b") == ["pick"]
+    # THE ZERO-WARNING BUDGET at BOTH severities (a WARNING regression
+    # sails a bare validate() green — the budget reads the REPORT).
+    diagnostics = validate_compiled(compiled)
+    assert diagnostics == (), (
+        f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
+    )
 
 
 def test_promise_type_story() -> None:
