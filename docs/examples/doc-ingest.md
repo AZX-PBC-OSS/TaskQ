@@ -330,14 +330,18 @@ async def run_nightly_refresh(schema: str, pool: object, slot: str) -> str:
     idempotency demonstrated (the same slot twice → one run). The
     caller's input IS the corpus (the body reads `ctx.input`)."""
     runner = FlowRunner(app.get("doc_ingest"), pool, schema)
-    run_id = await runner.create_flow(
+    claim = await runner.create_flow(
         input=IngestBatch(doc_ids=_BATCH),
         run_key=f"doc_ingest:nightly:{slot}",
     )
+    run_id = claim.flow_id
     # The FIRST wall: drive to the review HOLD (a drive to `terminal`
     # around a hold would spin its tick loop on a quiescent run — the
     # held answer IS the quiescent stop). A `max_ticks` return is a
-    # DEFECT with a name — surfaced, never a silent stop.
+    # DEFECT with a name — surfaced, never a silent stop. The TYPED
+    # CLAIM: create_flow returns the RunClaim (the claim's `kind` states
+    # created/existing — the 202-vs-409 distinction), and the run's id
+    # rides `claim.flow_id`.
     state = await runner.drive(run_id, until="held")
     if state == "max_ticks":
         raise RuntimeError(
