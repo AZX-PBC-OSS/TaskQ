@@ -1,32 +1,65 @@
 # FLAKE-KILL REPORT — the flake classes killed at the root, the pins that hold
 
-**Branch**: `cons/grand-9` (worktree `/tmp/opencode/wt-taskqflow`, single-writer).
-**Own PG**: `taskq-flakekill-pg` on :5719 (tuned to the shared pair's profile —
-`max_connections=1000`, `fsync=off`, `synchronous_commit=off`,
-`full_page_writes=off`, `max_wal_size=4GB`, `checkpoint_timeout=3600` — reached
+**Branch**: `cons/grand-9` (worktree `/tmp/opencode/wt-taskqflow`, single-writer),
+**REBASED over main's tip** (`4cc6f3c3`, #677 — the 144-commit replay; the
+identity collision it surfaced and the two casualties it caused are the
+consolidation commit's own record).
+**Own PG**: `taskq-flakekill-pg2` on :5725 (tuned to the shared pair's profile —
+`max_connections=1500`, `fsync=off`, `synchronous_commit=off`,
+`full_page_writes=off`, `max_wal_size=6GB`, `checkpoint_timeout=3600` — reached
 via `TASKQ_TEST_PG_DSN`, the conftest's external-cluster seam, BUILD-PROTOCOL
-§7b's one-container-per-worktree law).
+§7b's one-container-per-worktree law). The FIRST bar's own `taskq-flakekill-pg`
+on :5719 serves as the CO-TENANT's hammered PG in the loaded rounds.
 **Capture law**: every run → a timestamped file in `.measurements/`.
 
-## THE EXIT BAR — MET
+## THE EXIT BAR — MET, TWICE: quiet AND under the deliberate load
 
-Three consecutive full-suite green rounds of the fast tier
-(``-n 8 -m "not slow and not load_sensitive"`` — CI's own fast-lane filter)
-each under 15:00, captured:
+**THE UPGRADED BAR (the maintainer: "tests cannot be flakey, unreliable,
+brittle" PERIOD — 'green solo, red under load' IS the flake)**: the fast
+tier at -n 8, THREE consecutive green rounds WITH the deliberate
+background load applied — the CPU hog at the neighbor's measured ~38%
+profile (12 full-core spinners on the 32-core box, 37.5%) AND the
+co-tenant PG activity (pgbench, 8 clients, hammering the NEIGHBOR's own
+container, not the suite's). The suite must be green UNDER LOAD.
 
-| round | capture file | result | wall |
+| loaded round | capture file | result | wall |
 |---|---|---|---|
-| 1 | `.measurements/flakekill-fast-tier-round1-20261008T220820Z.txt` | 1 failed (the mutual-drop, cured) | **11:31** |
-| 2 | `.measurements/flakekill-fast-tier-round2-20261008T222709Z.txt` | 3 failed (cured: the TSL retention race, the publisher's token, the hygiene scan) | **10:44** |
-| 3 | `.measurements/flakekill-fast-tier-round3-20261008T224412Z.txt` | **12,906 passed — GREEN** | **10:16** |
-| 4 | `.measurements/flakekill-fast-tier-round4-20261008T231055Z.txt` | 2 failed (the mutual-drop's TRUE root — cured) | **10:54** |
-| 5 | `.measurements/flakekill-fast-tier-round5-20261008T233925Z.txt` | **12,907 passed — GREEN** | **10:32** |
-| 6 | `.measurements/flakekill-fast-tier-round6-20261008T235145Z.txt` | **12,907 passed — GREEN** | **10:46** |
-| 7 | `.measurements/flakekill-fast-tier-round7-20261009T000355Z.txt` | **12,907 passed — GREEN** | **10:27** |
+| L1 (instrument) | `.measurements/flakekill-loaded-round-L1-20261009T014852Z.txt` | 2 failed + 1 error (the rebase casualties, cured) | 13:04 |
+| L2 | `.measurements/flakekill-loaded-round-L2-20261009T025205Z.txt` | **12,996 passed — GREEN under load** | **13:11** |
+| L3 | `.measurements/flakekill-loaded-round-L3-20261009T030634Z.txt` | **12,996 passed — GREEN under load** | **14:40** |
+| L4 | `.measurements/flakekill-loaded-round-L4-20261009T032239Z.txt` | **12,996 passed — GREEN under load** | **13:12** |
 
-**The bar: rounds 5 → 6 → 7 — three consecutive greens, 10:32 / 10:46 / 10:27, every one under 15:00.**
+**The bar: L2 → L3 → L4 — three consecutive greens UNDER LOAD, 13:11 /
+14:40 / 13:12, every one under 15:00.** The load's profile: 12 hogs
+(~37.5% of the box) + pgbench driving the co-tenant PG to ~684% of a
+core, sustained through each round; the box's own load average ran 27+
+during the rounds (vs 3-7 quiet).
 
-Recon (unofficial, the durations profile): `.measurements/flakekill-recon-durations-20261008T214636Z.txt` — its 3 failed + 3 errors were the SPLIT-DROP class's discovery.
+**The quiet bar (the earlier record, kept for the timing table's base
+rate):** three consecutive greens at -n 8 on a quiet box — rounds 3/5/6/7
+(10:16 / 10:32 / 10:46 / 10:27). The measured LOAD-DEGRADATION FACTOR:
+quiet ~10:30 → loaded ~13:10 = **1.25x** — the honest multiplier the
+condition-bounds are sized against (the boot-poll's 30s bound is ~2.3x
+the loaded boot worst-case, still headroom-positive).
+
+The leaked-task guard: **zero leaks under the loaded rounds too** (the
+loaded rounds' captures carry zero guard failures — the leaks under load
+surface FASTER and the guard's fail-fast names them at the source).
+
+## THE NOISY-NEIGHBOR ENTRY (the class map's closing line)
+
+**KILLED — the margins are LOAD-ROBUST, not 'infra-decided'.** The
+upgraded bar's proof is the loaded-regime record above: the suite's
+DEFAULT (the fast tier at -n 8) runs green BESIDE a deliberate neighbor
+(37.5% CPU + a hammered co-tenant PG), three consecutive rounds, every
+one inside the 15:00 bound. The conversions that bought it: the
+condition-not-clock polls (C4), the lifecycle grouping (C6), the
+invocation-unique token (C7), the idempotent renumbered migration chain —
+and the residuals (the timing-assertion subjects: the cadence pin, the
+bands, the wall-clock perf pins) are MARKED `load_sensitive` and run in
+the exclusive lane, the law §7b already wrote. A test that cannot survive
+the neighbor is either converted or marked — nothing is left unmarked
+and unconverted.
 
 ## BUILD-PROTOCOL §7b — THE RESOURCE LAW
 
@@ -289,7 +322,7 @@ test-debris containers (3 days old, e2e run leftovers never swept).
   `load_sensitive` — its subject is a wall-clock cadence; it runs in the
   exclusive lane where its measurement is trustworthy.
 
-## THE TIMING TABLE (before/after)
+## THE TIMING TABLE (before/after, quiet + loaded)
 
 Before: the prior round's `.measurements/fast-tier-timed-210136.txt` —
 57 failed / 12,915 passed in **11:42** at -n 8 (green-but-broken: the COPY
@@ -298,14 +331,23 @@ true wall cost of a green run).
 
 | run | scope | failed | wall | capture |
 |---|---|---|---|---|
-| prior round | fast tier -n 8 | 57 | 11:42 | `fast-tier-timed-210136.txt` |
-| round 1 | fast tier -n 8 | 1 | 11:31 | `flakekill-fast-tier-round1-*.txt` |
-| round 2 | fast tier -n 8 | 3 | 10:44 | `flakekill-fast-tier-round2-*.txt` |
-| round 3 | fast tier -n 8 | **0** | **10:16** | `flakekill-fast-tier-round3-*.txt` |
-| round 4 | fast tier -n 8 | 2 | 10:54 | `flakekill-fast-tier-round4-*.txt` |
-| round 5 | fast tier -n 8 | **0** | **10:32** | `flakekill-fast-tier-round5-*.txt` |
-| round 6 | fast tier -n 8 | **0** | **10:46** | `flakekill-fast-tier-round6-*.txt` |
-| round 7 | fast tier -n 8 | **0** | **10:27** | `flakekill-fast-tier-round7-*.txt` |
+| prior round | fast tier -n 8, quiet | 57 | 11:42 | `fast-tier-timed-210136.txt` |
+| round 1 | fast tier -n 8, quiet | 1 | 11:31 | `flakekill-fast-tier-round1-*.txt` |
+| round 2 | fast tier -n 8, quiet | 3 | 10:44 | `flakekill-fast-tier-round2-*.txt` |
+| round 3 | fast tier -n 8, quiet | **0** | **10:16** | `flakekill-fast-tier-round3-*.txt` |
+| round 4 | fast tier -n 8, quiet | 2 | 10:54 | `flakekill-fast-tier-round4-*.txt` |
+| round 5 | fast tier -n 8, quiet | **0** | **10:32** | `flakekill-fast-tier-round5-*.txt` |
+| round 6 | fast tier -n 8, quiet | **0** | **10:46** | `flakekill-fast-tier-round6-*.txt` |
+| round 7 | fast tier -n 8, quiet | **0** | **10:27** | `flakekill-fast-tier-round7-*.txt` |
+| L1 | fast tier -n 8, LOADED | 2 + 1 error | 13:04 | `flakekill-loaded-round-L1-*.txt` |
+| L2 | fast tier -n 8, LOADED | **0** | **13:11** | `flakekill-loaded-round-L2-*.txt` |
+| L3 | fast tier -n 8, LOADED | **0** | **14:40** | `flakekill-loaded-round-L3-*.txt` |
+| L4 | fast tier -n 8, LOADED | **0** | **13:12** | `flakekill-loaded-round-L4-*.txt` |
+
+The degradation factor (the condition-bounds' measured multiplier):
+quiet ~10:30 → loaded ~13:10 = **1.25x**, and the wall still clears the
+15:00 bound under load with the suite at its LARGEST (12,996 tests — the
+consolidation grew it by 81 over the pre-rebase tier).
 
 ## THE SLOWEST 10 (the durations profile — WHY each is slow)
 
