@@ -278,7 +278,19 @@ async def test_full_lifecycle_on_each_of_the_three_modes(mode: StorageMode, mode
         # The compression family's first run fires seconds after the TSL
         # deploy registered it; defer it before any more DML, so no phase
         # below races it for a chunk (see _defer_compression_policies).
+        # THE RETENTION FAMILY JOINS THE DEFERRAL (the round-2 red, cured
+        # 2026-10-08): the retention policy's first run fires seconds after
+        # registration exactly like the compression one — and phase 3's
+        # row-exactness window (the aged row must SURVIVE the row-level
+        # sweep before the forced policy run takes it) closes the moment
+        # an un-deferred retention job fires mid-test and drops the aged
+        # seed's chunk ahead of its own script (count 0 != 1, the
+        # partition clock beating the test's). Deferred here, pulled back
+        # to now ONLY by _force_retention_policies_now at the phase's
+        # own drop step — the drop belongs to the phase, never to the
+        # background scheduler's arrival time.
         if mode is StorageMode.TIMESCALE_TSL:
+            await _defer_retention_policies(conn, schema)
             await _defer_compression_policies(conn, schema)
 
         # ── Phase 2: operate — live claims + the real prune→archive fold ──
@@ -599,6 +611,26 @@ def _row_gone(
         )
 
     return _gone
+
+
+async def _defer_retention_policies(conn: asyncpg.Connection, schema: str) -> None:
+    """Push the RETENTION policy's next run a year out — the setup-side
+    twin of :func:`_defer_compression_policies` (same measured first-run-
+    seconds-after-registration mechanism, same race: an un-deferred
+    retention job's chunk drop fires whenever the background scheduler
+    arrives, and phase 3's row-exactness window needs the drop to land
+    on the phase's own clock, via :func:`_force_retention_policies_now`)."""
+    rows = await conn.fetch(
+        "SELECT job_id FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        schema,
+    )
+    for r in rows:
+        await conn.execute(
+            "SELECT alter_job($1, next_start => $2::timestamptz)",
+            r["job_id"],
+            datetime.now(UTC) + timedelta(days=365),
+        )
 
 
 async def _defer_compression_policies(conn: asyncpg.Connection, schema: str) -> None:

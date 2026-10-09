@@ -390,7 +390,7 @@ unseen) · **E6** the fan-in bound · **E7** the cross-graph promise (a
 promise wired from ANOTHER app's recorder — recorded by the verbs,
 convicted here; the colliding-key smuggle builds a silently wrong edge) ·
 **E8** the loop CARRIER-TYPE (a body refining an unrelated model against
-the declared `carry=` — the recorded declaration is enforced) · **W1**
+the declared `carry_type=` (or the model instance passed as `initial=`) — the recorded declaration is enforced) · **W1**
 the eternal wait (the warning class) · **W2** the unknown queue (a queue
 no actor declares and TASKQ_QUEUES does not name — the warning class;
 the worker-boot fail-fast stays the runtime door).

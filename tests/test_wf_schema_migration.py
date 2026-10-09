@@ -19,7 +19,6 @@ the red drill's convicted shape).
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -32,7 +31,6 @@ import pytest
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.migrate import split_statements
-from tests._wf_fixtures import MEASUREMENTS
 
 WORKFLOW_ROUND = "01.00.24"
 _MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "taskq" / "migrations"
@@ -42,8 +40,11 @@ _SEED_ROWS = 10_000
 
 
 def _write_measurement(name: str, payload: object) -> None:
-    MEASUREMENTS.mkdir(exist_ok=True)
-    (MEASUREMENTS / name).write_text(json.dumps(payload, indent=2, default=str))
+    """THE APPEND-ONLY CONVERSION: the band artifact is RUN-SCOPED (the
+    in-place rewrite is the torn-write race; the newest CITED wins)."""
+    from tests._wf_fixtures import write_band_artifact
+
+    write_band_artifact(name, payload)  # type: ignore[arg-type]
 
 
 # ── Structural pins: the single-lock-class split (family 1's form) ──────

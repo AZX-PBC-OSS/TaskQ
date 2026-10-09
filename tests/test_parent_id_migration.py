@@ -15,6 +15,10 @@ from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 
 MIGRATION_DIR = Path("src/taskq/migrations")
 MIGRATION_NAME = "01.00.23_01_pre_jobs_parent_id.sql"
+# The index is SPLIT from the columns file (the single-lock-class
+# law, the consolidation): ALTERs and CREATE INDEX are different
+# lock classes and may not share a file.
+INDEX_MIGRATION_NAME = "01.00.23_07_pre_jobs_parent_pending_idx.sql"
 
 
 def _migration_sql() -> str:
@@ -50,10 +54,12 @@ def test_migration_adds_no_foreign_key() -> None:
 def test_migration_index_serves_the_pending_children_count() -> None:
     """The partial index repeats the count's quals verbatim (the 01.00.12_06
     doctrine: a partial index is only a candidate when the planner can
-    prove its predicate from the query's own quals)."""
-    sql = _migration_sql()
-    assert "jobs_parent_pending_idx" in sql
-    assert "WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL" in sql
+    prove its predicate from the query's own quals). The index lives in its
+    OWN file since the consolidation (the single-lock-class law: ALTERs and
+    CREATE INDEX are different lock classes, one file, one class)."""
+    index_sql = (MIGRATION_DIR / INDEX_MIGRATION_NAME).read_text()
+    assert "jobs_parent_pending_idx" in index_sql
+    assert "WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL" in index_sql
 
 
 def test_migration_creates_index_non_concurrently() -> None:
@@ -61,10 +67,15 @@ def test_migration_creates_index_non_concurrently() -> None:
     cannot run inside one (the 01.00.12_06 ops note). Plain CREATE INDEX
     statements only, with the by-hand CONCURRENTLY guidance in the header
     comment."""
-    sql = _migration_sql()
-    statements = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
+    index_sql = (MIGRATION_DIR / INDEX_MIGRATION_NAME).read_text()
+    columns_sql = _migration_sql()
+    statements = "\n".join(
+        line for line in index_sql.splitlines() if not line.strip().startswith("--")
+    )
     assert "CONCURRENTLY" not in statements
-    assert "maintenance window" in sql  # the ops guidance is in the file
+    assert (
+        "maintenance window" in columns_sql or "maintenance window" in index_sql
+    )  # the ops guidance is in one of the split files' headers
 
 
 def test_copy_from_columns_carries_parent_id() -> None:

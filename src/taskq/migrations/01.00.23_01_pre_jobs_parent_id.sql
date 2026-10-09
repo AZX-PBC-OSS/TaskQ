@@ -57,6 +57,3 @@
 ALTER TABLE "{schema}".jobs ADD COLUMN parent_id uuid;
 
 ALTER TABLE "{schema}".jobs_archive ADD COLUMN parent_id uuid;
-
-    ON "{schema}".jobs (parent_id)
-    WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL;

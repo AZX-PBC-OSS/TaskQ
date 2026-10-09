@@ -726,12 +726,24 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
     invocations' names can never land in one cluster - if that isolation ever
     regressed, distinct tokens would keep the runs' names from colliding on
-    whatever they ended up sharing. Under xdist the worker id IS the token;
-    serial runs use the invocation-unique basetemp dir name (``pytest-N``) -
-    pytest allocates a fresh numbered dir per invocation, so two overlapping
-    runs can never hold the same one.
+    whatever they ended up sharing.
+
+    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root cure,
+    2026-10-08): the invocation-unique numbered dir (``pytest-N``) PLUS the
+    xdist worker's own subdirectory (``popen-gwK``) - invocation-unique AND
+    worker-distinct in one string, which neither candidate alone is. The
+    plain worker id is NOT invocation-unique: ``gw7`` is identical in every
+    ``-n 8`` invocation on the box, so two overlapping invocations (or a
+    parent session and its own subprocess pytest - the scratch drills) hashing
+    (worker, module) landed the SAME database name on one cluster, and each
+    side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
+    connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
+    fuzz pins, every victim green solo. A subprocess pytest also mints its
+    own fresh ``pytest-M`` root (the lowest free number), so its basetemp
+    path is distinct from its parent's by construction - the scratch child
+    can never re-hash the parent's names, whatever it inherits.
     """
-    token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
+    token = str(tmp_path_factory.getbasetemp())
     # A raw ``MonkeyPatch`` instance, not the function-scoped fixture (this is
     # session-scoped): the sanctioned env seam with correct undo semantics -
     # ``os.environ[...] =`` here would be the suite's one direct env write,
@@ -1152,31 +1164,69 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     default load-balancing strategy.
 
     Grouping is defense-in-depth and efficiency, NOT a correctness
-    requirement: every module-scoped name is already worker-qualified
-    (``module_pg_schema`` / ``module_pg_pool`` / ``module_jobs_app`` hash the
-    xdist worker id into the schema name, ``_module_db_name`` does the same
-    for the per-module database, and ``module_redis_url`` allocates from a
-    per-process counter), so a module accidentally split across workers
-    would get DISTINCT schemas/databases/Redis DBs rather than clobbering.
-    What grouping prevents is the waste and noise of that split: duplicated
-    create/migrate/drop work per worker, doubled pool pressure against the
-    session container, and e2e modules paying for a second worker container
-    (``e2e_schema``, ``e2e_pg_pool``, ``e2e_worker``). This hook assigns
-    ``xdist_group(name=<module basename>)`` to every ``integration`` or
-    ``e2e`` test that doesn't already carry an explicit ``xdist_group``
-    marker, so chaos-style tests keep whatever group they already declared
-    (e.g. the per-module chaos families: ``chaos_leader``, ``chaos_notify``,
-    ``chaos_ratelimit``, ``chaos_livelock``, ``chaos_health``) while
-    everything else gets a safe, per-file default. The e2e namespace prefix keeps an e2e module from
+    requirement for the NAMES alone: every module-scoped name is already
+    worker-qualified (``module_pg_schema`` / ``module_pg_pool`` /
+    ``module_jobs_app`` hash the xdist worker id into the schema name,
+    ``_module_db_name`` does the same for the per-module database, and
+    ``module_redis_url`` allocates from a per-process counter), so a module
+    accidentally split across workers would get DISTINCT schemas/databases/
+    Redis DBs rather than clobbering. What grouping prevents is the waste
+    and noise of that split: duplicated create/migrate/drop work per worker,
+    doubled pool pressure against the session container, and e2e modules
+    paying for a second worker container (``e2e_schema``, ``e2e_pg_pool``,
+    ``e2e_worker``). This hook assigns ``xdist_group(name=<module
+    basename>)`` to every ``integration`` or ``e2e`` test that doesn't
+    already carry an explicit ``xdist_group`` marker, so chaos-style tests
+    keep whatever group they already declared (e.g. the per-module chaos
+    families: ``chaos_leader``, ``chaos_notify``, ``chaos_ratelimit``,
+    ``chaos_livelock``, ``chaos_health``) while everything else gets a
+    safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
+
+    THE SPLIT-DROP CLASS (named and cured 2026-10-08, the recon run's 3
+    failed + 3 errors): grouping IS a correctness requirement for every
+    module-scoped FIXTURE LIFECYCLE, not just its names. A fast-tier module
+    whose tests take the module-scoped PG fixtures (``pg_dsn`` et al.) but
+    carries no ``integration`` mark was NOT grouped — its tests split
+    across THREE workers under load-scheduling, and each worker ran its
+    own module-db lifecycle (create at first use, drop at scope end). The
+    drops land while the module is still mid-flight elsewhere:
+    ``DROP DATABASE ... WITH (FORCE)`` terminated live connections
+    (``terminating connection due to administrator command`` in the PG
+    log) and the stranded tests died on ``InvalidCatalogNameError:
+    database "tq_db_..." does not exist`` — rotating with pytest-randomly's
+    seed, every victim green solo. The cure is the same grouping the
+    integration modules have always had: any item requesting a
+    module-scoped PG/Redis fixture joins its module's own group, so the
+    whole module — one fixture lifecycle, one create/migrate/drop — runs
+    on ONE worker.
     """
+    # The module-scoped fixtures whose LIFECYCLE (not just their names)
+    # assumes the module's tests all land on one worker: the PG database
+    # (``pg_dsn``), the schema/pool/jobs-app stack built on it, and the
+    # per-process Redis DB. ``fixturenames`` is the transitive closure, so
+    # a test requesting ``module_pg_schema`` (which requests ``pg_dsn``)
+    # matches on ``pg_dsn`` alone.
+    _lifecycle_fixtures = ("pg_dsn", "module_redis_url")
     for item in items:
         is_e2e = "e2e" in item.keywords
-        if "integration" not in item.keywords and not is_e2e:
-            continue
         if item.get_closest_marker("xdist_group") is not None:
             continue
-        group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
+        if "integration" not in item.keywords and not is_e2e:
+            # The split-drop cure: a fast-tier item riding a module-scoped
+            # PG/Redis fixture joins its module's group too — same law, the
+            # lifecycle needs the single worker regardless of the tier.
+            # (The Function narrow: ``fixturenames`` — the transitive
+            # fixture closure — is a Function attribute; non-Function
+            # items request no fixtures and have no lifecycle stake.)
+            if not (
+                isinstance(item, pytest.Function)
+                and any(f in item.fixturenames for f in _lifecycle_fixtures)
+            ):
+                continue
+            group = item.path.stem
+        else:
+            group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
     # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW

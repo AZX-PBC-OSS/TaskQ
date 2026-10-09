@@ -178,6 +178,82 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         )
 
 
+async def test_enqueue_copy_record_arity_matches_columns(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """THE ARITY PIN (the COPY record builder vs the column list it feeds).
+
+    The record tuples in ``_enqueue_batch_fast``'s build loop are built BY
+    HAND, positionally, against ``copy_enqueue_columns`` -- nothing in the
+    type system ties their lengths together. The drift is not theoretical:
+    01.00.26 added budget_deadline/budget_paused/budget_remaining_ms to
+    COPY_FROM_COLUMNS (hence to COPY_ENQUEUE_COLUMNS) without touching the
+    builder, and EVERY enqueue_batch_fast COPY died in asyncpg's
+    protocol.pyx copy_in with a bare "IndexError: tuple index out of
+    range" -- a 39-wide record against 42 columns. The failure names
+    nothing useful; the mirror-divergence pins reported it as an
+    InMemory-vs-PG contract break. This pin fails at the seam instead:
+    drive one real enqueue through the real builder and demand the
+    record's width equals the column list's, with both named on failure.
+    """
+    from unittest.mock import patch
+
+    from pydantic import BaseModel
+
+    from taskq import EnqueueItem, TaskQ
+    from taskq.actor import actor
+    from taskq.migrate import apply_pending
+
+    class _Payload(BaseModel):
+        value: int
+
+    schema = f"{settings.schema_name}_copy_arity"
+    await apply_pending(pg_conn, schema=schema)
+
+    captured: list[tuple[tuple[str, ...], tuple[object, ...]]] = []
+    orig = asyncpg.Connection.copy_records_to_table
+
+    async def _probe(
+        self: asyncpg.Connection,
+        table: str,
+        *,
+        records: list[tuple[object, ...]],
+        columns: tuple[str, ...],
+        schema_name: str | None,
+        **kw: object,
+    ) -> str:
+        captured.append((tuple(columns), tuple(records[0])))
+        result = await orig(
+            self,
+            table,
+            records=records,
+            columns=columns,
+            schema_name=schema_name,
+            **kw,  # pyright: ignore[reportUnknownArgumentType]  # Why: the probe mirrors asyncpg's own signature; the pass-through is the real call.
+        )
+        return result  # pyright: ignore[reportReturnType]  # Why: asyncpg's COPY returns a COPY-status str; the stub's declared str matches the real call's shape.
+
+    @actor(name="copy_arity_probe_actor")
+    async def _probe_actor(payload: _Payload) -> None: ...
+
+    async with TaskQ(dsn=str(settings.pg_dsn), schema=schema) as tq:
+        with patch.object(asyncpg.Connection, "copy_records_to_table", _probe):
+            await tq.enqueue_batch_fast(
+                [EnqueueItem(actor_ref=_probe_actor, payload=_Payload(value=1))]
+            )
+
+    assert captured, "the COPY probe saw no call - the builder's path changed"
+    for columns, record in captured:
+        assert len(record) == len(columns), (
+            f"COPY record arity desynced from copy_enqueue_columns: "
+            f"record has {len(record)} elements, the column list has {len(columns)} "
+            f"({columns[len(record) :]} unwritten). asyncpg's copy_in fails this shape "
+            f"with a bare IndexError from protocol.pyx. Extend the record builder in "
+            f"_enqueue_batch_fast OR add the columns to _COPY_ENQUEUE_OMITTED - "
+            f"whichever the column's writer contract says."
+        )
+
+
 async def test_jobs_archive_columns_match_jobs_plus_archive_fields(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:

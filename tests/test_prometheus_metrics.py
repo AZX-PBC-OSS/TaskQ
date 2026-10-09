@@ -477,7 +477,7 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 24 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 25 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
@@ -492,11 +492,11 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 22 alerts ───────────────────────────────
+# ── rules.yaml has exactly 25 alerts ───────────────────────────────
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 24 alerts with the names."""
+    """rules.yaml contains exactly 25 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
     assert len(rules) == 25
