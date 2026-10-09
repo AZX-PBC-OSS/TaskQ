@@ -47,7 +47,12 @@ def _node_views(draw: st.DrawFn) -> NodeView:
         held=draw(st.booleans()) if status == "pending" else False,
         # B2's ABSORBED-FAILURE CLASS in the generator: the absorbed
         # clause's inputs are exercised, not just the plain failed row.
-        absorbed=draw(st.booleans()) if status == "failed" else False,
+        # The terminal-crash fold's absorption consistency: a
+        # crashed/abandoned row with an absorbing edge reads through it
+        # the same way (the fold makes them the failed class).
+        absorbed=draw(st.booleans())
+        if status in ("failed", "crashed", "abandoned")
+        else False,
         cancel_in_flight=draw(st.booleans()),
     )
 
@@ -86,15 +91,20 @@ class TestDerivationTotality:
         """B2's clause as a property: a multiset whose ONLY failures are
         ABSORBED (collect/maybe) derives through the parent's outcome —
         never 'failed' (the flip: un-absorb → failed)."""
-        unabsorbed_failure = any(n.status == "failed" and not n.absorbed for n in nodes)
+        unabsorbed_failure = any(
+            n.status in ("failed", "crashed", "abandoned") and not n.absorbed for n in nodes
+        )
         derived = derive_workflow_status(tuple(nodes))
         if not unabsorbed_failure:
             assert derived != "failed", f"an all-absorbed multiset derived failed: {nodes}"
         else:
-            # THE PRECEDENCE: failed only ever loses to row 1 (something
-            # running / the reclaim-owned / a cancel in flight).
+            # THE PRECEDENCE: failed only ever loses to row 1 — genuine
+            # liveness (a RUNNING row — the reclaim arms' only input) or
+            # a cancel in flight. The terminal-crash class is NOT
+            # liveness (the crashed-terminal wedge's cure): a crashed
+            # row's failed-class verdict never loses to itself.
             if derived != "failed":
-                assert any(n.status in ("running", "crashed", "abandoned") for n in nodes) or any(
+                assert any(n.status == "running" for n in nodes) or any(
                     n.cancel_in_flight for n in nodes
                 ), (
                     f"a non-absorbed failure with nothing running derived "

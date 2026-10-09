@@ -64,16 +64,16 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
     assert (
         derive_workflow_status((NodeView(status="pending", cancel_in_flight=True),)) == "running"
     ), "the cancel-in-flight leg"
-    assert (
-        derive_workflow_status(
-            (
-                NodeView(
-                    status="crashed",
-                ),
-            )
-        )
-        == "running"
-    ), "the repo vocabulary's row: a crashed node is the reclaim's input — the run is live"
+    # THE TERMINAL-CRASH FOLD (the crashed-terminal wedge's cure):
+    # crashed/abandoned are TERMINALS (the state machine gives them zero
+    # outbound transitions; no sweep arm ever reclaims them) — they fold
+    # into the failed-class terminal, never liveness. The old claim ("a
+    # crashed node is the reclaim's input — the run is live") was the
+    # wedge: the {succeeded, crashed} corpse derived 'running' forever.
+    assert derive_workflow_status((NodeView(status="crashed"),)) == "failed", (
+        "the terminal-crash fold: a crashed row is the failed-class "
+        "terminal — the reclaim's input is 'running' only"
+    )
 
     # Row 2 (B2): the ABSORBED failure derives through its parent — a
     # collect's 3 Failed among 997 Ok derive complete, never failed; the
@@ -115,6 +115,29 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
     # Row 5: all terminal-succeeded/skipped → complete.
     assert derive_workflow_status(_nodes("succeeded", "succeeded")) == "complete"
     assert derive_workflow_status(_nodes("succeeded", "skipped")) == "complete"
+
+    # Row 5.5 (the terminal-crash fold): a crashed/abandoned node IS the
+    # failed-class terminal — the deterministic death (the reclaim's
+    # crashed branch wrote it: the budget exhausted, nothing will ever
+    # revive it; the state machine gives it zero outbound transitions).
+    # THE WEDGE'S PIN: the old row-1 read crashed as liveness and the
+    # {succeeded, crashed} corpse derived 'running' forever.
+    assert derive_workflow_status(_nodes("succeeded", "crashed")) == "failed", (
+        "the terminal-crash fold: a budget-exhausted crash terminal is the "
+        "failed-class terminal — never liveness (the crashed-terminal wedge)"
+    )
+    assert derive_workflow_status(_nodes("crashed",)) == "failed"
+    assert derive_workflow_status(_nodes("abandoned", "succeeded")) == "failed"
+    # The flip: the fold's ABSORPTION consistency — an ABSORBED crash
+    # derives through its parent's outcome (the collect's partial-failure
+    # clause reads the crash the way it reads the failure).
+    assert derive_workflow_status(
+        (NodeView(status="succeeded"), NodeView(status="crashed", absorbed=True))
+    ) == "complete"
+    # And the fold loses ONLY to row 1's genuine liveness (a running row
+    # — the reclaim's real input — or a cancel in flight), never to the
+    # crash itself.
+    assert derive_workflow_status(_nodes("running", "crashed")) == "running"
 
     # Row 6: any cancelled → cancelled (a cancel beats complete — the
     # flip: complete-before-cancelled would red).
