@@ -1,3 +1,4 @@
 241 passed, 1 warning in 67.82s (0:01:07)
 1 failed, 4 passed in 26.91s
 911 passed in 143.47s (0:02:23)
+the perf-band red: test_pin_4's comparative timing assert (red_p50 > p50) under co-tenant load — the repo's documented rotating class ('every failure the rotating class, green solo'); the file untouched by this lane; the solo re-run: 5 passed
