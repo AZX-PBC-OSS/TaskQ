@@ -3908,12 +3908,23 @@ _FLOWS_LIST_LIMIT: Final[int] = 20
 
 
 def _cli_principal() -> str:
-    """The CLI's audit subject: the shell user, named. The shell always
-    knows who ran it — an unattributed mutation is the one thing the
-    audit trail cannot carry."""
-    import getpass
+    """The CLI's audit subject: THE KERNEL'S WORD (F-CLI-3's cure) —
+    ``os.getuid()`` through ``pwd``, never the environment. ``getpass.
+    getuser()`` reads ``LOGNAME``/``USER`` first, so
+    ``LOGNAME=postgres taskq flows resolve …`` wrote the mutation as
+    ``cli:postgres`` — the audit row's principal was spoofable by any
+    env var the calling shell already controls. The uid is the one
+    fact the kernel attests; an unresolvable uid (a container without
+    the passwd entry) names the NUMBER, never a borrowed name."""
+    import os
 
-    return f"cli:{getpass.getuser()}"
+    try:
+        import pwd
+
+        name = pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError):
+        name = f"uid{os.getuid()}"
+    return f"cli:{name}"
 
 
 def _flows_guard(settings: TaskQSettings) -> None:
@@ -3954,6 +3965,12 @@ def flows_list(
     ] = _FLOWS_LIST_LIMIT,
 ) -> None:
     """Which runs exist, newest first, with their derived statuses."""
+    if limit < 1:
+        # TRIO-3: a negative/zero limit is a NAMED refusal (the SQL's
+        # LIMIT clause rejects it as a bare InvalidRowCountInLimitClauseError
+        # traceback otherwise).
+        typer.echo(f"invalid --limit {limit}: the limit counts runs and must be >= 1", err=True)
+        raise typer.Exit(code=1)
     settings = TaskQSettings.load()
     asyncio.run(_flows_list(settings, limit))
 
@@ -3980,16 +3997,38 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
             )
             SELECT r.id, r.workflow, r.status AS root_status, r.created_at,
                    n.status AS node_status, n.deps_pending,
-                   n.metadata->>'blocking_reason' AS blocking_reason
+                   n.metadata->>'blocking_reason' AS blocking_reason,
+                   n.step_key,
+                   EXISTS (
+                       SELECT 1
+                       FROM "{settings.schema_name}".wf_edge e
+                       JOIN "{settings.schema_name}".jobs j2 ON j2.id = e.child_id
+                       WHERE e.parent_id = n.id
+                         AND e.failure_policy IN ('collect', 'maybe')
+                         AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))
+                   ) AS absorbed,
+                   s.id AS hold_id, s.signal_name, s.expires_at AS hold_expires_at
             FROM runs r
             LEFT JOIN "{settings.schema_name}".jobs n
               ON (n.metadata->>'flow_id')::uuid = r.id
              AND n.metadata ? 'flow_id'
              AND n.step_key <> '{FLOW_ROOT_STEP_KEY}'
+            LEFT JOIN "{settings.schema_name}".wf_signals s
+              ON s.workflow_id = r.id AND s.status = 'held' AND s.node_key = n.step_key
             ORDER BY r.created_at DESC, r.id, n.id
             """,  # noqa: S608  # Why: only the identifier-validated schema and the constant root key interpolate; the limit is a bound parameter.
             limit,
         )
+    except asyncpg.exceptions.UndefinedTableError:
+        # TRIO-1: the schema was never migrated — the named remedy, never
+        # a traceback.
+        typer.echo(
+            f"the schema {settings.schema_name!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
     finally:
         await close_conn_bounded(conn, "flows-list", CLOSE_TIMEOUT_SECS)
 
@@ -4005,12 +4044,32 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
             },
         )
         if row["node_status"] is not None:
+            hold = None
+            if row["hold_id"] is not None:
+                from taskq.workflows.api._hitl import HoldContext
+
+                hold = HoldContext(
+                    hold_id=str(row["hold_id"]),
+                    run_id=str(row["id"]),
+                    node_key=row["step_key"],
+                    signal_name=row["signal_name"],
+                    hold_epoch=0,
+                    call_id="",
+                    payload={},
+                    payload_schema=None,
+                    reason=None,
+                    created_at=None,
+                    expires_at=row["hold_expires_at"],
+                    status="held",
+                )
             entry["nodes"].append(
                 FlowNodeRow(
                     step_key="",
                     status=row["node_status"],
                     deps_pending=row["deps_pending"],
                     blocking_reason=row["blocking_reason"],
+                    absorbed=row["absorbed"] or False,
+                    hold=hold,
                 )
             )
     list_rows = [
@@ -4153,7 +4212,18 @@ def flows_holds(
 
     async def run() -> None:
         async with _flows_pool(settings) as pool:
-            holds = await HitlClient(pool, schema=settings.schema_name).list(str(parsed))
+            try:
+                holds = await HitlClient(pool, schema=settings.schema_name).list(str(parsed))
+            except asyncpg.exceptions.UndefinedTableError:
+                # TRIO-2: the schema never grew the workflow tables — the
+                # named remedy, never the traceback.
+                typer.echo(
+                    f"the schema {settings.schema_name!r} has no wf_signals table yet — "
+                    "the holds surface needs the migrations: run `taskq migrate` "
+                    "against this database, then retry",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from None
             for line in format_holds(holds, run_id=run_id):
                 typer.echo(line)
 
@@ -4424,6 +4494,22 @@ def flows_cancel(
 
     async def run() -> None:
         async with _flows_pool(settings) as pool:
+            # F-CLI-2: the GHOST distinguished from the terminal — a run id
+            # that exists in NO table is the honest rc=1 refusal (the same
+            # answer `flows status` gives), never a silent "no-op" with
+            # rc=0 over an id that names nothing.
+            exists = await pool.fetchval(
+                f'SELECT 1 FROM "{settings.schema_name}".jobs '  # noqa: S608  # Why: schema identifier-validated above.
+                "WHERE id = $1 AND step_key = '__flow__'",
+                parsed,
+            )
+            if exists is None:
+                typer.echo(
+                    f"no run {parsed} (source: jobs where step_key = '__flow__') — "
+                    "nothing to cancel",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
             stopped = await cancel_workflow_run(
                 pool,
                 schema=settings.schema_name,

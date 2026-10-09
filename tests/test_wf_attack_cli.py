@@ -243,14 +243,7 @@ def _named_refusal(result: Any) -> bool:
 # ── F-CLI-1: the list/status derivation drift (LANDED, two faces) ────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-1 (face: held run): `flows list` never populates "
-    "held/absorbed on its FlowNodeRows, so a mid-hold run lists as 'pending' "
-    "while `flows status` derives 'blocked' for the same run at the same "
-    "instant. The cure (the list read joins the held/absorbed record, one "
-    "derivation) flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-1 (held) — the list's held join, one derivation]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -272,13 +265,7 @@ async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-1 (face: collect-absorbed run): `flows list` "
-    "never populates absorbed=, so a collect-absorbed failure lists as "
-    "'failed' while `flows status` derives 'complete' for the same run. The "
-    "cure flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-1 (absorbed) — the list's absorbed EXISTS, one derivation]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -329,15 +316,7 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
 # ── F-CLI-2: ghost-cancel is a silent no-op (LANDED) ─────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-2: `flows cancel <ghost-run-id>` prints "
-    "'no-op: … already terminal — nothing cancelled' with rc=0 for a run id "
-    "that exists in NO table, while `flows status <ghost>` is the honest "
-    "rc=1 'no run'. The cure (cancel distinguishes ghost from terminal: "
-    "named refusal, exit 1, no audit row) flips this to XPASS-strict — "
-    "remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-2 — the ghost cancel's honest rc=1]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -368,15 +347,7 @@ async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
 # ── F-CLI-3: the audit principal is env-spoofable (LANDED) ───────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-3: the audit principal is env-spoofable — "
-    "_cli_principal() is cli:{getpass.getuser()} and getuser() reads "
-    "LOGNAME/USER first, so `LOGNAME=postgres taskq flows resolve …` writes "
-    "the mutation as cli:postgres. The cure (derive from os.getuid()/pwd — "
-    "the kernel's word) flips this to XPASS-strict — remove the marker WITH "
-    "the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-3 — the principal is getuid-derived (the kernel's word)]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     cli_settings: Any,
     wf_conn: asyncpg.Connection,
@@ -426,16 +397,7 @@ async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
 # ── F-CLI-4: DB-sourced strings print RAW (LANDED, two faces) ────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-4 (face: error_message): `flows status` "
-    "prints a failed node's error_message RAW — embedded newlines render as "
-    "a genuine finding + a FORGED remedy line, ANSI escapes reach the tty. "
-    "The cure (the _format_event_detail discipline at cli.py:3884: "
-    "whitespace/ANSI-collapsed and bounded, applied to every DB-sourced "
-    "string the flows surface prints) flips this to XPASS-strict — remove "
-    "the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-4 (the status face) — the error text through _bounded_line]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -478,15 +440,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     assert all(len(ln) <= _LINE_BOUND for ln in rendered)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CLI-4 (face: hold reason): `flows status` prints "
-    "a hold's reason RAW and the holds surface's render (format_holds) "
-    "prints a reason-carrying hold raw and UNBOUNDED — embedded newlines "
-    "forge a remedy line, ANSI escapes reach the tty, no length cap. The "
-    "cure (the _format_event_detail discipline) flips this to XPASS-strict "
-    "— remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-4 (the holds face) — the reason through _bounded_line]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -751,15 +705,7 @@ async def prewf_schema(module_pg_schema: Any) -> AsyncIterator[str]:
         await conn.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (traceback trio 1/3): `flows list` against a "
-    "never-migrated schema tracebacks (UndefinedTableError: relation "
-    "….jobs does not exist) instead of the guard's promised named exit "
-    "('prints the reason and exits 1 — never a traceback'). The cure "
-    "(detect the unmigrated schema, name the remedy: taskq migrate) flips "
-    "this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 1/3 — the unmigrated schema's named remedy]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, nomig_schema: str
 ) -> None:
@@ -771,13 +717,7 @@ async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (traceback trio 2/3): `flows holds` tracebacks on "
-    "a pre-workflows schema (UndefinedTableError: wf_signals does not "
-    "exist) instead of the guard's promised named exit. The cure flips "
-    "this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 2/3 — the pre-workflows holds' named remedy]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, prewf_schema: str
 ) -> None:
@@ -789,14 +729,7 @@ async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (traceback trio 3/3): `flows list --limit -5` "
-    "tracebacks (InvalidRowCountInLimitClauseError: LIMIT must not be "
-    "negative) instead of a named refusal on the bad option value. The "
-    "cure (validate --limit, print the reason, exit clean) flips this to "
-    "XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 3/3 — the negative --limit's named refusal]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
     cli_settings: Any,
 ) -> None:

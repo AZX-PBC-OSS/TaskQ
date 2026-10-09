@@ -101,6 +101,32 @@ def derive_flow_status(nodes: Sequence[FlowNodeRow]) -> WorkflowStatus:
     return derive_workflow_status(tuple(n.view() for n in nodes))
 
 
+def _bounded_line(text: object, limit: int = 120) -> str:
+    """THE DB-SOURCED TEXT'S DISCIPLINE (F-CLI-4's cure, the class seat):
+    anything the RENDER surfaces print from a DB-sourced string is
+    whitespace-COLLAPSED (embedded newlines cannot forge a remedy line —
+    an attacker-shaped error_message or hold reason writing its own
+    'remedy: …' line is the convicted forgery) and BOUNDED (the length
+    cap the event-detail line already carries). The escape sequences
+    die in the collapse: an ANSI escape's carriage moves and line feeds
+    are whitespace like any other."""
+    if text is None:
+        return ""
+    import re as _re
+
+    # the ANSI escapes first (an ESC sequence is not whitespace — the
+    # collapse alone would carry the coloring/erasing bytes to the tty);
+    # then the control-character strip; then the whitespace collapse.
+    text = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", str(text))
+    text = "".join(ch for ch in text if ch == "\t" or ord(ch) >= 32)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    remaining = len(text) - limit
+    suffix = f"... (+{remaining} characters)"
+    return text[: limit - len(suffix)] + suffix
+
+
 def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
     """THE WHY-STUCK ARM (the explain seam): what this node is waiting
     on and the ONE command that answers it. A live (non-stuck) node
@@ -127,8 +153,9 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
         ]
         if node.hold.reason:
             # THE WAITING-ON STATE's why (the author's declared reason —
-            # the operator reads it without opening the code).
-            lines.insert(1, f"       reason: {node.hold.reason}")
+            # the operator reads it without opening the code) — THROUGH
+            # THE DISCIPLINE: a DB-sourced reason cannot forge a line.
+            lines.insert(1, f"       reason: {_bounded_line(node.hold.reason)}")
         return lines
     if node.blocking_reason is not None and node.view().is_blocked_row:
         reason = node.blocking_reason
@@ -164,8 +191,8 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             else " · the ladder is EXHAUSTED (attempt = max_attempts)"
         )
         return [
-            f"  {node.step_key}: FAILED — {node.error_class or 'UnknownError'}: "
-            f"{(node.error_message or '')[:120]}{headroom_note} "
+            f"  {node.step_key}: FAILED — {_bounded_line(node.error_class or 'UnknownError', 60)}: "
+            f"{_bounded_line(node.error_message)}{headroom_note} "
             "(source: the jobs row's error columns + attempt counters)",
             f"       remedy: taskq flows retry {run_id} {node.step_key}"
             "  (re-pends the node and re-opens its blocked closure)",
@@ -252,7 +279,7 @@ def format_holds(holds: Sequence[HoldContext], *, run_id: str | None = None) -> 
             f" · epoch {h.hold_epoch}{deadline}"
         )
         if h.reason:
-            lines.append(f"    reason: {h.reason}")
+            lines.append(f"    reason: {_bounded_line(h.reason)}")
         lines.append(f"    remedy: taskq flows resolve {h.hold_id} '<decision json>'")
     return lines
 
