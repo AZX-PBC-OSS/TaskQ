@@ -224,7 +224,10 @@ async def run_nightly_refresh(schema: str, pool: object, slot: str) -> str:
         input=IngestBatch(doc_ids=sorted(_DOC_SOURCE)),
         run_key=f"doc_ingest:nightly:{slot}",
     )
-    await runner.drive(run_id)
+    # The FIRST wall: drive to the review HOLD (a drive to `terminal`
+    # around a hold would spin its tick loop on a quiescent run — the
+    # held answer IS the quiescent stop).
+    await runner.drive(run_id, until="held")
     return str(run_id)
 
 
@@ -250,6 +253,7 @@ async def main() -> None:
     print("hold:", hold.hold_id, "-", hold.signal_name)
     result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": "ship it"})
     print("resolve:", result.status)
+    await runner.drive(flow_id)  # the resume → the terminal
 
     # The SAME slot again → the SAME run (the run-key's claim).
     same = await run_nightly_refresh(schema, pool, slot="2026-10-08T00:00Z")
