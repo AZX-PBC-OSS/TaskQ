@@ -417,7 +417,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
 
 
 async def test_two_drivers_one_schema_one_run_stay_exactly_once(
-    wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
+    module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """GREEN GUARD (verified by the front, encoded so it can't rot): two
     FlowRunner processes' worth of driver — one schema, one run, driven
@@ -430,8 +430,8 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     from taskq.workflows.api._hitl import HitlClient
 
     compiled = wf_app.get("doc_ingest")
-    first_driver = FlowRunner(compiled, wf_pool, wf_schema)
-    second_driver = FlowRunner(compiled, wf_pool, wf_schema)
+    first_driver = FlowRunner(compiled, module_pg_pool, module_pg_schema.schema_name)
+    second_driver = FlowRunner(compiled, module_pg_pool, module_pg_schema.schema_name)
     run_id = (await first_driver.create_flow()).flow_id
 
     held = await asyncio.gather(
@@ -440,7 +440,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     )
     assert list(held) == ["held", "held"], held
 
-    client = HitlClient(wf_pool, schema=wf_schema)
+    client = HitlClient(module_pg_pool, schema=module_pg_schema.schema_name)
     (hold,) = await client.list(run_id)
     result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
     assert result.status == "delivered"
@@ -448,17 +448,17 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     terminal = await asyncio.gather(first_driver.drive(run_id), second_driver.drive(run_id))
     assert list(terminal) == ["terminal", "terminal"], terminal
 
-    duplicates = await wf_conn.fetch(
+    duplicates = await module_pg_pool.fetch(
         f"SELECT step_key, COALESCE(map_index, -1) AS mi, attempt, count(*) AS c "
-        f'FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
+        f'FROM "{module_pg_schema.schema_name}".wf_step_ledger WHERE flow_id = $1 '
         "GROUP BY 1, 2, 3 HAVING count(*) > 1",
         run_id,
     )
     assert list(duplicates) == [], (
         f"duplicate ledger groups under the two-driver race: {[dict(r) for r in duplicates]}"
     )
-    fires = await wf_conn.fetch(
-        f'SELECT step_key, count(*) AS c FROM "{wf_schema}".wf_join_fire '
+    fires = await module_pg_pool.fetch(
+        f'SELECT step_key, count(*) AS c FROM "{module_pg_schema.schema_name}".wf_join_fire '
         "WHERE flow_id = $1 GROUP BY 1",
         run_id,
     )
@@ -466,5 +466,5 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     assert all(r["c"] == 1 for r in fires), (
         f"a join fired twice under the two-driver race: { {r['step_key']: r['c'] for r in fires} }"
     )
-    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id)
+    root = await module_pg_pool.fetchval(f'SELECT status FROM "{module_pg_schema.schema_name}".jobs WHERE id = $1', run_id)
     assert root == "succeeded", root
