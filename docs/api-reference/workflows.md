@@ -130,11 +130,11 @@ invisible actor population). The vanilla path stays byte-identical.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the ELEVEN rules shipped (read
-from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E8, W1, and
-the two W2 faces; an earlier revision said "~6 rules" against a table
-that listed 7 — the reference now ships COMPLETE, from the code, not
-remembered), each classified —
+Runs in pytest, CI, and at worker boot; the FIFTEEN rules shipped (read
+from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E11, W1, the
+two W2 faces, and W3; an earlier revision claimed about six rules against
+a table that listed 7 — the reference now ships COMPLETE, from the code,
+not remembered), each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the
 compile's version of over-rejection.**
 
@@ -147,10 +147,14 @@ compile's version of over-rejection.**
 | `E5-incompatible-consumer` | error | an unrelated payload model consumed (the checker-independent half of the typing story) |
 | `E6-fan-in-bound` | error | a join over `MAX_FAN_IN_PER_JOIN` (1000) parents |
 | `E7-cross-graph-promise` | error | a promise wired from ANOTHER app's recorder — two apps' graphs spliced invisibly |
-| `E8-carrier-type` | error | the loop's declared `carry=` model vs the body's `Refine[...]` feedback type — unrelated carrier models: the thread promises data the next iteration cannot receive |
+| `E8-carrier-type` | error | the loop's declared `carry_type=` model (or the model instance passed as `initial=`) vs the body's `Refine[...]` feedback type — unrelated carrier models: the thread promises data the next iteration cannot receive |
+| `E9-ctx-annotation` | error | a body whose `ctx` annotation is not `StepContext` (or a subclass) — the annotation is verification, not documentation; the fabricated stand-in is refused at compile |
+| `E10-arity` | error | a body's params (beyond `ctx`) not matching the wired sources' count — the wiring's own promise, refused at compile, never a mid-flow ladder discovery |
+| `E11-loop-promise-carry` | error | a promise handle wired as the loop's `initial=` — the initial carry is a VALUE, never a handle (the handle cannot ride the row; wire the parent's result through a first step's return, or read it in the body) |
 | `W1-eternal-wait` | warning | a gate with no declared timeout — "a workflow that waits forever on a human is a support ticket" |
 | `W2-unknown-queue` | warning | a node projected onto a queue this app cannot see (the actor-not-found parking shape, named at validate) |
 | `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |
+| `W3-eternal-loop` | warning | a loop with no `until=` and neither wall set (`max_iterations`/`budget_s`) — a loop that can never stop on its own; declare the bound explicitly |
 
 The report is ONE-PASS (tsc-style): every rule's verdict, not the first
 failure alone. The mutation matrix (each mutation flips exactly one

@@ -376,6 +376,16 @@ class WorkflowApp:
             capture=getattr(build_fn, "__wf_capture__", "errors-only"),
             redact=getattr(build_fn, "__wf_redact__", None),
         )
+        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's cure —
+        # F-LOOP-7's finding): compile + register is the LAST compile-time
+        # seam a fleet passes through before rows exist; an invalid graph
+        # registered here is a fleet that refuses at first claim, never at
+        # compile — E8's own docstring's claim ("refuse at compile") made
+        # true. Errors raise; warnings report (the zero-warning-budget
+        # pins' teeth read them, the door never refuses on a warning).
+        from taskq.workflows.api._validate import validate_compiled
+
+        validate_compiled(compiled)
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
         # THE COMPILED CACHE (the worker-hosted execution door's D1
         # lookup): the compiled graph is recorded under its registered

@@ -109,6 +109,8 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_cross_graph(compiled)
     diagnostics += _rule_unknown_queue(compiled)
     diagnostics += _rule_carrier_type(compiled)
+    diagnostics += _rule_loop_promise_carry(compiled)
+    diagnostics += _rule_eternal_loop(compiled)
     diagnostics += _rule_join_for_progress(compiled)
     return diagnostics
 
@@ -476,6 +478,32 @@ def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
     return diagnostics
 
 
+def _rule_eternal_loop(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """W3: the loop's "waits forever" class — the docstring's own
+    promise (F-LOOP-6's finding, kept honest): a loop with NO ``until=``
+    and NEITHER wall set can never stop on its own; the refiner runs
+    until the fleet dies under it. Probably wrong, never a refusal (the
+    warning class — an unbounded refiner may be exactly what a
+    daemon-loop author means; the explicitness is the point)."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        spec = node.loop_spec
+        if spec is None:
+            continue
+        if node.loop_until is None and spec.max_iterations is None and spec.budget_s is None:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "W3-eternal-loop",
+                    "warning",
+                    f"loop {node.key!r} has no until= predicate and neither "
+                    "wall set (no max_iterations, no budget_s) — a loop that "
+                    "waits forever: it can never stop on its own; declare "
+                    "until=, max_iterations=, or budget_s= explicitly",
+                )
+            )
+    return diagnostics
+
+
 def _rule_cross_graph(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E7: a promise wired from ANOTHER app's recorder (attack-3 M3's
     smuggle — recorded by the verbs at wiring time, convicted here before
@@ -576,6 +604,49 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
                         "cannot receive",
                     )
                 )
+    return diagnostics
+
+
+def _rule_loop_promise_carry(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E11: the loop's initial carry is a VALUE, never a promise handle.
+
+    THE LOOP-PARENTS GAP (probe-convicted at this head): ``loop()``'s
+    signature takes no ``*args`` — a parent's result cannot be wired as
+    an edge — so an author who passes a ``Promise`` as ``initial=`` (the
+    natural reading of "the loop starts from the parent's result")
+    threaded the HANDLE itself into the carry: ``jsonable(Promise)``
+    raises ``UnencodableValue`` at the FIRST CLAIM — mid-flow, untyped
+    by any compile rule, after the rows exist. The refusal belongs at
+    the construction door: the promise handle is refused here, with the
+    named fix (await-shape: wire the parent's result into a first STEP
+    whose body returns the initial carry, and start the loop from THAT
+    value — or read the parent's result in the loop body via
+    ``ctx.substep``). The rule reads the handle's own identity (a
+    ``Promise`` instance), never its static type — the smuggle-check's
+    shape."""
+    from taskq.workflows.api._graph import Promise
+
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        spec = node.loop_spec
+        if spec is None:
+            continue
+        if isinstance(spec.initial_carry, Promise):  # pyright: ignore[reportUnknownMemberType]  # Why: the LoopSpec's object-typed attachment.
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E11-loop-promise-carry",
+                    "error",
+                    f"loop {node.key!r}'s initial= is a promise handle "
+                    f"(wired from {spec.initial_carry.key!r}) — the loop's "
+                    "initial carry is a VALUE, never a handle: the handle "
+                    "cannot ride the row (the first claim died "
+                    "UnencodableValue mid-flow), and the loop takes no "
+                    "promise args. Wire the parent's result through a "
+                    "first step whose body returns the initial carry and "
+                    "start the loop from that step's promise, or read the "
+                    "parent's result inside the body (ctx.substep).",
+                )
+            )
     return diagnostics
 
 

@@ -65,6 +65,7 @@ from taskq.workflows import (
     WorkflowApp,
     build,
     loop,
+    step,
 )
 from taskq.workflows._sweep import drain_outbox, sweep_loop_budget
 
@@ -310,27 +311,19 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     )
 
 
-# ── F-LOOP-5: the sweep's return counts only the escalate-enqueued ──────
+# ── F-LOOP-5: the sweep's return counts every exhaustion ────────────────
+# CURED (the sweep-count cure): the budget sweep's return counts EVERY
+# CAS-held exhaustion — the named state + the flow's terminalization
+# complete at the exhaust statement; the escalation arm is additional
+# work. The marker is gone, the green IS the receipt.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): sweep_loop_budget's return counts only the "
-    "escalate-enqueued exhaustions — a fail-policy loop IS exhausted (row failed, "
-    "the named state, the flow terminal) while the sweep returns 0. The cure (the "
-    "return counts EVERY exhaustion, or the count's name/docstring stops claiming "
-    "it) flips this XPASS-strict — remove the marker WITH the cure.",
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the escalation consumer is a DEAD LETTER on the "
-    "fleet — the dispatch fence's terminal-flow leg refuses the row because the "
-    "exhaustion terminalized the flow in the outbox insert's own transaction (the "
-    "row is born unfenceable). The phase-3 pin greens only via an in-process tick, "
-    "whose comment claims the fleet claims it — provably false. The cure (the "
-    "fence's documented exception for the escalation row, or the flow terminalized "
-    "after delivery) flips this XPASS-strict — remove the marker WITH the cure.",
-)
+# ── F-LOOP-3: the escalation's claim on the REAL dispatch path ──────────
+# CURED (this head): the ESCALATION-KIND exemption is shipped in BOTH
+# fences (the claim fence AND the probe fence — the two may not
+# disagree): the loop's registered escalation consumer is dispatchable ON
+# the terminal flow that spawned it. The marker is gone, the green IS the
+# receipt.
 async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -396,7 +389,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
         )
 
     runner = FlowRunner(app.get("aloop_escalation_dispatch"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     await drain_outbox(wf_pool, runner.wsql)
     esc = await wf_conn.fetchrow(
@@ -409,7 +402,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
 
     # THE CONTROL: a live flow's pending loop node.
-    live_flow = await runner.create_flow()
+    live_flow = (await runner.create_flow()).flow_id
     live_node = await wf_conn.fetchrow(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' "
         "AND (metadata->>'flow_id')::uuid = $1",
@@ -456,7 +449,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     outcome = await execute_flow_job(
         pool=wf_pool, schema=wf_schema, worker_id=JobId(worker_id), job=job
     )
-    assert outcome == "succeeded", outcome
+    assert outcome.outcome == "succeeded", outcome
     assert escalated and escalated[0].get("loop") == "counter", escalated
     esc_after = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs WHERE id = $1', esc["id"]
@@ -469,15 +462,13 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): a stale driver's unfenced exhaust killed a "
-    "healthy RECLAIMED loop mid-drive (flow failed/LoopBodyFailure, the live "
-    "driver's succeeded iterations orphaned, the escalation row written BY THE "
-    "ZOMBIE). The cure (the claim fence on the exhaust/advance) leaves the live "
-    "loop's counter and carry intact — this pin flips XPASS-strict then; remove "
-    "the marker WITH the cure.",
-)
+# CURED (this head): the claim identity's fence landed on BOTH the
+# advance and the exhaust statements (LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL's
+# worker + attempt + claim_epoch legs — the one-tx-finalize doctrine's
+# back door closed); the zombie's stale strike is refused at the statement.
+# The marker is gone, the green IS the receipt.
+
+
 async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -519,7 +510,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
         return build(loop("counter", gated_body, max_iterations=5))
 
     runner_a = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
-    flow_id = await runner_a.create_flow()
+    flow_id = (await runner_a.create_flow()).flow_id
     drive_a = asyncio.create_task(runner_a.drive(flow_id, max_ticks=10))
     await asyncio.wait_for(parked_a.wait(), timeout=10)
     loop_id = await wf_conn.fetchval(
@@ -636,16 +627,11 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
 
 
 # ── F-LOOP-6: the promised 'waits forever' validate warning ─────────────
+# CURED (this head): the W3-eternal-loop warning rule landed — the
+# docstring's promise is the shipped behavior; the marker is gone, the
+# green IS the receipt.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): loop()'s docstring promises the 'waits forever' "
-    "validate warning for an unset until with both walls unset — no rule in "
-    "_validate.py reads loop_until/max_iterations/budget_s; a no-walls loop validates "
-    "CLEAN. The cure (the warning rule) flips this XPASS-strict — remove the marker "
-    "WITH the cure.",
-)
 def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
     """The promised guard: no ``until=``, no ``max_iterations``, no
     ``budget_s`` — the "waits forever" class loop()'s own docstring
@@ -674,15 +660,13 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
 # ── F-LOOP-7: E8 convicts one seam late (registration, not validate) ────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): E8-carrier-type convicts at .validate() and at "
-    "FlowRunner construction — but app.get() compiles AND REGISTERS the mismatched "
-    "definition (record_compiled + _register_bodies), and the boot projection "
-    "compiles without validating — so a fleet refuses at first claim, not at "
-    "compile. The cure (registration/compile runs validation — the defect refused "
-    "before any row exists) flips this XPASS-strict — remove the marker WITH it.",
-)
+# ── F-LOOP-7: E8 convicts one seam late (registration, not validate) ────
+# CURED (this head): the registration door validates — app.get() runs
+# validate_compiled before recording/registering, so the mismatched
+# carrier is refused before any row exists; the marker is gone, the
+# green IS the receipt.
+
+
 def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
     """The seam-late conviction: a body ``-> Refine[Foo] | Done[Foo]``
     with ``initial=Bar()`` must be refused at the compile/registration
@@ -944,3 +928,56 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     )
     assert by_paused[False]["status"] == "failed"
     assert by_paused[False]["state"] == "budget_exhausted"
+
+
+# ── F-LOOP-8: the loop-parents gap — a promise handle as the initial carry ──
+
+
+def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None:
+    """THE LOOP-PARENTS GAP, refused at the construction door (the E11
+    rule). The convicted shape (probe-convicted at this head's pre-cure
+    tree): ``loop("scan", body, initial=some_promise)`` — the natural
+    reading of "the loop starts from the parent's result" — threaded the
+    PROMISE HANDLE itself into the carry; the first claim died
+    ``UnencodableValue: Type is not JSON serializable: Promise`` —
+    mid-flow, untyped by any compile rule, after the rows existed. The
+    cure: validate() REFUSES the handle (E11-loop-promise-carry, error)
+    and names the fix (a first step returns the initial carry; the loop
+    starts from that value). The honest alternatives still build: a
+    VALUE initial validates clean, and the loop-with-no-walls warning
+    (F-LOOP-6's subject) is unaffected."""
+    from taskq.workflows.api._validate import _run_rules
+
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[dict[str, int]]:
+        return Refine({"n": 1})
+
+    async def produce_body(ctx: StepContext) -> dict[str, int]:
+        return {"n": 5}
+
+    app = WorkflowApp()
+
+    @app.workflow("aloop_pinit")
+    def _wf() -> object:
+        p = step(produce_body, key="produce")
+        lp = loop("scan", refine_forever, initial=p, max_iterations=10)
+        return build(lp, p)
+
+    # THE REGISTRATION DOOR (the F-LOOP-7 cure's own seam) refuses the
+    # handle BEFORE any row exists — the named rule, the named fix.
+    from taskq.workflows.api._validate import WorkflowValidationError
+
+    with pytest.raises(WorkflowValidationError, match="E11-loop-promise-carry"):
+        app.get("aloop_pinit")
+
+    @app.workflow("aloop_value_init")
+    def _wf_ok() -> object:
+        return build(loop("counter", refine_forever, initial={"n": 0}, max_iterations=10))
+
+    # The honest alternative still builds clean: a VALUE initial carries
+    # through the door, and the clean graph's own diagnostics carry no
+    # E11 (the refusal never over-fires onto a value carry).
+
+    ok_diagnostics = _run_rules(app.get("aloop_value_init"))
+    assert not any(d.rule == "E11-loop-promise-carry" for d in ok_diagnostics), (
+        "a VALUE initial carry was convicted — the refusal over-fires"
+    )

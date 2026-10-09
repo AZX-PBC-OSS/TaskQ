@@ -16,10 +16,13 @@ writes impossible by construction — there is no snapshot-derived counter
 write. SET-BASED, NOT N+1: ONE batched statement (the per-join round-trip
 variant is the fanout proof's cut #4 crime; its MEASURED conviction is
 P1's sweep-cost curve — 14.9 ms @ 200 joins, the unscoped seq-scan monster
-83.7 ms @ 75k — ``/tmp/opencode/proto1/spike1/evidence/``; the scope pin
+83.7 ms @ 75k — the CITED-IMPORT artifact
+``.measurements/runs/sweep-cost-scale-curve-*.json``: the spike's
+session evidence directory is gone; the imported record IS the
+provenance. The scope pin
 convicts the unscoped shape. An earlier revision of this comment cited
-the per-join variant at "p50 477 ms / p95 1.73 s @ ~340 live joins" — no
-capture with those numbers exists; the figure is DELETED — provenance or
+the per-join variant at a p50/p95 figure for which no
+capture exists; the dead figure is DELETED — provenance or
 silence).
 
 COUNTER-AS-CACHE / LEDGER-AS-TRUTH: the re-derive reconciles the CACHE

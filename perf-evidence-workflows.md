@@ -24,18 +24,17 @@ mark, ONE transaction (`finalize_node` tx1, chunked parallel-array inserts
 at 500 rows/statement — never a second transaction, which would break the
 fork atomicity rule):
 
-- **measured: 66–120 ms across the six captured runs** (the artifact's
-  current head: 80.5 ms; `.measurements/runs/fanout-1000-tx-band-*.json`
-  carries every run beside the rolled artifact) → band **≤ 500 ms**
-  (generous headroom by design — the gate trips on a cost-CLASS
-  regression — a per-row round-trip loop at this width would pay 2000
-  round trips: the fanout proof's cut #4 crime, the per-join
+- **measured: 50.8–159.7 ms across the nine captured runs** (the
+  artifact's newest run: 57.7 ms; `.measurements/runs/fanout-1000-tx-
+  band-*.json` carries every run beside the rolled artifact) → band
+  **≤ 500 ms** (generous headroom by design — the gate trips on a
+  cost-CLASS regression — a per-row round-trip loop at this width would
+  pay 2000 round trips: the fanout proof's cut #4 crime, the per-join
   round-trip shape the P1 sweep-cost curve convicts in the sweep-arm
-  section below. An earlier revision of this file cited that crime
-  "at p50 477 ms / p95 1.73 s @ ~340 live joins" — NO capture with
-  those numbers exists anywhere in the evidence tree (the P1 summary's
-  real numbers are the sweep curve below); the figure is DELETED —
-  provenance or silence).
+  section below. An earlier revision of this file cited that crime at a
+  per-join p50/p95 figure for which NO capture exists anywhere in the
+  evidence tree (the P1 summary's real numbers are the sweep curve
+  below); the dead figure is DELETED — provenance or silence).
 
 ## The join-fire latency
 
@@ -43,8 +42,8 @@ Last-parent-finalize → the joined row dispatchable (`deps_pending = 0` +
 one `wf_join_fire` row + the outbox rows), measured on the finalize call
 (tx1 + tx2 — the fire is inside tx2):
 
-- **measured: 9.0–23.0 ms across the six captured runs** (the
-  artifact's current head: 12.0 ms; the runs beside the rolled
+- **measured: 4.3–42.3 ms across the nine captured runs** (the
+  artifact's newest run: 4.3 ms; the runs beside the rolled
   artifact) → band **≤ 50 ms**.
 
 ## The sweep arm (the set-based re-derive)
@@ -56,11 +55,15 @@ convicted alternative — the per-join round-trip shape (the fanout proof's
 cut #4 crime) — has its MEASURED conviction in P1's evidence, `60.4k
 nodes / 30k edges`, the sweep-cost scale curve 200 → 14.9 ms, 1000 →
 23.8 ms, 5000 → 39.3 ms, and the unscoped monster 83.7 ms WITH SEQ SCANS
-at 75k rows (`/tmp/opencode/proto1/spike1/evidence/` — `SUMMARY.txt`
-item 04). An earlier revision of this file and of the sweep's source
-comments cited the per-join variant at "p50 477 ms / p95 1.73 s @ ~340
-live joins" — no capture with those numbers exists in any evidence tree
-the repo names; the figure is DELETED (provenance or silence). The scope
+at 75k rows (the CITED-IMPORT artifact:
+`.measurements/runs/sweep-cost-scale-curve-*.json` — the P1 spike's
+summary imported at the consolidation; the spike's session evidence
+directory is gone, and the artifact SAYS SO — the imported record is
+the provenance, never a re-claimed fresh measurement). An earlier
+revision of this file and of the sweep's source
+comments cited the per-join variant at a p50/p95 figure for which no
+capture with those numbers exists in any evidence tree
+the repo names; the dead figure is DELETED (provenance or silence). The scope
 pin convicts the seq-scan shape; the crash matrix + the storm +
 duplicate-finalize numbers are P1 FINAL's imported evidence.
 
@@ -100,7 +103,7 @@ The two-channel persistence's bands, re-proven on the BUILT code
 | the STATE channel's row count under 10,000 emissions | **2 rows** (nodes × channels — CONSTANT; the convicted every-emission-a-row variant: 2,000 rows for 2,000 emissions, kept red) | `test_chatty_body_coalesce_cadence_and_constant_rows` + the numbers run |
 | the occurrence counter under 10,000 emissions | **== 10,000 exactly** (the coalescing is honest) | the same |
 | the ring's drop accounting | **appended == retained + dropped** exactly (the bound honored; the counter on the record) | `test_stream_ring_bound_and_drop_counter_honest` |
-| the read-side aggregate's fn time (200 children, mid-flight-capable) | **0.009 ms** (the PoC's 0.22 ms shape; the read writes nothing) | the numbers run |
+| the read-side aggregate's fn time (200 children, mid-flight-capable) | **0.009 ms** (the numbers run's own measurement of the shipped shape; the read writes nothing) | the numbers run |
 | the finalize's blindness to emission (structural) | the terminal-mark statement touches NO progress table (the zero-finalize-changes probe); a 10k-emission node finalizes normally | `test_zero_finalize_changes_probe` |
 | the crash window | freshness-only loss: the display's STATE ledger-derived at every sample; the terminal heals | `test_crash_window_freshness_only_loss_then_the_terminal_heals` |
 ## The click→panel latency band (T11, the admin workflow page)

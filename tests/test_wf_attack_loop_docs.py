@@ -22,8 +22,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[1]
 MEASUREMENTS = REPO / ".measurements"
 PERF_DOC = REPO / "perf-evidence-workflows.md"
@@ -141,16 +139,6 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779, second conviction for the 477/1.73 figure): "
-    "perf-evidence-workflows.md cites measured point figures with NO artifact "
-    "anywhere — 'p50 477 ms / p95 1.73 s @ ~340 live joins' (also in "
-    "_sweep.py:17), fan-out 'measured: 51.8 ms' (artifacts: 46.19-60.19), "
-    "join-fire 'measured: 5.2 ms' (artifacts: 8.15-14.39), and more. The cure "
-    "(produce the artifact or delete/correct the figure) flips this XPASS-strict "
-    "— remove the marker WITH the cure.",
-)
 def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
     """THE DOCS-NUMBERS LAW: every measured point figure in
     ``perf-evidence-workflows.md`` resolves to an artifact in
@@ -232,15 +220,6 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 # ── DOCS-5: the reference surface vs the shipped surface ───────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the API reference claims 'the ~6 rules' over a "
-    "7-row table while _validate.py ships 11 — E7-cross-graph-promise, "
-    "E8-carrier-type, W2-unknown-queue and W2-join-for-progress are omitted (and "
-    "two distinct rules share the W2 id prefix). The cure (the reference is "
-    "generated from or pinned against the shipped rule set) flips this "
-    "XPASS-strict — remove the marker WITH the cure.",
-)
 def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
     """The validator is the checker-independent contract — the reference
     must name EVERY shipped rule (a rule the reference omits is a rule a
