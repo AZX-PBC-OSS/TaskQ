@@ -39,7 +39,7 @@ zero-finalize-changes probe is a shipped pin).
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import asyncpg
 import structlog
@@ -144,7 +144,18 @@ def validate_emission(
     TypedGate-door pattern): a pydantic model the ``data`` must satisfy —
     the declaration is what makes a separate UI render the emission (the
     context-contract law). A declaration the data violates is a typed
-    refusal, never a silent pass."""
+    refusal, never a silent pass.
+
+    THE VALIDATED DUMP IS THE RECORD (the T20/T21 fixer's gate-hole
+    cure): the return carries the VALIDATED MODEL'S OWN dump
+    (``model_dump(mode="json")`` — the jsonb-shaped projection), never
+    the pre-validation dict. The convicted hole: the model_validate ran
+    (lax — pydantic coerces) and its answer was THROWN AWAY, the raw
+    dict stored — ``{"page": "42"}`` against a declared
+    ``page: int`` landed the STRING in the state row, the stream ring,
+    and every downstream reader: the schema was decoration, the storage
+    lied. The validated dump is also jsonb-clean by construction (the
+    model's own field serializers ran)."""
     if pct is not None:
         # The isinstance checks look unnecessary to a type checker because
         # the annotations say int | None — body code is under no such
@@ -165,11 +176,16 @@ def validate_emission(
             from pydantic import ValidationError
 
             try:
-                schema_decl.model_validate(data)
+                model = schema_decl.model_validate(data)
             except ValidationError as exc:
                 raise ProgressRefusedError(
                     f"data violates the node's declared progress schema: {exc}"
                 ) from exc
+            # THE VALIDATED DUMP (never the pre-validation dict — see the
+            # docstring): the coercion the declared schema performed IS
+            # the record.
+            dumped = model.model_dump(mode="json")
+            data = cast("dict[str, Any]", dumped)
         data = _cap_data(data)
     return pct, message, data
 
@@ -254,18 +270,25 @@ class ProgressEmitter:
         then the buffer takes it latest-wins and the cadence flush is
         armed. Never awaits the network."""
         pct_v, message_v, data_v = validate_emission(pct, message, data, self._schema_decl)
-        self.submit(pct_v, message_v, data_v)
+        self._submit(pct_v, message_v, data_v)
 
-    def submit(
+    def _submit(
         self,
         pct: int | None,
         message: str | None,
         data: dict[str, Any] | None,
     ) -> None:
         """Buffer one ALREADY-VALIDATED emission (latest-wins) and arm the
-        cadence flush. Sync — the caller (``ctx.progress``) validated the
-        shape first (the typed gate is :func:`validate_emission`'s, never
-        repeated here)."""
+        cadence flush. Sync. PRIVATE BY LAW (the T20/T21 fixer's gate-hole
+        cure): the PUBLIC op is :meth:`emit` (``ctx.progress``'s delegate)
+        and it VALIDATES — the buffer write was once a public ``submit``
+        that validated nothing, and the convicted hole is exactly what a
+        public unvalidated door admits: a ``pct=999`` persisted to the
+        state row (the storage CHECK is the backstop, but the typed gate
+        is the contract — a shape the gate never saw must never reach the
+        buffer). The private name is the seam's own enforcement: an
+        engine caller who needs the validated write path goes through the
+        gate."""
         self.emitted += 1
         if not self._enabled:
             return  # counted, written NOWHERE (the best-effort asymmetry)
@@ -413,7 +436,12 @@ async def project_auto_event(
 
     Best-effort by the caller's contract (the runner's seams wrap this —
     a failed projection is a logged freshness loss, never a node
-    failure). Returns the appended seq."""
+    failure). Returns the appended seq. THE DROP COUNT IS ON THE RECORD
+    (the T20/T21 fixer's gate-hole cure — the user class's receipt
+    discipline, DH2's fence): the append's returned drop count lands in
+    the node's STREAM-channel counters row in the same statement group
+    — an auto-class trim that vanished uncounted would be the
+    honest-pair's lie (appended == retained + dropped, BOTH classes)."""
     if kind not in KIND_VOCABULARY:
         raise ValueError(
             f"kind {kind!r} is outside the closed vocabulary "
@@ -431,4 +459,21 @@ async def project_auto_event(
             ring_bound,
         )
         assert row is not None  # the statement always returns its row
-    return int(row["seq"])
+        seq = int(row["seq"])
+        dropped = int(row["dropped"])
+        # THE COUNTERS ROW (the receipt discipline — never a silent
+        # discard of the trim's casualties): the same STREAM_CHANNEL
+        # counters row the user class's flush writes, occurrences 1 per
+        # projection. Unconditional — the row IS the record.
+        await conn.execute(
+            wsql.progress_state_upsert,
+            node_id,
+            STREAM_CHANNEL,
+            None,
+            None,
+            None,
+            1,
+            dropped,
+            seq,
+        )
+    return seq

@@ -227,11 +227,17 @@ class StepContext(CtxWaitOps):
         blocked node costs CORRECTNESS.
         """
         emitter = self._progress
-        schema = emitter.schema_decl if emitter is not None else None
-        pct_v, message_v, data_v = validate_emission(pct, message, data, schema)
         if emitter is None:
-            return  # unwired (direct testing): the deliberate no-op
-        emitter.submit(pct_v, message_v, data_v)
+            # Unwired (direct testing): the deliberate no-op — but the
+            # TYPED DOOR IS STILL THE AUTHORING CONTRACT (a wrong shape is
+            # refused here too, never silently swallowed: the author's
+            # test then sees the refusal their production run will get).
+            validate_emission(pct, message, data, None)
+            return
+        # THE PUBLIC OP VALIDATES (the gate-hole cure): the emitter's own
+        # validating door — the buffer's private write is never reached
+        # around the gate.
+        await emitter.emit(pct, message, data)
 
     async def step(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
         """Run *fn* once per (flow, step key); replay returns the recorded
