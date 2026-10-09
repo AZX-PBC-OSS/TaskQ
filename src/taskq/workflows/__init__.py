@@ -11,8 +11,8 @@ dependencies); the ``flows`` extra carries no requirements of its own and
 exists as the operator-facing opt-in marker.
 
 THE PUBLIC SURFACE IS SMALL ON PURPOSE (§7b's cut): the root re-exports
-the AUTHORING verbs + the RUNNER + the USER TYPES — twenty-four names, the
-``doc_ingest`` example's imports plus the typed surfaces. Everything else
+the AUTHORING verbs + the RUNNER + the PACKAGED RUN (``run`` — the
+one-call create+drive+read door) + the USER TYPES. Everything else
 (SWEEP internals, the finalize mechanics, the SQL statements, the wire
 specs, the ledger claims, the progress plumbing) is an ENGINE INTERNAL:
 import it from its submodule — the documented path — never from here.
@@ -21,7 +21,8 @@ their homes WITHOUT the tax:
 
 * ``api._graph`` owns the recorder + the wiring verbs; ``api._app`` the
   app/decorators/compiled-workflow/channel; ``api._validate`` owns
-  ``validate()``; ``api._mermaid`` owns the emission; ``api._runner`` +
+  ``validate()``; ``api._mermaid`` owns the emission; ``api._run`` owns
+  the packaged one-call run; ``api._runner`` +
   its concern modules (``_sql_runner``/``_runner_codec``/
   ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
   ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
@@ -48,6 +49,7 @@ from taskq.workflows.api import (
     step,
 )
 from taskq.workflows.api._loop import Done, Refine, loop
+from taskq.workflows.api._run import WorkflowRunResult, run
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
 from taskq.workflows.api._runner_exit import cancel_workflow_run, retry_workflow_node
 from taskq.workflows.chain import (
@@ -76,6 +78,7 @@ __all__ = [
     "WorkflowApp",
     "WorkflowBuildError",
     "WorkflowRunError",
+    "WorkflowRunResult",
     "build",
     "cancel_workflow_run",
     "chain_fork",
@@ -85,6 +88,7 @@ __all__ = [
     "loop",
     "map_source",
     "retry_workflow_node",
+    "run",
     "sink",
     "step",
 ]

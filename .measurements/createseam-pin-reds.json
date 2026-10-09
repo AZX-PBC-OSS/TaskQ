@@ -1,0 +1,47 @@
+{"run": "20261008T223118-2899258-e005a4b3", "ts": "2026-10-08T22:31:18", "entries": []}
+{"run": "20261008T223118-2899258-f3604226", "ts": "2026-10-08T22:31:18", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f24-f672-7f10-baa4-f9fd21f1b197\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T223118-2899258-7a8381d7", "ts": "2026-10-08T22:31:18", "entries": []}
+{"run": "20261008T223118-2899258-ab6fa99c", "ts": "2026-10-08T22:31:18", "entries": [{"pin": "pin_create_is_one_transaction", "mutation": "the create's statements are auto-committed (no conn.transaction()) \u2014 the root insert committed ALONE", "red": "{\"orphan_root\": \"01a11f24-f7d4-74e2-b73f-85202d3ddd24\", \"status\": \"pending\", \"nodes\": 0}"}]}
+{"run": "20261008T223119-2899258-4e58500a", "ts": "2026-10-08T22:31:19", "entries": [{"pin": "pin_packaged_run_one_call", "mutation": "taskq.workflows.run does not exist \u2014 the docs taught a phantom API (workflows.run(flow, input, key=\u2026))", "red": "{\"surface\": \"taskq.workflows.run\", \"present\": false}"}]}
+{"run": "20261008T223119-2899258-28364590", "ts": "2026-10-08T22:31:19", "entries": [{"pin": "pin_run_key_claim_is_honest", "mutation": "create_flow returned a bare JobId \u2014 the RunClaim.status DISCARDED (the caller cannot tell 'already running' from 'already failed' without a second query)", "red": "{\"returned\": \"UUID('01a11f24-f932-7552-b7a0-94a27a73d0a4')\"}"}]}
+{"run": "20261008T223126-2900743-b820b235", "ts": "2026-10-08T22:31:26", "entries": []}
+{"run": "20261008T223126-2900743-87dd8e21", "ts": "2026-10-08T22:31:27", "entries": []}
+{"run": "20261008T223127-2900743-1cef35f5", "ts": "2026-10-08T22:31:27", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f25-1869-72c3-ad0f-ef58f7bedc2a\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T223127-2900743-80cc3bce", "ts": "2026-10-08T22:31:27", "entries": [{"pin": "pin_create_is_one_transaction", "mutation": "the create's statements are auto-committed (no conn.transaction()) \u2014 the root insert committed ALONE", "red": "{\"orphan_root\": \"01a11f25-1922-7282-9c60-59d14859d6ba\", \"status\": \"pending\", \"nodes\": 0}"}]}
+{"run": "20261008T223127-2900743-fd57e01d", "ts": "2026-10-08T22:31:27", "entries": [{"pin": "pin_packaged_run_one_call", "mutation": "taskq.workflows.run does not exist \u2014 the docs taught a phantom API (workflows.run(flow, input, key=\u2026))", "red": "{\"surface\": \"taskq.workflows.run\", \"present\": false}"}]}
+{"run": "20261008T223127-2900743-57e2ee0f", "ts": "2026-10-08T22:31:27", "entries": [{"pin": "pin_run_key_claim_is_honest", "mutation": "create_flow returned a bare JobId \u2014 the RunClaim.status DISCARDED (the caller cannot tell 'already running' from 'already failed' without a second query)", "red": "{\"returned\": \"UUID('01a11f25-1a6b-7fe2-b108-f13b8486c1fe')\"}"}]}
+{"run": "20261008T223519-2927443-ed71a553", "ts": "2026-10-08T22:35:19", "entries": []}
+{"run": "20261008T223519-2927443-a9be0e3f", "ts": "2026-10-08T22:35:19", "entries": []}
+{"run": "20261008T223519-2927443-c28cb3ee", "ts": "2026-10-08T22:35:20", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223520-2927443-68c60923", "ts": "2026-10-08T22:35:20", "entries": []}
+{"run": "20261008T223520-2927443-1de30793", "ts": "2026-10-08T22:35:20", "entries": []}
+{"run": "20261008T223520-2927443-ae8c80fe", "ts": "2026-10-08T22:35:20", "entries": []}
+{"run": "20261008T223541-2931148-71861500", "ts": "2026-10-08T22:35:41", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223608-2935441-efac095c", "ts": "2026-10-08T22:36:08", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223615-2936836-4d682daf", "ts": "2026-10-08T22:36:15", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223633-2940111-34ab3d8c", "ts": "2026-10-08T22:36:33", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223705-2945473-4f041557", "ts": "2026-10-08T22:37:05", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [], \"step_keys\": []}"}]}
+{"run": "20261008T223758-2952989-fb0abec5", "ts": "2026-10-08T22:37:58", "entries": []}
+{"run": "20261008T223758-2952989-931aae12", "ts": "2026-10-08T22:37:58", "entries": []}
+{"run": "20261008T223758-2952989-8a90c4b9", "ts": "2026-10-08T22:37:58", "entries": []}
+{"run": "20261008T223758-2952989-9ffee028", "ts": "2026-10-08T22:37:58", "entries": []}
+{"run": "20261008T223758-2952989-cf6202ff", "ts": "2026-10-08T22:37:58", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f2b-1281-7163-9bc6-071f3e685819\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T223759-2952989-f176c88d", "ts": "2026-10-08T22:37:59", "entries": []}
+{"run": "20261008T223858-2959913-0c634149", "ts": "2026-10-08T22:38:58", "entries": []}
+{"run": "20261008T223858-2959913-a49dcfc1", "ts": "2026-10-08T22:38:58", "entries": []}
+{"run": "20261008T223858-2959929-0e9ef5bd", "ts": "2026-10-08T22:38:58", "entries": []}
+{"run": "20261008T223858-2959920-59b9238a", "ts": "2026-10-08T22:38:58", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f2b-fb5a-7103-8fd4-885cd1ee51fc\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T223858-2959929-bfb132ba", "ts": "2026-10-08T22:38:58", "entries": []}
+{"run": "20261008T223858-2959920-b71f5e48", "ts": "2026-10-08T22:38:58", "entries": []}
+{"run": "20261008T224541-3065515-a075c489", "ts": "2026-10-08T22:45:41", "entries": []}
+{"run": "20261008T224541-3065515-85759830", "ts": "2026-10-08T22:45:41", "entries": []}
+{"run": "20261008T224541-3065515-027aaee2", "ts": "2026-10-08T22:45:42", "entries": []}
+{"run": "20261008T224542-3065515-828dc0ab", "ts": "2026-10-08T22:45:42", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f32-24f6-7ca2-8cd9-c754e832dfdd\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T224542-3065515-5b3215b9", "ts": "2026-10-08T22:45:42", "entries": []}
+{"run": "20261008T224543-3065515-50ecbd43", "ts": "2026-10-08T22:45:43", "entries": []}
+{"run": "20261008T224617-3069460-a30c5b66", "ts": "2026-10-08T22:46:17", "entries": []}
+{"run": "20261008T224617-3069423-000875d1", "ts": "2026-10-08T22:46:17", "entries": []}
+{"run": "20261008T224617-3069450-41b89d2f", "ts": "2026-10-08T22:46:17", "entries": []}
+{"run": "20261008T224617-3069423-b4c001d0", "ts": "2026-10-08T22:46:17", "entries": []}
+{"run": "20261008T224617-3069460-d4704ff5", "ts": "2026-10-08T22:46:17", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f32-afc1-72f2-b690-0498643607cd\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T224618-3069450-c6b73237", "ts": "2026-10-08T22:46:18", "entries": []}

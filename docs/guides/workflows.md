@@ -232,19 +232,37 @@ shape: default idempotent ON, `idempotent=False` opts a step out.
 
 Run-level idempotency claims against
 the same composite arbiter with the scope `workflow-run:<flow name>` — a
-conflict returns the EXISTING run's id + status, never a second silent
+conflict returns the EXISTING run's TYPED claim (`RunClaim`: `created` /
+`existing-running` / `existing-terminal`), never a second silent
 run, and two different flows sharing a naive key never collide (each
-flow's keys namespace its own scope). THE RUN KEY'S SURFACE:
-`FlowRunner.create_flow(run_key=…)` — there is no separate
-`workflows.run` one-call spelling (earlier drafts of this page named
-one; the runner's `create_flow` is the only create surface, and the
-docs' claim that a bare `workflows.run` exists was WRONG). Cron
-composition: the cron entry
+flow's keys namespace its own scope). THE RUN KEY'S SURFACE — two
+spellings, one arbiter: `FlowRunner.create_flow(run_key=…)` (returns the
+typed claim) and the PACKAGED one-call run,
+`taskq.workflows.run(flow, pool, schema, input=…, key=…)` — create +
+drive + the decoded result in one call, the typed claim on the returned
+`WorkflowRunResult`. THE TERMINAL CASE IS STATED, NEVER SILENT: a
+TERMINAL run's replay answers `existing-terminal` with the prior run's
+id + status — the REFUSED-TO-REUSE verdict (a failed run squatting its
+key silently was the founding bug class; the re-run is the caller's
+documented choice of a NEW key). The demo endpoint surfaces the
+distinction: 202 for created/existing-running, 409 for
+existing-terminal. Cron composition: the cron entry
 fires the slot key as the run key — same slot twice → ONE run.
+
+THE CREATE IS ATOMIC: the root + the static nodes + the edges + the
+root's start are ONE transaction — a kill at any statement window leaves
+no ORPHAN ROOT behind (a run row with zero node rows is unrepresentable:
+the maintenance derivation develops a run FROM its node rows, and a
+nodeless root never derives, never terminalizes, never prunes — and it
+would squat the run key forever). The belt for that conviction is the
+`wf_nodeless_root_reap` sweep arm: any nodeless root that could ever
+exist (a future statement-order regression's debris) is reaped `failed`
+(`NodelessRunReaped`) once past the reap grace — the re-run is then a
+NEW key, the typed claim says `existing-terminal`.
 
 ## The sweep arms (wired)
 
-Three healing arms register in the leader's maintenance sweep loop
+Four healing arms register in the leader's maintenance sweep loop
 (the `_SweepSpec` tick table), gated on the backend's workflow capability
 marker (`workflow_sweeps_capable` — the same `hasattr` seam every
 maintenance sweep is admitted through, each capability its own marker; a
@@ -260,6 +278,9 @@ arms off):
   the insert's transaction;
 * `wf_phantom_reap` — 'running' ledger rows on terminal flows fenced (the
   rows-alone reconstruction reconciles).
+* `wf_nodeless_root_reap` — the orphan root's belt: a flow root with
+  ZERO node rows (the create-atomicity's convicted debris shape) is
+  reaped `failed` past the grace — the derivation can never develop it.
 
 The arms' imports stay inside the spec calls (nothing outside the package
 may import `taskq.workflows` at module scope).

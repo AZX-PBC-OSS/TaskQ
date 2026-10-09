@@ -178,6 +178,29 @@ but not-yet-upgraded workers cannot run against the new schema. Stop the
 workers pointed at the affected schema, restore the pre-migration backup,
 and pin `taskq-py` back until every worker is upgraded.
 
+### Rolling taskq-py back with live workflows: the quarantine step
+
+A code rollback (pin `taskq-py` back to a pre-workflows version) while
+workflow rows are live has a boundary the rollback plan must name: the
+v1 workers' dispatch will claim workflow rows whose `(actor, queue)`
+collides with their own registry. The workflow actors are projected into
+`actor_config` like any other cohort (that is the point — the estate
+sees them), so a v1 worker subscribed to the same queue is a legal
+dispatcher for those rows as far as its registry is concerned; its
+process, however, never imported the workflow definitions, so the
+claimed row cannot execute: the row parks at the snooze cadence
+(actor-not-found), budget-free but unrunnable, and the run wedges for as
+long as the v1 fleet keeps claiming the rows.
+
+The operator's honest boundary: **a rollback is not workflow-safe unless
+the workflow queues are quarantined first.** Before pinning workers
+back, stop (or move) the workers that would claim the workflow cohorts —
+or exclude the workflows' queues from the v1 fleet's subscription list
+(`TASKQ_QUEUES`) — so no v1 process is ever handed a workflow row. The
+rows themselves are safe to leave in place (they are ordinary `jobs`
+rows; the upgraded fleet resumes them), but a v1 fleet that claims one
+turns a live run into a wedged one.
+
 - Stop workers pointed at the affected schema to avoid further writes.
 - Restore the database from the pre-migration backup.
 - Pin `taskq-py` back to the previous version until the issue is resolved,

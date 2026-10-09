@@ -1,0 +1,19 @@
+        ``failed`` with the LOUD error class; a healthy run (nodes present)
+E       ImportError: cannot import name 'NODELESS_ROOT_REAP_GRACE_S' from 'taskq.workflows._sweep' (/tmp/opencode/wt-taskqflow/src/taskq/workflows/_sweep.py)
+tests/test_wf_create_seam_pins.py:377: ImportError
+E       AttributeError: 'asyncpg.pgproto.pgproto.UUID' object has no attribute 'flow_id'
+tests/test_wf_create_seam_pins.py:195: AttributeError
+            raise RuntimeError("the kill: the process dies after the root insert")
+        with pytest.raises(RuntimeError, match="the kill"):
+E       AssertionError: the kill after the root insert left ORPHAN ROOT <Record id=UUID('01a11f25-1922-7282-9c60-59d14859d6ba') status='pending'> — the root insert committed ALONE (the N+M+2 shape): the create is not one transaction
+tests/test_wf_create_seam_pins.py:161: AssertionError
+E       AttributeError: module 'taskq.workflows' has no attribute 'run'
+tests/test_wf_create_seam_pins.py:469: AttributeError
+        — never a bare id. THE CONVICTED LIE: a FAILED run + the same key
+E       AssertionError: create_flow returned UUID('01a11f25-1a6b-7fe2-b108-f13b8486c1fe') — the bare id lie: the typed RunClaim (created | existing-running | existing-terminal) is the honest surface
+tests/test_wf_create_seam_pins.py:329: AssertionError
+FAILED tests/test_wf_create_seam_pins.py::test_pin_nodeless_root_reap_belt - ...
+FAILED tests/test_wf_create_seam_pins.py::test_pin_kill_retry_completes_the_run
+FAILED tests/test_wf_create_seam_pins.py::test_pin_create_is_one_transaction_the_kill_commits_nothing
+FAILED tests/test_wf_create_seam_pins.py::test_pin_packaged_run_one_call_end_to_end
+FAILED tests/test_wf_create_seam_pins.py::test_pin_run_key_claim_is_honest_terminal_is_refused_loudly
