@@ -22,6 +22,7 @@ Each pin states the cure's law; the red evidence is the attack-3 corpus
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import asyncpg
@@ -207,9 +208,13 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # The outbox row is written in the exhaust's tx; the drain runs at
-    # the tick's end; the flow is terminal by then (the exhaust), so the
-    # consumer job is claimed by the NEXT dispatch pass (the fleet
-    # worker's queue poll — the runner's own next tick here).
+    # the tick's end. NOTE (the fenceable-shape pin below is the fleet
+    # truth): THIS arm's tick claims the consumer through the runner's
+    # own claimable read, which carries NO flow-status fence — the fleet
+    # dispatch claim DOES, and the escalation consumer is born into a
+    # TERMINAL flow. The in-process tick alone could never prove the
+    # escalation dispatchable; see
+    # test_escalation_consumer_dispatches_through_the_fleet_claim.
     await runner.tick(flow_id)
     outbox = await wf_conn.fetch(
         f'SELECT consumer_step_key, bindings FROM "{wf_schema}".wf_outbox WHERE flow_id = $1',
@@ -235,6 +240,122 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
     )
     # The default body's own record face (the bindings' payload reached it).
     assert "counter" in (consumer["payload"] or ""), "the exhaustion context never rode the job"
+
+
+async def test_escalation_consumer_dispatches_through_the_fleet_claim(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE ESCALATION'S FENCEABLE SHAPE (the FLEET-TRUTH pin): the
+    exhaustion tx commits the escalation's outbox row and the flow's
+    terminal TOGETHER — the consumer row is BORN into a terminal flow —
+    and the dispatch fence's terminal-flow leg (a workflow row on a
+    terminal flow is unclaimable) therefore refused the escalation
+    FOREVER: page-a-human was dead code with a green test (the old pin's
+    in-process tick took the runner's claimable read, which carries no
+    fence, while its comment named 'the fleet worker's queue poll' —
+    provably false).
+
+    THE CURE (the design decision, and why): a flow's death must not
+    orphan its pages-a-human duty — the operator's page is the ONE thing
+    that must survive the flow's terminality. The fence's terminal-flow
+    leg gains the ESCALATION-KIND exemption: the ``loop.escalation``
+    consumer alone is dispatchable on the terminal flow; every other
+    workflow row on a dead flow stays fenced. The exemption — not a
+    re-ordering — is the only shape that keeps the atomicity law (the
+    outbox row + the terminal = ONE tx) AND delivers the page: the fence
+    is evaluated at DISPATCH time (the drain is a later pass), when the
+    flow is terminal either way.
+
+    THE PIN takes the REAL claim path — ``dispatch_batch`` over the
+    certified strict-FIFO claim SQL, a capable worker's identity — and
+    the REAL fleet execution door — ``run_fleet_claimed_step``. The
+    escalation consumer must be CLAIMED and RUN."""
+    from datetime import timedelta
+
+    from taskq._ids import new_uuid as _new_uuid
+    from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
+    from taskq.workflows._sweep import drain_outbox
+
+    calls: list[int] = []
+
+    async def refine_forever(ctx: StepContext, carry: object) -> Refine[Counter]:
+        calls.append(1)
+        return Refine(Counter(acc=len(calls)))
+
+    app = WorkflowApp()
+
+    @app.workflow("a3cure_fleet_escalation_flow")
+    def fleet_escalation() -> object:
+        return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
+
+    runner = FlowRunner(app.get("a3cure_fleet_escalation_flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    # The FLOW IS TERMINAL here (the exhaust committed with the outbox
+    # row in one tx). The drain inserts the consumer row; the FLEET claim
+    # is the row's ONLY dispatch door.
+    await runner.tick(flow_id, execute=False)
+    consumer_id = await wf_conn.fetchval(
+        f'SELECT id FROM "{wf_schema}".jobs '
+        "WHERE step_key = 'loop.escalation' AND (metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    assert consumer_id is not None, "the escalation outbox row never drained into a consumer job"
+    flow_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    assert flow_status == "failed", flow_status
+
+    # THE FLEET CLAIM (the real claim round, the execution fence's
+    # capable-worker shape — the same stamp the boot's projection writes).
+    worker_id = _new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
+        "VALUES ('wf', 'default') ON CONFLICT (actor) DO NOTHING"
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
+        "VALUES ($1, 'wf-escalation-pin', 1, '{default}', $2::jsonb)",
+        worker_id,
+        json.dumps({"workflow_execution": True}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    claimed = {str(r.id) for r in dispatched}
+    assert str(consumer_id) in claimed, (
+        f"the escalation consumer {consumer_id} was NOT claimable through "
+        f"the fleet dispatch (claimed={sorted(claimed)}) — the fence's "
+        "terminal-flow leg refused the page-a-human duty forever: the "
+        "escalation is dead code"
+    )
+    # THE BODY RUNS through the fleet-claimed door: the registered
+    # escalation body executes, the consumer row terminal-succeeds
+    # carrying the exhaustion record.
+    job = next(r for r in dispatched if str(r.id) == str(consumer_id))
+    outcome = await runner.run_fleet_claimed_step(
+        flow_id,
+        {
+            "id": job.id,
+            "step_key": "loop.escalation",
+            "map_index": None,
+            "payload": job.payload,
+            "trace_id": job.trace_id,
+        },
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
+    )
+    assert outcome == "succeeded", outcome
+    consumer = await wf_conn.fetchrow(
+        f'SELECT status, result FROM "{wf_schema}".jobs WHERE id = $1', consumer_id
+    )
+    assert consumer is not None and consumer["status"] == "succeeded", dict(consumer)
+    assert "counter" in (consumer["result"] or ""), "the exhaustion record never reached the body"
 
 
 async def test_driver_fail_policy_enqueues_nothing(

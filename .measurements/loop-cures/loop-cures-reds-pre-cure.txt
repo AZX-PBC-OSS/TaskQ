@@ -1,0 +1,12 @@
+tests/test_wf_phase3_cure_pins.py:331: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 22:53:51 [debug    ] dispatch                       count=0 from_state=pending kind=dispatch limit_n=5 queues=['default'] to_state=running worker_id=01a11f39-9c30-77b2-a676-8da1ad46088c
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_declared_carry_arrives_typed_at_iteration_zero
+FAILED tests/test_wf_loop_pins.py::test_carry_type_survives_a_kill_and_resume_mid_loop
+FAILED tests/test_wf_loop_pins.py::test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated
+FAILED tests/test_wf_loop_pins.py::test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once
+FAILED tests/test_wf_loop_pins.py::test_infra_fault_routes_to_reclaim_never_the_ladder
+FAILED tests/test_wf_loop_pins.py::test_carry_advanced_exactly_once_per_iteration
+FAILED tests/test_wf_phase3_cure_pins.py::test_escalation_consumer_dispatches_through_the_fleet_claim
+7 failed, 25 passed in 7.61s

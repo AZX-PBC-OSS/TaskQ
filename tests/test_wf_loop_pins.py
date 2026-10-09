@@ -62,12 +62,21 @@ def _loop_app(
     *,
     max_iterations: int | None = None,
     budget_s: float | None = None,
+    carry: object | None = None,
 ) -> tuple[WorkflowApp, str]:
     app = WorkflowApp()
 
     @app.workflow("counter_flow")
     def counter_flow() -> object:
-        return build(loop("counter", body, max_iterations=max_iterations, budget_s=budget_s))
+        return build(
+            loop(
+                "counter",
+                body,
+                max_iterations=max_iterations,
+                budget_s=budget_s,
+                carry=carry,
+            )
+        )
 
     app.get("counter_flow")  # compile + register
     return app, "counter_flow"
@@ -87,17 +96,25 @@ async def test_carry_advanced_exactly_once_per_iteration(
 ) -> None:
     """P3 1c's pin at the API: the final acc == the iteration count (no
     double-apply, no lost apply); the iteration ledger's timeline is
-    consecutive."""
+    consecutive. THE BODY ASSERTS THE REAL TYPE (the masking fallback —
+    ``isinstance(carry, Counter) else 1`` — is DELETED: it silently RESET
+    the accumulation to 1 whenever the carry arrived untyped, which is
+    every resume; a pin with a fallback asserts nothing)."""
     iterations: list[int] = []
 
     async def counting_body(ctx: StepContext, carry: object) -> object:
-        acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
+        assert isinstance(carry, Counter), (
+            f"the carry arrived as {type(carry).__name__!r} — the declared "
+            "type never reached the body (the accumulate-once law is "
+            "asserted on the REAL type, never through a fallback)"
+        )
+        acc = carry.acc + 1
         iterations.append(acc)
         if acc >= 3:
             return Done(Counter(acc=acc))
         return Refine(Counter(acc=acc))
 
-    app, name = _loop_app(counting_body, max_iterations=3)
+    app, name = _loop_app(counting_body, max_iterations=3, carry=Counter())
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
@@ -315,11 +332,15 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
         return await real(*a, **kw)
 
     async def done_at_two(ctx: StepContext, carry: object) -> Done[Counter] | Refine[Counter]:
-        acc = (carry or Counter()).acc + 1 if isinstance(carry, Counter) else 1
+        assert isinstance(carry, Counter), (
+            f"the carry arrived as {type(carry).__name__!r} — the masking "
+            "fallback is deleted; the pin asserts the real type"
+        )
+        acc = carry.acc + 1
         return Done(Counter(acc=acc)) if acc >= 2 else Refine(Counter(acc=acc))
 
     with patch.object(ledger_module, "memoized_step_result", killing_memo):
-        app3, name3 = _loop_app(done_at_two, max_iterations=5)
+        app3, name3 = _loop_app(done_at_two, max_iterations=5, carry=Counter())
         runner3 = await _runner_of(app3, name3, wf_pool, wf_schema)
         flow_id3 = (await runner3.create_flow()).flow_id
         await runner3.drive(flow_id3, max_ticks=10)
@@ -588,3 +609,275 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     )
     assert ladder_burns == 0
     _ = render_loop_sql, LOOP_REMAINING_SQL  # the clock seam's imports (the on-wake read)
+
+
+# ── THE CARRY'S TYPED TRUTH: the declared type reaches the body ─────────
+
+
+async def test_declared_carry_arrives_typed_at_iteration_zero(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE CARRY'S DECLARED TYPE IS THE CONTRACT: a loop declared
+    ``carry=Counter(...)`` hands the body a REAL ``Counter`` at iteration
+    0 — not the jsonb dict the init's dump produced. The pre-cure truth:
+    the typed carry NEVER reached the body (the init serialized it
+    typeless; the pins' isinstance fallbacks masked the lie)."""
+    seen: list[object] = []
+
+    async def typed_body(ctx: StepContext, carry: object) -> Done[Counter]:
+        seen.append(carry)
+        assert isinstance(carry, Counter), (
+            f"the declared carry arrived as {type(carry).__name__!r} — the "
+            "typed carry never reached the body"
+        )
+        return Done(Counter(acc=carry.acc + 1))
+
+    app, name = _loop_app(typed_body, max_iterations=3, carry=Counter(acc=41))
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    assert await runner.result(flow_id) == {"acc": 42}
+    assert seen and all(isinstance(c, Counter) for c in seen), (
+        f"the body saw {[type(c).__name__ for c in seen]} — the declared "
+        "type did not round-trip to iteration 0"
+    )
+
+
+async def test_carry_type_survives_a_kill_and_resume_mid_loop(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE TYPE SURVIVES THE CRASH BOUNDARY: a machinery kill mid-loop
+    (the reclaim's crashed row + the re-pend) is resumed by a FRESH
+    driver pass; the resumed body receives the declared type with the
+    EXACT accumulated state — the accumulation is exact across resumes
+    (no reset). The pre-cure truth: the resumed carry arrived as the
+    jsonb dict and the masked pins reset the count (observed [1, 1, 2, 3]
+    for a 3-step count)."""
+    from unittest.mock import patch
+
+    from taskq.workflows import ledger as ledger_module
+
+    real = ledger_module.memoized_step_result
+    kills = {"n": 0}
+
+    async def killing_memo(*a: Any, **kw: Any) -> Any:
+        kills["n"] += 1
+        if kills["n"] == 2:
+            # THE KILL: the driver's own memo read at the top of the
+            # SECOND pass — after iteration 0's Refine was recorded and
+            # the carry advanced. The reclaim owns it; the resume
+            # re-reads the carry from the ROW (the crash boundary).
+            raise asyncpg.exceptions.ConnectionDoesNotExistError("the storm kill")
+        return await real(*a, **kw)
+
+    seen: list[int] = []
+
+    async def counting_body(ctx: StepContext, carry: object) -> object:
+        assert isinstance(carry, Counter), (
+            f"after the resume the carry arrived as "
+            f"{type(carry).__name__!r} — the type did not survive the "
+            "crash boundary (the accumulation reset is the lie the mask "
+            "hid)"
+        )
+        acc = carry.acc + 1
+        seen.append(acc)
+        if acc >= 3:
+            return Done(Counter(acc=acc))
+        return Refine(Counter(acc=acc))
+
+    with patch.object(ledger_module, "memoized_step_result", killing_memo):
+        app, name = _loop_app(counting_body, max_iterations=5, carry=Counter())
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        assert await runner.drive(flow_id, max_ticks=30) == "terminal"
+    # THE ACCUMULATION IS EXACT ACROSS THE RESUME: [1, 2, 3] — never
+    # [1, 1, 2, 3] (the reset), never [1] (the wedge).
+    assert seen == [1, 2, 3], seen
+    # The crash boundary WAS crossed (the machinery's reclaim recorded it).
+    crashed = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND status = 'crashed'",
+        flow_id,
+    )
+    assert int(crashed) >= 1, "the pin never crossed the crash boundary"
+    assert await runner.result(flow_id) == {"acc": 3}
+
+
+# ── THE ADVANCE/EXHAUST FENCES: the claim identity's legs ───────────────
+
+
+async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE ADVANCE/EXHAUST FENCES: the loop's advance and exhaust carry
+    the SAME claim-identity legs every other terminal write carries
+    (worker + attempt + claim_epoch — the one-tx-finalize doctrine; the
+    unguarded statements were the doctrine's BACK DOOR). The pre-cure
+    truth: a zombie driver's exhaust killed a HEALTHY RECLAIMED loop and
+    wrote its escalation row; a stale payload moved the counter
+    backward.
+
+    The pin runs the SHIPPED statements: the zombie (its claim lapsed;
+    the loop reclaimed by a new driver at a fresh attempt + epoch)
+    advances and exhausts — BOTH REFUSED; the healthy loop survives, the
+    counter never moves backward; the new driver's advance lands EXACTLY
+    ONCE, and its exhaust terminalizes the loop."""
+    from taskq.workflows.api._sql_loop import (
+        LOOP_ADVANCE_SQL,
+        LOOP_EXHAUST_SQL,
+        render_loop_sql,
+    )
+
+    zombie, fresh = new_uuid(), new_uuid()
+    # THE RECLAIMED LOOP: running at iteration 3, claimed by the NEW
+    # driver (attempt 6, epoch 4). The zombie still holds its stale view
+    # (attempt 5, epoch 3). (The statements are the subject — the rows
+    # are hand-crafted at the reclaimed identity.)
+    flow_id = new_uuid()
+    loop_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, locked_by_worker, attempt, "
+        "claim_epoch, deps_pending) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
+        "$2::jsonb, $3, 6, 4, 0)",
+        loop_id,
+        json.dumps(
+            {
+                "flow_id": str(flow_id),
+                "kind": "loop",
+                "iteration": 3,
+                "max_iterations": 100,
+                "carry": {"acc": 3},
+            }
+        ),
+        fresh,
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', '__flow__', "
+        "$2::jsonb)",
+        flow_id,
+        json.dumps({"flow_id": str(flow_id), "kind": "loop"}),
+    )
+
+    # THE ZOMBIE'S ADVANCE (stale identity, stale payload — it would move
+    # the counter BACKWARD to 4): REFUSED.
+    refused = await wf_conn.fetchval(
+        render_loop_sql(LOOP_ADVANCE_SQL, wf_schema),
+        loop_id,
+        json.dumps({"carry": {"acc": 999}, "iteration": 4}),
+        100,
+        zombie,
+        5,
+        3,
+    )
+    assert refused is None, "the zombie driver's advance was ADMITTED — the back door is open"
+    # THE ZOMBIE'S EXHAUST (it would kill the healthy reclaimed loop):
+    # REFUSED — the loop survives, no named state, no escalation row.
+    zombie_exhaust = await wf_conn.fetchrow(
+        render_loop_sql(LOOP_EXHAUST_SQL, wf_schema),
+        loop_id,
+        "IterationLimitExhausted",
+        '{"iteration_state": "iteration_cap_exhausted", "kind": "loop"}',
+        "the zombie's message",
+        zombie,
+        5,
+        3,
+    )
+    assert zombie_exhaust is not None and not zombie_exhaust["loop_exhausted"], (
+        "the zombie driver's exhaust LANDED — it killed a healthy "
+        "reclaimed loop (the back door is open)"
+    )
+    # THE HEALTHY LOOP SURVIVES, untouched by the stale payloads.
+    row = await wf_conn.fetchrow(
+        f"SELECT status, metadata->>'iteration' AS iteration, metadata->>'carry' AS carry "
+        f'FROM "{wf_schema}".jobs WHERE id = $1',
+        loop_id,
+    )
+    assert row is not None and row["status"] == "running"
+    assert row["iteration"] == "3", row["iteration"]
+    assert json.loads(row["carry"]) == {"acc": 3}, (
+        "the zombie's stale carry payload moved the counter/carry — "
+        "the counter moved BACKWARD"
+    )
+
+    # THE NEW DRIVER advances (its own claim identity): EXACTLY ONCE —
+    # the counter moves FORWARD to 4 with the driver's payload.
+    advanced = await wf_conn.fetchval(
+        render_loop_sql(LOOP_ADVANCE_SQL, wf_schema),
+        loop_id,
+        json.dumps({"carry": {"acc": 4}, "iteration": 4}),
+        100,
+        fresh,
+        6,
+        4,
+    )
+    assert advanced == 4, f"the reclaimed loop's own driver was refused ({advanced!r})"
+    # ...and its exhaust lands (the named state + the flow terminal).
+    exhausted = await wf_conn.fetchrow(
+        render_loop_sql(LOOP_EXHAUST_SQL, wf_schema),
+        loop_id,
+        "IterationLimitExhausted",
+        '{"iteration_state": "iteration_cap_exhausted", "kind": "loop"}',
+        "the driver's wall",
+        fresh,
+        6,
+        4,
+    )
+    assert exhausted is not None and exhausted["loop_exhausted"] == 1
+    status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
+    assert status == "failed"
+
+
+async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE SHAPE ERROR NAMED: a body returning neither Done nor Refine is
+    recorded as the TYPED shape error — the iteration's ledger terminal
+    says ``failed`` / ``LoopBodyShapeError``, the loop node's diagnosis
+    names it, the flow terminalizes. The replay honors the recorded
+    truth: the pre-cure ledger recorded a SUCCEEDED iteration and the
+    memo replay re-threaded the raw return AS A REFINE — the ledger
+    fabricated."""
+    calls = {"n": 0}
+
+    async def wrong_shape(ctx: StepContext, carry: object) -> object:
+        calls["n"] += 1
+        return {"not": "the union"}  # neither Done nor Refine — THE SHAPE ERROR
+
+    app, name = _loop_app(wrong_shape, max_iterations=5)
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    # THE LEDGER RECORDS THE TRUTH: the iteration's terminal is the typed
+    # shape error, never a SUCCEEDED row carrying a laundered feedback.
+    row = await wf_conn.fetchrow(
+        f"SELECT status, error_class, error_message FROM \"{wf_schema}\".wf_step_ledger "
+        "WHERE flow_id = $1 AND step_key = 'counter.iter0'",
+        flow_id,
+    )
+    assert row is not None
+    assert row["status"] == "failed", (
+        f"the shape error was recorded as {row['status']!r} — the ledger "
+        "fabricated a succeeded iteration"
+    )
+    assert row["error_class"] == "LoopBodyShapeError", row["error_class"]
+    assert "Done" in (row["error_message"] or "") and "Refine" in (row["error_message"] or "")
+    # THE DIAGNOSIS NAMES IT: the loop node's own terminal carries the
+    # typed class; the flow terminalized.
+    node_row = await wf_conn.fetchrow(
+        f"SELECT status, error_class FROM \"{wf_schema}\".jobs "
+        "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    assert node_row is not None
+    assert node_row["error_class"] == "LoopBodyShapeError", node_row["error_class"]
+    assert node_row["status"] == "failed"
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    assert root == "failed"
+    # THE REPLAY HONORS THE RECORDED TRUTH: one invocation per iteration —
+    # a re-drive never re-runs the body, never re-threads the raw return.
+    assert await runner.drive(flow_id) == "terminal"
+    assert calls["n"] == 1, calls["n"]
