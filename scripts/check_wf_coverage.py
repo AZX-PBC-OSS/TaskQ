@@ -59,13 +59,19 @@ def _git(*args: str) -> str:
 
 def _head() -> tuple[str, bool]:
     """(head sha, tree_dirty) — the artifact's provenance pair. THE DIRTY
-    RULE: the estate's OWN writes (untracked/modified files under
-    ``.measurements/``) are not dirt — the battery writes them as it
-    runs. Dirt is the tracked SOURCE tree changing under the
-    measurement."""
+    RULE: the evidence estate's OWN writes are not dirt — the battery
+    writes the sinks and the run-scoped captures (tracked or not) as it
+    runs, under ``.measurements/``. Dirt is the SOURCE tree (everything
+    else) changing under the measurement."""
     sha = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain")
-    dirty = any(not line.startswith("??") for line in status.splitlines())
+    dirty = False
+    for line in status.splitlines():
+        _xy, _sep, path = line.partition("\t")
+        if path.startswith(".measurements/"):
+            continue
+        dirty = True
+        break
     return sha, dirty
 
 
