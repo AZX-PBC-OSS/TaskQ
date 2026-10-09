@@ -1,0 +1,45 @@
+unformatted: File would be reformatted
+  --> examples/fleet_demo/workflows.py:47:24
+   |
+46 |
+   - REVIEW_GATE = GateDecl(
+   -     name="ReviewDecision", payload_models=(ReviewDecision,), timeout_s=600.0
+   - )
+47 + REVIEW_GATE = GateDecl(name="ReviewDecision", payload_models=(ReviewDecision,), timeout_s=600.0)
+48 |
+--------------------------------------------------------------------------------
+78 |     workflow pauses here until the operator resolves."""
+   -     decision = await ctx.wait_signal((ReviewDecision,), timeout_s=600.0,
+   -                                      reason="the fleet demo's review hold")
+79 +     decision = await ctx.wait_signal(
+80 +         (ReviewDecision,), timeout_s=600.0, reason="the fleet demo's review hold"
+81 +     )
+82 |     print(f"  [enrich] {doc_id} resumed: {decision.verdict} ({decision.note})")
+   |
+
+unformatted: File would be reformatted
+   --> tests/test_wf_cli_pins.py:469:10
+    |
+468 |     proc = subprocess.run(
+    -         ["/usr/bin/grep", "-rn", "from taskq.workflows.api._hitl import HitlClient", str(repo / "docs")],
+    -         capture_output=True, text=True,
+469 +         [
+470 +             "/usr/bin/grep",
+471 +             "-rn",
+472 +             "from taskq.workflows.api._hitl import HitlClient",
+473 +             str(repo / "docs"),
+474 +         ],
+475 +         capture_output=True,
+476 +         text=True,
+477 |     )
+--------------------------------------------------------------------------------
+498 |
+    -     anchors = {k: {slug(t) for _, t in re_mod.findall(r"^(#{1,4})\s+(.+)$", v, re_mod.M)} for k, v in docs.items()}
+499 +     anchors = {
+500 +         k: {slug(t) for _, t in re_mod.findall(r"^(#{1,4})\s+(.+)$", v, re_mod.M)}
+501 +         for k, v in docs.items()
+502 +     }
+503 |     bad: list[str] = []
+    |
+
+2 files would be reformatted, 1456 files already formatted

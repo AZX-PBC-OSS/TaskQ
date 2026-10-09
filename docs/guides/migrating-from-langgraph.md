@@ -51,7 +51,7 @@ publish step**, then the run completes. In LangGraph this took a
 
 ### BEFORE — LangGraph
 
-```python
+```python no-exec — not executed: the BEFORE twin runs against langgraph (not a dependency of this repo)
 # BEFORE — LangGraph: state-dict channels, string edges, in-memory checkpoint
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -92,7 +92,7 @@ re-implemented by every client; nothing type-checks the channel merges.
 # AFTER — TaskQflow: rows are the durability, the hold is a slot-releasing row
 from pydantic import BaseModel
 from taskq.workflows import FlowRunner, WorkflowApp, build, step
-from taskq.workflows.api._hitl import HitlClient
+from taskq.workflows import HitlClient
 
 
 class DocIn(BaseModel):
@@ -149,7 +149,7 @@ promise arguments; `interrupt` → `wait_signal`; `MemorySaver` → nothing
 
 ## 3. The map-reduce port (the `Send` shape)
 
-```python
+```python no-exec — not executed: the BEFORE twin runs against langgraph (not a dependency of this repo)
 # BEFORE: Send-based dynamic fan-out + the empirically-verified join
 #   def fanout(state) -> list[Send]:
 #       return [Send("enrich", {"doc_id": d}) for d in state["docs"]]

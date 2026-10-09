@@ -446,3 +446,70 @@ def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:
             assert keyword not in source, (
                 f"{fn_name} carries a write statement ({keyword!r}) — the read-only pin reds"
             )
+
+
+def test_the_public_reexport_hitlclient() -> None:
+    """THE PUBLIC RE-EXPORT PIN (the stranger's finding): the guide's
+    HITL surface is reachable from the PUBLIC namespace — the
+    `from taskq.workflows import HitlClient` door + the __all__
+    membership (a private-module import in the docs' own lines reds
+    this pin's sweep)."""
+    import taskq.workflows as wf_public
+
+    assert wf_public.HitlClient is not None
+    assert "HitlClient" in wf_public.__all__
+    assert "DeliveryResult" in wf_public.__all__
+    # THE DOCS' IMPORT SWEEP: the shipped docs never teach the private
+    # module path (the re-export's own point).
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(__file__).parent.parent
+    proc = subprocess.run(  # noqa: S603  # Why: the fixed literal pattern; nothing operator-supplied.
+        [
+            "/usr/bin/grep",
+            "-rn",
+            "from taskq.workflows.api._hitl import HitlClient",
+            str(repo / "docs"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0, f"the docs teach the private path: {proc.stdout[:200]}"
+
+
+def test_the_docs_anchor_link_check() -> None:
+    """THE GUIDES' ANCHOR SWEEP (the §-renumbering's pin): EVERY
+    cross-linked `.md#fragment` anchor in docs/ resolves against the
+    target file's mkdocs-slugified headings — a renumbered section
+    without its link reds this sweep."""
+    import os
+    import re as re_mod
+    from pathlib import Path
+
+    docs_root = (Path(__file__).parent.parent / "docs").resolve()
+    docs = {str(md.relative_to(docs_root)): md.read_text() for md in docs_root.rglob("*.md")}
+
+    def slug(title: str) -> str:
+        t = title.strip().lower().replace("`", "")
+        t = re_mod.sub(r"[^\w\s-]", "", t)
+        return re_mod.sub(r"-{2,}", "-", re_mod.sub(r"\s+", "-", t.strip()))
+
+    anchors = {
+        k: {slug(t) for _, t in re_mod.findall(r"^(#{1,4})\s+(.+)$", v, re_mod.M)}
+        for k, v in docs.items()
+    }
+    bad: list[str] = []
+    for path, text in docs.items():
+        base = (docs_root / path).parent
+        for m in re_mod.finditer(r"\]\(([^)#\s]+\.md)(#([^)\s]+))?\)", text):
+            target, frag = m.group(1), m.group(3)
+            if target.startswith("http"):
+                continue
+            rel = os.path.relpath(os.path.normpath(str(base / target)), docs_root)
+            if rel not in docs:
+                bad.append(f"{path} → {target} (the FILE missing)")
+                continue
+            if frag and frag not in anchors[rel]:
+                bad.append(f"{path} → {target}#{frag}")
+    assert not bad, f"the docs' broken anchors: {bad}"

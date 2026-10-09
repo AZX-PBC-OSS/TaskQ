@@ -147,7 +147,7 @@ async def main() -> None:
         await runner.drive(flow_id, until="held")
         verdict("A2 held-not-crashed", True, "the run pauses: a ROW (the MemorySaver hole gone)")
 
-        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows import HitlClient
 
         hitl = HitlClient(pool, schema=schema)
         holds = await hitl.list(run=flow_id)
