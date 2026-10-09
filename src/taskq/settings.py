@@ -1990,6 +1990,25 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_PRUNE_BATCH_SIZE. Rows to delete per batch.",
     )
 
+    # -- Workflow outbox retention ----------------------------------
+    workflow_outbox_retention_period: timedelta = Field(
+        default=timedelta(hours=24),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_OUTBOX_RETENTION_PERIOD. The age at "
+        "which a DELIVERED wf_outbox row is deleted. A delivered outbox "
+        "row is narration — the drain's arbiter already inserted the "
+        "consumer rows and wf_join_fire is the exactly-once ledger — and "
+        "without this TTL the delivered population grows monotonically "
+        "forever (the D2 soak's finding: 5.9k at close, monotone, no "
+        "pruner). One bounded committed batch per leader tick; "
+        "UNDELIVERED rows are never touched (the drain owns them — a "
+        "deleted undelivered row is a lost delivery). timedelta(0) "
+        "DISABLES the sweep, the deletion-sweep family's zero-means-off "
+        "sentinel (a brand-new deletion loop's safe misconfiguration is "
+        "off), deliberately opposite to the prune family's "
+        "zero-means-now. Negative values raise at settings load.",
+    )
+
     # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
         default=DEFAULT_PRUNE_RETENTION,
