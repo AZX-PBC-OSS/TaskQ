@@ -1517,3 +1517,67 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     }
     out = run_promtool_rule_tests(RULES_PATH, yaml.safe_dump(test_doc), tmp_path)
     assert "SUCCESS" in out, out
+
+
+# ── THE RUNBOOK-ANCHOR PIN (the F-R3 discipline, re-landed 2026-10-09) ──
+
+
+def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
+    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 drill,
+    made mechanical): every ``## TaskQ…`` alert row in
+    ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
+    ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``
+    (the pair ships lockstep), and every shipped alert has a runbook row —
+    an operator paged by the real alert must find its row, and a row no
+    alert can fire is a page that lies. The convicted shape (F-R3's
+    original + its carry-regression, both 2026-10-09): the runbook's
+    ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules NO rule
+    file carried — the runbook's promise had no code behind it. The two
+    rows' operational content lives in ``TaskQWorkflowBlockedStuck``'s
+    row (the alert that actually measures the blocked/held shape)."""
+    runbook = Path(__file__).parent.parent / "docs" / "guides" / "runbooks.md"
+    # The alert-anchored rows only: a ``## TaskQ…`` heading whose next
+    # non-empty line is the alert's "What fired" (the runbook row's own
+    # shape). Non-alert sections (the stall-attribution guide, the
+    # related-docs links) name no rule and are out of the pin's scope.
+    row_names = set(re.findall(r"^## (TaskQ[A-Za-z0-9]+)\s*$", runbook.read_text(), re.M))
+    prometheus_alerts: set[str] = set()
+    rules_data = yaml.safe_load(RULES_PATH.read_text())
+    for group in rules_data.get("groups", []):
+        for rule in group.get("rules", []):
+            if "alert" in rule:
+                prometheus_alerts.add(rule["alert"])
+    kubernetes_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "taskq"
+        / "contrib"
+        / "kubernetes"
+        / "prometheus_rule.yaml"
+    )
+    kubernetes_alerts: set[str] = set()
+    kubernetes_data = yaml.safe_load(kubernetes_path.read_text())
+    for group in kubernetes_data.get("spec", {}).get("groups", []):
+        for rule in group.get("rules", []):
+            if "alert" in rule:
+                kubernetes_alerts.add(rule["alert"])
+    assert prometheus_alerts == kubernetes_alerts, (
+        "THE RULE FILES' LOCKSTEP: prometheus/rules.yaml and "
+        "kubernetes/prometheus_rule.yaml disagree — "
+        f"prometheus-only {sorted(prometheus_alerts - kubernetes_alerts)}, "
+        f"kubernetes-only {sorted(kubernetes_alerts - prometheus_alerts)}"
+    )
+    phantom_rows = row_names - prometheus_alerts
+    anchorless_alerts = prometheus_alerts - row_names
+    assert not phantom_rows, (
+        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the F-R3 class): "
+        f"{sorted(phantom_rows)} — a runbook row no shipped rule can fire "
+        "is a page that lies: ship the rule (both files, lockstep, with "
+        "its metric) or fold the row's content into the shipped alert's "
+        "row"
+    )
+    assert not anchorless_alerts, (
+        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the F-R3 cross-face): "
+        f"{sorted(anchorless_alerts)} — an operator paged by this alert "
+        "finds no runbook row: write the row"
+    )
