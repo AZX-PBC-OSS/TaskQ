@@ -1,0 +1,10 @@
+{
+  "mutation": "the rederive's reconcile write-guard flipped (the counter never returns to the ledger's truth)",
+  "observed": {
+    "deps_pending_after_mutated_sweep": 1,
+    "ledger_truth": 0
+  },
+  "pin": "pin1-snapshot-write",
+  "run": "20261008T223255-2908904-bec593a8",
+  "ts": "2026-10-08T22:32:55"
+}

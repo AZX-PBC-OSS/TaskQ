@@ -1,0 +1,5 @@
+  - examples/doc-ingest.md
+INFO    -  Doc file 'examples/doc-ingest.md' contains an unrecognized relative link '../../../examples/', it was left as is.
+INFO    -  Documentation built in 16.78 seconds
+exit=0
+head: 4bf53c869f87be86419056fb90795c383ef1633d
