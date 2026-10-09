@@ -101,6 +101,7 @@ async def test_fan_out_tx_band_1000_children(
 
 
 @pytest.mark.integration
+@pytest.mark.load_sensitive  # the docstring's own declaration ("all load_sensitive") — the wall-clock band runs in the exclusive lane (the L-round's nothing-unmarked law)
 async def test_join_fire_latency_band(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
