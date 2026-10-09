@@ -10,7 +10,7 @@ never DB-side or random-UUID generation (the TID251 ban).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
@@ -18,6 +18,7 @@ from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
 __all__ = [
+    "MAP_INDEX_CEILING",
     "AbsorbingPolicy",
     "ChildSpec",
     "ConsumerBinding",
@@ -36,6 +37,20 @@ __all__ = [
     "_jsonb",
     "_metadata",
 ]
+
+#: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
+#: documents: ``jobs.map_index`` is a SMALLINT (the ledger's claim
+#: arbiter column, 01.00.23_05), so a record's per-run identity tops out
+#: at 32767. Record #32768 is the convicted shape: the raw DataError the
+#: smallint cast raised MID-TRANSACTION took the valid page-mates down
+#: with it (an accidental untyped ceiling — the whole page rolled back
+#: and the raw error laddered as transient). The engine now refuses the
+#: poison record AT THE DOOR (:class:`taskq.workflows._emit.
+#: MapIndexExhaustedError` — named, loud, the record named): the valid
+#: page-mates COMMIT (the batch semantics — a poison record kills
+#: ITSELF loudly, never its mates), and the deterministic death
+#: terminalizes the source with the ceiling documented here.
+MAP_INDEX_CEILING: Final[int] = 32767
 
 #: A join edge's declared failure policy (T06's two semantics):
 #:

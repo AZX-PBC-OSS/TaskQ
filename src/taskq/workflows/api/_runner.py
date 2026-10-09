@@ -957,12 +957,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         outbox carries the consumer bindings — the cascade, cut #1's
         cure). ``None`` when the body returned no list (the map over
         nothing — the join fires empty, the collect states it)."""
-        from taskq.workflows._types import ConsumerBinding
+        from taskq.workflows._emit import MapIndexExhaustedError
+        from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
 
         raw_items = result.get("value") if result is not None else None
         items: list[object] = (
             list(raw_items) if isinstance(raw_items, list) else []  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — the envelope's value is the body's own return, jsonb-round-tripped.
         )
+        # THE SMALLINT CEILING AT THE FORK'S DOOR (the typed death's
+        # other seat — the emit batch's own guard is in _emit.py): the
+        # map children's ledger identity rides map_index (a smallint) —
+        # a map over more than CEILING+1 items dies as the raw DataError
+        # MID-FINALIZE-TX (the whole fork rolled back, the raw error
+        # laddered). The named refusal, BEFORE the tx: the record's
+        # identity cannot grow past the column's domain.
+        if len(items) > MAP_INDEX_CEILING + 1:
+            raise MapIndexExhaustedError(
+                f"the map source {row['step_key']!r} returned "
+                f"{len(items)} items — record #{MAP_INDEX_CEILING + 1} is "
+                f"past the map_index smallint ceiling "
+                f"({MAP_INDEX_CEILING}); the fork refuses BEFORE the "
+                "finalize tx (the ceiling is documented on "
+                "MAP_INDEX_CEILING — split the source's page)"
+            )
         join_key = f"{row['step_key']}.join"
         bindings = tuple(
             ConsumerBinding(

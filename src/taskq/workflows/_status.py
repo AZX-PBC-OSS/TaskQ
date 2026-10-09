@@ -174,9 +174,7 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
     #    old predicate read them as "the reclaim's input" and the wedge
     #    was the proof: nothing ever reclaimed them, the corpse derived
     #    ``running`` forever.
-    if any(n.status == "running" for n in nodes) or any(
-        n.cancel_in_flight for n in nodes
-    ):
+    if any(n.status == "running" for n in nodes) or any(n.cancel_in_flight for n in nodes):
         return "running"
     # 2. THE ABSORBED FAILURES COME FIRST (B2): an absorbed failure derives
     #    through its parent's outcome — the failed row below reads only
@@ -245,9 +243,7 @@ async def reconstruct_workflow_status(
     # way it absorbs the failure — the SQL maintenance leg's
     # _absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
-    absorbed_keys = {
-        r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL
-    }
+    absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
     ledger_by_key: dict[str, str] = {}
     for r in ledger_rows:
         # The ledger's LATEST terminal row for the step (attempt-ordered

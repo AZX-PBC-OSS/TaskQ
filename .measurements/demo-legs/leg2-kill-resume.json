@@ -1,0 +1,23 @@
+{
+  "leg": "2 \u2014 the kill-and-resume",
+  "run_id": "01a11f39-8f01-7153-9a2c-1eadf6d9f698",
+  "root_status": "succeeded",
+  "ledger_statuses": [
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded",
+    "succeeded"
+  ],
+  "the_drill": "worker1 SIGKILLed mid-node \u2192 the lease expiry \u2192 worker2 re-claimed \u2192 the run completed"
+}

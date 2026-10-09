@@ -31,7 +31,7 @@ from taskq.workflows.engine import finalize_node
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["LadderOps"]
+__all__ = ["LadderOps", "is_deterministic_authoring_failure"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -65,6 +65,47 @@ def is_infra_fault(exc: BaseException) -> bool:
         ConnectionError,
     )
     return isinstance(exc, infra)
+
+
+def is_deterministic_authoring_failure(exc: BaseException) -> bool:
+    """THE FAILURE-CLASS ROUTING RULE's deterministic leg (the T20/T21
+    fixer's cure — the rule stated once, pinned per class):
+    a DETERMINISTIC authoring failure never rides the retry ladder. The
+    three classes the engine itself defines are deterministic BY
+    CONSTRUCTION — each is raised by the engine's own gates for a defect
+    that re-running cannot cure:
+
+    * :class:`ProgressRefusedError` — a wrong-shaped emission (an
+      authoring bug; the body will send the same shape on every retry);
+    * :class:`PageDivergedError` — the emit's page already exists (the
+      resume's cursor diverged from the row history; the re-claim
+      re-reads the SAME cursor and collides again);
+    * :class:`MapIndexExhaustedError` — the smallint ceiling (the
+      record's identity cannot grow past it on any retry).
+
+    THE ROUTING RULE, per class (the pin drills all three legs):
+    ``deterministic = the NAMED terminal`` (finalize immediately, the
+    error class on the record, the ladder unburned — a retry budget
+    spent on a deterministic death is the record's lie: three identical
+    failures pretending to be a flake); ``infra = reclaim`` (the
+    machinery boundary's classifier, :func:`is_infra_fault` — the
+    ladder untouched); ``transient = the ladder`` (the body's ordinary
+    failures — the backoff curve, then the terminal).
+
+    THE BODY BOUNDARY consults this BEFORE the ladder
+    (:meth:`LadderOps._ladder_or_fail`): a body-raised wrong-shape
+    emission used to burn the whole ladder and terminalize as a raw
+    laddered failure — the deterministic death, mislabeled transient.
+    """
+    from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
+    from taskq.workflows._progress import ProgressRefusedError
+
+    deterministic: tuple[type[BaseException], ...] = (
+        ProgressRefusedError,
+        PageDivergedError,
+        MapIndexExhaustedError,
+    )
+    return isinstance(exc, deterministic)
 
 
 class _LadderHost(Protocol):
@@ -101,27 +142,41 @@ class LadderOps(_LadderHost):
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
         terminal-fails (T06's propagation takes over). ``permanent`` retry
-        kinds fail immediately (cut #12's classifier knob)."""
+        kinds fail immediately (cut #12's classifier knob).
+
+        THE DETERMINISTIC ROUTE (the failure-class routing rule —
+        :func:`is_deterministic_authoring_failure`): a DETERMINISTIC
+        authoring failure finalizes immediately with the named class, the
+        ladder unburned — whatever the declared ``retry_kind`` (the rule
+        outranks the knob: a retry budget spent on a deterministic death
+        is the record's lie)."""
         max_attempts = node.max_attempts if node is not None else 3
         retry_kind = node.retry_kind if node is not None else "transient"
+        # THE DETERMINISTIC ROUTE: the ladder (the count read + the
+        # re-pend) is skipped entirely for a deterministic authoring
+        # failure — the finalizer below runs on the first attempt.
+        deterministic = is_deterministic_authoring_failure(exc)
         # RESUME-NOT-RETRY (cut #5): the LADDER counts the ledger's
         # 'failed' rows — the claim's attempt ordinal increments on EVERY
         # claim (holds' resumes included), so a hold-heavy node keeps its
         # full retry curve (the shared-counter variant — 2 holds +
         # max_attempts=3 = terminal failure with ZERO retries — is pin
-        # 7's RED forever).
-        failed_count = int(
-            await wf_conn_fetchval(
-                self.pool,
-                self.schema,
-                "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
-                "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
-                "AND status = 'failed'",
-                flow_id,
-                row["step_key"],
-                row["map_index"],
+        # 7's RED forever). THE DETERMINISTIC ROUTE skips the count (the
+        # ladder is not consulted).
+        failed_count = 0
+        if not deterministic:
+            failed_count = int(
+                await wf_conn_fetchval(
+                    self.pool,
+                    self.schema,
+                    "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
+                    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
+                    "AND status = 'failed'",
+                    flow_id,
+                    row["step_key"],
+                    row["map_index"],
+                )
             )
-        )
         # The attempt's OWN ledger row terminalizes 'failed' (the claim
         # inserted it — the arbiter's key is the attempt's identity): an
         # INSERT here would collide with the claim (the UniqueViolation
@@ -140,7 +195,7 @@ class LadderOps(_LadderHost):
                 None,
                 row["map_index"],
             )
-            if retry_kind != "permanent" and failed_count + 1 < max_attempts:
+            if not deterministic and retry_kind != "permanent" and failed_count + 1 < max_attempts:
                 await conn.execute(
                     render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                     row["id"],
