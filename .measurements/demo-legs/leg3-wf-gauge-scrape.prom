@@ -1,0 +1,28 @@
+# HELP target_info Target metadata
+# TYPE target_info gauge
+target_info{service_instance_id="8f2d1fcc-4126-4bfe-baa9-467f6c912a91",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+# HELP taskq_ratelimit_reclaim_pending Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick (scalar: bucket names are not a dimension).
+# TYPE taskq_ratelimit_reclaim_pending gauge
+taskq_ratelimit_reclaim_pending{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_cron_disabled_schedules Currently disabled schedules.
+# TYPE taskq_cron_disabled_schedules gauge
+taskq_cron_disabled_schedules{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_jobs_oldest_due_age_seconds Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled.
+# TYPE taskq_jobs_oldest_due_age_seconds gauge
+taskq_jobs_oldest_due_age_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_jobs_scheduled_count Count of jobs currently in `scheduled` status, sampled by the backlog detection leader. Label-less twin of `taskq.jobs.by_status{status="scheduled"}`, kept in step with it so TaskQScheduledBacklogGrowing can compare it against `taskq.jobs.oldest_due_age_seconds` (also label-less) without a PromQL join modifier.
+# TYPE taskq_jobs_scheduled_count gauge
+taskq_jobs_scheduled_count{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_jobs_scheduled_horizon_seconds Seconds between now and the FURTHEST-out scheduled job's wake time (MAX(scheduled_at) - now, over status='scheduled'), sampled by every worker with taskq.jobs.by_status. The wave's depth signal: how far ahead the future-armed work reaches. 0.0 when nothing is scheduled; NEGATIVE when even the furthest job is overdue — every armed row has crossed its wake time and promotion is not keeping up. Label-less twin of taskq.jobs.by_status{status="scheduled"}, like taskq.jobs.scheduled_count, so the three backlog operands join without a PromQL join modifier.
+# TYPE taskq_jobs_scheduled_horizon_seconds gauge
+taskq_jobs_scheduled_horizon_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_jobs_running_lease_expired Running jobs whose lock lease is past expiry (the zombie-running shape), with rows in a cancel phase (cancel_phase != 0) carved out , the reclaim sweep deliberately waits out the cancel grace ladder for those, so an expired lease mid-cancel is the protocol working, not a zombie; a cancel that never completes pages elsewhere (TaskQAbandonedJobs when its worker is alive to escalate, TaskQHeartbeatMisses when it died mid-cancel, reclaim honors the row to 'cancelled' either way). Healthy reads 0, the reclaim sweep drains expired leases within a tick or two, so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with taskq.jobs.by_status.
+# TYPE taskq_jobs_running_lease_expired gauge
+taskq_jobs_running_lease_expired{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_heartbeat_consecutive_failures Consecutive heartbeat tick failures for this worker (sample-on-scrape).
+# TYPE taskq_heartbeat_consecutive_failures gauge
+taskq_heartbeat_consecutive_failures{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_wf_progress_nodes_total Workflow node rows per declared workflow and derived node state, sampled by the maintenance leader on the admin surface. Unregistered workflows collapse onto the _other_ bucket (summed); never per-node labels — the per-node truth is the row and the run's admin page. The alert: TaskQWorkflowBlockedStuck (a run pinned blocked past the bound, no transition).
+# TYPE taskq_wf_progress_nodes_total gauge
+taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="succeeded",workflow="doc_ingest"} 1.0
+taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="pending",workflow="doc_ingest"} 16.0
