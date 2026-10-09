@@ -4490,9 +4490,23 @@ async def _flows_resolve(
         validated = _validate_through_gate(
             app_obj, root_name, hold.node_key, hold.signal_name, decision
         )
-        result = await client.resolve(
-            str(hold_id), validated, reason=reason, principal=_cli_principal()
-        )
+        try:
+            result = await client.resolve(
+                str(hold_id), validated, reason=reason, principal=_cli_principal()
+            )
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # THE RACE'S HONEST LOSER (the same deadlock-refusal the cancel
+            # verb carries — the two verbs' cascades can deadlock; PG kills
+            # one writer; the CLI's answer is the NAMED refusal with the
+            # remedy, never a rich traceback — the diagnostics-first law).
+            typer.echo(
+                f"the hold {hold_id}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the hold is being "
+                "resolved OR the run cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
         _echo_delivery(result, str(hold_id))
 
 
@@ -4528,13 +4542,30 @@ def flows_cancel(
                     err=True,
                 )
                 raise typer.Exit(code=1)
-            stopped = await cancel_workflow_run(
-                pool,
-                schema=settings.schema_name,
-                flow_id=JobId(parsed),
-                reason=reason,
-                principal=_cli_principal(),
-            )
+            stopped = None
+            try:
+                stopped = await cancel_workflow_run(
+                    pool,
+                    schema=settings.schema_name,
+                    flow_id=JobId(parsed),
+                    reason=reason,
+                    principal=_cli_principal(),
+                )
+            except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+                # THE RACE'S HONEST LOSER (the resolve/cancel race pin's
+                # conviction — the two verbs' cascades can deadlock: PG
+                # kills one writer, and the CLI's answer must be the NAMED
+                # refusal with the remedy, never a rich traceback — the
+                # diagnostics-first law). The winner's own voice is honest;
+                # the loser retries by re-running the verb.
+                typer.echo(
+                    f"the run {parsed}'s writers raced and PG resolved the "
+                    "deadlock in another writer's favour — the run is being "
+                    "cancelled OR resolved by the winner; re-run this verb "
+                    "to see the settled state",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from None
             if stopped:
                 typer.echo(
                     f"cancelled: run {parsed} (the cascade landed; "

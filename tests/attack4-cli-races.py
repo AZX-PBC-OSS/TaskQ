@@ -178,14 +178,14 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     named terminal, and the audit rows tell the same story the outputs
     did — no silent loser.
 
-    THE SUBPROCESS TIMING WEATHER (the disposition's mark, recorded at
-    the consolidation and re-observed at the final head): the race is
-    staged through two REAL processes, so the loser's exit can carry the
-    loser's OWN early-read verdict under a noisy box — a one-off red,
-    green x2 solo and module-parallel (the loaded-bar law's mark, the
-    demo-legs class map's own disposition). The assertion's substance is
-    the OUTCOME HONESTY (one named terminal, the audit agreeing), not
-    the race's scheduling."""
+    THE RACE'S TWO HONEST LOSERS (both cured at this head): (1) the
+    cascades can DEADLOCK (the resolve's CAS vs the cancel's cascade) —
+    PG kills one writer, and BOTH verbs now answer the deadlock with the
+    NAMED refusal + exit 1 (the diagnostics-first law: never a rich
+    traceback); (2) a resolve win leaves the run RESUMABLE, never
+    terminal — the settle is the DRIVER's own contract (the drive pass
+    after the race), and the pin stages it instead of asserting a
+    terminal state no driverless run owes."""
     from taskq.workflows.api._hitl import HitlClient
 
     schema = module_pg_schema.schema_name
@@ -242,7 +242,20 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     assert "Traceback" not in r_err, f"the resolve crashed: {r_err}"
     assert "Traceback" not in c_err, f"the cancel crashed: {c_err}"
     # The outcomes agree with the ROWS: the hold is delivered-or-cancelled,
-    # never both, and the run is terminal.
+    # never both, and the run is terminal. THE SETTLE IS THE DRIVER'S OWN
+    # CONTRACT (the runbook's own line: "the rows are the truth — the
+    # driver picks the work up when the resolve lands"): a resolve win
+    # leaves the run RESUMABLE, not terminal — the rows wait for the next
+    # drive pass; the cancel win terminalizes by itself. The pin settles
+    # the run through the runner (the drive the operator's fleet would
+    # do), then asserts the terminal — the race's staging owes the pin a
+    # driver, the rows never owed a driverless root a terminal state.
+    settled_runner = FlowRunner(
+        sys.modules[MODULE_NAME].app.get("attack4b_hold_flow"),  # type: ignore[attr-defined]
+        module_pg_pool,
+        schema,
+    )
+    await settled_runner.drive(run_id)
     row = await module_pg_pool.fetchrow(
         f'SELECT status, resolved_at FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
     )
