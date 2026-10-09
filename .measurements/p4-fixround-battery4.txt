@@ -1,0 +1,2522 @@
+........................................................................ [ 37%]
+.......................................................................F [ 75%]
+.......F...........FFFFFFF.FFF.F.FFF...........                          [100%]
+=================================== FAILURES ===================================
+________________ test_full_run_the_callers_input_is_the_corpus _________________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_7c5ce517a0', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_7c5ce517a0a1')
+wf_pool = <asyncpg.pool.Pool object at 0x7fdaed44cdc0>
+wf_conn = <asyncpg.connection.Connection object at 0x7fdaef9724e0>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_callers_input_is_the_corpus(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE INPUT IS WIRED (the fence's first-hour cure c):
+        ``create_flow(input=…)`` is CONSUMED — the map fans the CALLER's
+        batch, not the wiring's declared default. The most natural first
+        experiment (hand the flow YOUR documents) must enrich YOUR
+        documents; the accepted-and-ignored shape reds HERE."""
+        import asyncpg
+    
+        from taskq.migrate import apply_pending
+        from taskq.workflows import FlowRunner, HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+        compiled = app_obj.get("doc_ingest_bench")
+        runner = FlowRunner(compiled, wf_pool, schema)
+        run_id = await runner.create_flow(
+            input=example_ns["IngestBatch"](doc_ids=["doc-000", "doc-003"])
+        )
+        held = await runner.drive(run_id, until="held")
+        assert held == "held", f"the run never held (the review gate): {held}"
+        client = HitlClient(wf_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+>       result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_doc_ingest_example.py:301: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_hitl.py:831: in resolve
+    logger.info(
+.venv/lib/python3.13/site-packages/structlog/_native.py:172: in meth
+    return self._proxy_to_logger(
+.venv/lib/python3.13/site-packages/structlog/_base.py:224: in _proxy_to_logger
+    return getattr(self._logger, method_name)(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <PrintLogger(file=<EncodedFile name="<_io.FileIO name=6 mode='rb+' closefd=True>" mode='r+' encoding='utf-8'>)>
+message = '2026-10-08 23:16:50 [info     ] signal.resolved                hold_id=01a11f4e-a606-7e53-88b9-daf22456ec8a run_id=01a11f4e-a54e-7ea1-9b53-0312214df61b signal=ReviewDecision'
+
+    def msg(self, message: str) -> None:
+        """
+        Print *message*.
+        """
+        f = self._file if self._file is not stdout else None
+        with self._lock:
+>           print(message, file=f, flush=True)
+E           OSError: [Errno 28] No space left on device
+
+.venv/lib/python3.13/site-packages/structlog/_output.py:113: OSError
+____________________ test_t08_rollup_cost_gate_index_driven ____________________
+OSError: [Errno 28] No space left on device
+
+During handling of the above exception, another exception occurred:
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdaed4335c0>
+wf_schema = 'tq_9ec45c0925'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44fd00>
+wf_sql = WorkflowSql(schema='tq_9ec45c0925', terminal_mark='UPDATE tq_9ec45c0925.jobs\nSET status = $2::"tq_9ec45c0925".job_sta...status, result\nFROM tq_9ec45c0925.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+
+    @pytest.mark.load_sensitive
+    @pytest.mark.integration
+    async def test_t08_rollup_cost_gate_index_driven(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+    ) -> None:
+        """At the FLEET shape the flow-scoped reads are INDEX-DRIVEN (the
+        EXPLAIN assert: no seq scan of the fleet table) and inside the recorded
+        band. THE SHAPE IS THE LOAD-BEARING PART (the phase-2 attack's H3b):
+        the pre-rewrite pin measured a table that contained ONLY the measured
+        flow's own rows — where the measured flow IS the whole table, a seq
+        scan and an index scan cost the same and the plan assert cannot fail.
+        Here the measured run is ONE AMONG MANY on a fleet table (40 runs +
+        a 60k-row vanilla population), the production shape — the seq-scan
+        shape (the pre-cure index: the raw-TEXT key the reads' uuid cast
+        broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
+        per-node read at this very shape —
+        .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
+        The ride: jobs_wf_flow_nodes_idx (01.00.25_02 — the index expression
+        carries the same uuid cast the reads carry; the partial covers the
+        workflow rows only)."""
+        import time
+    
+        n_vanilla = 60_000
+        n_flows = 40
+        n_nodes = 500
+    
+        # THE VANILLA POPULATION: production's fleet table is mostly NOT
+        # workflow rows — this is what makes the plan assert honest (a seq
+        # scan must traverse THIS to find the measured run).
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, scheduled_at, idempotency_scope, idempotency_key) "
+            "SELECT gen_random_uuid(), 'van', 'default', '{}', 3, 'transient', "
+            f"(ARRAY['succeeded','failed']::text[])[1 + (g % 2)]::{wf_schema}.job_status, "
+            "'v', now() - interval '1 hour', 'scope', 'van-' || g "
+            "FROM generate_series(1, $1) g",
+            n_vanilla,
+        )
+    
+        flow_ids: list[JobId] = []
+        for _ in range(n_flows):
+            flow_id = await seed_flow(wf_conn, wf_schema)
+            flow_ids.append(flow_id)
+            await wf_conn.execute(
+                f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+                "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+                "SELECT gen_random_uuid(), 'wf', 'default', '{}', 3, 'transient', "
+                f"(ARRAY['succeeded','running','pending','failed']::text[])[1 + (g % 4)]::{wf_schema}.job_status, "
+                "'c', jsonb_build_object('flow_id', $1::text, 'blocking_reason', 'join'), "
+                "'workflow:' || $1::text, 'wf:' || $1::text || ':' || g "
+                "FROM generate_series(1, $2) g",
+                str(flow_id),
+                n_nodes,
+            )
+    
+        # THE STEADY STATE: the VACUUMED table (index scans need the
+        # visibility map; a freshly-seeded table heap-visits every row — the
+        # two measurements both recorded, the argument in the artifact).
+        await wf_conn.execute("VACUUM (ANALYZE)")
+    
+        # THE PLAN ASSERT: no seq scan of jobs/wf_edge in ANY flow-scoped read
+        # (the rollup, the per-node read, the maintenance leg — the fleet
+        # gauge's sampler is deliberately fleet-wide: it groups the WHOLE
+        # fleet, there is no run id to key it; its recorded band is its own).
+        async def assert_index_driven(sql: str, *args: object) -> None:
+            plan_rows = await wf_conn.fetch(f"EXPLAIN (FORMAT JSON) {sql}", *args)
+            plan = plan_rows[0][0]
+            if isinstance(plan, str):
+                plan = json.loads(plan)
+    
+            def walk(node: dict[str, Any]) -> None:
+                node_type = node.get("Node Type")
+                rel = node.get("Relation Name")
+                # The FLEET TABLE is the gate's subject: a seq scan of jobs at
+                # the fleet shape is the monster class. (wf_edge is EMPTY in
+                # this shape — a seq scan of an empty relation is the
+                # planner's correct, zero-cost pick, not a fleet walk; the
+                # per-node probes ride wf_edge_parent_idx when rows exist.)
+                assert not (node_type == "Seq Scan" and rel == "jobs"), (
+                    f"the read seq-scans {rel} at the fleet shape — the "
+                    "index-driven gate reds (the cure: 01.00.25_02's uuid-cast "
+                    "expression + the workflow-rows-only partial)"
+                )
+                for child in node.get("Plans", []) or []:
+                    walk(child)  # pyright: ignore[reportArgumentType]
+    
+            walk(plan[0]["Plan"])  # pyright: ignore[reportIndexType]
+    
+        measured_flow = flow_ids[-1]
+        await assert_index_driven(wf_sql.workflow_rollup, measured_flow)
+        await assert_index_driven(wf_sql.workflow_nodes, measured_flow)
+        await assert_index_driven(wf_sql.workflow_root_maintain, 200)
+    
+        # THE BAND: the fleet-shape read is O(the run's own node count) — the
+        # measured p50 sits in the sub-millisecond class at the 500-node run
+        # shape (measured 0.12-0.24 ms; the band is set from the measurement
+        # with CI-noise margin, G11/G12: bands are SET from measurements,
+        # then pinned — the band moves only by argument in review).
+        samples: list[float] = []
+        for _ in range(5):
+            start_ns = time.perf_counter_ns()
+            rows = await module_pg_pool.fetch(wf_sql.workflow_rollup, measured_flow)
+            samples.append((time.perf_counter_ns() - start_ns) / 1e6)
+            assert rows, "the rollup answered"
+        p50 = sorted(samples)[len(samples) // 2]
+        band_budget_ms = 10.0
+        assert p50 <= band_budget_ms, (
+            f"the grouped rollup p50 {p50:.2f} ms exceeds the recorded band "
+            f"({band_budget_ms} ms) at the fleet shape — re-argue the band in "
+            "review, never edit it silently"
+        )
+    
+        from tests._wf_fixtures import write_band_artifact
+    
+>       write_band_artifact(
+            "wf-rollup-band.json",
+            {
+                "shape": {
+                    "fleet_rows": n_vanilla + n_flows * (n_nodes + 1),
+                    "runs": n_flows,
+                    "nodes_per_run": n_nodes,
+                    "measured_flow": str(measured_flow),
+                },
+                "p50_ms": round(p50, 3),
+                "samples_ms": [round(s, 3) for s in samples],
+                "recorded_band_ms": band_budget_ms,
+                "argument": (
+                    "the pin REWRITTEN for the fleet shape (the phase-2 "
+                    "attack's H3b): the pre-rewrite shape measured a table "
+                    "containing ONLY the measured flow's rows — the "
+                    "measured flow WAS the whole table, so the plan assert "
+                    "could not fail on a seq scan. At the fleet shape the "
+                    "pre-cure index (01.00.25_01's raw-TEXT key) served NO "
+                    "flow-scoped read: the rollup read p50 21.2 ms and the "
+                    "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
+                    "fleet table (.measurements/fix2/index-before-text-"
+                    "index.txt). The cure (01.00.25_02: the uuid-cast "
+                    "expression + the metadata?'flow_id' partial, the "
+                    "reads carrying the proving clauses) puts every "
+                    "flow-scoped read on the index: p50 ~0.1-0.3 ms — "
+                    "O(the run's own node count). The plan gate is the "
+                    "load-bearing assert; the band is set from THIS "
+                    "measurement. The fleet-wide gauge sampler ("
+                    "_QUERY_WF_PROGRESS_SQL_TEMPLATE) is fleet-wide BY "
+                    "DESIGN (no run id to key); its band is recorded in "
+                    "index-fleet-bands.json (~23 ms at the 220k-row fleet)."
+                ),
+                "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_02)",
+            },
+        )
+
+tests/test_wf_status_pins.py:684: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/_wf_fixtures.py:54: in write_band_artifact
+    path.write_text(json.dumps(payload, indent=2, default=str))
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py:555: in write_text
+    return PathBase.write_text(self, data, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/tmp/opencode/wt-taskqflow-p4/.measurements/runs/wf-rollup-band-20261008T231654-271d.json')
+data = '{\n  "shape": {\n    "fleet_rows": 80040,\n    "runs": 40,\n    "nodes_per_run": 500,\n    "measured_flow": "01a11f4e...-fleet-bands.json (~23 ms at the 220k-row fleet).",\n  "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.25_02)"\n}'
+encoding = 'locale', errors = None, newline = None
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        """
+        Open the file in text mode, write to it, and close the file.
+        """
+        if not isinstance(data, str):
+            raise TypeError('data must be str, not %s' %
+                            data.__class__.__name__)
+>       with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       OSError: [Errno 28] No space left on device
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/pathlib/_abc.py:651: OSError
+____________________ test_node_panel_unknown_node_is_a_404 _____________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+
+    good = await http.post(
+        f"/api/runs/{run_id}/resolve",
+        data={
+            "hold_id": hold.hold_id,
+            "decision": json.dumps({"verdict": "approve", "note": ""}),
+>           "reason": "the editor approved",
+            "csrf_token": _csrf_of(http),
+        },
+    )
+
+tests/web_admin/test_workflows_page.py:402: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+__________ test_the_pages_degrade_when_the_workflow_tables_are_absent __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+
+    run_id = await _seed_run(module_pg_pool, schema)
+    run_id_uuid = __import__("uuid").UUID(run_id)
+    from taskq.web.admin._wf_rows import fetch_run_view
+    
+    async with module_pg_pool.acquire() as conn:
+        view = await fetch_run_view(conn, schema, run_id_uuid)
+    assert view is not None
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/workflows/{run_id}")
+    html = resp.text
+    boot = json.loads(
+        html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
+    )
+    # THE ROWS==DOM CHECK: every node row's status appears on the page's
+    # snapshot, node for node.
+    rendered = {n["key"]: n["status"] for n in boot["state"]["nodes"]}
+    rows = {n.key: n.status for n in view.nodes}
+>   assert rendered == rows
+          ^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:604: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+____ test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped _____
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+        import time as time_mod
+    
+        schema = module_pg_schema.schema_name
+    
+        # A plain run (the panel read is status-independent).
+        compiled = sys.modules[MODULE_NAME].app.get("admin_plain_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id)
+        app = _make_admin_app(module_pg_pool, schema)
+        samples: list[float] = []
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(10):
+                t0 = time_mod.perf_counter()
+                resp = await client.get(f"/api/runs/{flow_id}/nodes/solo")
+                samples.append((time_mod.perf_counter() - t0) * 1000)
+                assert resp.status_code == 200
+        samples.sort()
+        p95 = samples[int(0.95 * len(samples)) - 1]
+        assert p95 <= 50.0, f"the panel's p95 read took {p95:.1f} ms — the band is 50 ms"
+    
+    
+    def test_the_page_js_carries_the_keyboard_contract() -> None:
+        """Keyboard operability's source pin: the delegated keydown listener
+        (Enter/Space activates a focused node) + the tab focus + the native
+        forms (the Resolve form is a real <form> — Enter submits it)."""
+>       from pathlib import Path
+              ^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:649: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:56 [info     ] node.held                      hold_id=01a11f4e-be61-7161-87ea-45f6dd2518ce node=review run_id=01a11f4e-be35-7bf0-8194-67fa8a8e2e13 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+___________ test_resolve_through_the_typed_door_delivers_and_audits ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fdaed432b70>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+        demo_app_module: Any,
+    ) -> None:
+        """THE NO-UNTYPED-DOOR PIN: a router mounted WITHOUT the workflow
+        definitions answers 501 — the resolve refuses to deliver untyped."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/queues")  # the CSRF cookie's set (the guarded-POST discipline)
+            resp = await client.post(
+                f"/api/runs/{run_id}/resolve",
+                data={"hold_id": "x", "decision": "{}", "csrf_token": _csrf_of(client)},
+            )
+>       assert resp.status_code == 501
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:354: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:56 [info     ] node.held                      hold_id=01a11f4e-bf4c-7573-b0f3-be15ceb74653 node=review run_id=01a11f4e-bf24-74c3-aad0-cac3c635cfb4 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+________________________ test_runs_list_links_the_runs _________________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+            resp = await client.get("/workflows/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f")
+        assert resp.status_code == 404
+    
+    
+    async def test_runs_list_empty_schema_is_the_defined_empty_state(
+        module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
+    ) -> None:
+>       """THE STATES MATRIX (2): the list page's empty schema renders the
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        honest line + the next step (never a blank table)."""
+
+tests/web_admin/test_workflows_page.py:216: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:57 [info     ] node.held                      hold_id=01a11f4e-c01b-7033-b041-dbc4d6081671 node=review run_id=01a11f4e-bff8-7071-8379-1d2e3cf887d6 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+_______________ test_runs_list_renders_the_rows_and_the_cap_note _______________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+>   ???
+
+tests/web_admin/test_workflows_page.py:464: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:57 [info     ] node.held                      hold_id=01a11f4e-c0ce-75f2-9a35-f3889869c228 node=review run_id=01a11f4e-c0ad-7632-8312-1ddbf436f547 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+____________ test_run_page_renders_the_audit_trail_after_a_resolve _____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fdaefc9f2f0>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+            "WHERE action = 'hitl.resolve' ORDER BY id DESC LIMIT 1"
+        )
+        assert audit is not None, "a resolve without an audit row reds"
+        assert audit["principal_subject"] == "anonymous"  # the dev path's named subject
+    
+    
+    async def test_node_panel_unknown_node_is_a_404(
+        module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """THE STATES MATRIX (4): the panel's unknown node is a 404 — the
+        JS renders it as the panel's error state (never a blank panel)."""
+        app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)
+>       async with httpx.AsyncClient(
+              ^^^^^^^^^^^^^^^^^^^^^^^^
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+tests/web_admin/test_workflows_page.py:422: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:57 [info     ] node.held                      hold_id=01a11f4e-c177-77c0-99f5-d075dfc2faeb node=review run_id=01a11f4e-c159-74d1-8c82-744924ded471 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+____________ test_runs_list_empty_schema_is_the_defined_empty_state ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client_http:
+        resp = await client_http.get(f"/workflows/{flow_id}")
+    assert resp.status_code == 200
+>   assert "No holds on this run" in resp.text
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:199: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+______ test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh _______
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fdaefc9ec60>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+        bundle = create_router(pool, schema=schema, base_path="", workflow_app=wf_app)
+        app = FastAPI()
+        setup_admin_state(app, bundle)
+        app.include_router(bundle.router)
+        return app
+    
+    
+    async def _seed_run(pool: asyncpg.Pool, schema: str, *, name: str = "admin_hold_flow") -> str:
+>       """A REAL run driven to its hold (the rows the page renders)."""
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:132: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:57 [info     ] node.held                      hold_id=01a11f4e-c2b3-7422-9a0f-88c16339a165 node=review run_id=01a11f4e-c292-7753-b90e-3e6e0f244fb4 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+______________________ test_run_page_unknown_run_is_a_404 ______________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+
+    healthy-zero line — never a blank section that reads as a healthy
+    zero (the #673 rule; the blank-region variant reds this pin). A
+    resolved hold renders as a DECISION (the rows-alone audit), which is
+>   a different defined state."""
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+_________ test_resolve_without_mounted_definitions_is_the_501_residual _________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+        assert replayed[0]["seq"] > last_seq
+        assert "nodes" in replayed[0] and replayed[0]["nodes"], "the replayed frame is a FULL snapshot"
+        assert {n["key"] for n in replayed[0]["nodes"]} == {"review"}
+    
+    
+    async def test_sse_unknown_run_streams_the_empty_snapshot(
+        module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """THE STATES MATRIX (3): a stream for an unknown/not-yet-inserted
+>       run emits the snapshot with ZERO nodes — a defined state, not a
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        hang, not a blank."""
+
+tests/web_admin/test_workflows_page.py:326: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:58 [info     ] node.held                      hold_id=01a11f4e-c4cd-7c80-a47e-f52c2b2ffe43 node=review run_id=01a11f4e-c4a9-71c3-81a7-461fd866d0c5 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+____________________ test_g7_rows_equal_the_rendered_state _____________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fdaefca3a70>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        # THE EMPTY TRAIL (the defined state):
+        before = await http.get(f"/workflows/{run_id}")
+        assert "No operator actions recorded" in before.text
+        # The resolve (the action):
+        from taskq.workflows import HitlClient
+    
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+        await http.get("/queues")
+        good = await http.post(
+            f"/api/runs/{run_id}/resolve",
+            data={
+                "hold_id": hold.hold_id,
+>               "decision": json.dumps({"verdict": "approve", "note": ""}),
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                "reason": "the trail pin's resolve",
+                "csrf_token": _csrf_of(http),
+            },
+        )
+
+tests/web_admin/test_workflows_page.py:515: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 23:16:58 [info     ] node.held                      hold_id=01a11f4e-c590-7151-81cb-cef10edfa614 node=review run_id=01a11f4e-c572-7072-8160-bdf71b6d4a27 signals=['Approval']
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+___________________________ test_panel_latency_band ____________________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+        """The list page's LOADED state: the runs render (the links + the
+        statuses); the cap note states the render's bound."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/workflows")
+        html = resp.text
+        assert f"/workflows/{run_id}" in html
+        assert "Workflow Runs" in html
+    
+    
+    def test_the_cli_gate_models_the_key_error_path() -> None:
+        """gate_models_for's KeyError path: a node that is not in the
+        compiled graph is the named KeyError (the typed door's 422 maps
+        it)."""
+>       from taskq.workflows import WorkflowApp, build, step
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:554: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+________________ test_run_page_zero_holds_is_the_defined_state _________________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fdaed44d480>
+module_pg_schema = ModulePgSchema(schema_name='tq_9ca7420d2f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_9ca7420d2f39')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    # THE META-REFRESH KILLER (the dragon, pinned): the page MUST NOT
+    # carry the meta refresh — it destroys the live SVG.
+    assert 'http-equiv="refresh"' not in html
+    # The boot JSON: the rows-alone mermaid + the state.
+    assert 'id="wf-boot"' in html
+    boot = json.loads(
+        html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
+    )
+    assert boot["runId"] == run_id
+    assert "review" in boot["mermaid"]
+    assert boot["state"]["status"] == "blocked"  # the §17.5 derivation over the rows
+    # The held node's state rides the snapshot (the amber pin's data).
+    node_states = {n["key"]: n for n in boot["state"]["nodes"]}
+    assert node_states["review"]["hold"] is True
+    # The hold's context (the WAITING-ON state + the schema + the example).
+    assert "editorial approval" in html
+>   assert "declared payload schema" in html
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/web_admin/test_workflows_page.py:174: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/web_admin/test_workflows_page.py:105: in _make_admin_app
+    ???
+src/taskq/web/admin/_factory.py:886: in create_router
+    settings = TaskQSettings.load()
+               ^^^^^^^^^^^^^^^^^^^^
+src/taskq/settings.py:801: in load
+    return super().load(
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:931: in load
+    dotenv_layer = _layer_for(params)
+                   ^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/dotenvmodel/config.py:351: in _layer_for
+    return read_env_files(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+env = 'dev'
+env_dir = PosixPath('/tmp/pytest-of-rich/pytest-19627/no-dotfiles0')
+load_local = True, read_environ = True
+
+    def read_env_files(
+        env: str | None = None,
+        *,
+        env_dir: Path | str | None = None,
+        load_local: bool | None = None,
+        read_environ: bool | None = None,
+    ) -> DotenvLayer:
+        """Read the cascading .env files and merge them — purely, without touching os.environ.
+    
+        The process environment is never written; the merged values are
+        returned instead. Files are probed in Node.js-style cascade order and merged
+        with later (more specific) files winning, regardless of any override
+        policy — the override policy is applied later, once, against the whole
+        merged layer (see `DotEnvConfig.load()`).
+    
+        Interpolation happens once, after the merge, and progressively in
+        merged-key order: a `${VAR}` reference in a file value sees the keys
+        defined earlier in the merged cascade — with their already-resolved
+        values — over the process environment, so a later file can build on an
+        earlier file's value, while a forward or self reference (to a key defined
+        later in the merged order, or after it in the same file) sees only
+        `os.environ`. With `read_environ=False` the process environment is
+        excluded from this base too: references resolve against the merged
+        dotfile values alone, so a variable defined only in the process
+        environment resolves to `""` (or the `:-` default) just like an
+        unresolved one. A reference to a variable defined only in the process
+        environment still resolves in the default mode, and interpolation is
+        independent of the `override` knob, which only governs per-field
+        precedence afterwards. python-dotenv 1.2.3's semantics apply,
+        replicated locally (`${VAR}` / `${VAR:-default}`; no `$VAR` shorthand;
+        an unresolved reference becomes `""`; the `:-` default applies only
+        when the name is absent from the base — a present-but-empty value wins
+        over it). Bare keys (`KEY` with no `=`) are left unset, matching
+        `load_dotenv()`, which skips them.
+    
+        Probing order:
+            1. `.env` (base configuration)
+            2. `.env.local` (local base overrides — only when `load_local`)
+            3. `.env.{env}` (environment-specific)
+            4. `.env.{env}.local` (local environment overrides — only when `load_local`)
+    
+        When to use:
+            - Called automatically by `DotEnvConfig.load()` — you rarely call this directly
+            - Call directly if you need the merged dotfile layer without creating a config
+    
+        Args:
+            env: Environment name (e.g., "dev", "prod", "test"). If None, reads from
+                the `ENV` environment variable, defaults to "dev"
+            env_dir: Custom base directory for .env files — a `str` is accepted
+                and converted to a `Path`. If None, uses the `DOTENV_DIR`
+                environment variable or current working directory
+            load_local: Whether to include `.local` files. If None (the
+                default), resolves through `DOTENV_LOAD_LOCAL` with the same
+                auto rule as `load()`: skip `.local` files when the resolved
+                environment is `"test"` (case-insensitive), else include them.
+                When False, a present-but-skipped `.local` file is logged at
+                INFO with the two restore knobs (`load_local=True` /
+                `DOTENV_LOAD_LOCAL=true`)
+            read_environ: Whether the process environment participates in the
+                interpolation base. If None (the default), resolves through
+                `DOTENV_READ_ENVIRON` (default `True`). When False, `${VAR}`
+                references resolve against the merged dotfile values only —
+                the knob channel (`ENV`, `DOTENV_DIR`, `DOTENV_LOAD_LOCAL`,
+                `DOTENV_READ_ENVIRON` itself) still resolves from the process
+                environment, since `read_environ` excludes it as a value
+                source only
+    
+        Returns:
+            A `DotenvLayer` with the merged values, the base directory, and
+            the files that were read
+    
+        Raises:
+            ValueError: If `env` contains invalid characters (only alphanumeric,
+                hyphens, and underscores allowed — prevents path traversal)
+            FileNotFoundError: If the resolved base directory doesn't exist
+            NotADirectoryError: If the resolved base directory exists but is not
+                a directory — typically `DOTENV_DIR` or `env_dir` pointed at a
+                `.env` file itself rather than the directory containing it
+    
+        Example:
+            ```python
+            # Merge the .env cascade for the dev environment
+            layer = read_env_files(env="dev")
+    
+            # Custom directory, skipping .local files
+            from pathlib import Path
+            layer = read_env_files(env="prod", env_dir=Path("/app/config"), load_local=False)
+    
+            # Interpolate against the dotfiles only, never the process environment
+            layer = read_env_files(env="prod", read_environ=False)
+            ```
+    
+        See Also:
+            - [`DotEnvConfig.load`][dotenvmodel.config.DotEnvConfig.load]: Loads config, applying its override policy against this layer.
+            - [`get_env_var`][dotenvmodel.loading.get_env_var]: Get a single env var by field name.
+        """
+        resolved_env = resolve_env_name(env)
+        logger.info(f"Loading configuration for environment: {resolved_env}")
+    
+        base_dir = resolve_env_dir(env_dir)
+        logger.debug(f"Base directory for .env files: {base_dir}")
+    
+        # is_dir(), not exists(): a regular file passes an existence check but
+        # yields an empty cascade and a "No .env files found" warning that names
+        # the file itself — a misconfigured env_dir indistinguishable from a
+        # correctly-configured empty one. Pointing DOTENV_DIR at .env rather than
+        # its parent is the common spelling of that mistake.
+        if not base_dir.is_dir():
+            if base_dir.exists():
+                logger.error(f"Environment file directory is not a directory: {base_dir}")
+                raise NotADirectoryError(f"Environment file directory is not a directory: {base_dir}")
+            logger.error(f"Environment file directory does not exist: {base_dir}")
+>           raise FileNotFoundError(f"Environment file directory does not exist: {base_dir}")
+E           FileNotFoundError: Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+
+.venv/lib/python3.13/site-packages/dotenvmodel/loading.py:479: FileNotFoundError
+------------------------------ Captured log call -------------------------------
+ERROR    dotenvmodel:loading.py:478 Environment file directory does not exist: /tmp/pytest-of-rich/pytest-19627/no-dotfiles0
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_callers_input_is_the_corpus
+FAILED tests/test_wf_status_pins.py::test_t08_rollup_cost_gate_index_driven
+FAILED tests/web_admin/test_workflows_page.py::test_node_panel_unknown_node_is_a_404
+FAILED tests/web_admin/test_workflows_page.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+FAILED tests/web_admin/test_workflows_page.py::test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_through_the_typed_door_delivers_and_audits
+FAILED tests/web_admin/test_workflows_page.py::test_runs_list_links_the_runs
+FAILED tests/web_admin/test_workflows_page.py::test_runs_list_renders_the_rows_and_the_cap_note
+FAILED tests/web_admin/test_workflows_page.py::test_run_page_renders_the_audit_trail_after_a_resolve
+FAILED tests/web_admin/test_workflows_page.py::test_runs_list_empty_schema_is_the_defined_empty_state
+FAILED tests/web_admin/test_workflows_page.py::test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh
+FAILED tests/web_admin/test_workflows_page.py::test_run_page_unknown_run_is_a_404
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_without_mounted_definitions_is_the_501_residual
+FAILED tests/web_admin/test_workflows_page.py::test_g7_rows_equal_the_rendered_state
+FAILED tests/web_admin/test_workflows_page.py::test_panel_latency_band - File...
+FAILED tests/web_admin/test_workflows_page.py::test_run_page_zero_holds_is_the_defined_state
+16 failed, 175 passed in 116.55s (0:01:56)

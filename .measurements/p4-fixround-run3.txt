@@ -1,0 +1,222 @@
+FFF.FF                                                                   [100%]
+=================================== FAILURES ===================================
+________________ test_e5_the_legitimate_mixed_signature_greens _________________
+
+    def test_e5_the_legitimate_mixed_signature_greens() -> None:
+        """THE ZERO-FALSE-POSITIVE PIN: ``step(body, p, 3)`` for
+        ``body(ctx, item: Report, page: int)`` — the mixed promise/data
+        signature GREENS (the cross-product convicted it before; the map is
+        by signature order now)."""
+        app = WorkflowApp()
+    
+        async def source_body(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        async def mixed_body(ctx: Any, item: Report, page: int) -> str:
+            return f"{item.ref}:{page}"
+    
+        @app.workflow("e5_mixed")
+        def e5_mixed() -> object:
+            p = step(source_body, Ingest(doc_id="d1"), key="src")
+            return build(step(mixed_body, p, 3, key="tail"))
+    
+>       app.get("e5_mixed").validate()  # the mixed signature: GREEN
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e5_mixed', nodes={'src': NodeDecl(key='src', actor='wf', queue='default', body=<function test_e...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E5-incompatible-consumer: 'tail' consumes 'src''s Report through a param the compile cannot see a model on — annotate the param with the payload's model (the annotation IS the wiring; a duck-typed param consumes any producer unseen)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+__________ test_e9_the_fabricated_ctx_annotation_is_the_build_refusal __________
+
+    def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
+        """THE LIE IS THE BUILD REFUSAL: a body whose ctx annotation is a
+        fabricated stand-in never compiles (the docs' verification claim is
+        unconditional now)."""
+        app = WorkflowApp()
+    
+        async def lying_body(ctx: _FabricatedCtx, params: Ingest) -> Report:  # type: ignore[reportInvalidTypeForm]  # Why: THE LIE ITSELF — the probe's subject.
+            return Report(ref=params.doc_id)  # type: ignore[return-value]  # Why: the lie's body reads nothing.
+    
+        @app.workflow("e9_lying_ctx")
+        def e9_lying_ctx() -> object:
+            return build(step(lying_body, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e9_lying_ctx")
+        diagnostics = validate_compiled.__wrapped__(compiled) if hasattr(validate_compiled, "__wrapped__") else None
+        from taskq.workflows.api._validate import _run_rules
+    
+        rules = _run_rules(compiled)
+        e9 = [d for d in rules if d.rule == "E9-ctx-annotation"]
+        assert e9, "the fabricated ctx annotation was not convicted (the erasure ships)"
+        assert "StepContext" in e9[0].message
+        # And the RUN door refuses too (the errors raise):
+        with pytest.raises(WorkflowRunError, match="E9-ctx-annotation"):
+>           compiled.validate()
+
+tests/test_wf_api_fixround_pins.py:75: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e9_lying_ctx', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function ...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E9-ctx-annotation: 'solo''s body declares its context as <class 'tests.test_wf_api_fixround_pins._FabricatedCtx'> — the ctx annotation must BE StepContext (or a subclass), or the declared-unchecked Any/object: the checker verifies the body's ctx.* reads against the REAL surface; a fabricated stand-in verifies a lie
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+______________ test_e10_the_over_arity_body_is_the_build_refusal _______________
+
+    def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
+        """THE ARITY GAP'S CURE: a body taking MORE params than wired is the
+        BUILD refusal — the mismatch never reaches the ladder."""
+        app = WorkflowApp()
+    
+        async def over_arity(ctx: Any, params: Ingest, extra: str, more: int) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e10_over_arity")
+        def e10_over_arity() -> object:
+            return build(step(over_arity, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e10_over_arity")
+        with pytest.raises(WorkflowRunError, match="E10-arity"):
+>           compiled.validate()
+
+tests/test_wf_api_fixround_pins.py:113: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e10_over_arity', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<functio...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E10-arity: 'solo''s body takes 3 param(s) (params, extra, more) but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+__________________ test_e5_the_genuine_mismatch_still_refuses __________________
+
+    def test_e5_the_genuine_mismatch_still_refuses() -> None:
+        """The genuine mismatch still refuses (the signature-ordered
+        comparison sees it): the consumer's param model is unrelated to its
+        OWN wired parent's product."""
+        app = WorkflowApp()
+    
+        class Other(BaseModel):
+            n: int
+    
+        async def source_body(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        async def mismatched(ctx: Any, item: Other) -> str:
+            return item.n.__str__()
+    
+        @app.workflow("e5_mismatch")
+        def e5_mismatch() -> object:
+            p = step(source_body, Ingest(doc_id="d1"), key="src")
+            return build(step(mismatched, p, key="tail"))
+    
+        with pytest.raises(WorkflowRunError, match="E5-incompatible-consumer"):
+>           app.get("e5_mismatch").validate()
+
+tests/test_wf_api_fixround_pins.py:176: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e5_mismatch', nodes={'src': NodeDecl(key='src', actor='wf', queue='default', body=<function tes...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E10-arity: 'tail''s body takes 0 param(s) () but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+_____________________ test_e9_the_honest_annotation_greens _____________________
+
+    def test_e9_the_honest_annotation_greens() -> None:
+        """The HONEST annotation: ``ctx: StepContext`` (the documented
+        annotation) greens — the rule refuses lies, never the truth."""
+        from taskq.workflows import StepContext
+    
+        app = WorkflowApp()
+    
+        async def honest_body(ctx: StepContext, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e9_honest_ctx")
+        def e9_honest_ctx() -> object:
+            return build(step(honest_body, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e9_honest_ctx")
+>       compiled.validate()  # zero findings
+        ^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e9_honest_ctx', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E10-arity: 'solo''s body takes 0 param(s) () but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_fixround_pins.py::test_e5_the_legitimate_mixed_signature_greens
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_fabricated_ctx_annotation_is_the_build_refusal
+FAILED tests/test_wf_api_fixround_pins.py::test_e10_the_over_arity_body_is_the_build_refusal
+FAILED tests/test_wf_api_fixround_pins.py::test_e5_the_genuine_mismatch_still_refuses
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_honest_annotation_greens
+5 failed, 1 passed in 0.43s

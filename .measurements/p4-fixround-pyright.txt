@@ -1,0 +1,38 @@
+/tmp/opencode/wt-taskqflow-p4/examples/worker.py
+  /tmp/opencode/wt-taskqflow-p4/examples/worker.py:25:8 - error: Import "examples.workflows" is not accessed (reportUnusedImport)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:165:25 - error: "Final" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:166:24 - error: "Final" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:169:5 - error: Function "_bound_for_panel" is not accessed (reportUnusedFunction)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:177:5 - error: Type of "bound" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:178:5 - error: Type of "remaining" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:180:37 - error: Argument type is unknown
+    Argument corresponds to parameter "max_chars" in function "truncate_to_bounds" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:216:11 - error: Function "_validated_through_gates_audited" is not accessed (reportUnusedFunction)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:316:5 - error: Type of parameter "session_verifier" is partially unknown
+    Parameter type is "Unknown | None" (reportUnknownParameterType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:316:23 - error: "Callable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:316:36 - error: "Awaitable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:345:21 - error: Argument type is unknown
+    Argument corresponds to parameter "fut" in function "wait_for" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:503:9 - error: Type of parameter "session_verifier" is partially unknown
+    Parameter type is "Unknown | None" (reportUnknownParameterType)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:503:27 - error: "Callable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:503:47 - error: "Awaitable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:548:28 - error: "Callable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:548:41 - error: "Awaitable" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_actions.py:549:22 - error: Return type of lambda is unknown (reportUnknownLambdaType)
+/tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/web/admin/_wf_rows.py:183:9 - error: Argument of type "list[Record]" cannot be assigned to parameter "progress_rows" of type "Sequence[Mapping[str, Any]]" in function "summarize_map_children"
+    "list[Record]" is not assignable to "Sequence[Mapping[str, Any]]"
+      Type parameter "_T_co@Sequence" is covariant, but "Record" is not a subtype of "Mapping[str, Any]"
+        "Record" is not assignable to "Mapping[str, Any]" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p4/tests/test_wf_api_fixround_pins.py
+  /tmp/opencode/wt-taskqflow-p4/tests/test_wf_api_fixround_pins.py:27:48 - error: Import "WorkflowRunError" is not accessed (reportUnusedImport)
+  /tmp/opencode/wt-taskqflow-p4/tests/test_wf_api_fixround_pins.py:50:11 - error: Function "_annotated_body" is not accessed (reportUnusedFunction)
+  /tmp/opencode/wt-taskqflow-p4/tests/test_wf_api_fixround_pins.py:71:5 - error: Variable "diagnostics" is not accessed (reportUnusedVariable)
+  /tmp/opencode/wt-taskqflow-p4/tests/test_wf_api_fixround_pins.py:71:37 - error: Cannot access attribute "__wrapped__" for class "FunctionType"
+    Attribute "__wrapped__" is unknown (reportFunctionMemberAccess)
+/tmp/opencode/wt-taskqflow-p4/tests/web_admin/test_workflows_page.py
+  /tmp/opencode/wt-taskqflow-p4/tests/web_admin/test_workflows_page.py:65:11 - error: Function declaration "_plain_body" is obscured by a declaration of the same name (reportRedeclaration)
+24 errors, 0 warnings, 0 informations

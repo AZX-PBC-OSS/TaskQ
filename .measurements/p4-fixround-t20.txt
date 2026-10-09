@@ -1,0 +1,51 @@
+.............................F......................................s... [ 97%]
+..                                                                       [100%]
+=================================== FAILURES ===================================
+_______________ test_e4_does_not_convict_a_fully_annotated_body ________________
+
+    def test_e4_does_not_convict_a_fully_annotated_body() -> None:
+        """THE ZERO-FALSE-POSITIVE DOCTRINE at E4 (the miner's red): a
+        fully-annotated body whose return type is NOT module-level (a
+        function-scope model the body's code never names — the annotation
+        string creates no closure cell, the resolved hints are {}) is NOT
+        convicted: E4's question is the annotation's PRESENCE (read from the
+        raw signature), never its resolvability; the type-dependent rules
+        (E5/E8, the codec) keep the resolved view and SKIP the unresolvable
+        (a guess is never convicted)."""
+    
+        class Local(BaseModel):
+            n: int
+    
+        def make_local() -> Local:
+            return Local(n=1)
+    
+        async def annotated_body(ctx: StepContext, params: Ingest) -> Local:
+            return make_local()  # the body's code never names Local — no closure cell
+    
+        app = WorkflowApp()
+    
+        @app.workflow("a3cure_e4_fp_flow")
+        def e4_fp() -> object:
+            return build(step(annotated_body, Ingest(doc_id="d1"), key="a"))
+    
+        rules = [d.rule for d in _run_rules(app.get("a3cure_e4_fp_flow"))]
+>       assert rules == [], f"the false positive: a fully-annotated body convicted: {rules}"
+E       AssertionError: the false positive: a fully-annotated body convicted: ['E10-arity']
+E       assert ['E10-arity'] == []
+E         
+E         Left contains one more item: 'E10-arity'
+E         Use -v to get more diff
+
+tests/test_wf_phase3_cure_pins.py:643: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/_progress.py:296: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:163: pyright is not installed (the typeprobe dependency group owns the binary)
+FAILED tests/test_wf_phase3_cure_pins.py::test_e4_does_not_convict_a_fully_annotated_body
+1 failed, 72 passed, 1 skipped, 1 warning in 27.52s

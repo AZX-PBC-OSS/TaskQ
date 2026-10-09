@@ -1,0 +1,349 @@
+FFFFFF                                                                   [100%]
+=================================== FAILURES ===================================
+_____________________ test_e9_the_honest_annotation_greens _____________________
+
+    def test_e9_the_honest_annotation_greens() -> None:
+        """The HONEST annotation: ``ctx: StepContext`` (the documented
+        annotation) greens — the rule refuses lies, never the truth."""
+        from taskq.workflows import StepContext
+    
+        app = WorkflowApp()
+    
+        async def honest_body(ctx: StepContext, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e9_honest_ctx")
+        def e9_honest_ctx() -> object:
+            return build(step(honest_body, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e9_honest_ctx")
+>       compiled.validate()  # zero findings
+        ^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e9_honest_ctx', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def validate_compiled(compiled: CompiledWorkflow) -> tuple[WorkflowValidationError, ...]:
+        """Run EVERY rule, return the diagnostics (the one-pass report). The
+        ERRORs also raise — a graph with an error must not run; the tuple is
+        what the API's report format spells (rule → severity → message)."""
+        diagnostics = _run_rules(compiled)
+        errors = [d for d in diagnostics if d.severity == "error"]
+        if errors:
+            report = "; ".join(f"{d.rule}: {d.message}" for d in errors)
+>           raise WorkflowValidationError("validate", "error", f"{len(errors)} error(s) — {report}")
+E           taskq.workflows.api._validate.WorkflowValidationError: [error] validate: 1 error(s) — E10-arity: 'solo''s body takes 0 param(s) () but the wiring wired 1 argument(s) — the arity is the wiring's own promise: a body param with no wired source is a TypeError mid-flow (the ladder's discovery of a wiring-time lie)
+
+src/taskq/workflows/api/_validate.py:93: WorkflowValidationError
+_______________________ test_e10_the_exact_arity_greens ________________________
+
+    def test_e10_the_exact_arity_greens() -> None:
+        """The exact arity greens (the rule refuses the mismatch, never the
+        wiring)."""
+        app = WorkflowApp()
+    
+        async def exact(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e10_exact")
+        def e10_exact() -> object:
+            return build(step(exact, Ingest(doc_id="d1"), key="solo"))
+    
+>       app.get("e10_exact").validate()
+
+tests/test_wf_api_fixround_pins.py:128: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+src/taskq/workflows/api/_validate.py:89: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:104: in _run_rules
+    diagnostics += _rule_ctx_annotation(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e10_exact', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function tes...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+        must BE :class:`StepContext` (or a subclass). A FABRICATED ctx
+        annotation (``ctx: _FabricatedCtx`` — an anything-goes stand-in) is
+        the wiring-site erasure: the checker verifies the body's ``ctx.*``
+        reads against the LIE, every face reports clean, and the docs' claim
+        ("the checker verifies the body's ctx.* reads") is conditional on
+        honesty nobody verified. The conformance is verified at BUILD: the
+        annotation is verification, not documentation."""
+        from taskq.workflows.api._ctx import StepContext
+    
+        diagnostics: list[WorkflowValidationError] = []
+        for node in compiled.nodes.values():
+            if node.body is None:
+                continue
+            hints = body_hints(node.body)
+            ctx_ann = hints.get("ctx")
+            if ctx_ann is None:
+                continue  # the unannotated ctx: E4's rule owns the wiring's
+                # annotation law for the RETURN; the ctx reads unverifiable —
+                # the same erasure, but the annotation's ABSENCE is honest.
+>           if ctx_ann is Any or ctx_ann is object:
+                          ^^^
+E           NameError: name 'Any' is not defined
+
+src/taskq/workflows/api/_validate.py:396: NameError
+________________ test_e5_the_legitimate_mixed_signature_greens _________________
+
+    def test_e5_the_legitimate_mixed_signature_greens() -> None:
+        """THE ZERO-FALSE-POSITIVE PIN: ``step(body, p, 3)`` for
+        ``body(ctx, item: Report, page: int)`` — the mixed promise/data
+        signature GREENS (the cross-product convicted it before; the map is
+        by signature order now)."""
+        app = WorkflowApp()
+    
+        async def source_body(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        async def mixed_body(ctx: Any, item: Report, page: int) -> str:
+            return f"{item.ref}:{page}"
+    
+        @app.workflow("e5_mixed")
+        def e5_mixed() -> object:
+            p = step(source_body, Ingest(doc_id="d1"), key="src")
+            return build(step(mixed_body, p, 3, key="tail"))
+    
+>       app.get("e5_mixed").validate()  # the mixed signature: GREEN
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+src/taskq/workflows/api/_validate.py:89: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:104: in _run_rules
+    diagnostics += _rule_ctx_annotation(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e5_mixed', nodes={'src': NodeDecl(key='src', actor='wf', queue='default', body=<function test_e...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+        must BE :class:`StepContext` (or a subclass). A FABRICATED ctx
+        annotation (``ctx: _FabricatedCtx`` — an anything-goes stand-in) is
+        the wiring-site erasure: the checker verifies the body's ``ctx.*``
+        reads against the LIE, every face reports clean, and the docs' claim
+        ("the checker verifies the body's ctx.* reads") is conditional on
+        honesty nobody verified. The conformance is verified at BUILD: the
+        annotation is verification, not documentation."""
+        from taskq.workflows.api._ctx import StepContext
+    
+        diagnostics: list[WorkflowValidationError] = []
+        for node in compiled.nodes.values():
+            if node.body is None:
+                continue
+            hints = body_hints(node.body)
+            ctx_ann = hints.get("ctx")
+            if ctx_ann is None:
+                continue  # the unannotated ctx: E4's rule owns the wiring's
+                # annotation law for the RETURN; the ctx reads unverifiable —
+                # the same erasure, but the annotation's ABSENCE is honest.
+>           if ctx_ann is Any or ctx_ann is object:
+                          ^^^
+E           NameError: name 'Any' is not defined
+
+src/taskq/workflows/api/_validate.py:396: NameError
+______________ test_e10_the_over_arity_body_is_the_build_refusal _______________
+
+    def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
+        """THE ARITY GAP'S CURE: a body taking MORE params than wired is the
+        BUILD refusal — the mismatch never reaches the ladder."""
+        app = WorkflowApp()
+    
+        async def over_arity(ctx: Any, params: Ingest, extra: str, more: int) -> Report:
+            return Report(ref=params.doc_id)
+    
+        @app.workflow("e10_over_arity")
+        def e10_over_arity() -> object:
+            return build(step(over_arity, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e10_over_arity")
+        with pytest.raises(WorkflowRunError, match="E10-arity"):
+>           compiled.validate()
+
+tests/test_wf_api_fixround_pins.py:113: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+src/taskq/workflows/api/_validate.py:89: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:104: in _run_rules
+    diagnostics += _rule_ctx_annotation(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e10_over_arity', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<functio...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+        must BE :class:`StepContext` (or a subclass). A FABRICATED ctx
+        annotation (``ctx: _FabricatedCtx`` — an anything-goes stand-in) is
+        the wiring-site erasure: the checker verifies the body's ``ctx.*``
+        reads against the LIE, every face reports clean, and the docs' claim
+        ("the checker verifies the body's ctx.* reads") is conditional on
+        honesty nobody verified. The conformance is verified at BUILD: the
+        annotation is verification, not documentation."""
+        from taskq.workflows.api._ctx import StepContext
+    
+        diagnostics: list[WorkflowValidationError] = []
+        for node in compiled.nodes.values():
+            if node.body is None:
+                continue
+            hints = body_hints(node.body)
+            ctx_ann = hints.get("ctx")
+            if ctx_ann is None:
+                continue  # the unannotated ctx: E4's rule owns the wiring's
+                # annotation law for the RETURN; the ctx reads unverifiable —
+                # the same erasure, but the annotation's ABSENCE is honest.
+>           if ctx_ann is Any or ctx_ann is object:
+                          ^^^
+E           NameError: name 'Any' is not defined
+
+src/taskq/workflows/api/_validate.py:396: NameError
+__________________ test_e5_the_genuine_mismatch_still_refuses __________________
+
+    def test_e5_the_genuine_mismatch_still_refuses() -> None:
+        """The genuine mismatch still refuses (the signature-ordered
+        comparison sees it): the consumer's param model is unrelated to its
+        OWN wired parent's product."""
+        app = WorkflowApp()
+    
+        class Other(BaseModel):
+            n: int
+    
+        async def source_body(ctx: Any, params: Ingest) -> Report:
+            return Report(ref=params.doc_id)
+    
+        async def mismatched(ctx: Any, item: Other) -> str:
+            return item.n.__str__()
+    
+        @app.workflow("e5_mismatch")
+        def e5_mismatch() -> object:
+            p = step(source_body, Ingest(doc_id="d1"), key="src")
+            return build(step(mismatched, p, key="tail"))
+    
+        with pytest.raises(WorkflowRunError, match="E5-incompatible-consumer"):
+>           app.get("e5_mismatch").validate()
+
+tests/test_wf_api_fixround_pins.py:176: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:186: in validate
+    validate_compiled(self)
+src/taskq/workflows/api/_validate.py:89: in validate_compiled
+    diagnostics = _run_rules(compiled)
+                  ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_validate.py:104: in _run_rules
+    diagnostics += _rule_ctx_annotation(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e5_mismatch', nodes={'src': NodeDecl(key='src', actor='wf', queue='default', body=<function tes...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+        must BE :class:`StepContext` (or a subclass). A FABRICATED ctx
+        annotation (``ctx: _FabricatedCtx`` — an anything-goes stand-in) is
+        the wiring-site erasure: the checker verifies the body's ``ctx.*``
+        reads against the LIE, every face reports clean, and the docs' claim
+        ("the checker verifies the body's ctx.* reads") is conditional on
+        honesty nobody verified. The conformance is verified at BUILD: the
+        annotation is verification, not documentation."""
+        from taskq.workflows.api._ctx import StepContext
+    
+        diagnostics: list[WorkflowValidationError] = []
+        for node in compiled.nodes.values():
+            if node.body is None:
+                continue
+            hints = body_hints(node.body)
+            ctx_ann = hints.get("ctx")
+            if ctx_ann is None:
+                continue  # the unannotated ctx: E4's rule owns the wiring's
+                # annotation law for the RETURN; the ctx reads unverifiable —
+                # the same erasure, but the annotation's ABSENCE is honest.
+>           if ctx_ann is Any or ctx_ann is object:
+                          ^^^
+E           NameError: name 'Any' is not defined
+
+src/taskq/workflows/api/_validate.py:396: NameError
+__________ test_e9_the_fabricated_ctx_annotation_is_the_build_refusal __________
+
+    def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
+        """THE LIE IS THE BUILD REFUSAL: a body whose ctx annotation is a
+        fabricated stand-in never compiles (the docs' verification claim is
+        unconditional now)."""
+        app = WorkflowApp()
+    
+        async def lying_body(ctx: _FabricatedCtx, params: Ingest) -> Report:  # type: ignore[reportInvalidTypeForm]  # Why: THE LIE ITSELF — the probe's subject.
+            return Report(ref=params.doc_id)  # type: ignore[return-value]  # Why: the lie's body reads nothing.
+    
+        @app.workflow("e9_lying_ctx")
+        def e9_lying_ctx() -> object:
+            return build(step(lying_body, Ingest(doc_id="d1"), key="solo"))
+    
+        compiled = app.get("e9_lying_ctx")
+        diagnostics = validate_compiled.__wrapped__(compiled) if hasattr(validate_compiled, "__wrapped__") else None
+        from taskq.workflows.api._validate import _run_rules
+    
+>       rules = _run_rules(compiled)
+                ^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_fixround_pins.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_validate.py:104: in _run_rules
+    diagnostics += _rule_ctx_annotation(compiled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+compiled = CompiledWorkflow(name='e9_lying_ctx', nodes={'solo': NodeDecl(key='solo', actor='wf', queue='default', body=<function ...e, chains=(), max_in_flight=1000, smuggled=(), known_queues=frozenset({'default'}), capture='errors-only', redact=None)
+
+    def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+        """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+        must BE :class:`StepContext` (or a subclass). A FABRICATED ctx
+        annotation (``ctx: _FabricatedCtx`` — an anything-goes stand-in) is
+        the wiring-site erasure: the checker verifies the body's ``ctx.*``
+        reads against the LIE, every face reports clean, and the docs' claim
+        ("the checker verifies the body's ctx.* reads") is conditional on
+        honesty nobody verified. The conformance is verified at BUILD: the
+        annotation is verification, not documentation."""
+        from taskq.workflows.api._ctx import StepContext
+    
+        diagnostics: list[WorkflowValidationError] = []
+        for node in compiled.nodes.values():
+            if node.body is None:
+                continue
+            hints = body_hints(node.body)
+            ctx_ann = hints.get("ctx")
+            if ctx_ann is None:
+                continue  # the unannotated ctx: E4's rule owns the wiring's
+                # annotation law for the RETURN; the ctx reads unverifiable —
+                # the same erasure, but the annotation's ABSENCE is honest.
+>           if ctx_ann is Any or ctx_ann is object:
+                          ^^^
+E           NameError: name 'Any' is not defined
+
+src/taskq/workflows/api/_validate.py:396: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_honest_annotation_greens
+FAILED tests/test_wf_api_fixround_pins.py::test_e10_the_exact_arity_greens - ...
+FAILED tests/test_wf_api_fixround_pins.py::test_e5_the_legitimate_mixed_signature_greens
+FAILED tests/test_wf_api_fixround_pins.py::test_e10_the_over_arity_body_is_the_build_refusal
+FAILED tests/test_wf_api_fixround_pins.py::test_e5_the_genuine_mismatch_still_refuses
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_fabricated_ctx_annotation_is_the_build_refusal
+6 failed in 0.46s
