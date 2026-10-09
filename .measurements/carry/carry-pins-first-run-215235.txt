@@ -1,0 +1,4 @@
+x..                                                                      [100%]
+=========================== short test summary info ============================
+XFAIL tests/test_wf_attack_cancel.py::test_the_cancel_path_never_imports_the_admin_package - LIVE FINDING (the attack landed at af1b8779): cancel_workflow's lazy `from taskq.web.admin._audit import record_admin_action` imports the admin package — whose __init__ imports the fastapi extra — so a base taskq[flows] install cannot cancel a workflow. The cure (the audit seam moves to a deps-free module) flips this to XPASS-strict — remove the marker WITH the cure.
+2 passed, 1 xfailed in 4.01s
