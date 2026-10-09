@@ -108,6 +108,7 @@ pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 
 from fastapi import FastAPI  # Why: importorskip guards the optional extra first.
 
+import taskq.web.admin._listen as _rt_listen_mod
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -1396,6 +1397,29 @@ async def test_null_partition_key_is_the_documented_divergence(
 
 
 # ── 3. The SSE streams + progress endpoints on the converted schema ──────
+
+
+@pytest.fixture(autouse=True)
+def _rt_unlisten_stall(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """RT INJECTION: the UNLISTEN stall. The release cleanup's round trips
+    hang 7.0s - past the close's own 5s wait_for bound, inside the shielded
+    cleanup - so the stream's detached close tail outlives the test body:
+    the loaded-loop shape the teardown-window flake ran under. The shield
+    structure is PRESERVED (the stall lives inside a shielded cleanup, so
+    the wait_for expiry detaches rather than strands), which is the
+    production shape; the release still happens, at ~7s."""
+    real_shield = _rt_listen_mod.shield_with_retrieval
+
+    async def _stalled(conn: object, pool: object, channel: str, cb: object) -> None:
+        async def _cleanup() -> None:
+            await asyncio.sleep(7.0)
+            await conn.execute(f'UNLISTEN "{channel}"')  # type: ignore[union-attr]
+            await pool.release(conn)  # type: ignore[union-attr]
+
+        await real_shield(_cleanup())
+
+    monkeypatch.setattr(_rt_listen_mod, "_release_listen_connection", _stalled)
+    yield
 
 
 async def _stream_until(

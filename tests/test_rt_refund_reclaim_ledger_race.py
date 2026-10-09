@@ -77,6 +77,7 @@ and the sweep's expiry are anchored to the PG clock with aged
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
@@ -545,6 +546,8 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
         assert deps.settings.pg_dsn_direct is not None
         conn = await asyncpg.connect(deps.settings.pg_dsn_direct)
         holder = await asyncpg.connect(deps.settings.pg_dsn_direct)
+        ct_tasks: list[asyncio.Task[None]] = []
+        ct_conns: list[asyncpg.Connection] = []
         try:
             worker_id = new_uuid()
             await _seed_worker(conn, schema, worker_id)
@@ -575,10 +578,51 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
             #    the stamped row, its arbiter PARKS on the holder's lock.
             await holder.execute("BEGIN")
             await holder.execute(f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', job_id)
+            # ── RT INJECTION: xdist co-tenancy, two full pairs ─────────────
+            # Two OTHER transactions' row locks in THIS database, each with
+            # one granted holder and one queued waiter — exactly the shape a
+            # co-tenant xdist worker's own park produces in pg_locks.
+            other_a = await _seed_pending_job(conn, schema)
+            other_b = await _seed_pending_job(conn, schema)
+            ct_hold_a = await asyncpg.connect(deps.settings.pg_dsn_direct)
+            ct_wait_a = await asyncpg.connect(deps.settings.pg_dsn_direct)
+            ct_conns = [ct_hold_a, ct_wait_a]
+
+            async def _co_tenant_park(ct_wait: asyncpg.Connection, job: UUID) -> None:
+                await ct_wait.execute("BEGIN")
+                await ct_wait.execute(
+                    f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', job
+                )
+
+            await ct_hold_a.execute("BEGIN")
+            await ct_hold_a.execute(
+                f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', other_a
+            )
+            ct_task_a = asyncio.create_task(_co_tenant_park(ct_wait_a, other_a))
+            ct_tasks = [ct_task_a]
+            # Let both queue entries register in the lock manager.
+            await asyncio.sleep(0.3)
+            n_ungranted_in_db = await conn.fetchval(
+                "SELECT count(*) FROM pg_locks l "
+                "JOIN pg_stat_activity a ON a.pid = l.pid "
+                "WHERE NOT l.granted AND a.datname = current_database()"
+            )
+            print(f"RT: co-tenant ungranted locks in this db = {n_ungranted_in_db}")
+            # ── end RT INJECTION ───────────────────────────────────────────
             shutdown = asyncio.Event()
-            isolate_task = asyncio.create_task(isolate_self(deps, worker_id, shutdown))
+
+            async def _stalled_isolate() -> None:
+                await asyncio.sleep(2.0)  # RT: the pre-connect stall
+                await isolate_self(deps, worker_id, shutdown)
+
+            isolate_task = asyncio.create_task(_stalled_isolate())
             try:
+                _t0 = asyncio.get_running_loop().time()
                 await _wait_for_lock_waiter(holder, schema)
+                print(
+                    f"RT: poll returned after {asyncio.get_running_loop().time() - _t0:.2f}s"
+                )
+
 
                 # 4. THE REFUND, committed INSIDE the SELECT->UPDATE window:
                 #    the counter rolls 1 -> 0 and the stamp is un-stamped
@@ -660,5 +704,12 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
                 (a["attempt"], a["outcome"]) for a in await _attempt_rows(conn, schema, job_id)
             ] == [(1, "succeeded")]
         finally:
+            for _t in ct_tasks:
+                _t.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _t
+            for _c in ct_conns:
+                with contextlib.suppress(Exception):
+                    await _c.close()
             await holder.close()
             await conn.close()
