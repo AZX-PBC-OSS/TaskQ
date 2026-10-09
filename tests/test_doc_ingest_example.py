@@ -117,13 +117,26 @@ def test_the_abstraction_contract_grep_gate() -> None:
 
 def test_fast_tier_the_graph_compiles_and_validates_clean(
     example_ns: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """THE FAST-TIER SMOKE: the fence's DEFINITIONS exec without
-    containers; the app compiles the flow; validate() reports zero
-    findings (the zero-warning budget). The main() driver is stripped —
+    containers; the app compiles the graph; THE ZERO-WARNING BUDGET,
+    ENFORCED AT BOTH SEVERITIES. ``validate()`` raises on ERROR severity
+    only — a WARNING regression (W2-unknown-queue, W1-eternal-wait)
+    sails a bare ``validate()`` green, so the budget reads the REPORT:
+    zero diagnostics of EITHER severity. The fence's placement queues
+    are declared via ``TASKQ_QUEUES`` (the page's prerequisites block —
+    the same env the cold user sets). The main() driver is stripped —
     the smoke tests the WIRING, the full run is the other lane."""
+    monkeypatch.setenv("TASKQ_QUEUES", "enrich,cpu,io,classify")
     compiled = example_ns["app"].get("doc_ingest")
-    compiled.validate()  # zero findings — a new example defect reds HERE
+    from taskq.workflows.api._validate import validate_compiled
+
+    diagnostics = validate_compiled(compiled)
+    assert diagnostics == (), (
+        "the zero-warning budget is VIOLATED — a finding of either "
+        f"severity reds: {[d.rule for d in diagnostics]}"
+    )
     keys = set(compiled.node_keys())
     # The nine shapes' node census (the graph carries them ALL).
     assert {
@@ -137,10 +150,15 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
         "publish",
     } <= keys, keys
     # The duality is IN the wiring: the barrier's REQUIRED edges + the
-    # MAYBE path's gather.
+    # MAYBE path's gather. The publish consumes the collect TOO (the
+    # report derives from the run's rows).
+    assert compiled.parents_of("publish") == ["review", "gather", "gather:1", "ingest.join"]
     assert compiled.nodes["ingest.join"].kind == "map_join"
     sinks = compiled.sunk
     assert "route" in sinks, "the router's fire-and-forget declaration is missing"
+    # THE ITEM LADDER'S KNOB, NAMED (shape 4): the map's max_attempts is
+    # declared in the wiring — the knob the shape table names EXISTS.
+    assert compiled.nodes["ingest"].map_max_attempts == 3
 
 
 def test_fast_tier_the_mermaid_golden_is_byte_stable(
@@ -208,6 +226,17 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
             "must not look healthy)"
         )
 
+        # THE TERMINAL REPORT, PINNED AGAINST THE RUN (the envelope is
+        # the truth): the ghost NAMED in dead_lettered, every doc
+        # published ONCE (the gather's double fan-in, deduped), the
+        # failed list the batch's residual. A report carrying a
+        # hardcoded `[]` reds HERE.
+        report = example_ns["PublishReport"].model_validate(await runner.result(run_id))
+        assert report.dead_lettered == ["doc-999"], report
+        assert len(report.published) == len(set(report.published)), report
+        assert sorted(report.published) == sorted(example_ns["_DOC_SOURCE"]), report
+        assert report.failed == [], report
+
         # THE EXACTLY-ONCE PIN: the join-fire ledger has ONE row per join.
         fires = await wf_conn.fetch(
             f'SELECT step_key, count(*) FROM "{schema}".wf_join_fire '
@@ -220,6 +249,48 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
                 f"round {round_no}: the {join_key} fired {counts.get(join_key)} times — "
                 "the exactly-once pin reds"
             )
+
+
+async def test_full_run_the_callers_input_is_the_corpus(
+    module_pg_schema: Any,
+    wf_pool: Any,
+    wf_conn: Any,
+    example_ns: dict[str, Any],
+) -> None:
+    """THE INPUT IS WIRED (the fence's first-hour cure c):
+    ``create_flow(input=…)`` is CONSUMED — the map fans the CALLER's
+    batch, not the wiring's declared default. The most natural first
+    experiment (hand the flow YOUR documents) must enrich YOUR
+    documents; the accepted-and-ignored shape reds HERE."""
+    import asyncpg
+
+    from taskq.migrate import apply_pending
+    from taskq.workflows import FlowRunner, HitlClient
+
+    schema = module_pg_schema.schema_name
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    await apply_pending(conn, schema=schema)
+    await conn.close()
+
+    app_obj = example_ns["app"]
+    compiled = app_obj.get("doc_ingest_bench")
+    runner = FlowRunner(compiled, wf_pool, schema)
+    run_id = await runner.create_flow(
+        input=example_ns["IngestBatch"](doc_ids=["doc-000", "doc-003"])
+    )
+    held = await runner.drive(run_id, until="held")
+    assert held == "held", f"the run never held (the review gate): {held}"
+    client = HitlClient(wf_pool, schema=schema)
+    (hold,) = await client.list(run_id)
+    result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+    assert result.status == "delivered"
+    outcome = await runner.drive(run_id)
+    assert outcome == "terminal"
+
+    report = example_ns["PublishReport"].model_validate(await runner.result(run_id))
+    assert report.published == ["doc-000", "doc-003"], report
+    assert report.dead_lettered == [], report
+    assert report.failed == [], report
 
 
 async def test_full_run_the_cron_slot_key_is_run_level_idempotent(
