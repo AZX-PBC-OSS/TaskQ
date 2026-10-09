@@ -52,7 +52,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, gather, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
@@ -309,8 +309,14 @@ def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     declared: set[str] = set()
     for name in ("doc_ingest", "doc_screen_router"):
         compiled = wf_app.get(name)
-        declared |= {n.queue for n in compiled.nodes.values() if getattr(n, "queue", None)}
-        declared |= {c.queue for c in compiled.chains if getattr(c, "queue", None)}
+        for n in compiled.nodes.values():
+            if getattr(n, "queue", None):
+                node_obj: Any = n
+                declared |= {str(node_obj.queue)}  # pyright: ignore[reportAttributeAccessIssue]
+        for c in compiled.chains:
+            if getattr(c, "queue", None):
+                chain_obj: Any = c
+                declared |= {str(chain_obj.queue)}
     assert declared, "the demo declares no queues — the guard lost its subject"
 
     compose = (REPO_ROOT / "examples" / "docker-compose.yml").read_text()
@@ -397,13 +403,11 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
         # error face: an edge-less join is diagnosed + refused (E-rule).
         return build(gather([]))
 
-    from taskq.workflows.api._graph import gather as _gather
-
     error_app = WorkflowApp()
 
     @error_app.workflow("att_demopin_error_flow")
     def _err_wf2() -> object:
-        return build(_gather([]))  # the empty gather: the ERROR-severity rule
+        return build(gather([]))  # the empty gather: the ERROR-severity rule
 
     with pytest.raises(WorkflowValidationError):
         error_app.get("att_demopin_error_flow").validate()

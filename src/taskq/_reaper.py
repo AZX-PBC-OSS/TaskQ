@@ -14,11 +14,18 @@ count; the reaper's own did) and re-raises what belongs to the reaper.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Coroutine
 
 __all__ = ["reap_cancelled_child"]
 
+#: Anything cancel-shaped and awaitable: a Task[T] of any T, a Future, a
+#: coroutine wrapper — the reaper's callers pass the task objects they
+#: just cancelled, whose result types vary freely (the variance is why a
+#: Future[object] parameter refused Task[None]).
+type TaskLike = Awaitable[object] | Coroutine[object, object, object]
 
-async def reap_cancelled_child(task: asyncio.Future[object]) -> None:
+
+async def reap_cancelled_child(task: TaskLike) -> None:
     """Await a JUST-CANCELLED child task, suppressing only THE CHILD'S
     OWN cancellation. A concurrent cancellation of THIS task (the
     shutdown's own cut) propagates — never swallowed."""
