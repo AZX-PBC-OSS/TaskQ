@@ -95,7 +95,9 @@ _HUGE_CHARS = 200_000
 #: The bound the pin asserts on the panel's served error text: THE
 #: SHIPPED CONSTANT ITSELF (pin the constant, not a copy — a copy
 #: drifts from the served truth; the sweepaudit's own precedent).
-from taskq.web.admin._wf_actions import _PANEL_FIELD_CAP_CHARS as _PANEL_FIELD_BOUND  # noqa: E402  # Why: the constant must ride the shipped module; the import placement follows the corpus's own late-import discipline.
+from taskq.web.admin._wf_actions import (
+    _PANEL_FIELD_CAP_CHARS as _PANEL_FIELD_BOUND,  # Why: the constant must ride the shipped module; the import placement follows the corpus's own late-import discipline.
+)
 
 
 class Approval(BaseModel):

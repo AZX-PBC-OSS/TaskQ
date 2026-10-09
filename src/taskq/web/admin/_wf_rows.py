@@ -215,7 +215,6 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
     )
 
 
-
 #: The display bound the jobs page's Data section carries (the same
 #: number): the node panel's error fields are row-sourced and a row can
 #: carry megabytes of failure text — the panel serves the bounded form
