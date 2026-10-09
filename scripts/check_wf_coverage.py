@@ -64,14 +64,14 @@ def _head() -> tuple[str, bool]:
     runs, under ``.measurements/``. Dirt is the SOURCE tree (everything
     else) changing under the measurement."""
     sha = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain")
-    dirty = False
-    for line in status.splitlines():
-        path = line[3:]  # the porcelain v1 shape: XY<space>path
-        if path.startswith(".measurements/"):
-            continue
-        dirty = True
-        break
+    # The paths, unambiguous (porcelain's XY spacing varies with the
+    # staging state): the tracked changes + the untracked files.
+    changed = (
+        _git("diff", "--name-only", "HEAD")
+        + "\n"
+        + _git("ls-files", "--others", "--exclude-standard")
+    )
+    dirty = any(not path.startswith(".measurements/") for path in changed.splitlines() if path)
     return sha, dirty
 
 
