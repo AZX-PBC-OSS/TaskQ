@@ -21,6 +21,7 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import (
@@ -36,6 +37,64 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
+
+
+def head_sha() -> str:
+    """THE HEAD-STAMP LAW (the evidence-integrity round, cure 5): every
+    evidence artifact RECORDS ITS HEAD — the sha the verification
+    (``scripts/verify_evidence_heads.py``) re-runs the artifact against.
+    An unstamped capture is a rumor; a stale one is history, never the
+    live claim."""
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return out.strip()
+
+
+#: The provenance law's version marker — a sink record stamped with this
+#: law carries FULLY-CITED entries (run + capture path + sha256); the
+#: guard verifies every record stamped with it and grandfathered NOTHING
+#: forward: a pre-law record is history, never the live claim.
+REDLOG_LAW = "provenance-1"
+
+
+def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
+    """THE APPEND-ONLY CONVERSION (the receipts law): a band artifact is
+    a RUN-SCOPED file, never a write_text-in-place name. The convicted
+    defect: every run rewrote the SAME file whole — two concurrent runs'
+    writes tore each other (the 11 torn rows the ledgers' union found),
+    and a partial run's numbers falsified the recorded band (the newest
+    subset is not the newest measurement). Each run writes
+    ``runs/{stem}-{timestamp}-{token}.json``; the newest CITED
+    (:func:`latest_band_artifact`) is the record the report reads."""
+    runs = MEASUREMENTS / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    stem = name.removesuffix(".json")
+    path = runs / f"{stem}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:4]}.json"
+    record = dict(payload)
+    # THE HEAD-STAMP LAW: the artifact carries the head it was measured
+    # on — the verification (scripts/verify_evidence_heads.py) re-runs it
+    # on its claimed head.
+    record.setdefault("head_sha", head_sha())
+    path.write_text(json.dumps(record, indent=2, default=str))
+    return path
+
+
+def latest_band_artifact(stem: str) -> Path | None:
+    """The newest CITED: the newest run-scoped capture for *stem* (the
+    chronological union's tail — the record a report cites)."""
+    runs = MEASUREMENTS / "runs"
+    if not runs.is_dir():
+        return None
+    matches = sorted(runs.glob(f"{stem}-*.json"))
+    return matches[-1] if matches else None
+
 
 #: The terminal-status SQL set — the statement-side literal the engine's
 #: guards spell (the twin of statemachine.TERMINAL_STATUSES); the pins'
@@ -58,7 +117,26 @@ class RedLog:
     numbers falsified by whichever subset ran last. Append-only: a
     partial run adds its own run-scoped record; history is never
     truncated. The run id (pid + a token + the timestamp) makes each
-    record attributable."""
+    record attributable.
+
+    THE PROVENANCE LAW (the evidence-integrity round, cure 3): every
+    entry cites a RECEIPT CHAIN — (a) its drill's run-id, (b) the
+    drill's captured output FILE PATH, (c) a sha256 of that file. The
+    capture is written at RECORD time (the drill's own observation,
+    machine-written, in the run's own capture directory); the guard
+    (:mod:`tests.test_fv_redlog_guard`) re-verifies the chain at guard
+    time — a cited capture that is missing or mismatching FAILS the
+    guard. The law REPLACES the syntactic shape rule (the AST
+    literal-only scan): that guard was defeatable twice over (a
+    keyword-form payload skipped inspection; a name-laundered
+    module-level constant walked past it) — the receipt chain inspects
+    the SINK, never the call's shape, and convictions are by provenance.
+
+    The captures' home (``.measurements/redlog-captures/<run>/``) is
+    deliberately UNIGNORED-adjacent residue: ``.measurements/`` is
+    gitignored, the sinks live there as run records, and the guard
+    verifies captures of records still alive on this tree.
+    """
 
     def __init__(self, filename: str) -> None:
         self._filename = filename
@@ -66,8 +144,31 @@ class RedLog:
         self.entries: list[dict[str, str]] = []
 
     def red(self, pin: str, mutation: str, observed: Any) -> None:
+        """Record one convicted red WITH its receipt: the entry carries
+        the run-id, the drill's captured output file path, and the
+        capture's sha256 — the chain the guard verifies."""
+        capture_dir = MEASUREMENTS / "redlog-captures" / self._run_id
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        sanitized = "".join(c if c.isalnum() or c in "-_" else "_" for c in pin) or "pin"
+        capture = capture_dir / f"{sanitized}.json"
+        payload = {
+            "pin": pin,
+            "mutation": mutation,
+            "observed": observed,
+            "run": self._run_id,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        capture.write_text(json.dumps(payload, indent=2, default=str, sort_keys=True))
+        digest = sha256(capture.read_bytes()).hexdigest()
         self.entries.append(
-            {"pin": pin, "mutation": mutation, "red": json.dumps(observed, default=str)}
+            {
+                "pin": pin,
+                "mutation": mutation,
+                "red": json.dumps(observed, default=str),
+                "run": self._run_id,
+                "capture": str(capture.relative_to(MEASUREMENTS)),
+                "sha256": digest,
+            }
         )
 
     def flush(self) -> None:
@@ -75,6 +176,11 @@ class RedLog:
         record = {
             "run": self._run_id,
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "law": REDLOG_LAW,
+            # THE HEAD-STAMP LAW: the sink record carries the head the
+            # drills ran on (the receipt chain's fourth link — the run
+            # is attributable to a TREE, not just a process).
+            "head_sha": head_sha(),
             "entries": self.entries,
         }
         with (MEASUREMENTS / self._filename).open("a") as sink:
@@ -147,6 +253,16 @@ def createseam_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
+@pytest.fixture
+def wedge_redlog() -> Iterator[RedLog]:
+    """The red sink for the crashed-terminal wedge pins (the pre-cure
+    tree's corpse-greens: the reconstruction's running, the maintenance
+    pass's non-heal, the G7 blind spot)."""
+    log = RedLog("wedge-pin-reds.json")
+    yield log
+    log.flush()
+
+
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in
@@ -205,7 +321,19 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     * a LIVE root ('running'/'pending') may lag the rows' terminal
       verdict by one sweep pass — the maintenance leg's lag window (the
       H1 cure heals it in one pass; the H1 pin carries that teeth).
-    """
+
+    THE WEDGE LEG (the crashed-terminal wedge's red-drill — the
+    attacker's proof was G7 staying green ON THE CORPSE): a live root
+    whose rows reconstruct a TERMINAL verdict contradicts the rows.
+    The lag window is ONE pass, so the check RUNS the maintenance leg
+    itself (the same statement the sweep drives) and re-reads: the
+    reported state must now equal the rows' terminal verdict. A root
+    that still disagrees is THE WEDGE — a run the reported state claims
+    is live while the rows say it terminalized and nothing will ever
+    change either side (the corpse that reports 'running' forever). The
+    drill pin (tests/test_wf_t20_crashed_terminal_wedge.py) reds this
+    leg against a no-op maintenance mutant — the assertion can fail on
+    a wedge, it is not a decoration."""
     from taskq.workflows._status import reconstruct_workflow_status
 
     flows = await wf_conn.fetch(
@@ -227,6 +355,55 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
                 f"the reported status drifted from the rows: flow {flow['id']} "
                 f"reports 'failed' but the rows reconstruct 'complete' — "
                 "the wrong verdict on a completed run (G7)"
+            )
+        elif status in ("running", "pending") and reconstructed in (
+            "failed",
+            "cancelled",
+            "complete",
+        ):
+            # THE WEDGE LEG: the rows have spoken a TERMINAL verdict; the
+            # lag window is one sweep pass — run it, re-read, and the
+            # root must agree. (The maintain statement's own derivation
+            # re-derives the root from the node rows — a disagreement
+            # AFTER the pass is the two derivations' drift or a wedging
+            # sweep.) ONE HONEST LAG SURVIVES the leg: the §17.5
+            # cancelled/failed PRECEDENCE derives a terminal verdict OVER
+            # live rows (a fired-but-unclaimed join row is claimable
+            # work the derivation's cancelled row outranks) — the root
+            # legitimately waits for it. THE WEDGE is the ALL-TERMINAL
+            # corpse: no live-class row exists anywhere and the root
+            # still reports live — nothing will ever change either side.
+            await wf_conn.execute(wf_sql.workflow_root_maintain, 200)
+            healed = await wf_conn.fetchval(
+                f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow["id"]
+            )
+            expected = G7_DERIVED_TO_ROOT[reconstructed]
+            if healed == expected:
+                continue
+            remaining = await wf_conn.fetchval(
+                f"""SELECT count(*) FROM "{wf_schema}".jobs
+                    WHERE (metadata->>'flow_id')::uuid = $1
+                      AND metadata ? 'flow_id'
+                      AND step_key <> '__flow__'
+                      AND status IN ('pending', 'scheduled', 'running')""",
+                flow["id"],
+            )
+            if remaining:
+                # THE HONEST PRECEDENCE LAG: the terminal verdict derives
+                # OVER live rows (the fired-but-unclaimed join is
+                # claimable work) — the root waits for them, the law's
+                # lag window covers it.
+                continue
+            assert healed == expected, (
+                f"THE WEDGE (G7's terminal-contradiction leg): flow "
+                f"{flow['id']} reports {healed!r} while the rows "
+                f"reconstruct {reconstructed!r} with NO live-class row "
+                f"left on the run — a TERMINAL verdict the one-pass heal "
+                f"(the maintenance leg) did not land. The run's reported "
+                "state contradicts its own rows AND the heal: a wedged "
+                "run — the operator must notice forever (the "
+                "crashed-terminal wedge's signature: the corpse reports "
+                "'running' over a deterministic death)"
             )
 
 
