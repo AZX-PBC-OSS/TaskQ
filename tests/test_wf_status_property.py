@@ -50,9 +50,7 @@ def _node_views(draw: st.DrawFn) -> NodeView:
         # The terminal-crash fold's absorption consistency: a
         # crashed/abandoned row with an absorbing edge reads through it
         # the same way (the fold makes them the failed class).
-        absorbed=draw(st.booleans())
-        if status in ("failed", "crashed", "abandoned")
-        else False,
+        absorbed=draw(st.booleans()) if status in ("failed", "crashed", "abandoned") else False,
         cancel_in_flight=draw(st.booleans()),
     )
 

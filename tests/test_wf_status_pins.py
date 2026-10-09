@@ -126,14 +126,24 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
         "the terminal-crash fold: a budget-exhausted crash terminal is the "
         "failed-class terminal — never liveness (the crashed-terminal wedge)"
     )
-    assert derive_workflow_status(_nodes("crashed",)) == "failed"
+    assert (
+        derive_workflow_status(
+            _nodes(
+                "crashed",
+            )
+        )
+        == "failed"
+    )
     assert derive_workflow_status(_nodes("abandoned", "succeeded")) == "failed"
     # The flip: the fold's ABSORPTION consistency — an ABSORBED crash
     # derives through its parent's outcome (the collect's partial-failure
     # clause reads the crash the way it reads the failure).
-    assert derive_workflow_status(
-        (NodeView(status="succeeded"), NodeView(status="crashed", absorbed=True))
-    ) == "complete"
+    assert (
+        derive_workflow_status(
+            (NodeView(status="succeeded"), NodeView(status="crashed", absorbed=True))
+        )
+        == "complete"
+    )
     # And the fold loses ONLY to row 1's genuine liveness (a running row
     # — the reclaim's real input — or a cancel in flight), never to the
     # crash itself.

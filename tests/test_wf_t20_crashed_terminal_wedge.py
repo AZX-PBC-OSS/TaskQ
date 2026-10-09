@@ -108,8 +108,7 @@ async def test_the_wedged_corpse_derives_terminal(
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
     await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
-        "WHERE id = $1",
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
         ok,
     )
     await seed_crashed_node(wf_conn, wf_schema, flow_id)
@@ -145,8 +144,7 @@ async def test_the_wedged_root_heals_on_one_sweep_pass(
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
     await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
-        "WHERE id = $1",
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
         ok,
     )
     await seed_crashed_node(wf_conn, wf_schema, flow_id)
@@ -196,8 +194,7 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
     await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
-        "WHERE id = $1",
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
         ok,
     )
     await seed_crashed_node(wf_conn, wf_schema, flow_id)
@@ -210,14 +207,23 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
         # Consumes $1 (the batch arg) — the pass runs, maintains nothing.
         workflow_root_maintain="SELECT 0::int WHERE $1::int IS NOT NULL",
     )
-    with pytest.raises(AssertionError, match="WEDGE|drifted"):
+    with pytest.raises(AssertionError) as drill:
         await g7_check(wf_conn, wf_schema, noop_sql)
+    assert "WEDGE" in str(drill.value), (
+        f"the red-drill's failure is not the wedge leg naming itself: {drill.value}"
+    )
+    root_after = await root_row(wf_conn, wf_schema, flow_id)
     wedge_redlog.red(
         "g7-corpses-cannot-hide",
         "the G7 assertion WITHOUT the terminal-contradiction leg: a live "
         "root over a terminal reconstruction greens the dead run (the "
-        "attacker's proof: G7 stayed green on the corpse)",
-        {"root_status": "running", "reconstructed": "failed"},
+        "attacker's proof: G7 stayed green on the corpse) — the drill "
+        "ran the mutant check and read the corpse after it",
+        {
+            "raised": str(drill.value)[:300],
+            "root_status_after_the_mutant_pass": root_after["status"],
+            "reconstructed": await reconstruct_workflow_status(wf_conn, wf_sql, flow_id),
+        },
     )
 
     # THE SHIPPED SHAPE GREENS: the same corpse through the REAL check —

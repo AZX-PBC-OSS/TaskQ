@@ -37,7 +37,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
-from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, emit_batch
+from taskq.workflows._emit import EMIT_CURSOR_KEY, EmitFencedError, PageDivergedError, emit_batch
 from taskq.workflows._types import EmitChild, NodeSpec
 from tests._wf_fixtures import RedLog, seed_flow
 
@@ -554,7 +554,13 @@ async def test_t20_emit_map_index_discriminates_siblings(
     # THE COLLISION DRILL: re-emitting the same record (the same
     # step + map_index) aborts the tx on the unique key — the loud
     # refusal; the tx's OTHER children (a fresh sibling) roll back with
-    # it (never a partial page).
+    # it (never a partial page). THE NAMED DEATH (the T20/T21 fixer's
+    # typed death): the raw UniqueViolationError no longer escapes
+    # whole — the divergence is PageDivergedError (the cursor diverged
+    # from the row history; the remedy — re-sync the cursor — rides the
+    # message). The ARBITER's teeth are the same teeth (the collision
+    # detected, the tx rolled back, the cursor un-advanced); the
+    # raw-typed ladder death is what was cured.
     dupes = [
         EmitChild(
             step_key="screen",
@@ -573,7 +579,7 @@ async def test_t20_emit_map_index_discriminates_siblings(
             map_index=9,
         ),
     ]
-    with pytest.raises(asyncpg.UniqueViolationError):
+    with pytest.raises(PageDivergedError, match="re-sync the cursor"):
         await emit_batch(
             module_pg_pool,
             wf_sql,
