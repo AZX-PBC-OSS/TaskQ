@@ -15,7 +15,7 @@ application must not kill the other 199.
 THE FIX (one leg, no column, no index, no migration): the failed arm
 gates on live UNRESOLVED work —
 
-    bool_or(status IN ('running','crashed','abandoned')
+    bool_or(status = 'running'
             OR (status IN ('pending','scheduled')
                 AND NOT (metadata ? 'blocking_reason')))
 
@@ -23,6 +23,13 @@ The blocked-stamp exclusion is exactly what keeps the phase-2 H1 wedge
 cured: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.
+
+THE TERMINAL-CRASH RE-DERIVATION (the T20/T21 fixer's zombie audit —
+this file's original spelling carried crashed/abandoned in the liveness
+set as "the reclaim's input"): crashed/abandoned are TERMINALS with zero
+outbound transitions and no reclaim arm — they belong in the FAILED arm
+(their deterministic death IS the failure), never in liveness. See
+tests/test_wf_t20_crashed_terminal_wedge.py for the wedge's pins.
 
 Red-first: the 149-siblings pin ran RED against the shipped leg (the root
 flipped ``failed`` with 149 live siblings — the stranding reproduced);

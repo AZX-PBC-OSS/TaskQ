@@ -1,10 +1,13 @@
 """ATTACK-3 — the phase-3 public surface's NEGATIVE type probes.
 
-Each ``MUST_ERROR`` marker names a wrong-shape call that must RED on
-BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) — the typed-doors law
-(BUILD-PROTOCOL §7b). This file is run DIRECTLY by the attacker's gate
-invocation (the shipped ``_gate.py`` corpus is untouched); the capture
-goes to ``.measurements/attack3/``.
+Each ``MUST_ERROR(rules...)`` marker names a wrong-shape call that must
+RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
+from the marker's DECLARED set — the typed-doors law (BUILD-PROTOCOL
+§7b). THE EVIDENCE-INTEGRITY ROUND'S WIRING: this file ran DIRECTLY
+under the attacker's own invocation and ROTTED OFF the gate (the markers
+carried NO rule-id declaration — the gate refuses a bare MUST_ERROR, the
+assertion must name what it asserts). Wired into ``_gate.py``'s corpus;
+the rule-ids below name BOTH checkers' vocabularies.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ def probe_exhaustion_policy_literal() -> None:
     def a3t1() -> object:
         return build(
             loop("l1", _body, on_exhausted="abort")
-        )  # MUST_ERROR: "abort" is not in Literal["escalate", "fail"]
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): "abort" is not in Literal["escalate", "fail"]
 
 
 def probe_sync_until_predicate() -> None:
@@ -59,7 +62,7 @@ def probe_sync_until_predicate() -> None:
     def a3t2() -> object:
         return build(
             loop("l2", _body, until=sync_until)
-        )  # MUST_ERROR: a sync bool-returning closure is not Awaitable[bool]
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): a sync bool-returning closure is not Awaitable[bool]
 
 
 def probe_resolve_takes_a_dict_not_a_model() -> None:
@@ -68,10 +71,10 @@ def probe_resolve_takes_a_dict_not_a_model() -> None:
     operator holds) must red, naming the door's own shape gap."""
     from taskq.workflows.api._hitl import HitlClient
 
-    async def probe(client: HitlClient) -> None:
+    async def probe(client: HitlClient) -> None:  # pyright: ignore[reportUnusedFunction] — the probe call's diagnostics ARE the assertion
         await client.resolve(
             "00000000-0000-0000-0000-000000000000", Approval(verdict="ok")
-        )  # MUST_ERROR: an Approval instance is not a dict[str, object]
+        )  # MUST_ERROR(reportArgumentType, invalid-argument-type): an Approval instance is not a dict[str, object]
 
 
 def probe_awaiting_a_promise_again() -> None:
@@ -84,7 +87,7 @@ def probe_awaiting_a_promise_again() -> None:
         produced = step(_body, Ingest(doc_id="d"), key="produce")
         _pending = asyncio.ensure_future(
             produced
-        )  # MUST_ERROR: a Promise is not a future/coroutine
+        )  # MUST_ERROR(reportCallIssue, reportArgumentType, no-matching-overload): a Promise is not a future/coroutine — no ensure_future overload accepts it
         assert _pending is not None  # the reference is STORED (RUF006) and never awaited
         return build(produced)
 
@@ -93,7 +96,8 @@ def probe_loop_body_wrong_union() -> None:
     """The loop body must return Done/Refine — a body returning the raw
     payload type is the shape error (the residual machinery's static
     face: BodyFn's object return makes this invisible to the checker —
-    this probe NAMES the gap; it is intentionally NOT a MUST_ERROR)."""
+    this probe NAMES the gap; it is intentionally NOT a marked
+    assertion)."""
     app = WorkflowApp()
 
     async def raw_body(ctx: Any, carry: Any) -> Report:

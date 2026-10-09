@@ -1,111 +1,238 @@
-"""FV-DELIVERABLE — THE REDLOG LAW GUARD (the findings-validation round).
+"""FV-DELIVERABLE — THE REDLOG LAW GUARD, RE-WRITTEN TO PROVENANCE (the
+findings-validation round; the evidence-integrity round's cure 3).
 
-THE LAW (the new evidence law this round enforces): **a redlog entry is
-machine-generated or it doesn't exist.**
+THE LAW (the new evidence law this round enforces): **a redlog entry
+CITES ITS RECEIPT CHAIN, or it doesn't exist.**
 
-The redlog sinks (``.measurements/*-pin-reds.json``, the mutation drills'
-recorded reds) are append-only and run-scoped since the phase-3 fixer —
-but the SINK MECHANICS were fixed while the FABRICATED ENTRIES survived:
-several pins call ``redlog.red(pin, mutation, observed)`` with a
-hand-written dict LITERAL describing an observation NO drill ever made in
-that process (e.g. ``{"zombie_wake": True, ...}`` recorded at the end of a
-test whose assertions prove the OPPOSITE). A red recorded from a literal
-is prose wearing an evidence file's clothes — the exact class the
-fabricated-red conviction named.
+The guard's first body (the shape rule) AST-walked every test module and
+convicted ``.red(...)`` calls whose ``observed`` payload was composed
+entirely of syntactic constants — a hand-written literal is prose
+wearing an evidence file's clothes. THE SHAPE RULE WAS DEFEATABLE, twice
+over, live:
 
-THE ENFORCEMENT: an ``observed`` payload built ONLY from syntactic
-constants can never be evidence — a drill's record must DERIVE at least
-one value from the run (a live DB read, a computed flag). This guard
-AST-walks every test module and fails on any ``.red(...)`` call whose
-third argument is a literal-only ``dict``/``set``/``tuple``/``list``
-(composed entirely of ``ast.Constant`` nodes and literal-only
-containers). Calls that derive any value from the run's own reads pass
-(``{"executions_after_redelivery": executions}`` — the honest drill's
-shape).
+1. **THE KEYWORD-FORM BYPASS** — ``log.red('pin', 'mut', observed={...})``
+   has two positional args; the AST scan read ``node.args[2]``, found
+   nothing, and SKIPPED INSPECTION. A fabricated payload riding the
+   keyword never saw the guard.
+2. **THE NAME-LAUNDERED CONSTANT** — ``log.red('pin', 'mut',
+   FABRICATED)`` where ``FABRICATED`` is a module-level literal dict: the
+   payload node is an ``ast.Name``, not a literal — the scan passed it.
+   The lie moved one hop up the module and the guard went blind.
 
-Failures name file:line + the pin — the fix is to RUN the mutation drill
-and record what it actually produced (or delete the entry: a red that was
-never run doesn't exist).
+THE CURE IS THE PROVENANCE RULE, NOT A SHAPE RULE: the guard no longer
+inspects the CALL at all — it verifies the SINK's RECEIPT CHAIN. Every
+entry a law-stamped run recorded must cite (a) its drill's RUN-ID, (b)
+the drill's captured output FILE PATH, (c) the capture's sha256 — and
+the guard RE-VERIFIES at guard time: the cited file EXISTS, its digest
+matches, and its content IS the recorded red. An entry whose cited
+capture is missing or mismatching FAILS the guard — whatever syntactic
+shape produced it. The two bypasses are re-tested below and both are
+convicted BY PROVENANCE: the keyword form and the laundered name now
+produce receipts like any other call (the old blind spots are verified
+entries), and the conviction of a FABRICATED entry is its broken receipt
+— a missing capture, a digest mismatch, a content mismatch — never the
+payload's grammar.
+
+(A mechanical guard cannot read minds: a pin that writes the same lie
+into its drill capture AND its entry leaves a self-consistent artifact —
+which is why the mutation drills' teeth are BEHAVIORAL pins
+(``test_wf_sweep_pins.py`` pin 23's law): the lie flips a green test the
+moment the mutation ships. The receipt chain's convictions are the
+mechanical half: hand-edited sinks, fabricated citations, stale
+captures, cross-tree identity confusion.)
 """
 
 from __future__ import annotations
 
-import ast
+import json
+from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
-_TESTS = Path(__file__).resolve().parent
+from tests._wf_fixtures import MEASUREMENTS, REDLOG_LAW
 
-#: The redlog sinks' method name (the fixture handles: engine_redlog,
-#: hitl_redlog, loop_redlog, ledger_redlog, propagation_redlog, t20_,
-#: t21_, progress_redlog — every RedLog instance).
-_RED_METHOD = "red"
+#: The redlog sinks (the fixtures' filenames — every RedLog instance).
+_SINKS: tuple[str, ...] = (
+    "pin-reds.json",
+    "ledger-pin-reds.json",
+    "t10-pin-reds.json",
+    "t19-pin-reds.json",
+    "t06-propagation-reds.json",
+    "t20-pin-reds.json",
+    "t21-pin-reds.json",
+)
 
-_LITERAL_NODES = (ast.Constant,)
+
+def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
+    """(sink path, record) for every law-stamped record in every sink.
+    Pre-law records are HISTORY (the append-only law preserves them);
+    they carry no receipt citations and the guard demands none of them —
+    the law's records are the live claims."""
+    out: list[tuple[Path, dict[str, Any]]] = []
+    for name in _SINKS:
+        sink = MEASUREMENTS / name
+        if not sink.exists():
+            continue
+        for line in sink.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("law") == REDLOG_LAW:
+                out.append((sink, record))
+    return out
 
 
-def _is_literal(node: ast.expr) -> bool:
-    """True when the expression is composed ONLY of constants and
-    literal-only containers — a hand-constructed payload, never a
-    machine-generated observation."""
-    if isinstance(node, _LITERAL_NODES):
-        return True
-    if isinstance(node, ast.Dict):
-        return all(
-            _is_literal(k) and _is_literal(v) for k, v in zip(node.keys, node.values, strict=True)
+def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: Path) -> str | None:
+    """The receipt chain's verdict for ONE entry: ``None`` = the chain
+    holds; otherwise the FIRST broken link, named. The three links:
+
+    (a) the entry cites its drill's run-id (the record's own run);
+    (b) the entry cites the drill's captured output file path;
+    (c) the file EXISTS, its sha256 matches, and its content contains
+        the recorded red (the capture's own observed, byte-equal).
+    """
+    capture_rel = entry.get("capture")
+    if not capture_rel:
+        return (
+            f"pin={entry.get('pin')!r}: the entry cites NO capture — the "
+            "provenance law's link (b) is missing (a redlog entry without "
+            "a cited capture doesn't exist)"
         )
-    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        return all(_is_literal(e) for e in node.elts)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        return _is_literal(node.operand)
-    return False
+    if entry.get("run") != record.get("run"):
+        return (
+            f"pin={entry.get('pin')!r}: the entry's run-id {entry.get('run')!r} "
+            f"is not the record's run {record.get('run')!r} — the citation's "
+            "link (a) is broken (cross-run identity confusion)"
+        )
+    capture = measurements / capture_rel
+    if not capture.is_file():
+        return (
+            f"pin={entry.get('pin')!r}: the cited capture {capture_rel} does "
+            "not EXIST — the receipt chain's link (c) is broken (a red that "
+            "never ran, or a capture deleted since)"
+        )
+    digest = sha256(capture.read_bytes()).hexdigest()
+    if digest != entry.get("sha256"):
+        return (
+            f"pin={entry.get('pin')!r}: the cited capture {capture_rel} does not "
+            "match the recorded sha256 — the capture MUTATED since the entry "
+            "recorded it (the receipt chain's link (c) is broken)"
+        )
+    recorded = json.loads(entry["red"])
+    captured = json.loads(capture.read_text())
+    if captured.get("observed") != recorded:
+        return (
+            f"pin={entry.get('pin')!r}: the cited capture's observed payload is "
+            f"{captured.get('observed')!r} but the entry recorded {recorded!r} — "
+            "the file does not contain the recorded red (the citation's "
+            "content check failed)"
+        )
+    return None
 
 
-def _modules() -> list[Path]:
-    return sorted(_TESTS.glob("test_*.py"))
-
-
-def test_redlog_entries_are_machine_generated_not_hand_constructed() -> None:
-    """THE LAW: every redlog .red() payload derives at least one value
-    from the drill's own run. Literal-only payloads are fabricated
-    observations — the red doesn't exist."""
+def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
+    """THE PROVENANCE LAW: every entry a law-stamped run recorded cites
+    its drill's run-id + captured output file, the file exists, its
+    digest matches, and its content IS the recorded red. A broken chain
+    = the guard FAILS, the entry named."""
     violations: list[str] = []
-    for path in _modules():
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr != _RED_METHOD:
-                continue
-            if len(node.args) < 3:
-                continue
-            observed = node.args[2]
-            if _is_literal(observed):
-                pin = ""
-                if isinstance(node.args[0], ast.Constant):
-                    pin = str(node.args[0].value)
-                violations.append(
-                    f"{path.name}:{node.lineno} pin={pin!r}: the observed "
-                    "payload is a hand-written literal — no drill produced "
-                    "it. Run the mutation drill and record what it actually "
-                    "yielded, or delete the entry (a red that never ran "
-                    "doesn't exist)."
-                )
+    for sink, record in _sink_records():
+        for entry in record.get("entries", []):
+            broken = verify_receipt(record, entry, MEASUREMENTS)
+            if broken is not None:
+                violations.append(f"{sink.name}: {broken}")
     assert not violations, (
-        "THE REDLOG LAW: a redlog entry is machine-generated or it doesn't "
-        "exist — these .red() calls record hand-constructed payloads:\n" + "\n".join(violations)
+        "THE REDLOG PROVENANCE LAW: a redlog entry cites its receipt chain "
+        "(run-id + capture file + digest) or it doesn't exist — these "
+        "entries' chains are broken:\n" + "\n".join(violations)
     )
 
 
-def test_guard_bites() -> None:
-    """The guard's own red: a literal payload must be convicted, a
-    derived payload must pass."""
-    literal = ast.parse("log.red('pin-x', 'mutation', {'zombie_wake': True, 'n': 3})").body[0]
-    call = next(n for n in ast.walk(literal) if isinstance(n, ast.Call))
-    assert isinstance(call.args[2], ast.expr)
-    assert _is_literal(call.args[2]), "the literal payload must be convicted"
+def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The shape rule's TWO LIVE BYPASSES, re-tested against the
+    provenance rule: NEITHER form escapes the receipt chain.
 
-    derived = ast.parse("log.red('pin-x', 'mutation', {'rows': rows, 'fired': rows == 0})").body[0]
-    call_d = next(n for n in ast.walk(derived) if isinstance(n, ast.Call))
-    assert not _is_literal(call_d.args[2]), "the derived payload must pass"
+    * the KEYWORD-FORM payload (the old scan read ``args[2]`` and
+      skipped) — records like any call now, its entry VERIFIED by
+      receipt; break the receipt (delete the capture) and the guard
+      convicts the entry, whatever syntax produced it;
+    * the NAME-LAUNDERED CONSTANT (the old scan saw an ``ast.Name`` and
+      passed) — same: the entry is verified by its CAPTURE's content,
+      not by resolving the name's grammar; mutate the capture behind the
+      digest and the guard convicts (the content check).
+    """
+    from tests._wf_fixtures import RedLog
+
+    sink = tmp_path / "bypass-reds.json"
+    monkeypatch.setattr("tests._wf_fixtures.MEASUREMENTS", tmp_path)
+    measurements_root = tmp_path  # the RedLog module-global is patched above
+
+    log = RedLog(sink.name)
+
+    # BYPASS 1, the keyword form — the old guard's blind spot:
+    log.red("bypass-keyword-form", "the payload rides observed=", observed={"zombie_wake": True})
+    # BYPASS 2, the name-laundered constant — the old guard saw a Name:
+    fabricated_constant = {"zombie_wake": True, "note": "never drilled"}
+    log.red("bypass-laundered-constant", "the payload is a module constant", fabricated_constant)
+    log.flush()
+
+    records = [json.loads(line) for line in sink.read_text().splitlines()]
+    assert len(records) == 1 and records[0]["law"] == REDLOG_LAW
+    for entry in records[0]["entries"]:
+        # THE PROVENANCE VERDICT: both entries' receipts HOLD (each cites
+        # a live, digest-matching, content-matching capture) — the
+        # conviction is by the chain, never the shape.
+        assert verify_receipt(records[0], entry, measurements_root) is None, entry
+
+    # THE CONVICTIONS (both by provenance):
+    keyword_entry, laundered_entry = records[0]["entries"]
+    # 1. The keyword-form entry whose capture VANISHED: convicted.
+    capture_of = lambda entry: measurements_root / entry["capture"]  # noqa: E731
+    capture_of(keyword_entry).unlink()
+    broken = verify_receipt(records[0], keyword_entry, measurements_root)
+    assert broken is not None and "does not EXIST" in broken, broken
+    # 2. The laundered-constant entry whose capture MISMATCHES its
+    #    recorded red (the capture rewritten behind the digest — the
+    #    stale/mutated receipt): convicted.
+    capture_path = capture_of(laundered_entry)
+    capture_path.write_text(
+        json.dumps(
+            {
+                "pin": laundered_entry["pin"],
+                "mutation": laundered_entry["mutation"],
+                "observed": {"zombie_wake": False},
+                "run": records[0]["run"],
+                "ts": "1970-01-01T00:00:00",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    broken = verify_receipt(records[0], laundered_entry, measurements_root)
+    assert broken is not None and (
+        "does not match the recorded sha256" in broken or "content check failed" in broken
+    ), broken
+
+
+def test_a_fabricated_sink_entry_without_a_citation_is_convicted(tmp_path: Path) -> None:
+    """THE HAND-EDITED SINK (the fabrication vector the shape rule could
+    never see — it lived outside the source): an entry appended to a
+    sink WITHOUT its receipt chain is convicted at guard time. The red
+    that was never run doesn't exist."""
+    fabricated = {
+        "run": "19700101T000000-0-deadbeef",
+        "ts": "1970-01-01T00:00:00",
+        "law": REDLOG_LAW,
+        "entries": [
+            {
+                "pin": "fabricated-without-a-drill",
+                "mutation": "nothing was mutated",
+                "red": '{"zombie_wake": true}',
+            }
+        ],
+    }
+    record = {"run": fabricated["run"], "law": REDLOG_LAW, "entries": fabricated["entries"]}
+    broken = verify_receipt(record, record["entries"][0], tmp_path)
+    assert broken is not None and "cites NO capture" in broken, broken

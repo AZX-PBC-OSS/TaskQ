@@ -40,6 +40,8 @@ from typing import Any
 
 import pytest
 
+from tests._wf_fixtures import head_sha  # the head-stamp law (the capture's stamp)
+
 pytestmark = pytest.mark.integration
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements" / "demo-legs"
@@ -50,6 +52,20 @@ def _capture(name: str, content: str) -> Path:
     path = MEASUREMENTS / name
     path.write_text(content)
     return path
+
+
+def _capture_headed(name: str, content: str) -> Path:
+    """The capture WITH its head stamp (the head-stamp law: every
+    evidence artifact records the head it was taken on). JSON captures
+    carry the stamp INSIDE the document (``head_sha``) — the file stays
+    machine-readable; text captures carry it as the trailing ``head:``
+    line."""
+    if name.endswith(".json"):
+        data = json.loads(content)
+        assert isinstance(data, dict), "the leg captures are JSON objects"
+        data.setdefault("head_sha", head_sha())
+        return _capture(name, json.dumps(data, indent=2, ensure_ascii=False))
+    return _capture(name, f"{content.rstrip()}\nhead: {head_sha()}\n")
 
 
 # ── LEG 1: the cancellation ──────────────────────────────────────────────
@@ -112,7 +128,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     assert view is not None
     assert view.derive() == "cancelled", view.derive()
 
-    _capture(
+    _capture_headed(
         "leg1-cancellation.json",
         json.dumps(
             {
@@ -243,7 +259,7 @@ async def test_leg2_the_kill_and_resume_drill(
         run_id_uuid,
     )
     attempts = [r["status"] for r in ledger]
-    _capture(
+    _capture_headed(
         "leg2-kill-resume.json",
         json.dumps(
             {
@@ -307,7 +323,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
         for (wf, state), count in sorted(collapsed.items())
     ]
     scrape_text = "\n".join(lines) + "\n"
-    _capture("leg3-wf-gauge-scrape.prom", scrape_text)
+    _capture_headed("leg3-wf-gauge-scrape.prom", scrape_text)
     assert lines, "the scrape rendered nothing"
     assert any("wf_progress_nodes_total" in line for line in lines)
     assert any("doc_ingest" in line for line in lines), lines
@@ -345,7 +361,7 @@ async def test_leg4_the_conditional_router_routes_live(
     by_key: dict[str, list[str]] = {}
     for row in node_rows:
         by_key.setdefault(row["step_key"], []).append(row["status"])
-    _capture(
+    _capture_headed(
         "leg4-router.json",
         json.dumps(
             {

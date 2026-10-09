@@ -163,15 +163,25 @@ per_flow AS (
            -- and the root finalize can never drift): a failed node whose
            -- failure the flow's fence never delivered is NOT absorbed.
            bool_or(
-               n.status = 'failed'
+               n.status IN ('failed', 'crashed', 'abandoned')
                AND NOT """
     + _absorbed_exists("n")
     + """
            ) AS has_failed,
-           -- THE FAILED ARM'S LIVENESS (T20, the spike's live finding):
-           -- live UNRESOLVED work holds a failing run: a
-           -- running/crashed/abandoned row (the reclaim's input) AND a
-           -- pending/scheduled row that is NOT a resolved-blocked stamp.
+           -- THE FAILED ARM'S LIVENESS (T20, the spike's live finding;
+           -- RE-DERIVED by the T20/T21 fixer's zombie audit against the
+           -- state machine's totality table): live UNRESOLVED work holds
+           -- a failing run — a RUNNING row (the reclaim arms' ONLY
+           -- input) and a pending/scheduled row that is NOT a
+           -- resolved-blocked stamp. THE TERMINAL-CRASH CLASS IS GONE
+           -- FROM THIS PREDICATE: crashed/abandoned have ZERO outbound
+           -- transitions (statemachine.VALID_TRANSITIONS), no sweep arm
+           -- ever reclaims them (the reclaim's input is 'running' — its
+           -- crashed branch wrote the row BECAUSE the budget was
+           -- exhausted), so they are TERMINALS, never liveness — the old
+           -- 'running/crashed/abandoned' spelling was the crashed-
+           -- terminal wedge: a {succeeded, crashed} run's corpse root
+           -- stayed 'running' forever (the att_t20 evidence roots).
            -- THE 149-STRANDED-CHAINS WEDGE this cures: a no-fan-in
            -- streaming batch's FIRST chain failure must not finalize the
            -- root while the other chains are pending — the dispatch
@@ -180,7 +190,7 @@ per_flow AS (
            -- LOAD-BEARING: a blocked-with-reason row (the H1 wedge's
            -- stamped join) is RESOLVED — it must not hold the run, or
            -- the original wedge returns.
-           bool_or(n.status IN ('running', 'crashed', 'abandoned')
+           bool_or(n.status = 'running'
                    OR (n.status IN ('pending', 'scheduled')
                        AND NOT (n.metadata ? 'blocking_reason')))
                AS has_unresolved,
@@ -188,8 +198,12 @@ per_flow AS (
            -- EVERY non-terminal row is a live run: pending rows (join-wait,
            -- held, blocked-with-reason — the blocked representations
            -- derive 'blocked', a LIVE state) and scheduled rows derive
-           -- 'pending'/'blocked' — never a terminal verdict.
-           bool_or(n.status IN ('pending', 'running', 'scheduled', 'crashed', 'abandoned'))
+           -- 'pending'/'blocked' — never a terminal verdict. THE
+           -- TERMINAL-CRASH CLASS IS GONE (the zombie audit's same
+           -- re-derivation): crashed/abandoned are terminal statuses —
+           -- has_live counting them held the corpse root's finalize
+           -- forever (the wedge's second seat).
+           bool_or(n.status IN ('pending', 'running', 'scheduled'))
                AS has_live
     FROM roots r
     JOIN {schema}.jobs n

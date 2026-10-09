@@ -67,6 +67,47 @@ def is_infra_fault(exc: BaseException) -> bool:
     return isinstance(exc, infra)
 
 
+def is_deterministic_authoring_failure(exc: BaseException) -> bool:
+    """THE FAILURE-CLASS ROUTING RULE's deterministic leg (the T20/T21
+    fixer's cure — the rule stated once, pinned per class):
+    a DETERMINISTIC authoring failure never rides the retry ladder. The
+    three classes the engine itself defines are deterministic BY
+    CONSTRUCTION — each is raised by the engine's own gates for a defect
+    that re-running cannot cure:
+
+    * :class:`ProgressRefusedError` — a wrong-shaped emission (an
+      authoring bug; the body will send the same shape on every retry);
+    * :class:`PageDivergedError` — the emit's page already exists (the
+      resume's cursor diverged from the row history; the re-claim
+      re-reads the SAME cursor and collides again);
+    * :class:`MapIndexExhaustedError` — the smallint ceiling (the
+      record's identity cannot grow past it on any retry).
+
+    THE ROUTING RULE, per class (the pin drills all three legs):
+    ``deterministic = the NAMED terminal`` (finalize immediately, the
+    error class on the record, the ladder unburned — a retry budget
+    spent on a deterministic death is the record's lie: three identical
+    failures pretending to be a flake); ``infra = reclaim`` (the
+    machinery boundary's classifier, :func:`is_infra_fault` — the
+    ladder untouched); ``transient = the ladder`` (the body's ordinary
+    failures — the backoff curve, then the terminal).
+
+    THE BODY BOUNDARY consults this BEFORE the ladder
+    (:meth:`LadderOps._ladder_or_fail`): a body-raised wrong-shape
+    emission used to burn the whole ladder and terminalize as a raw
+    laddered failure — the deterministic death, mislabeled transient.
+    """
+    from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
+    from taskq.workflows._progress import ProgressRefusedError
+
+    deterministic: tuple[type[BaseException], ...] = (
+        ProgressRefusedError,
+        PageDivergedError,
+        MapIndexExhaustedError,
+    )
+    return isinstance(exc, deterministic)
+
+
 class _LadderHost(Protocol):
     """The runner surface the ladder reads (the split's typed seam —
     the fields live on the runner, the machinery here)."""

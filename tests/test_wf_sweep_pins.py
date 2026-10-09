@@ -20,7 +20,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.workflows._sql import WorkflowSql
+from taskq.workflows._sql import TERMINAL_SQL_SET, WorkflowSql
 from taskq.workflows._sweep import reap_phantom_ledger, sweep_join_rederive
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
@@ -706,6 +706,127 @@ async def test_pin_17_empty_join_never_fires(
     assert result.applied
     assert await fire_count(wf_conn, wf_schema, j2) == 1, "the outer join fires once"
     assert (await node_state(wf_conn, wf_schema, j2))["deps_pending"] == 0
+
+
+# ── Pin 23: THE FLOW-STATUS LEG, PINNED BEHAVIORALLY (the stealth mutant) ─
+
+
+def _gut_flow_leg_predicate_sql(wf_sql: WorkflowSql) -> str:
+    """THE STEALTH MUTANT (the evidence-integrity round's convicted
+    shape): the flow-status EXISTS leg is KEPT — every shape-scanning
+    comparator still finds an ``AND EXISTS (…)`` clause — but the
+    PREDICATE inside it is gutted to a tautology (``status = status``).
+    Unqualified, ``status`` resolves to the subquery's own row
+    (``fl.status = fl.status``): TRUE wherever the flow row exists, DEAD
+    OR ALIVE. The fence's letter survives; its substance is gone. The
+    drop-the-EXISTS mutant (pin 5's drill) is LOUD; this one greens 71+
+    tests — which is exactly why the leg's pin below is BEHAVIORAL."""
+    gutted = "AND fl.status = status  -- STEALTH: the leg's letter, not its substance"
+    mutated = wf_sql.sweep_fire.replace(f"AND fl.status NOT IN {TERMINAL_SQL_SET}", gutted)
+    assert mutated != wf_sql.sweep_fire, "the stealth mutation drill did not arm"
+    assert "AND EXISTS" in mutated, (
+        "the stealth mutation must KEEP the EXISTS clause — the convicted "
+        "shape is a gutted predicate behind an intact fence, not a dropped leg"
+    )
+    return mutated
+
+
+@pytest.mark.integration
+async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_gutted(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    engine_redlog: RedLog,
+) -> None:
+    """THE BEHAVIORAL PIN (the evidence-integrity round, cure 2): 'never
+    fire on a dead flow' is held by the OBSERVED OUTCOME — the fire's
+    absence read back from the rows — never by the mutated SQL's shape.
+
+    Why this pin exists: the fire's flow-status leg rode only pins that
+    (a) assert the SHIPPED behavior through the flow-fenced arm's
+    upstream stamp (pin 5 — the H2 fence resolves the row before the
+    fire arm ever sees it, so gutting the fire's own leg reds nothing
+    there), or (b) drop the EXISTS leg wholesale (pin 5's drill — a
+    mutation the stealth variant survives: keep the EXISTS, gut the
+    predicate, and every shape-comparing comparator still greens). The
+    STEALTH mutant shipped would pass 71+ tests.
+
+    The pin runs the fire arm DIRECTLY on a firable join of a CANCELLED
+    flow — no upstream arm can stamp the row first, so the flow-status
+    leg is the ONLY fence in the statement:
+
+    1. THE SHIPPED BEHAVIOR: the fire does not happen — no
+       ``wf_join_fire`` row, the join row still pending and join-blocked
+       (the absence is OBSERVABLE in the rows, twice over).
+    2. THE STEALTH MUTANT on a pristine twin: the fire HAPPENS — the
+       same rows that proved the refusal now prove the mutant reds this
+       pin. The leg is load-bearing BEHAVIORALLY; a gutted predicate
+       cannot hide behind its intact EXISTS.
+    """
+    flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
+    join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
+    parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+
+    # The parent's tx1 commits; tx2 NEVER runs (the crash window). The
+    # join's LEDGER cache still says waiting, but the fire arm reads the
+    # COUNT — every leg but the flow-status one says FIRABLE.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
+        "WHERE id = $1 AND status = 'running' AND attempt = 1 AND claim_epoch = 0",
+        parent,
+    )
+
+    # 1. THE SHIPPED BEHAVIOR — the fire's ABSENCE, observable in the rows:
+    shipped_winners = await wf_conn.fetch(wf_sql.sweep_fire, [new_uuid()], 50)
+    engine_redlog.red(
+        "pin23-shipped-refusal",
+        "the shipped fire's flow-status leg vs a dead flow's firable join",
+        {"fired": len(shipped_winners)},
+    )
+    assert len(shipped_winners) == 0, (
+        f"the shipped fire fired on a CANCELLED flow: {shipped_winners} — "
+        "the flow-status leg is absent or inert on this tree"
+    )
+    assert await fire_count(wf_conn, wf_schema, join_id) == 0, (
+        "the fire's absence must hold in the wf_join_fire rows, not just in the statement's return"
+    )
+    join_state = await node_state(wf_conn, wf_schema, join_id)
+    assert join_state["status"] == "pending", join_state
+    assert join_state["metadata"].get("blocking_reason") == "join", (
+        "the refused join's row is UNTOUCHED — never fired, never claimed "
+        "(the sweep re-derives it; the refusal is observable in the row)"
+    )
+
+    # 2. THE STEALTH MUTANT, on the SAME state plus a pristine twin —
+    #    the mutant REDS the assertions above: the fire HAPPENS, in the
+    #    same rows. (Both joins are firable on the dead flow; the
+    #    statement fires the set's head — the conviction is that A fire
+    #    row now exists where the shipped leg produced none.)
+    twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
+    await seed_edge(wf_conn, wf_schema, twin, parent, flow_id)
+    stealth_winners = await wf_conn.fetch(
+        _gut_flow_leg_predicate_sql(wf_sql), [new_uuid(), new_uuid()], 50
+    )
+    flow_fires = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_join_fire WHERE flow_id = $1', flow_id
+    )
+    engine_redlog.red(
+        "pin23-stealth-mutant",
+        "the EXISTS kept, the predicate gutted to status = status (the leg's letter without its substance)",
+        {"fired": len(stealth_winners), "flow_fire_rows": int(flow_fires)},
+    )
+    assert len(stealth_winners) == 2, (
+        "the stealth mutant did not fire the dead flow's firable joins — the "
+        "behavioral comparator is broken (the gutted predicate must pass the "
+        "joins the shipped leg refuses, or this pin proves nothing)"
+    )
+    assert int(flow_fires) == 2, (
+        f"the mutant's fires must be OBSERVABLE in the wf_join_fire rows "
+        f"(flow_fires={flow_fires}) — the conviction is the row, never the "
+        "mutated string"
+    )
 
 
 # ── R2-2: THE UNREGISTERED NAME IS LOUD (the loudness asymmetry) ────────

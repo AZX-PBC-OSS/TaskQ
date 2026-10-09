@@ -97,6 +97,7 @@ test-wf-cov: env
 		tests/test_wf_propagation_pins.py tests/test_wf_pruner_pins.py \
 		tests/test_wf_runner_pins.py tests/test_wf_scenario_pins.py \
 		tests/test_wf_schema_migration.py tests/test_fv_redlog_guard.py \
+		tests/test_worker_execution_seam.py \
 		tests/test_fv_sweep_lock_teeth_pin.py tests/attack3-validate.py \
 		tests/attack4-coverage-closers.py \
 		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
