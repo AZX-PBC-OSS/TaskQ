@@ -61,7 +61,10 @@ def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
     def e9_lying_ctx() -> object:
         return build(step(lying_body, Ingest(doc_id="d1"), key="solo"))
 
-    compiled = app.get("e9_lying_ctx")
+    # the PROBE SEAM (app._compile): the door (app.get) raises on the
+    # graph's error — the pin's subject is the compiled graph's OWN
+    # validate() report, so the probe compiles without the door.
+    compiled = app._compile("e9_lying_ctx")
     from taskq.workflows.api._validate import _run_rules
 
     e9 = [d for d in _run_rules(compiled) if d.rule == "E9-ctx-annotation"]
@@ -103,7 +106,9 @@ def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
     def e10_over_arity() -> object:
         return build(step(over_arity, Ingest(doc_id="d1"), key="solo"))
 
-    compiled = app.get("e10_over_arity")
+    # the PROBE SEAM (app._compile): the door would raise — the pin's
+    # subject is the graph's own validate() report.
+    compiled = app._compile("e10_over_arity")
     with pytest.raises(WorkflowValidationError, match="E10-arity"):
         compiled.validate()
 

@@ -437,6 +437,16 @@ async def producer_loop(
                 # verification round (the pin carries the seat's name).
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(poll_interval)
+                # THE ABSORB'S OWN ACCOUNTING (the uncancel closure): the
+                # suppress ABSORBED a delivered cancel request — the
+                # loop's documented contract here — and an un-uncancelled
+                # request is a STALE COUNT: every later reaper decision
+                # (me.cancelling() as the own-vs-child discriminator)
+                # misreads the loop as cancelled and tears it down. The
+                # request was consumed by the absorb; the count says so.
+                _me = asyncio.current_task()
+                if _me is not None and _me.cancelling():
+                    _me.uncancel()
                 continue
 
             # The round completed without error: reset the backstop's

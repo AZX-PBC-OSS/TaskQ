@@ -62,7 +62,7 @@ async def _held_flow(
     """A flow driven to its hold: (flow_id, node_id, hold_id, runner)."""
     app = _wedge_app(name)
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     node_id = await wf_pool.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'review' "
@@ -305,7 +305,7 @@ async def test_hold_stamp_reconcile_statement_is_the_batch_bounded_self_consumin
     still 'held' (the held-row exclusivity, P3 rule 1's family)."""
     app = _wedge_app("wedge_batch_flow")
     runner = FlowRunner(app.get("wedge_batch_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     node_id, hold_id = await _node_and_hold(wf_conn, wf_schema, flow_id)
     await _plant_wedge(wf_conn, wf_schema, node_id, hold_id, signal_status="delivered")

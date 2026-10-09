@@ -182,7 +182,7 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     the consolidation and re-observed at the final head): the race is
     staged through two REAL processes, so the loser's exit can carry the
     loser's OWN early-read verdict under a noisy box — a one-off red,
-    green ×2 solo and module-parallel (the loaded-bar law's mark, the
+    green x2 solo and module-parallel (the loaded-bar law's mark, the
     demo-legs class map's own disposition). The assertion's substance is
     the OUTCOME HONESTY (one named terminal, the audit agreeing), not
     the race's scheduling."""
