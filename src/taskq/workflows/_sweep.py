@@ -62,6 +62,7 @@ __all__ = [
     "SweepResult",
     "drain_outbox",
     "reap_nodeless_roots",
+    "prune_delivered_outbox",
     "reap_phantom_ledger",
     "sweep_hold_stamps",
     "sweep_join_rederive",
@@ -434,6 +435,28 @@ async def sweep_hold_stamps(
             cleared=cleared_count,
         )
     return cleared_count
+
+
+async def prune_delivered_outbox(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE DELIVERED OUTBOX'S TTL ARM (the D2 soak's P3): a delivered
+    outbox row is narration — the consumer rows exist (the drain's
+    arbiter), ``wf_join_fire`` is the exactly-once ledger — and the soak
+    measured the delivered population growing monotonically forever (no
+    pruner touched it). This arm deletes delivered rows past *retention*,
+    one bounded batch per pass (the tick's drain loop pulls the
+    remainder); UNDELIVERED rows are never touched (the drain owns them —
+    a deleted undelivered row is a lost delivery). ``retention`` is the
+    deletion-sweep family's zero-means-off sentinel: the caller's
+    settings gate skips the arm entirely at ``timedelta(0)``."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(wsql.outbox_retention, batch_size, retention)
+    return len(rows)
 
 
 async def sweep_loop_budget(

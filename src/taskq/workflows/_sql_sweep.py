@@ -486,3 +486,27 @@ WHERE j.id = s.id
   AND (sig.id IS NULL OR sig.status <> 'held')
 RETURNING j.id, (sig.id IS NULL) AS hold_absent
 """
+
+
+# THE DELIVERED OUTBOX'S TTL (the D2 soak's P3): a delivered outbox row is
+# narration — the consumer rows exist (the drain's arbiter inserted them),
+# wf_join_fire is the exactly-once ledger, and the D2 soak measured the
+# delivered population growing monotonically forever (5.9k at close, no
+# pruner touched it). The retention policy's own row: delivered rows past
+# the TTL delete, one bounded committed batch per pass; UNDELIVERED rows
+# are never touched here (the drain owns them — deleting an undelivered
+# row would lose the delivery it exists to make). The period is the
+# sweep-family's zero-means-OFF sentinel (settings level): a brand-new
+# deletion loop's safe misconfiguration is off.
+OUTBOX_RETENTION_SQL = """\
+WITH doomed AS (
+    SELECT id FROM {schema}.wf_outbox
+    WHERE delivered
+      AND created_at <= clock_timestamp() - $2::interval
+    ORDER BY id
+    LIMIT $1
+)
+DELETE FROM {schema}.wf_outbox o USING doomed d
+WHERE o.id = d.id
+RETURNING o.id
+"""

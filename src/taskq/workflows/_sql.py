@@ -91,6 +91,7 @@ from taskq.workflows._sql_sweep import (
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
     OUTBOX_FETCH_UNDELIVERED_SQL,
+    OUTBOX_RETENTION_SQL,
     PHANTOM_REAP_SQL,
     REDERIVE_SWEEP_SQL,
     SWEEP_FIRE_SQL,
@@ -161,6 +162,7 @@ class WorkflowSql:
     sweep_fire: str
     join_body_unavailable: str
     hold_stamp_reconcile: str
+    outbox_retention: str
     ledger_claim: str
     ledger_memoized: str
     ledger_terminal: str
@@ -242,6 +244,7 @@ class WorkflowSql:
             sweep_fire=render(SWEEP_FIRE_SQL),
             join_body_unavailable=render(JOIN_BODY_UNAVAILABLE_SQL),
             hold_stamp_reconcile=render(HOLD_STAMP_RECONCILE_SQL),
+            outbox_retention=render(OUTBOX_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_terminal=render(LEDGER_TERMINAL_SQL),

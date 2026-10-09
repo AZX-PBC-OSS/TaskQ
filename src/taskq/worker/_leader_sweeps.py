@@ -619,6 +619,25 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    async def wf_outbox_retention_call() -> int:
+        # THE DELIVERED OUTBOX'S TTL ARM (the D2 soak's P3: delivered
+        # outbox rows retained forever — 5.9k at close, monotone, no
+        # pruner). The retention policy's own row: the delivered rows
+        # past the TTL delete, one bounded batch per pass; undelivered
+        # rows are the drain's. The period gate is the settings-level
+        # disable sentinel (timedelta(0) → the spec's period gate skips
+        # the arm — a brand-new deletion loop's safe misconfiguration is
+        # off). The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import prune_delivered_outbox
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await prune_delivered_outbox(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_outbox_retention_period,
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
     async def wf_loop_budget_call() -> int:
         # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
         # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
@@ -911,6 +930,24 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=False,
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
+        ),
+        _SweepSpec(
+            # wf_outbox_retention — THE DELIVERED OUTBOX'S TTL (the D2
+            # soak's P3): delivered rows are narration; past the period
+            # they delete (one bounded batch per pass, undelivered rows
+            # never). The period gate is the settings-level disable
+            # sentinel: timedelta(0) disables the arm — a brand-new
+            # deletion loop's safe misconfiguration is off (the
+            # event-retention sweep's polarity).
+            name="wf_outbox_retention",
+            call=wf_outbox_retention_call,
+            warn_event="sweep-wf-outbox-retention-failed",
+            warn_kind="sweep_wf_outbox_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_outbox_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_outbox_retention_tick"),
         ),
         _SweepSpec(
             # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
