@@ -49,13 +49,22 @@ TY_VERSION = "0.0.85"
 
 #: The probe CORPUS: one file per API surface round (T01's engine corpus,
 #: the T09 flow API's wiring corpus, the type-mechanism round's generic
-#: wiring corpus — the negative probes ship WITH the API, BUILD-PROTOCOL
-#: §7b). Each MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS
-#: the marker declares.
+#: wiring corpus, the phase-2/-3/-4 attack rounds' surface corpora — the
+#: negative probes ship WITH the API, BUILD-PROTOCOL §7b). Each
+#: MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS the
+#: marker declares. THE EVIDENCE-INTEGRITY ROUND'S WIRING (cure 4):
+#: attack2/attack3/attack4 ran only under their attackers' own
+#: invocations and ROTTED OFF this gate — three of seven corpus files
+#: unwired, their markers dead or wrong-rule as the signatures moved.
+#: They are WIRED here, re-derived against the current signatures
+#: (wire-or-delete, no zombie corpus).
 _CORPUS: tuple[str, ...] = (
     "attack_wf_negative_types.py",
     "wf_api_negative_types.py",
     "wf_generic_step_negative_types.py",
+    "attack2_wf_phase2_types.py",
+    "attack3_wf_negative_types.py",
+    "attack4_new_surfaces_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

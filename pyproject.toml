@@ -327,6 +327,15 @@ ignore = [
 # caller-controlled value uses $N parameter binding. The file's SQL is the
 # audit-trail red-team's own setup and assertion DDL (test-local triggers).
 "tests/test_audit_redteam.py" = ["S608"]
+# The fleet executor's pins (the evidence-integrity round): the SAME
+# shape — the f-strings' ONLY interpolation is the module fixture's
+# schema identifier, values all $N-bound.
+"tests/test_worker_execution_seam.py" = ["S608"]
+# The wf fixtures' head_sha() helper + the coverage gate + the head-stamp
+# verifier: fixed-argv git probes of the repo's own state (the
+# head-stamp law's provenance check; no user input reaches a command line).
+"scripts/check_wf_coverage.py" = ["S603", "S607"]
+"scripts/verify_evidence_heads.py" = ["S603", "S607"]
 # The T09 runner pins: the same shape — the f-string's ONLY interpolation
 # is the module fixture's schema identifier (module_pg_schema), values all
 # $N-bound.
@@ -415,8 +424,10 @@ ignore = [
 # fixture builds; all user-supplied values use $N parameter binding. The
 # shared seed helpers live in _wf_fixtures (the composed-fixture home);
 # the pin files split by pin family (finalize/sweep/fork/units/_schema/
-# perf-bands/ledger). S311: timing jitter in the race pins.
-"tests/_wf_fixtures.py" = ["S608"]
+# perf-bands/ledger). S311: timing jitter in the race pins. S607: the
+# head-stamp law's head_sha() helper — a fixed-argv git probe of the
+# repo's own state (the evidence-integrity round; no user input).
+"tests/_wf_fixtures.py" = ["S608", "S607"]
 "tests/test_wf_schema_migration.py" = ["S608"]
 "tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_progress_emission.py" = ["S608"]
