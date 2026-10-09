@@ -160,9 +160,7 @@ def build_capture(
             capture[key], cut = _truncate_to_byte_cap(capture[key], field_max)
             if cut is not None:
                 capture[TRUNCATED_MARKER] = capture.get(TRUNCATED_MARKER, 0) + cut
-            total = sum(
-                utf8_byte_len(v) for k, v in capture.items() if k != TRUNCATED_MARKER
-            )
+            total = sum(utf8_byte_len(v) for k, v in capture.items() if k != TRUNCATED_MARKER)
             if total <= max_bytes:
                 break
     return capture

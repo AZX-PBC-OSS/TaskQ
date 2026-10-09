@@ -208,8 +208,16 @@ class CtxWaitOps(_WaitHost):
                 f"hold_cursor_{self.attempt}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
-            row_cursor = int(row_meta["cursor"]) if row_meta is not None and row_meta["cursor"] is not None else 0  # pyright: ignore[reportIndexType,reportArgumentType]
-            row_iteration = int(row_meta["iteration"]) if row_meta is not None and row_meta["iteration"] is not None else 0  # pyright: ignore[reportIndexType,reportArgumentType]
+            row_cursor = (
+                int(row_meta["cursor"])
+                if row_meta is not None and row_meta["cursor"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
+            row_iteration = (
+                int(row_meta["iteration"])
+                if row_meta is not None and row_meta["iteration"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
             cursor = row_iteration if is_loop_kind else row_cursor
             queue = await conn.fetch(
                 render_sql(
