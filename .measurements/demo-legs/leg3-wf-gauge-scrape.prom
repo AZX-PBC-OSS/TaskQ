@@ -1,6 +1,6 @@
 # HELP target_info Target metadata
 # TYPE target_info gauge
-target_info{service_instance_id="f5ebb02f-8506-43d1-8b7f-d51c7adeca3d",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+target_info{service_instance_id="707a52de-0528-4c7d-93c9-2528572a99ff",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
 # HELP taskq_ratelimit_reclaim_pending Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick (scalar: bucket names are not a dimension).
 # TYPE taskq_ratelimit_reclaim_pending gauge
 taskq_ratelimit_reclaim_pending{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
@@ -22,7 +22,41 @@ taskq_jobs_running_lease_expired{otel_scope_name="taskq",otel_scope_schema_url="
 # HELP taskq_heartbeat_consecutive_failures Consecutive heartbeat tick failures for this worker (sample-on-scrape).
 # TYPE taskq_heartbeat_consecutive_failures gauge
 taskq_heartbeat_consecutive_failures{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
+# HELP taskq_admin_sse_connections SSE streams currently open, per (topic, surface). surface is the closed enum 'admin' (the admin UI's /sse/{topic} stream) or 'progress' (the per-job progress stream); topic is the closed vocabulary the endpoints validate before the slot lookup (queues/jobs/workers/history for admin, the one constant progress-stream family key for progress). Recorded in the process that serves the streams, so this series is exported on the admin's /jobs/health/metrics and never on a worker scrape. A value pinned at the configured cap with taskq.admin.sse.rejections_total rising is SSE saturation.
+# TYPE taskq_admin_sse_connections gauge
+taskq_admin_sse_connections{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",surface="progress",topic="_other_"} 3.0
 # HELP taskq_wf_progress_nodes_total Workflow node rows per declared workflow and derived node state, sampled by the maintenance leader on the admin surface. Unregistered workflows collapse onto the _other_ bucket (summed); never per-node labels — the per-node truth is the row and the run's admin page. The alert: TaskQWorkflowBlockedStuck (a run pinned blocked past the bound, no transition).
 # TYPE taskq_wf_progress_nodes_total gauge
 taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="pending",workflow="doc_ingest"} 16.0
 taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="succeeded",workflow="doc_ingest"} 1.0
+# HELP taskq_claim_latency_p50_seconds This worker's claim-statement latency p50 over the recent window, per queue. The claim path's own distribution view - the degradation shows here before the backlog explodes.
+# TYPE taskq_claim_latency_p50_seconds gauge
+taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.023630349896848202
+taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="fleet_life_q"} 0.03321242006495595
+taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_new"} 0.02416971605271101
+taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_old"} 0.031519188079982996
+taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="rt_dispatch_q"} 0.06026461999863386
+# HELP taskq_claim_latency_p95_seconds This worker's claim-statement latency p95 over the recent window, per queue. taskq.dispatch.duration's histogram carries the same signal as a histogram; this gauge exists so the degradation-ratio operands are directly scrapeable without histogram_quantile.
+# TYPE taskq_claim_latency_p95_seconds gauge
+taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.06943925004452467
+taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="fleet_life_q"} 0.040514258900657296
+taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_new"} 0.03692687815055251
+taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_old"} 0.031519188079982996
+taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="rt_dispatch_q"} 0.06026461999863386
+# HELP taskq_claim_latency_p99_seconds This worker's claim-statement latency p99 over the recent window, per queue - the numerator of the degradation ratio.
+# TYPE taskq_claim_latency_p99_seconds gauge
+taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.07401286391541362
+taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="fleet_life_q"} 0.040514258900657296
+taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_new"} 0.03692687815055251
+taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_old"} 0.031519188079982996
+taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="rt_dispatch_q"} 0.06026461999863386
+# HELP taskq_claim_claims_per_second This worker's claim throughput over the recent window, per queue. Read beside the degradation ratio: a rising ratio with a collapsing rate is a claim path about to stall (the death spiral's last visible stage); a rising ratio with a steady rate is headroom still being spent.
+# TYPE taskq_claim_claims_per_second gauge
+taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.06931255216050491
+taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="fleet_life_q"} 2.185272775208712
+taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_new"} 0.009008151659145614
+taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="tqm_old"} 1.0
+taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="rt_dispatch_q"} 1.0
+# HELP taskq_claim_degradation_ratio The live claim-latency p99 against its rolling 24h baseline (minute-bucketed p99s), per queue. ~10x is the pinned-MVCC-horizon signature: a long transaction is holding VACUUM off and the claim query's scan is degenerating through dead tuples. Runbook: TaskQClaimLatencyDegraded. Reports no data until the baseline has warmed (5 minutes), never a fabricated 1.0.
+# TYPE taskq_claim_degradation_ratio gauge
+taskq_claim_degradation_ratio{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 1.1991635957423432
