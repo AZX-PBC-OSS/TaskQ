@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -86,6 +87,7 @@ from taskq.workflows.api._sql_runner import (
     CANCEL_ROOT_SQL_TEMPLATE,
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
+    FLOW_NODE_CENSUS_SQL_TEMPLATE,
     FLOW_PAYLOAD_SQL_TEMPLATE,
     FLOW_STATUS_SQL_TEMPLATE,
     HELD_COUNT_SQL_TEMPLATE,
@@ -157,43 +159,95 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         input: object = None,
         run_key: str | None = None,
-    ) -> JobId:
+    ) -> RunClaim:
         """Create the run: the flow root (its payload CARRIES the input —
         cut #7) + every non-map node upfront (the join-wait rows among
         them, edges declared in the same call). The map joins are
         runtime-spawned by their source's fork (the engine's FORK
         ATOMICITY) — the wiring's downstream consumers ride the join's
-        declared consumers (the outbox)."""
-        claim: RunClaim = await self._insert_root(input, run_key)
-        if not claim.created:
-            return claim.flow_id
-        async with self.pool.acquire() as conn, conn.transaction():
-            # THE CREATE IS ONE TRANSACTION (the deploy matrix's fleet-
-            # crash cure): the rows, the edges, the root's start — one
-            # commit. The create ran statement-autocommit before, and the
-            # fleet's dispatch round swept the not-yet-wired rows UP
-            # INSIDE the create: a join-wait child claimed (and EXECUTED
-            # — its parents' results did not exist, the arg resolution
-            # crashed the worker), the flow's own wiring half-born. A
-            # transaction bounds the dispatch's visibility to the WHOLE
-            # wiring (the fork's atomicity law, create-time face).
-            await self._insert_static_nodes(conn, claim.flow_id, input)
-            # The run is LIVE: the root flips pending → running (the
-            # maintenance leg's derivation owns the TERMINAL verdict
-            # from the rows — the root is a cache, never the decider).
-            await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
-        return claim.flow_id
+        declared consumers (the outbox).
 
-    async def _insert_root(self, input: object, run_key: str | None) -> RunClaim:
+        THE CREATE ATOMICITY (the fork-atomicity law at creation
+        granularity): the ROOT INSERT rides the SAME transaction as the
+        static nodes + edges + ROOT_START. The pre-cure shape committed
+        the root ALONE (its own acquire) and the wiring rode a second
+        transaction — the kill in between stranded the ORPHAN ROOT
+        (pending, ZERO nodes): a root the maintenance derivation can
+        never develop (its rollup INNER-JOINS the node rows — a nodeless
+        root never derives, never terminalizes, never prunes) and one
+        that SQUATS THE RUN KEY (the retry's arbiter conflict answered
+        ``created=False`` and the nodes never landed — ``drive()`` ran to
+        ``max_ticks``). One transaction makes the orphan UNREPRESENTABLE
+        (the create-time face of the fleet-crash cure's own law — the
+        dispatch's visibility is bounded to the WHOLE wiring, and now to
+        the root that owns it).
+
+        THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
+        TYPED :class:`RunClaim` returns — ``created`` /
+        ``existing-running`` / ``existing-terminal`` (the
+        :attr:`RunClaim.kind` verdict) — never a bare id the caller
+        cannot read a status off.
+
+        THE RETRY-COMPLETION CENSUS (the belt's belt): an arbiter
+        conflict over a PENDING run with ZERO node rows is the orphan's
+        one remaining signature (the pre-cure debris) — the nodes
+        re-insert and the root starts IN THE SAME TRANSACTION (the retry
+        completes; the killed create's key is finished, not squatted). A
+        conflict over anything else is the G2 contract: the EXISTING run,
+        never a second silent run, and a terminal run's key is never
+        re-fired. THE REAP BELT: the census-grace arm
+        (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
+        orphan that could ever exist (a future statement-order
+        regression's debris) past the grace."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            claim = await self._insert_root(conn, input, run_key)
+            complete = claim.created
+            if not complete:
+                # THE RETRY-COMPLETION CENSUS: the orphan's signature is
+                # pending + zero nodes — a committed create whose node
+                # pass never rode the root's tx. Anything else is the
+                # existing run.
+                complete = (
+                    claim.status == "pending" and await self._node_census(conn, claim.flow_id) == 0
+                )
+            if complete:
+                # THE CREATE IS ONE TRANSACTION (the deploy matrix's
+                # fleet-crash cure): the rows, the edges, the root's
+                # start — one commit. The create ran statement-autocommit
+                # before, and the fleet's dispatch round swept the
+                # not-yet-wired rows UP INSIDE the create: a join-wait
+                # child claimed (and EXECUTED — its parents' results did
+                # not exist, the arg resolution crashed the worker), the
+                # flow's own wiring half-born. A transaction bounds the
+                # dispatch's visibility to the WHOLE wiring (the fork's
+                # atomicity law, create-time face).
+                await self._insert_static_nodes(conn, claim.flow_id, input)
+                # The run is LIVE: the root flips pending → running (the
+                # maintenance leg's derivation owns the TERMINAL verdict
+                # from the rows — the root is a cache, never the decider).
+                await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
+                # THE CLAIM CARRIES THE COMMITTED STATUS: the ROOT_START
+                # rode the same tx — the run returns LIVE ('running'),
+                # never the insert's pre-start 'pending' (the envelope
+                # never lies about the state it handed back).
+                claim = replace(claim, status="running")
+        return claim
+
+    async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
+        """The run's node-row count — the orphan's census (a nodeless
+        root counts ZERO). The named statement, never inline SQL."""
+        raw = await conn.fetchval(render_sql(FLOW_NODE_CENSUS_SQL_TEMPLATE, self.schema), flow_id)
+        return int(raw or 0)
+
+    async def _insert_root(self, conn: ConnLike, input: object, run_key: str | None) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
         entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
-        async with self.pool.acquire() as conn:
-            return await insert_flow_run(
-                conn,
-                self.wsql,
-                entry=FlowEntryShim(self.compiled.name, entry_payload),
-                run_key=key,
-            )
+        return await insert_flow_run(
+            conn,
+            self.wsql,
+            entry=FlowEntryShim(self.compiled.name, entry_payload),
+            run_key=key,
+        )
 
     async def _insert_static_nodes(self, conn: ConnLike, flow_id: JobId, input: object) -> None:
         for key in sorted(self.compiled.nodes):

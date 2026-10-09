@@ -113,7 +113,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
         return build(step(discriminated_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app2.get("a3cure_discriminated_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -151,7 +151,7 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
         return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("a3cure_ambiguous_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -204,7 +204,7 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
 
     runner = FlowRunner(app.get("a3cure_escalate_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # The outbox row is written in the exhaust's tx; the drain runs at
     # the tick's end; the flow is terminal by then (the exhaust), so the
@@ -256,7 +256,7 @@ async def test_driver_fail_policy_enqueues_nothing(
         return build(loop("counter", refine_forever, max_iterations=2, on_exhausted="fail"))
 
     runner = FlowRunner(app.get("a3cure_fail_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     outbox = await wf_conn.fetch(
         f'SELECT consumer_step_key FROM "{wf_schema}".wf_outbox WHERE flow_id = $1', flow_id
@@ -297,7 +297,7 @@ async def test_escalates_to_registers_a_custom_body(
         )
 
     runner = FlowRunner(app.get("a3cure_custom_escalation_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     await runner.tick(flow_id)  # the consumer pass (the flow is terminal; see the escalate pin)
     assert escalated, "the author's escalation body never ran — the registration is a ghost"
@@ -330,7 +330,7 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
         return build(loop("counter", refine_forever, max_iterations=3))
 
     runner = FlowRunner(app.get("a3cure_reachable_cap_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert len(calls) == 3, f"the cap did not bound spawns exactly: {len(calls)}"
     iteration = await wf_conn.fetchval(
@@ -385,7 +385,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
         return build(step(tail, b, key="tail"))
 
     runner = FlowRunner(app.get("a3cure_exit_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert ran == [], "the downstream node RAN after an Exit — the early exit did not exit"
     # THE EXITED NODE: terminal-succeeded, the typed payload recorded.
@@ -443,7 +443,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
         return build(step(fails_always, Ingest(doc_id="d1"), key="lonely", max_attempts=1))
 
     runner = FlowRunner(app.get("a3cure_retry_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed"
@@ -581,7 +581,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
         return build(step(tail_tail, tail, key="tail_tail"))
 
     runner = FlowRunner(app.get("a3cure_map_tail_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert await runner.result(flow_id) == {"double": 60}
     assert ran == ["tail_tail"]

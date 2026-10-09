@@ -86,7 +86,7 @@ async def main() -> dict[str, Any]:
 
     t0 = time.perf_counter()
     runner = FlowRunner(app.get("t21_chatty_numbers"), pool, schema)
-    flow = await runner.create_flow()
+    flow = (await runner.create_flow()).flow_id
     assert await runner.drive(flow) == "terminal"
     wall_s = time.perf_counter() - t0
 
@@ -133,7 +133,7 @@ async def main() -> dict[str, Any]:
     # the quiet node's finalize (the comparison point)
     t0 = time.perf_counter()
     runner_q = FlowRunner(app.get("t21_quiet_numbers"), pool, schema)
-    flow_q = await runner_q.create_flow()
+    flow_q = (await runner_q.create_flow()).flow_id
     await runner_q.drive(flow_q)
     quiet_s = time.perf_counter() - t0
     out["quiet"] = {"wall_s": round(quiet_s, 3)}
@@ -158,7 +158,7 @@ async def main() -> dict[str, Any]:
         return build(map_source(source, item, key="proc", aggregate=risk_mean))
 
     runner_m = FlowRunner(app2.get("t21_map_numbers"), pool, schema)
-    flow_m = await runner_m.create_flow()
+    flow_m = (await runner_m.create_flow()).flow_id
     t0 = time.perf_counter()
     await runner_m.drive(flow_m)
     map_s = time.perf_counter() - t0

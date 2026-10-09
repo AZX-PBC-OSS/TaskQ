@@ -102,7 +102,7 @@ async def _held_run(wf_pool: Any, wf_schema: str, *, name: str = "cli_hold_flow"
     """A real run driven to its hold; the run id (str) is the CLI's address."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = await flow_runner.create_flow()
+    flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id, until="held")
     return str(flow_id)
 
@@ -153,7 +153,7 @@ async def test_holds_on_a_terminal_run_is_the_healthy_zero(
     section that reads as zero-holds reds)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = await flow_runner.create_flow()
+    flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id)
     result = await to_thread(runner.invoke, app, ["flows", "holds", str(flow_id)])
     assert result.exit_code == 0, result.output
@@ -240,7 +240,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     completes after the operator's retry (§22.6's manual leg)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = await flow_runner.create_flow()
+    flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id)
 
     status = await to_thread(runner.invoke, app, ["flows", "status", str(flow_id)])

@@ -132,6 +132,7 @@ from taskq.worker.health import HealthServer
 # tests._wf_fixtures. The per-line ignores repeat: pyright does not
 # propagate the import block's first-line ignore.
 from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
+    createseam_redlog,  # pyright: ignore[reportUnusedImport]
     engine_redlog,  # pyright: ignore[reportUnusedImport]
     hitl_redlog,  # pyright: ignore[reportUnusedImport]
     ledger_redlog,  # pyright: ignore[reportUnusedImport]

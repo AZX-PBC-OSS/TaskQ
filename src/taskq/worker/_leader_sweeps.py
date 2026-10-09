@@ -577,6 +577,21 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             render_workflow_sql(ctx.deps.settings.schema_name),
         )
 
+    async def wf_nodeless_root_reap_call() -> int:
+        # THE NODELESS-ROOT REAP (the create-seam's belt, the SECOND
+        # fence): a root row with zero node rows — the orphan shape a
+        # future statement-order regression could commit — past the
+        # grace is reaped 'failed' LOUDLY (the maintenance derivation
+        # can never develop it: its rollup INNER-JOINS the node rows).
+        # The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import reap_nodeless_roots
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await reap_nodeless_roots(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     async def wf_progress_ring_prune_call() -> int:
         # THE PROGRESS RING'S PRUNE ARM (T21): the STREAM channel's
         # backstop — leaked rings (emissions that stopped before the
@@ -845,6 +860,23 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
+        ),
+        _SweepSpec(
+            # wf_nodeless_root_reap — THE ORPHAN ROOT'S BELT (the
+            # create-seam's second fence): a nodeless flow root (pending
+            # or running, past the grace — the create's atomicity makes
+            # it unrepresentable on the shipped path; the belt reaps any
+            # future statement-order regression's debris) reaped 'failed'
+            # LOUDLY. NOT a drain either: every reaped root leaves the
+            # predicate; the batch bound is the debris population's own
+            # cap.
+            name="wf_nodeless_root_reap",
+            call=wf_nodeless_root_reap_call,
+            warn_event="sweep-wf-nodeless-root-reap-failed",
+            warn_kind="sweep_wf_nodeless_root_reap_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_nodeless_root_reap_tick"),
         ),
         _SweepSpec(
             # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP (T21):

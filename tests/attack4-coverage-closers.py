@@ -248,7 +248,7 @@ async def held_app(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> Any
         _HELD_APP_STATE["app"] = app
     app = _HELD_APP_STATE["app"]
     runner = FlowRunner(app.get("attack4_closer_hold"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     return {"app": app, "runner": runner, "flow_id": flow_id, "schema": schema}
 
@@ -303,7 +303,7 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
     assert second.status == "no-op" and "already delivered" in (second.reason or ""), second
 
     # THE RESUME-REFUSED arm: a held hold whose node's mark is gone.
-    flow2 = await held_app["runner"].create_flow()
+    flow2 = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow2, until="held")
     (hold2,) = await client.list(str(flow2))
     await module_pg_pool.execute(
@@ -326,7 +326,7 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
     # THE CANCELLED-HOLD arm (the deliver CAS's refusal half): a hold the
     # cancel cascade consumed — the CAS misses, the row's status is
     # 'cancelled' → the named refusal (never the no-op).
-    flow3 = await held_app["runner"].create_flow()
+    flow3 = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow3, until="held")
     (hold3,) = await client.list(str(flow3))
     from taskq.backend._protocol import JobId as _JobId
@@ -377,7 +377,7 @@ async def test_the_cold_boundary_refuses_by_the_rows_schema_alone(
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_cold_refusal"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
     # The AMBIGUOUS world: a second schema both-all-optional (the
@@ -431,7 +431,7 @@ async def test_the_resolves_dead_node_arm_via_the_client(
     stands."""
     schema = held_app["schema"]
     client = HitlClient(module_pg_pool, schema=schema)
-    flow_id = await held_app["runner"].create_flow()
+    flow_id = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow_id, until="held")
     (hold,) = await client.list(str(flow_id))
     await module_pg_pool.execute(
@@ -451,7 +451,7 @@ async def test_the_contexts_null_payload_skips_the_chain(
     chain gate is the isinstance guard — the payload rides as None, no
     chain, no hook (nothing to redact)."""
     schema = held_app["schema"]
-    flow_id = await held_app["runner"].create_flow()
+    flow_id = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow_id, until="held")
     await module_pg_pool.execute(
         f'UPDATE "{schema}".wf_signals SET payload = NULL '
@@ -551,7 +551,7 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
         return build(map_source(ingested, child, key="kid"))
 
     runner = FlowRunner(app.get("attack4_cursor_flow"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(flow_id)
     assert outcome == "terminal"
 
@@ -603,7 +603,7 @@ async def test_the_re_wait_while_a_hold_stands_raises_node_held(
         return build(step(double_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_rewait"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
     # THE RE-WAIT from a NEW body execution's ctx (the same coordinates):
@@ -678,7 +678,7 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_signal_reader"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(str(flow_id))

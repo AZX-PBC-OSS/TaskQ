@@ -81,7 +81,7 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         return build(step(work, Ingest(doc_id="d1"), key="work", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_chain"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     node = await wf_conn.fetchval(
@@ -142,7 +142,7 @@ async def test_declared_schema_door_refuses_wrong_shape(
         return build(step(lying_body, Ingest(doc_id="d1"), key="lying", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_lying"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     status = await wf_conn.fetchval(
         f"""SELECT status::text FROM "{wf_schema}".jobs WHERE step_key = 'lying'
@@ -223,7 +223,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
     runner = FlowRunner(app.get("t21_chatty"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     status = await runner.drive(flow_id)
     assert status == "terminal"
 
@@ -369,7 +369,7 @@ async def test_terminal_projection_lands_after_the_finalize(
         return build(step(boom, Ingest(doc_id="d1"), key="boom", max_attempts=1))
 
     runner = FlowRunner(app.get("t21_boom"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     node = await wf_conn.fetchval(

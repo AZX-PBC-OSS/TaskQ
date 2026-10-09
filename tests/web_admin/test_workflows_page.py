@@ -115,7 +115,7 @@ async def _seed_run(
     """A REAL run driven to its hold (the rows the page renders)."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     return str(flow_id)
 
@@ -169,7 +169,7 @@ async def test_run_page_zero_holds_is_the_defined_state(
     # A hold-free run: zero wf_signals rows, ever.
     compiled = sys.modules[MODULE_NAME].app.get("admin_plain_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(
@@ -551,7 +551,7 @@ async def test_panel_latency_band(
     # A plain run (the panel read is status-independent).
     compiled = sys.modules[MODULE_NAME].app.get("admin_plain_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     app = _make_admin_app(module_pg_pool, schema)
     samples: list[float] = []
@@ -646,7 +646,7 @@ async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
     run_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
     compiled = sys.modules[MODULE_NAME].app.get("admin_hold_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, run_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     await run_pool.close()
     await conn.execute(f'DROP TABLE "{schema}".wf_edge')

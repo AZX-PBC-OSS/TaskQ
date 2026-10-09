@@ -63,7 +63,7 @@ async def _held_flow(
         return build(step(wait_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     node_id = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'review' AND "

@@ -338,18 +338,27 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
 
 # ── the workflow demo (T16) ─────────────────────────────────────────────
 #
-# The SAME envelope contract (the repo's F3 finding): the workflow
-# trigger answers 202 with the RUN id + the run-watch url (the admin's
-# workflow page — the graph view with the live SSE). A run-key conflict
-# (the same cron slot twice) answers 202 WITH THE EXISTING run id (the
-# idempotency shows in the envelope — the SAME id for the same slot; the
-# code always answers 202, never a 200 re-read), the run-level
-# idempotency is the demo, not an error.
+# The SAME envelope contract (the repo's F3 finding) — HONEST (the
+# create-seam's cure): the workflow trigger answers 202 with the RUN id +
+# the run-watch url (the admin's workflow page — the graph view with the
+# live SSE). A run-key conflict with a LIVE run answers 202 WITH THE
+# EXISTING run id (the idempotency shows in the envelope — the SAME id
+# for the same slot), the run-level idempotency is the demo, not an
+# error. A run-key conflict with a TERMINAL run answers 409 — the
+# REFUSED-TO-REUSE verdict the typed claim states (a failed run's key
+# replayed as a silent 202 was the convicted lie).
 
 
 @app.post("/workflows/{workflow_name}/run")
 async def run_workflow(workflow_name: str, request: Request) -> Response:
-    """Trigger the demo workflow; 202 + {run_id, url} — the F3 envelope."""
+    """Trigger the demo workflow; the HONEST envelope (the create-seam's
+    cure): the typed RunClaim decides the code — ``created`` /
+    ``existing-running`` answer 202 + {run_id, url}; an
+    ``existing-terminal`` claim answers **409** with the PRIOR run's id +
+    status — the REFUSED-TO-REUSE verdict stated loudly (the convicted
+    shape: a FAILED run's key replayed as a silent 202 that launched
+    nothing). The re-run is the caller's documented choice: a NEW slot
+    key."""
     from examples.workflows import trigger_run
 
     if workflow_name != "doc_ingest":
@@ -362,9 +371,23 @@ async def run_workflow(workflow_name: str, request: Request) -> Response:
         raw_slot = form.get("slot")
         if isinstance(raw_slot, str) and raw_slot:
             run_key = f"doc_ingest:demo:{raw_slot}"
-    run_id = await trigger_run(pool, settings_obj.schema_name, run_key)
+    claim = await trigger_run(pool, settings_obj.schema_name, run_key)
+    if claim.kind == "existing-terminal":
+        return JSONResponse(
+            {
+                "run_id": str(claim.flow_id),
+                "status": claim.status,
+                "detail": (
+                    "the run key's prior run is terminal "
+                    f"({claim.status}) — its key is never silently "
+                    "re-fired; re-run with a new slot key"
+                ),
+                "url": f"/taskq/workflows/{claim.flow_id}",
+            },
+            status_code=409,
+        )
     return JSONResponse(
-        {"run_id": run_id, "url": f"/taskq/workflows/{run_id}"},
+        {"run_id": str(claim.flow_id), "url": f"/taskq/workflows/{claim.flow_id}"},
         status_code=202,
     )
 

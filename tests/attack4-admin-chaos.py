@@ -219,7 +219,7 @@ def _make_admin_app(pg: asyncpg.Pool, schema: str, wf_app: Any = None) -> FastAP
 async def _run_seed(pool: asyncpg.Pool, schema: str, *, name: str = "attack4a_hold_flow") -> str:
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     return str(flow_id)
 
@@ -635,7 +635,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4a_map_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # Drive the fork: ticks until terminal or nothing claimable — the
     # read path under test does not care whether the children are
     # terminal, only how many rows exist.

@@ -45,7 +45,7 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(
         return build(step(body, Ingest(doc_id="d1"), key="solo"))
 
     runner = FlowRunner(app.get("step_optout"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1
     # THE LEDGER: no claim row for the opted-out STEP (the NODE's own
@@ -80,7 +80,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
         return build(step(body, Ingest(doc_id="d1"), key="solo", max_attempts=2))
 
     runner = FlowRunner(app.get("step_fail"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     rows = await wf_pool.fetch(
         f'SELECT status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
@@ -117,7 +117,7 @@ async def test_ctx_step_the_memoized_replay_returns_the_record(
         return build(step(body, Ingest(doc_id="d1"), key="solo", max_attempts=3))
 
     runner = FlowRunner(app.get("step_memo"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1, calls  # the step RAN ONCE (the replay returned the record)
 
@@ -142,7 +142,7 @@ async def test_capture_policies_none_and_errors_only(
             return build(step(fails, Ingest(doc_id="the input text"), key="solo"))
 
         runner = FlowRunner(app.get(f"cap_{policy}"), wf_pool, wf_schema)
-        flow_id = await runner.create_flow()
+        flow_id = (await runner.create_flow()).flow_id
         assert await runner.drive(flow_id) == "terminal"
         rows = await wf_pool.fetch(
             f'SELECT capture FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
@@ -304,7 +304,7 @@ async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
         return build(the_loop, first)
 
     runner = FlowRunner(app.get("ctx_runtime_fields"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     assert seen["step_ctx"] == ("ctx_runtime_fields", "q1", True), seen
     assert seen["loop_ctx"] == ("ctx_runtime_fields", 1_800_000), seen

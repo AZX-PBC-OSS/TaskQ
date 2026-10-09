@@ -59,7 +59,7 @@ async def test_a3_driver_exhaustion_never_enqueues_the_escalation(
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
 
     runner = await _runner_of(app, "a3_escalate_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     outbox = await wf_conn.fetch(
         f'SELECT consumer_step_key, bindings FROM "{wf_schema}".wf_outbox WHERE flow_id = $1',
@@ -94,7 +94,7 @@ async def test_a3_fail_policy_escalates_anyway(
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="fail"))
 
     runner = await _runner_of(app, "a3_fail_policy_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # The SWEEP-driven exhaustion path: orphan the loop past its cap the
     # way the shipped pin does (the driver would exhaust it otherwise).
     await wf_conn.execute(
@@ -144,7 +144,7 @@ async def test_a3_poison_body_escapes_both_walls(
         return build(loop("counter", poison, max_iterations=5))
 
     runner = await _runner_of(app, "a3_poison_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # The bound drive: if the machinery had ANY bound, the flow would go
     # terminal within the ticks.
     await runner.drive(flow_id, max_ticks=60)
@@ -190,7 +190,7 @@ async def test_a3_cursor_replay_through_a_retry(
         return build(step(body, Ingest(doc_id="d1"), key="review"))
 
     runner = await _runner_of(app, "a3_cursor_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # Drive to the hold, deliver ONE answer, then the body fails once.
     await runner.drive(flow_id, until="held")
     from taskq.workflows.api._hitl import HitlClient
@@ -244,7 +244,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
         return build(loop("counter", fails_once, max_iterations=3))
 
     runner = await _runner_of(app, "a3_mixed_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     node = await wf_conn.fetchrow(
@@ -285,7 +285,7 @@ async def test_a3_cap_bounds_spawns_through_the_memo_replay(
         return build(loop("counter", counting, max_iterations=4))
 
     runner = await _runner_of(app, "a3_cap_flow", wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     assert len(calls) == 4, f"the cap did NOT bound spawns exactly: {len(calls)}"
     # The sweep's shadow on the terminal rows changes nothing.

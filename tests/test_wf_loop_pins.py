@@ -99,7 +99,7 @@ async def test_carry_advanced_exactly_once_per_iteration(
 
     app, name = _loop_app(counting_body, max_iterations=3)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # The carry advanced EXACTLY ONCE per iteration: [1, 2, 3].
     assert iterations == [1, 2, 3], iterations
@@ -137,7 +137,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
 
     app, name = _loop_app(refine_forever, max_iterations=5)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # EXACTLY max_iterations spawns (the cap bounds total spawns).
     assert len(spawns) == 5, len(spawns)
@@ -178,7 +178,7 @@ async def test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop(
     ``if``-in-the-body implementation reds this (the body never runs)."""
     app, name = _loop_app(None, max_iterations=3)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # ORPHAN the loop: claim it (running) and force the counter PAST the
     # cap — no worker will ever advance it.
     await wf_conn.execute(
@@ -214,7 +214,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     mutation drill's recorded red = the CONSUME-BUDGET dragon)."""
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # Both loop rows: 'running', deadline forced into the past.
     for paused in (True, False):
         loop_id = new_uuid()
@@ -280,7 +280,7 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
 
     app2, name2 = _loop_app(body_failure, max_iterations=5)
     runner2 = await _runner_of(app2, name2, wf_pool, wf_schema)
-    flow_id2 = await runner2.create_flow()
+    flow_id2 = (await runner2.create_flow()).flow_id
     await runner2.drive(flow_id2, max_ticks=30)
     node_row = await wf_conn.fetchrow(
         f'SELECT status, error_class FROM "{wf_schema}".jobs '
@@ -321,7 +321,7 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     with patch.object(ledger_module, "memoized_step_result", killing_memo):
         app3, name3 = _loop_app(done_at_two, max_iterations=5)
         runner3 = await _runner_of(app3, name3, wf_pool, wf_schema)
-        flow_id3 = await runner3.create_flow()
+        flow_id3 = (await runner3.create_flow()).flow_id
         await runner3.drive(flow_id3, max_ticks=10)
         crashed3 = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
@@ -371,7 +371,7 @@ async def test_budget_fires_on_db_clock_under_app_clock_skew(
     del skew_clock
     app, name = _loop_app(None, budget_s=1.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     loop_id = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' AND "
         "(metadata->>'flow_id')::uuid = $1",
@@ -413,7 +413,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
 
     app, name = _loop_app(None, max_iterations=2)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     iter_key = "counter.iter0"
     # THE CLAIM (one statement — the arbiter's key is the identity).
     from taskq.workflows.ledger import claim_step_ledger
@@ -485,7 +485,7 @@ async def test_consume_budget_dragon_red_forever(
     # The shipped arm's paused-row refusal (the green side of the drill):
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     loop_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -533,7 +533,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
         return build(loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0))
 
     runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # (1) the loop RUNS and HOLDS.
     verdict = await runner.drive(flow_id, until="held")
     assert verdict == "held", verdict

@@ -163,8 +163,10 @@ class ScriptConn:
     async def execute(self, sql: str, *args: object) -> str:
         # The workflow statements' calls carry the wf_ prefix (the
         # composition pin strips them with the wf events; a legacy call
-        # never matches — the strip stays conservative).
-        if "wf_" in sql:
+        # never matches — the strip stays conservative). The jobs-table
+        # workflow statements (the nodeless-root reap) carry no wf_ table
+        # — the flow-root marker they filter on IS the classifier.
+        if "wf_" in sql or "__flow__" in sql:
             self.stream.append(("call", "wf_stmt"))
             return "UPDATE 0"
         self.stream.append(("call", "stale_workers"))
@@ -179,8 +181,10 @@ class ScriptConn:
         # The SAME wf_ classification the execute path carries (the ring
         # prune's owner count is the first wf statement on this channel —
         # an unclassified fetchval would ride the stale_batches script's
-        # deque and shift a 7 into the wrong arm's verdict).
-        if "wf_" in sql:
+        # deque and shift a 7 into the wrong arm's verdict). The
+        # jobs-table workflow statements (the nodeless-root reap) carry
+        # no wf_ table — the flow-root marker IS the classifier.
+        if "wf_" in sql or "__flow__" in sql:
             self.stream.append(("call", "wf_stmt"))
             return 0
         self.stream.append(("call", "stale_batches"))
@@ -646,6 +650,7 @@ _WF_ARMS = (
     "wf_signal_sweep",
     "wf_loop_budget",
     "wf_phantom_reap",
+    "wf_nodeless_root_reap",
     "wf_progress_ring_prune",
 )
 

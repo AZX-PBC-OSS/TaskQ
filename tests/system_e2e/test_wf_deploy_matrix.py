@@ -124,7 +124,7 @@ async def _create_run(
     pool: asyncpg.Pool, schema: str, flow_name: str, *, run_key: str | None = None
 ) -> str:
     runner = FlowRunner(MARCH_FLOWS[flow_name], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
-    flow_id = await runner.create_flow(run_key=run_key)
+    flow_id = (await runner.create_flow(run_key=run_key)).flow_id
     return str(flow_id)
 
 

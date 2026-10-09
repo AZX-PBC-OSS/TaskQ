@@ -546,7 +546,7 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
     try:
         compiled = get_compiled_workflow("deep_research")
         runner = FlowRunner(compiled, pool, settings.schema_name)
-        flow_id = await runner.create_flow(run_key=f"deep-research:{payload.slot}")
+        flow_id = (await runner.create_flow(run_key=f"deep-research:{payload.slot}")).flow_id
         return {"flow_id": str(flow_id)}
     finally:
         await pool.close()

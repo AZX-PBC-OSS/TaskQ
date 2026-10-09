@@ -137,6 +137,16 @@ def progress_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
+@pytest.fixture
+def createseam_redlog() -> Iterator[RedLog]:
+    """The red sink for the create-seam pins (the create's atomicity, the
+    run-key claim's honesty, the root-marker fence, the reap belt, the
+    packaged run)."""
+    log = RedLog("createseam-pin-reds.json")
+    yield log
+    log.flush()
+
+
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in

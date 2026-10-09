@@ -109,7 +109,7 @@ async def test_create_flow_carries_input_and_drives(
         return build(a)
 
     runner = FlowRunner(app.get("input_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow(input={"doc_id": "d1"})
+    flow_id = (await runner.create_flow(input={"doc_id": "d1"})).flow_id
     # THE INPUT IS ON THE ROW (cut #7: never a closure).
     raw = await wf_conn.fetchval(
         f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1',
@@ -137,7 +137,7 @@ async def test_join_user_body_cascades_downstream(
         return build(step(_tail, reducer, key="tail"))
 
     runner = FlowRunner(app.get("cascade_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # The cascade: tail saw the REDUCER's output (the decoded totals).
     assert await runner.result(flow_id) == {"total": 8}
@@ -158,7 +158,7 @@ async def test_sequenced_maps_depth3_one_flow(
         return build(step(_map_tail, source, key="tail"))
 
     runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # the map's children exist as ROWS with map_index (the fork's
     # per-item identity — the ledger keys them separately).
@@ -202,7 +202,7 @@ async def test_skip_predicate_decided_at_dispatch(
         )
 
     runner = FlowRunner(app.get("guard_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     row = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs '
@@ -236,7 +236,7 @@ async def test_retry_classifier_routes_by_kind(
         return build(node)
 
     runner = FlowRunner(app.get("retry_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     attempts = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
@@ -270,7 +270,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
         return build(node)
 
     runner = FlowRunner(app.get("ladder_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     statuses = await wf_conn.fetch(
         f'SELECT status FROM "{wf_schema}".wf_step_ledger '
@@ -297,7 +297,7 @@ async def test_flow_result_read_decodes_once(
         return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
 
     runner = FlowRunner(app.get("result_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     result = await runner.result(flow_id)
     assert isinstance(result, dict) and result == {"ref": "d1"}
@@ -329,7 +329,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
         return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
 
     runner = FlowRunner(app.get("d1_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # THE REGISTRY IS THE TRUTH: the compile registered the bodies.
     definition = get_registry().get("d1_flow")
     assert "only" in definition.bodies
@@ -362,7 +362,7 @@ async def test_map_children_ledger_identity_and_max_attempts(
         return build(mapped)
 
     runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     ledger = await wf_conn.fetch(
         f'SELECT map_index, attempt, status FROM "{wf_schema}".wf_step_ledger '
@@ -427,7 +427,7 @@ async def test_drive_until_held_bound(
         return build(a)
 
     runner = FlowRunner(app.get("bound_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # THE BOUND: max_ticks=2 ends the drive — never a hang (the cap is
     # the pin; a driver that spins forever is the defect with no stack).
     verdict = await runner.drive(flow_id, until="held", max_ticks=2, tick=0.0)

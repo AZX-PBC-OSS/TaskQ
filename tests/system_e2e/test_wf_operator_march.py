@@ -104,7 +104,7 @@ async def test_the_operators_march_deploy_to_rollback(
         pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=4)
         wsql = WorkflowSql.build(schema)
         runner = FlowRunner(MARCH_FLOWS["reclaim_target"], pool, schema)
-        flow_id = await runner.create_flow(run_key="operator-march:observe")
+        flow_id = (await runner.create_flow(run_key="operator-march:observe")).flow_id
         await tag_run_rows(pool, schema, str(flow_id), _TAG)
         start = time.monotonic()
         observed: str | None = None
@@ -147,7 +147,7 @@ async def test_the_operators_march_deploy_to_rollback(
         # NOTHING serves — LIVE-blocked, the reason NAMED, the alert's
         # join confirmable.
         drift_runner = FlowRunner(MARCH_FLOWS["drift_target"], pool, schema)
-        drift_id = await drift_runner.create_flow(run_key="operator-march:debug")
+        drift_id = (await drift_runner.create_flow(run_key="operator-march:debug")).flow_id
         start = time.monotonic()
         gone: asyncpg.Record | None = None
         while time.monotonic() - start < _DRIFT_OBSERVE_BOUND_S:
@@ -184,7 +184,7 @@ async def test_the_operators_march_deploy_to_rollback(
         # generations; the per-attempt record rides the claims (the
         # §22.1 record).
         live_run = FlowRunner(MARCH_FLOWS["reclaim_target"], pool, schema)
-        upgrade_id = await live_run.create_flow(run_key="operator-march:upgrade")
+        upgrade_id = (await live_run.create_flow(run_key="operator-march:upgrade")).flow_id
         gen2 = spawn_worker(
             module_pg_schema.pg_dsn,
             schema,
@@ -221,7 +221,7 @@ async def test_the_operators_march_deploy_to_rollback(
         # The vanilla pod joins (the v1 deployment): the fence never
         # hands it a workflow row; the pod stays alive; the capable
         # fleet finishes the run.
-        rollback_id = await live_run.create_flow(run_key="operator-march:rollback")
+        rollback_id = (await live_run.create_flow(run_key="operator-march:rollback")).flow_id
         v1 = spawn_worker(
             module_pg_schema.pg_dsn,
             schema,
@@ -356,7 +356,7 @@ async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
         from taskq.workflows.api._runner import FlowRunner
 
         runner = FlowRunner(MARCH_FLOWS["reclaim_target"], pool, schema)
-        flow_id = await runner.create_flow(run_key="operator-march:upgrade-path")
+        flow_id = (await runner.create_flow(run_key="operator-march:upgrade-path")).flow_id
         await tag_run_rows(pool, schema, str(flow_id), _TAG)
         status, measured = await wait_flow_terminal(
             conn, schema, str(flow_id), bound_s=MARCH_SETTLE_BOUND_S * 2

@@ -83,6 +83,7 @@ from taskq.workflows._sql_status import (
 )
 from taskq.workflows._sql_sweep import (
     JOIN_BODY_UNAVAILABLE_SQL,
+    NODELESS_ROOT_REAP_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
     OUTBOX_FETCH_UNDELIVERED_SQL,
@@ -160,6 +161,7 @@ class WorkflowSql:
     ledger_fence_attempt: str
     ledger_fence_by_id: str
     phantom_reap: str
+    nodeless_root_reap: str
     node_insert: str
     node_edge: str
     flow_status: str
@@ -236,6 +238,7 @@ class WorkflowSql:
             ledger_fence_attempt=render(LEDGER_FENCE_ATTEMPT_SQL),
             ledger_fence_by_id=render(LEDGER_FENCE_BY_ID_SQL),
             phantom_reap=render(PHANTOM_REAP_SQL),
+            nodeless_root_reap=render(NODELESS_ROOT_REAP_SQL),
             node_insert=render(NODE_INSERT_SQL),
             node_edge=render(NODE_EDGE_SQL),
             flow_status=render(FLOW_STATUS_SQL),

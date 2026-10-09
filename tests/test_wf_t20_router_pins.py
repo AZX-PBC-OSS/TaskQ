@@ -541,7 +541,7 @@ async def test_t20_chain_end_to_end_through_the_runner(
         return build(src)
 
     runner = FlowRunner(app.get("t20_chain_e2e"), module_pg_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
 
     rows = await wf_conn.fetch(
@@ -623,7 +623,7 @@ async def test_t20_router_not_total_through_the_runner(
         return build(src)
 
     runner = FlowRunner(app.get("t20_router_not_total_e2e"), module_pg_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     row = await wf_conn.fetchrow(

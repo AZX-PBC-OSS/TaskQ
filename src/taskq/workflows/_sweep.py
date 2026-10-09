@@ -32,6 +32,8 @@ arm excludes them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import Final
 
 import asyncpg
 import structlog
@@ -52,12 +54,19 @@ from taskq.workflows._sql import (
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
 __all__ = [
+    "NODELESS_ROOT_REAP_GRACE_S",
     "SweepResult",
     "drain_outbox",
+    "reap_nodeless_roots",
     "reap_phantom_ledger",
     "sweep_join_rederive",
     "sweep_progress_ring_prune",
 ]
+
+#: The reap belt's grace (seconds): a nodeless root younger than this is
+#: an in-flight create of a buggy shape, not debris — the belt never reaps
+#: mid-flight. The clock comparison is PG's own (the DB-clock doctrine).
+NODELESS_ROOT_REAP_GRACE_S: Final[float] = 300.0
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -322,6 +331,39 @@ async def sweep_progress_ring_prune(
     async with pool.acquire() as conn:
         pruned: int | None = await conn.fetchval(wsql.progress_ring_prune, ring_bound, batch_size)
     return int(pruned or 0)
+
+
+async def reap_nodeless_roots(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    grace_s: float = NODELESS_ROOT_REAP_GRACE_S,
+    batch_size: int = 100,
+) -> int:
+    """THE NODELESS-ROOT REAP (the create-seam's belt, the SECOND fence):
+    every root row (``step_key = '__flow__'``) with ZERO node rows, in
+    ``pending`` or ``running``, past the grace — reaped ``failed`` with
+    the LOUD ``NodelessRunReaped`` class, in one set-based bounded
+    statement (the event leg rides it).
+
+    THE CREATE ATOMICITY is the first fence: root + nodes + edges +
+    ROOT_START are one transaction, so the orphan root is UNREPRESENTABLE
+    on the shipped create. THIS arm is what protects against any future
+    statement-order regression re-opening the window: the pre-cure
+    debris shape (the root insert committed ALONE, the node pass killed)
+    was a root the maintenance derivation can never develop (the rollup
+    INNER-JOINS the node rows — a nodeless root never derives, never
+    terminalizes, never prunes: unbounded retention AND a run key
+    squatted forever). The belt reaps it; the typed claim surface then
+    answers the squatted key's replay ``existing-terminal`` LOUDLY (the
+    caller's re-run is a new key — never a silent no-op).
+
+    Returns the reaped count."""
+    async with pool.acquire() as conn:
+        reaped: str | None = await conn.fetchval(
+            wsql.nodeless_root_reap, timedelta(seconds=grace_s), batch_size
+        )
+    return int(reaped or 0)
 
 
 async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:

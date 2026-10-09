@@ -46,6 +46,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api import GateDecl
+from taskq.workflows.ledger import RunClaim
 
 #: The demo's batch: one doc is ARMED to fail its first enrichment
 #: attempt (the failing child + collect's demonstration; the retry takes
@@ -189,12 +190,15 @@ def doc_ingest() -> object:
     return build(published)
 
 
-async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = None) -> str:
+async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = None) -> RunClaim:
     """The demo's trigger: one run of the demo graph (the run key makes
-    the trigger idempotent when given)."""
+    the trigger idempotent when given). THE CLAIM SURFACE HONEST: the
+    TYPED claim returns — the claim's ``kind`` states the demo's
+    202-vs-409 distinction (``created``/``existing-running`` → 202;
+    ``existing-terminal`` → the REFUSED-TO-REUSE 409, the prior run's id
+    + status on the envelope) — never a bare id and a silent 202."""
     runner = FlowRunner(wf_app.get("doc_ingest"), pool, schema)
-    flow_id = await runner.create_flow(input=IngestBatch(doc_ids=list(DEMO_DOCS)), run_key=run_key)
-    return str(flow_id)
+    return await runner.create_flow(input=IngestBatch(doc_ids=list(DEMO_DOCS)), run_key=run_key)
 
 
 async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:

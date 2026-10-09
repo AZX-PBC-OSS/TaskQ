@@ -64,7 +64,7 @@ async def _held_flow(
         return build(step(wait_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     node_id = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'review' AND "
@@ -188,7 +188,7 @@ async def test_resume_does_not_burn_the_retry_ladder(
         return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
 
     runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
     # is ALIVE) → succeed.
     for _ in range(6):
@@ -259,7 +259,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
         return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # HOLD 1.
     await runner.drive(flow_id, until="held")
     rows = await wf_conn.fetch(

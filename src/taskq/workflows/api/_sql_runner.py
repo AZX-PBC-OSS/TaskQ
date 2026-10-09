@@ -106,6 +106,17 @@ WHERE (metadata->>'flow_id')::uuid = $1
 ORDER BY id
 """
 
+#: THE NODE CENSUS (the create-seam's retry-completion read): the run's
+#: node-row count — a nodeless root (the orphan's signature: pending +
+#: zero nodes, the pre-cure debris shape) counts ZERO. The same
+#: lineage-and-not-the-root predicate every node read spells.
+FLOW_NODE_CENSUS_SQL_TEMPLATE = """
+SELECT count(*) FROM {schema}.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND metadata ? 'flow_id'
+  AND step_key <> '__flow__'
+"""
+
 FLOW_STATUS_SQL_TEMPLATE = """
 SELECT status FROM {schema}.jobs WHERE id = $1
 """

@@ -90,7 +90,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
         return build(children)
 
     runner = FlowRunner(app.get("attack4c_self_cancel"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # THE BOUND: the drive ends (any outcome) — a wedge is the defect.
     outcome = await asyncio.wait_for(runner.drive(flow_id, max_ticks=200), timeout=60)
     assert outcome in ("terminal", "max_ticks", "held"), outcome
@@ -137,7 +137,7 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_late_resolve"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
     # The FENCE-BYPASS world: the root goes terminal over the held node
@@ -201,7 +201,7 @@ async def test_a_hold_without_payload_schema_meets_the_typed_door(
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_cold_gate"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
     # THE REGISTRATION IS GONE: the row's payload_schema erased — the
@@ -264,7 +264,7 @@ async def test_a_hold_with_payload_schema_in_the_warm_process_still_refuses_garb
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_gate_control"), module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(str(flow_id))
@@ -368,7 +368,7 @@ async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
     for round_no in range(3):
         pool = await asyncpg.create_pool(dsn, min_size=1)
         runner = FlowRunner(compiled, pool, schema)
-        flow_id = await runner.create_flow()
+        flow_id = (await runner.create_flow()).flow_id
         await runner.tick(flow_id)  # the parent claims + finalizes mid-round
         mid = await pool.fetchval(
             f'SELECT status FROM "{schema}".jobs '

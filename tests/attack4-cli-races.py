@@ -161,7 +161,7 @@ def _cli(
 async def _held_run(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> str:
     compiled = sys.modules[MODULE_NAME].app.get("attack4b_hold_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, module_pg_schema.schema_name)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     return str(flow_id)
 
@@ -347,7 +347,7 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4b_stuck_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # A BOUNDED drive: the run's root does not flip while the blocked
     # closure stands (the derivation says 'blocked', not terminal) — an
     # unbounded drive would spend its max_ticks sleeping. The rows are
@@ -459,7 +459,7 @@ async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     runner = FlowRunner(
         other.get("attack4b_GHOST_flow"), module_pg_pool, module_pg_schema.schema_name
     )
-    run_id = await runner.create_flow()
+    run_id = (await runner.create_flow()).flow_id
     await runner.drive(
         run_id, until="held"
     )  # the REAL hold row (the gate's lookup must reach the KeyError)
@@ -495,7 +495,7 @@ async def test_the_cancel_of_an_already_terminal_run_is_the_named_noop(
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4b_hold_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     from taskq.workflows.api._hitl import HitlClient
 

@@ -396,7 +396,7 @@ async def test_the_streaming_emit_march_conditional_chains(
         from taskq.workflows.api._runner import FlowRunner
 
         runner = FlowRunner(runner_ctor, march_pool, schema)
-        flow_id = await runner.create_flow()
+        flow_id = (await runner.create_flow()).flow_id
         await tag_run_rows(march_pool, schema, str(flow_id), _TAG)
 
         status, measured = await wait_flow_terminal(conn, schema, str(flow_id))
@@ -482,7 +482,7 @@ async def test_the_doc_ingest_march_fan_in_progress_render(
     try:
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["i1", "i2"])
         runner = FlowRunner(MARCH_FLOWS["doc_ingest_march"], march_pool, schema)
-        flow_id = await runner.create_flow()
+        flow_id = (await runner.create_flow()).flow_id
         await tag_run_rows(march_pool, schema, str(flow_id), _TAG)
 
         status, measured = await wait_flow_terminal(conn, schema, str(flow_id))

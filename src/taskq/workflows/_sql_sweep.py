@@ -376,3 +376,59 @@ WHERE l.status = 'running'
   )
 RETURNING l.id, l.flow_id
 """
+
+
+# ── THE NODELESS-ROOT REAP (the create-seam's belt) ─────────────────────
+# The create's atomicity makes the orphan root UNREPRESENTABLE (root +
+# nodes + edges + ROOT_START are one transaction); this arm is the SECOND
+# fence: any nodeless root that could ever exist — a future statement-
+# order regression's debris, a hand-crafted row — is reaped 'failed' with
+# the LOUD error class once it is past the grace. THE SHAPES REAPED: a
+# root (step_key '__flow__') with ZERO node rows in 'pending' or
+# 'running' — the maintenance derivation can never develop either (its
+# rollup INNER-JOINS the node rows: a nodeless root never derives, never
+# terminalizes, never prunes — unbounded retention + a run key squatted
+# forever). THE GRACE ($1) is the belt's own conservatism: an in-flight
+# create of a buggy future shape is not reaped mid-flight; the clock is
+# PG's own (the DB-clock doctrine), the batch bounded ($2, SKIP LOCKED).
+# The event leg rides the same statement (a terminal transition an
+# events reader cannot see never happened). The reap is the DEFINED
+# verdict, not a heal: the run's key stays with the reaped run — the
+# caller's re-run is a NEW key (the typed claim surface states the
+# existing-terminal verdict loudly).
+NODELESS_ROOT_REAP_SQL = """\
+WITH orphans AS (
+    SELECT f.id
+    FROM {schema}.jobs f
+    WHERE f.step_key = '__flow__'
+      AND f.status IN ('pending', 'running')
+      AND f.created_at < now() - $1::interval
+      AND NOT EXISTS (
+          SELECT 1
+          FROM {schema}.jobs n
+          WHERE (n.metadata->>'flow_id')::uuid = f.id
+            AND n.metadata ? 'flow_id'
+            AND n.step_key <> '__flow__'
+      )
+    ORDER BY f.id
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED
+), evt AS (
+    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+    SELECT o.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'pending', 'to_state', 'failed',
+                              'error_class', 'NodelessRunReaped')
+    FROM orphans o
+)
+UPDATE {schema}.jobs f
+SET status = 'failed',
+    error_class = 'NodelessRunReaped',
+    error_message = 'the run root has no node rows past the reap grace — '
+                     'the create did not commit atomically (the orphan '
+                     'root: undevelopable by the derivation, the run key '
+                     'squatted); re-run with a NEW run key',
+    finished_at = clock_timestamp()
+FROM orphans o
+WHERE f.id = o.id
+RETURNING f.id
+"""

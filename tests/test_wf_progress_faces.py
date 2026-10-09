@@ -83,7 +83,7 @@ async def _map_flow(
         return build(items)
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # ONE tick: the source runs + forks the children; the children stay
     # pending (the caller drives them in its own rhythm).
     await runner.tick(flow_id)
@@ -246,7 +246,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
         return build(step(liar, Ingest(doc_id="d1"), key="liar", max_attempts=1))
 
     runner = FlowRunner(app.get("t21_liar_display"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     node = await wf_conn.fetchval(
@@ -519,7 +519,7 @@ async def test_http_face_streams_display_then_progress(
         return build(step(work, Ingest(doc_id="d1"), key="work"))
 
     runner = FlowRunner(app.get("t21_http_flow"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
     # THE ROUTE IS REGISTERED (the thin mapping's existence — the admin

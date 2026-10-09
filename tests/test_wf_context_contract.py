@@ -79,7 +79,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
         return build(step(tail, mapped, key="tail"))
 
     runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+    flow_id = (await runner.create_flow(input=Ingest(doc_id="d1"))).flow_id
     await runner.drive(flow_id)
     root = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
@@ -121,7 +121,7 @@ async def test_the_loop_ctx_carries_the_budget_wall(
         return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
 
     runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()  # no input — ctx.input is None (the honest zero)
+    flow_id = (await runner.create_flow()).flow_id  # no input — ctx.input is None (the honest zero)
     assert await runner.drive(flow_id) == "terminal"
     assert seen["flow_name"] == "ctx_budget"
     assert seen["budget_ms"] is not None

@@ -58,7 +58,7 @@ async def test_the_retry_cycle_terminates_the_ladder_is_the_bound(
         return build(step(always_fails, Ingest(doc_id="d1"), key="solo", max_attempts=3))
 
     runner = FlowRunner(app.get("attack4_cycle"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     outcome = await asyncio.wait_for(runner.drive(flow_id), timeout=60)
     assert outcome == "terminal"
     root = await wf_conn.fetchval(
@@ -100,7 +100,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
         return build(mapped)
 
     runner = FlowRunner(app.get("attack4_deadlock"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
 
     # THE COOPERATIVE STOP (the probe's own no-hangs discipline): the
     # driver is never CANCELLED mid-query (a cancellation landing in a
@@ -161,7 +161,7 @@ async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
         return build(step(holds, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("attack4_race"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
     client = HitlClient(wf_pool, schema=wf_schema)

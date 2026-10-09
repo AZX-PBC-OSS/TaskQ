@@ -60,7 +60,7 @@ async def _held_flow(pool: asyncpg.Pool, schema: str, name: str) -> tuple[JobId,
         return build(step(_hold_body, _Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get(name), pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id, until="held") == "held"
     return flow_id, runner
 

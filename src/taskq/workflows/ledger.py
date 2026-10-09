@@ -45,12 +45,13 @@ a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
@@ -62,6 +63,7 @@ __all__ = [
     "FlowEntry",
     "LedgerClaim",
     "RunClaim",
+    "RunClaimKind",
     "claim_step_ledger",
     "insert_flow_run",
     "memoized_step_result",
@@ -70,7 +72,7 @@ __all__ = [
     "step_idempotency_scope",
 ]
 
-#: The run-level idempotency scope (G2). The step-level scope is
+#: The run-key arbiter's scope (G2). The step-level scope is
 #: ``workflow:{flow_id}`` (one flow run namespaces its own step keys).
 #: THE SCOPE IS NAMESPACED PER FLOW (the run-key collision attack's cure):
 #: :func:`run_idempotency_scope` composes ``workflow-run:<flow name>`` —
@@ -79,6 +81,13 @@ __all__ = [
 #: collide silently (the second flow's run returned the FIRST flow's run
 #: id + status, launched nothing).
 RUN_IDEMPOTENCY_SCOPE: Final[str] = "workflow-run"
+
+#: The typed claim verdicts (the claim surface's honest vocabulary).
+RunClaimKind = Literal["created", "existing-running", "existing-terminal"]
+
+#: The terminal set the ``existing-terminal`` verdict reads (the
+#: state machine's own vocabulary — never a re-spelled literal).
+TERMINAL_JOB_STATUSES: Final[frozenset[str]] = frozenset(TERMINAL_STATUSES)
 
 
 class FlowEntry(Protocol):
@@ -155,11 +164,33 @@ class LedgerClaim:
 class RunClaim:
     """The run-key arbiter's outcome: ``created`` rows are THIS caller's new
     run; a conflicting caller gets the EXISTING run's id + status — never a
-    second silent run."""
+    second silent run.
+
+    THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
+    pre-cure surfaces discarded ``status`` and returned a bare id — the
+    caller could not tell 'already running' from 'already failed' without
+    a second query, and a FAILED run's key replayed as a silent 202. The
+    typed verdict is :attr:`kind`: ``created`` (THIS caller's run),
+    ``existing-running`` (the live run's id — idempotent replay), or
+    ``existing-terminal`` (the REFUSED-TO-REUSE verdict, stated LOUDLY:
+    a terminal run's key is never silently re-fired — the re-run is the
+    caller's documented choice, a NEW key, and the claim carries the
+    prior run's id + status so the caller can act on it).
+    """
 
     flow_id: JobId
     created: bool
     status: str
+
+    @property
+    def kind(self) -> RunClaimKind:
+        """The typed verdict (the T01 door's law: a member access, never a
+        bare value to decode at the call site)."""
+        if self.created:
+            return "created"
+        if self.status in TERMINAL_JOB_STATUSES:
+            return "existing-terminal"
+        return "existing-running"
 
 
 async def claim_step_ledger(

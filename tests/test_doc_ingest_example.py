@@ -180,7 +180,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
     for round_no in range(3):
         compiled = app_obj.get("doc_ingest")
         runner = FlowRunner(compiled, wf_pool, schema)
-        run_id = await runner.create_flow()
+        run_id = (await runner.create_flow()).flow_id
         held = await runner.drive(run_id, until="held")
         assert held == "held", f"round {round_no}: the run never held (the review gate)"
         client = HitlClient(wf_pool, schema=schema)
@@ -236,6 +236,6 @@ async def test_full_run_the_cron_slot_key_is_run_level_idempotent(
     compiled = app_obj.get("doc_ingest")
     runner = FlowRunner(compiled, wf_pool, schema)
     slot = "test-slot-00:00Z"
-    first = await runner.create_flow(run_key=f"doc_ingest:nightly:{slot}")
-    second = await runner.create_flow(run_key=f"doc_ingest:nightly:{slot}")
+    first = (await runner.create_flow(run_key=f"doc_ingest:nightly:{slot}")).flow_id
+    second = (await runner.create_flow(run_key=f"doc_ingest:nightly:{slot}")).flow_id
     assert first == second, "the same cron slot produced a SECOND run — the idempotency reds"

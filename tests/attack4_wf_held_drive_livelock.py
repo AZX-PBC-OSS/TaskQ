@@ -50,7 +50,7 @@ async def test_drive_until_held_sees_a_no_deadline_hold(
         return build(step(body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("attack4_held_no_deadline"), wf_pool, wf_schema)  # type: ignore[arg-type]
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # The drive is BOUNDED (its own max_ticks pin) — the livelock class
     # this pin convicts is the WRONG ANSWER, not a hang.
     outcome = await runner.drive(flow_id, until="held", max_ticks=50)
