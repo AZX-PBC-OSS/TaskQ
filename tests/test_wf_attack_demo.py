@@ -64,17 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # ── F-DEMO-1: the foreign run poisons the drive pass ─────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-1 @ af1b8779: examples/workflows.py's _drive_pending drives "
-        "every running flow with the doc_ingest compiled graph — a foreign-workflow run "
-        "raises WorkflowRunError ('a foreign step key'), aborts the pass, and starves the "
-        "runs behind it (no ORDER BY), re-raised every 0.5s forever. The cure (per-run "
-        "isolation + a NAMED skip log) flips this to XPASS-strict — remove the marker "
-        "WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
 async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -87,11 +77,28 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     a silently-dead driver looks exactly like a wedged run)."""
     from examples.workflows import _drive_pending, trigger_run, wf_app
 
+    class TheForeignInput(BaseModel):
+        doc: str
+
+    async def _the_foreign_body(ctx: StepContext, params: TheForeignInput) -> str:
+        return "the foreign lane's own body — never driven by the demo's pass"
+
     # The FOREIGN run FIRST: the pass's fetch is LIMIT 5 with no ORDER
-    # BY — physical (insertion) order decides who poisons whom.
-    foreign_runner = FlowRunner(wf_app.get("doc_screen_router"), wf_pool, wf_schema)
-    foreign_id = await foreign_runner.create_flow()
-    demo_id = uuid.UUID(await trigger_run(wf_pool, wf_schema))
+    # BY — physical (insertion) order decides who poisons whom. The
+    # foreign run belongs to a THROWAWAY app (a workflow name the demo's
+    # own registry does not carry) — the honest foreign shape: the rows
+    # share the schema, the DEFINITION belongs to another driver.
+    foreign_app = WorkflowApp()
+
+    @foreign_app.workflow("the-foreign-lanes-own-workflow")
+    def the_foreign_lanes_own_workflow() -> object:
+        return build(step(_the_foreign_body, TheForeignInput(doc="d1"), key="the_foreign_step"))
+
+    foreign_runner = FlowRunner(
+        foreign_app.get("the-foreign-lanes-own-workflow"), wf_pool, wf_schema
+    )
+    foreign_id = (await foreign_runner.create_flow()).flow_id
+    demo_id = (await trigger_run(wf_pool, wf_schema)).flow_id
 
     # THE PIN: one pass never raises on the foreign run (today:
     # WorkflowRunError — step 'screen_source' is not in workflow
@@ -129,16 +136,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
 _CANCEL_BOUND_S = 5.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-2 @ af1b8779: the contextlib.suppress(asyncio.CancelledError) "
-        "inside _drive_pending swallows the lifespan's drive_task.cancel() — measured "
-        "alive 12s after cancel, still ticking. The cure (never suppress CancelledError; "
-        "let it propagate to drive_loop's own `except asyncio.CancelledError: raise`) "
-        "flips this to XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
 async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -178,17 +176,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
 # ── F-DEMO-3: the node panel cannot address a map child ──────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-3 @ af1b8779: _NODE_PANEL_SQL is fetchrow WHERE step_key=$1 "
-        "with no map_index addressing — a map's children share one step key, so the panel "
-        "serves an ARBITRARY child and the README's promised observation (watch "
-        "doc-doomed's attempt go 1 → 2 in the node panel) is unreachable. The cure "
-        "(address by (step_key, map_index); the failing child is the served row) flips "
-        "this to XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-3]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -211,7 +199,7 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     from taskq.web.admin import create_router, setup_admin_state
 
     runner = FlowRunner(wf_app.get("doc_ingest"), wf_pool, wf_schema)
-    run_id = await runner.create_flow()
+    run_id = (await runner.create_flow()).flow_id
     # Drive until the ARMED child (doc-doomed) heals through its ladder:
     # attempt 1 failed (the demo's armed transient failure), attempt 2
     # succeeded — the observation the README promises.
@@ -272,17 +260,7 @@ _PROM_LINE_RE = re.compile(
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-5 @ af1b8779 (the evidence law): .measurements/demo-legs/"
-        "leg3-wf-gauge-scrape.prom is a test's f-string rendering, never scraped — the "
-        "metric name carries illegal dots for the Prometheus text format and the label "
-        "reads workflow=\"None\" where the sampler's documented coalesce is _other_. "
-        "The cure (regenerate from a real scrape or delete the artifact) flips this to "
-        "XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
 def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
     """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
@@ -434,7 +412,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     compiled = wf_app.get("doc_ingest")
     first_driver = FlowRunner(compiled, wf_pool, wf_schema)
     second_driver = FlowRunner(compiled, wf_pool, wf_schema)
-    run_id = await first_driver.create_flow()
+    run_id = (await first_driver.create_flow()).flow_id
 
     held = await asyncio.gather(
         first_driver.drive(run_id, until="held"),
@@ -451,7 +429,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     assert list(terminal) == ["terminal", "terminal"], terminal
 
     duplicates = await wf_conn.fetch(
-        f'SELECT step_key, COALESCE(map_index, -1) AS mi, attempt, count(*) AS c '
+        f"SELECT step_key, COALESCE(map_index, -1) AS mi, attempt, count(*) AS c "
         f'FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
         "GROUP BY 1, 2, 3 HAVING count(*) > 1",
         run_id,
@@ -466,8 +444,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     )
     assert fires, "no join fired — the guard lost its subject"
     assert all(r["c"] == 1 for r in fires), (
-        f"a join fired twice under the two-driver race: "
-        f"{ {r['step_key']: r['c'] for r in fires} }"
+        f"a join fired twice under the two-driver race: { {r['step_key']: r['c'] for r in fires} }"
     )
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id)
     assert root == "succeeded", root

@@ -132,17 +132,7 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
 # ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are "
-    "{succeeded, crashed@budget-ceiling} reconstructs 'running' forever — "
-    "rule 1 of derive_workflow_status counts every crashed row as the "
-    "reclaim's input, but the jobs-level reclaim only WRITES crashed when "
-    "the budget is exhausted (nothing re-runs it). The cure (the derivation "
-    "treats a budget-exhausted crashed node as the unabsorbed irrecoverable "
-    "failure it is) flips this to XPASS-strict — remove the marker WITH "
-    "the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(a)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
 async def test_wedge_derivation_terminalizes_the_dead_run(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
@@ -168,15 +158,7 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
 # ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's "
-    "has_unresolved counts crashed as live work, so the wedged root stays "
-    "'running' across every sweep pass and the G7 reported==reconstructed "
-    "assertion stays green on the corpse (both say 'running'). The cure "
-    "terminalizes the root ('failed') — the dead run is SURFACED — and "
-    "flips this pin to XPASS-strict.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
@@ -220,17 +202,7 @@ async def _create_body(ctx: StepContext, params: _CreateIn) -> Any:
     return {"doc_id": params.doc_id}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the "
-    "root insert alone (its own pool acquire), then runs "
-    "_insert_static_nodes + ROOT_START on a second acquire with no "
-    "conn.transaction() — a kill between them leaves a pending, zero-node "
-    "orphan root that WORKFLOW_ROOT_MAINTAIN_SQL's inner join can never "
-    "see: it never terminalizes, never prunes. The cure — one transaction "
-    "for the whole create, or a named arm terminalizing/reaping the orphan "
-    "within the grace — flips this to XPASS-strict.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
 async def test_interrupted_create_leaves_no_live_orphan(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -289,18 +261,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
 # ── F-CREATE-3: THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence "
-    "(_WF_DISPATCH_FENCE_TEMPLATE) admits ANY step_key row to a "
-    "workflow_execution-capable worker whose named flow is non-terminal — "
-    "the pending __flow__ root names ITSELF (metadata.flow_id = own id) and "
-    "'pending' is not terminal, so a capable worker claims the root row; "
-    "_resolve_body('__flow__', None) raises the plain WorkflowRunError the "
-    "intercept does NOT catch (it catches WorkflowBodyUnresolvableError "
-    "only) → churn. The cure (a step_key <> '__flow__' exclusion in the "
-    "claim's candidate predicates) flips this to XPASS-strict.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-3]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:

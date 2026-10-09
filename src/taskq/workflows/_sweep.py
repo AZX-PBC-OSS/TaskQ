@@ -469,6 +469,13 @@ async def sweep_loop_budget(
             )
             if result is None or not result["loop_exhausted"]:
                 continue  # another writer got there first — the CAS held
+            # THE COUNT IS THE EXHAUSTION'S (f_loop_5's cure): the named
+            # state + the flow's terminalization COMPLETED at the exhaust
+            # statement — every CAS-held exhaustion is ONE exhaustion,
+            # whatever the policy does next (the escalate arm's enqueue is
+            # ADDITIONAL work; a fail-policy loop IS exhausted and the
+            # return must say so).
+            exhausted += 1
             # THE POLICY (attack-3 H1's cure — the sweep READS the
             # registered declaration, D1): ``fail`` = the named state is
             # the record, NO enqueue; ``escalate`` = the escalation
@@ -505,5 +512,4 @@ async def sweep_loop_budget(
                 ESCALATION_STEP_KEY,
                 _jsonb(bindings),
             )
-            exhausted += 1
     return exhausted

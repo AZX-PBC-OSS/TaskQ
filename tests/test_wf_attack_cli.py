@@ -206,7 +206,7 @@ async def _held_run(wf_pool: Any, wf_schema: str, *, name: str = "atkcli_hold_fl
     """A real run driven to its hold; the run id (str) is the CLI's address."""
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = await flow_runner.create_flow()
+    flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id, until="held")
     return str(flow_id)
 
@@ -445,7 +445,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     standalone forged 'remedy:' line, never an ESC byte."""
     compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = await flow_runner.create_flow()
+    flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id)
 
     res = await to_thread(runner.invoke, app, ["flows", "status", str(flow_id)])

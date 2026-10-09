@@ -83,7 +83,7 @@ async def _drive_to_terminal_report(
 
     runner = FlowRunner(compiled, pool, schema)
     batch = example_ns["IngestBatch"]
-    run_id = await runner.create_flow(input=batch(doc_ids=input_doc_ids))
+    run_id = (await runner.create_flow(input=batch(doc_ids=input_doc_ids))).flow_id
     assert await runner.drive(run_id, until="held") == "held", "the run never held"
     client = HitlClient(pool, schema=schema)
     (hold,) = await client.list(run_id)
@@ -100,39 +100,20 @@ async def _drive_to_terminal_report(
     return dict(report["value"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-4(b) @ af1b8779: the fence's run_nightly_refresh drives "
-        "until='terminal' — the run HOLDS at the review, so the drive spins ~166s past "
-        "the hold and the 'max_ticks' verdict is silently discarded before main() "
-        "resolves the hold blind. The cure (drive until='held', assert the verdict, "
-        "print the hold) flips this to XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b) second face]; the marker is removed per the designed flip (the confirmation receipt).
 def test_the_fence_drives_to_the_hold_not_past_it(example_fence: str) -> None:
     """The fence must drive ``until="held"`` before it lists and resolves
     the hold — the documented flow (hold → answer it) instead of the
     shipped ~166 s blind spin whose discarded 'max_ticks' return looks
     exactly like progress."""
     assert 'until="held"' in example_fence, (
-        "the fence never drives until=\"held\" — run_nightly_refresh's bare "
+        'the fence never drives until="held" — run_nightly_refresh\'s bare '
         "`await runner.drive(run_id)` spins to max_ticks PAST the review "
         "hold (~166s measured) and the verdict is discarded"
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-4(c) @ af1b8779: the fence accepts create_flow(input=…) "
-        "but IGNORES it — the ingest step's params are baked into the wiring "
-        "(IngestBatch(doc_ids=sorted(_DOC_SOURCE))), so the run row's input never "
-        "reaches the body. The cure (the ingest reads the run's input — ctx.input, "
-        "cut #7's own door) flips this to XPASS-strict — remove the marker WITH the "
-        "cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(c)]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_the_run_input_is_honored(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,
@@ -147,7 +128,9 @@ async def test_the_run_input_is_honored(
     schema = module_pg_schema.schema_name
     compiled = example_ns["app"].get("doc_ingest_truth")
     runner = FlowRunner(compiled, wf_pool, schema)
-    run_id = await runner.create_flow(input=example_ns["IngestBatch"](doc_ids=["doc-only"]))
+    run_id = (
+        await runner.create_flow(input=example_ns["IngestBatch"](doc_ids=["doc-only"]))
+    ).flow_id
     assert await runner.drive(run_id, until="held") == "held"
     raw = await wf_conn.fetchval(
         f'SELECT result FROM "{schema}".jobs '
@@ -163,16 +146,7 @@ async def test_the_run_input_is_honored(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-4(d) @ af1b8779: the terminal PublishReport hardcodes "
-        "dead_lettered=[] and failed=[] while the doc claims 'the failures ride the "
-        "report, named' — a dead-lettered doc vanishes from the report (and rides the "
-        "PUBLISHED list). The cure (the router's dead letters are wired into the "
-        "report) flips this to XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(d)]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_the_terminal_report_names_the_failures(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,
@@ -212,17 +186,7 @@ async def test_the_terminal_report_names_the_failures(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-4(e) @ af1b8779: the published list double-counts every "
-        "doc — publish_body's `ready` is the barrier's gather over [summaries, "
-        "entities], and the default packer CONCATENATES the parents' lists (24 "
-        "entries for 12 docs), against the fence's own shape-2 claim (the collect "
-        "fans in as ONE list). The cure (de-duplicate, or wire the report from one "
-        "consumer list) flips this to XPASS-strict — remove the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(e)]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_the_published_list_names_each_doc_once(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,

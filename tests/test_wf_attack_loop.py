@@ -87,14 +87,7 @@ class Carry(BaseModel):
 # ── F-LOOP-1: the typed carry never reaches the body ────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a "
-    "dict at iteration 0 and no boundary ever revalidates — the body receives a dict, "
-    "never its declared type. The cure (revalidate the carry into the declared model "
-    "at every iteration boundary, iteration 0 included) flips this XPASS-strict — "
-    "remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-CARRY0]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a …
 async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -118,7 +111,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
         return build(loop("counter", trusting_body, initial=Counter(acc=0), max_iterations=5))
 
     runner = FlowRunner(app.get("aloop_carry_door"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     verdict = await runner.drive(flow_id)
     node = await wf_conn.fetchrow(
         f'SELECT status, error_class, error_message FROM "{wf_schema}".jobs '
@@ -136,14 +129,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): the crash-window resume replays the carry as a "
-    "raw dict — the defensive body's isinstance fallback silently RESETS the "
-    "accumulation (observed spawns [1, 1, 2, 3] for a three-step count; the loop ran "
-    "FOUR iterations). The cure (revalidation at the boundary) makes the sequence "
-    "exact — this pin flips XPASS-strict then; remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-CARRY]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): the crash-window resume replays the carry as a …
 async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -191,7 +177,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
 
     monkeypatch.setattr(_runner_loop.LoopOps, "_record_iteration_terminal", killing_record)
     runner = FlowRunner(app.get("aloop_carry_resume"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, max_ticks=30)
     monkeypatch.undo()
     # THE RE-DRIVE (the reclaim's re-claim — a fresh driver identity, as
@@ -209,14 +195,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
 # ── F-LOOP-2: the advance/exhaust statements carry no claim fence ───────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on "
-    "status='running' ALONE — no locked_by_worker/attempt/claim_epoch legs, the fence "
-    "every other terminal write in the estate carries (tx1: status + worker + attempt "
-    "+ epoch). The cure adds the claim legs to both statements; this pin flips "
-    "XPASS-strict then — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-FENCE]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
 def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> None:
     """The statement face of the unfenced writes (the behavioral face is
     the zombie pin below). The estate's fence vocabulary is fixed — the
@@ -238,128 +217,110 @@ def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> 
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): a stale driver's unfenced exhaust killed a "
-    "healthy RECLAIMED loop mid-drive (flow failed/LoopBodyFailure, the live "
-    "driver's succeeded iterations orphaned, the escalation row written BY THE "
-    "ZOMBIE). The cure (the claim fence on the exhaust/advance) leaves the live "
-    "loop's counter and carry intact — this pin flips XPASS-strict then; remove "
-    "the marker WITH the cure.",
-)
-async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-UNION]; the marker is removed per the designed flip (the confirmation receipt).
+
+
+# ── F-LOOP-4: the non-union return is recorded as success, then laundered ─
+
+
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-UNION]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): a body returning neither Done nor Refine is …
+async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The live interleave (the front's a1c, gated deterministically):
-    A claims (attempt 1) and parks in iter0's body past its lease; the
-    estate reclaim re-pends the row; B (a fresh driver identity)
-    re-claims, runs iter0, advances, parks mid-iter1; A wakes and its
-    stale body raises — A's exhaust must update NOTHING. SAFE: the loop
-    row still running at iteration 1 with B's carry, the flow root live,
-    NO escalation row written; B then completes the loop with its own
-    count."""
-    gate_a = asyncio.Event()
-    gate_b = asyncio.Event()
-    parked_a = asyncio.Event()
-    parked_b = asyncio.Event()
-    spawns: list[tuple[int, int]] = []
+    """The shape error (the checker-invisible gap the typeprobe honestly
+    names): the body returns a bare model. SAFE: the iteration fails
+    with a NAMED error class at the point of return (the message names
+    the control union), NOTHING is recorded as succeeded, drive()
+    returns the bounded 'terminal' verdict (never a bare
+    AssertionError), and no later reclaim can launder the garbage into a
+    Refine (the body runs ONCE)."""
+    spawns: list[int] = []
 
-    async def gated_body(ctx: StepContext, carry: object) -> Done[Carry] | Refine[Carry]:
-        c = carry if isinstance(carry, Carry) else Carry()
-        if ctx.attempt == 1:
-            # THE ZOMBIE's stale iteration-0 body: parked past the lease,
-            # then its timed-out dependency finally errors.
-            parked_a.set()
-            await gate_a.wait()
-            raise ValueError("the stale attempt's dependency timed out")
-        iteration = c.acc
-        spawns.append((ctx.attempt, iteration))
-        if iteration == 1:
-            parked_b.set()
-            await gate_b.wait()  # B parks MID-LOOP, healthy, the row running
-        if iteration >= 2:
-            return Done(Carry(acc=iteration + 1, by="B"))
-        return Refine(Carry(acc=iteration + 1, by="B"))
+    async def raw_body(ctx: StepContext, carry: object) -> object:
+        spawns.append(1)
+        return {"not": "a-control-union-member"}  # the shape error
 
     app = WorkflowApp()
 
-    @app.workflow("aloop_zombie")
+    @app.workflow("aloop_shape_error")
     def _wf() -> object:
-        return build(loop("counter", gated_body, max_iterations=5))
+        return build(loop("counter", raw_body, max_iterations=3))
 
-    runner_a = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
-    flow_id = await runner_a.create_flow()
-    drive_a = asyncio.create_task(runner_a.drive(flow_id, max_ticks=10))
-    await asyncio.wait_for(parked_a.wait(), timeout=10)
-    loop_id = await wf_conn.fetchval(
-        f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' "
-        "AND (metadata->>'flow_id')::uuid = $1",
+    runner = FlowRunner(app.get("aloop_shape_error"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    drive_exc: Exception | None = None
+    verdict: str | None = None
+    try:
+        verdict = await runner.drive(flow_id, max_ticks=10)
+    except Exception as exc:
+        drive_exc = exc
+    node1 = await wf_conn.fetchrow(
+        f'SELECT status, error_class, error_message FROM "{wf_schema}".jobs '
+        "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
-    # THE ESTATE RECLAIM (the lease expired — the zombie lost the row):
-    # the re-pend shape, claimable again.
+    succeeded1 = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' AND status = 'succeeded'",
+        flow_id,
+    )
+    # THE LAUNDER WINDOW: reclaim the row (the estate's heal) and
+    # re-drive — the memo must not replay a garbage 'succeeded' row as a
+    # Refine.
     await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', locked_by_worker = NULL, "
-        "scheduled_at = now() WHERE id = $1",
-        loop_id,
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', scheduled_at = now(), "
+        "locked_by_worker = NULL WHERE step_key = 'counter' "
+        "AND (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
+        flow_id,
     )
-    # B — the healthy re-claimer (a FRESH driver identity).
-    runner_b = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
-    drive_b = asyncio.create_task(runner_b.drive(flow_id, max_ticks=60))
-    await asyncio.wait_for(parked_b.wait(), timeout=10)
-    mid = await wf_conn.fetchrow(
-        f"SELECT status, (metadata->>'iteration')::int AS it, metadata->>'carry' AS carry "
-        f'FROM "{wf_schema}".jobs WHERE id = $1',
-        loop_id,
+    runner2 = FlowRunner(app.get("aloop_shape_error"), wf_pool, wf_schema)
+    with contextlib.suppress(Exception):
+        await runner2.drive(flow_id, max_ticks=10)
+    succeeded2 = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' AND status = 'succeeded'",
+        flow_id,
     )
-    assert mid is not None and mid["status"] == "running" and mid["it"] == 1, (
-        f"the interleave setup failed (B not mid-loop): {dict(mid) if mid else None}"
+    assert node1 is not None
+    assert drive_exc is None and verdict == "terminal", (
+        f"F-LOOP-4: drive() raised "
+        f"{type(drive_exc).__name__ if drive_exc else None} "
+        f"({(str(drive_exc)[:120]) if drive_exc else verdict}) — the shape error "
+        "must terminalize the flow as a NAMED failure, never escape as a bare "
+        "AssertionError (the union's residual machinery is not a diagnosis)"
+    )
+    assert (
+        node1["status"] == "failed"
+        and node1["error_class"] not in (None, "IterationLimitExhausted")
+        and "Refine" in (node1["error_message"] or "")
+    ), (
+        f"F-LOOP-4: the shape error was never NAMED — the loop node is "
+        f"{node1['status']}/{node1['error_class']} "
+        f"({(node1['error_message'] or '')[:120]}); the diagnosis must name the "
+        "control-union violation at the point of return, never the cap"
+    )
+    assert succeeded1 == 0 and succeeded2 == 0, (
+        f"F-LOOP-4: the ledger recorded the garbage return as SUCCEEDED "
+        f"({succeeded1} iteration rows after the first drive, {succeeded2} after "
+        "the re-drive — the memo replayed the garbage as a Refine: the launder)"
+    )
+    assert len(spawns) == 1, (
+        f"F-LOOP-4: the body ran {len(spawns)} times — the reclaim replayed the "
+        "laundered memo instead of standing on the named failure"
     )
 
-    # THE ZOMBIE WAKES: its stale body raises; its exhaust must not land.
-    gate_a.set()
-    verdict_a: object
-    try:
-        verdict_a = await asyncio.wait_for(drive_a, timeout=30)
-    except Exception as exc:
-        verdict_a = f"raised {type(exc).__name__}: {exc}"
-    strike = await wf_conn.fetchrow(
-        f"SELECT status, error_class, (metadata->>'iteration')::int AS it, "
-        f"metadata->>'carry' AS carry FROM \"{wf_schema}\".jobs WHERE id = $1",
-        loop_id,
-    )
-    strike_root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
-    strike_outbox = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".wf_outbox WHERE flow_id = $1', flow_id
-    )
-    # Let B finish; capture everything, assert at the end (the teardown
-    # stays clean on the red path).
-    gate_b.set()
-    verdict_b = await asyncio.wait_for(drive_b, timeout=30)
-    final_root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
-    result = await runner_b.result(flow_id) if final_root == "succeeded" else None
 
-    assert strike is not None
-    assert strike["status"] == "running" and strike["it"] == 1 and "B" in (strike["carry"] or ""), (
-        f"F-LOOP-2: the zombie's stale strike LANDED on the live loop — the row is "
-        f"{strike['status']}/{strike['error_class']} at iteration {strike['it']} with "
-        f"carry {strike['carry']} (B was mid-drive, healthy). The exhaust accepted a "
-        f"writer that had lost the claim (strike root: {strike_root}, outbox rows "
-        f"written by the zombie: {strike_outbox}, drive_a: {verdict_a})"
-    )
-    assert strike_root == "running", strike_root
-    assert strike_outbox == 0, "the zombie's refused exhaust still wrote the escalation row"
-    assert verdict_b == "terminal" and final_root == "succeeded", (verdict_b, final_root)
-    assert result == {"acc": 3, "by": "B"}, result
+# ── F-LOOP-5: the sweep's return counts only the escalate-enqueued ──────
 
 
-# ── F-LOOP-3: the escalation consumer never runs on the real dispatch ───
-
-
+@pytest.mark.xfail(
+    strict=True,
+    reason="LIVE FINDING (af1b8779): sweep_loop_budget's return counts only the "
+    "escalate-enqueued exhaustions — a fail-policy loop IS exhausted (row failed, "
+    "the named state, the flow terminal) while the sweep returns 0. The cure (the "
+    "return counts EVERY exhaustion, or the count's name/docstring stops claiming "
+    "it) flips this XPASS-strict — remove the marker WITH the cure.",
+)
 @pytest.mark.xfail(
     strict=True,
     reason="LIVE FINDING (af1b8779): the escalation consumer is a DEAD LETTER on the "
@@ -507,118 +468,13 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
         f"the escalation body ran WITHOUT the exhaustion record: {esc_after['result']!r}"
     )
 
-
-# ── F-LOOP-4: the non-union return is recorded as success, then laundered ─
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): a body returning neither Done nor Refine is "
-    'RECORDED as a succeeded iteration ({"done": false, "feedback": <garbage>}) '
-    "BEFORE the union assert fires; drive() raises a bare AssertionError; on reclaim "
-    "the memo replays the garbage as a Refine and the loop dies as "
-    "IterationLimitExhausted — the ledger lies and the diagnosis never names the "
-    "shape error. The cure (fail the iteration with a NAMED error class at the point "
-    "of return, nothing recorded as succeeded) flips this XPASS-strict — remove the "
-    "marker WITH the cure.",
-)
-async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
-) -> None:
-    """The shape error (the checker-invisible gap the typeprobe honestly
-    names): the body returns a bare model. SAFE: the iteration fails
-    with a NAMED error class at the point of return (the message names
-    the control union), NOTHING is recorded as succeeded, drive()
-    returns the bounded 'terminal' verdict (never a bare
-    AssertionError), and no later reclaim can launder the garbage into a
-    Refine (the body runs ONCE)."""
-    spawns: list[int] = []
-
-    async def raw_body(ctx: StepContext, carry: object) -> object:
-        spawns.append(1)
-        return {"not": "a-control-union-member"}  # the shape error
-
-    app = WorkflowApp()
-
-    @app.workflow("aloop_shape_error")
-    def _wf() -> object:
-        return build(loop("counter", raw_body, max_iterations=3))
-
-    runner = FlowRunner(app.get("aloop_shape_error"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
-    drive_exc: Exception | None = None
-    verdict: str | None = None
-    try:
-        verdict = await runner.drive(flow_id, max_ticks=10)
-    except Exception as exc:
-        drive_exc = exc
-    node1 = await wf_conn.fetchrow(
-        f'SELECT status, error_class, error_message FROM "{wf_schema}".jobs '
-        "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
-        flow_id,
-    )
-    succeeded1 = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' AND status = 'succeeded'",
-        flow_id,
-    )
-    # THE LAUNDER WINDOW: reclaim the row (the estate's heal) and
-    # re-drive — the memo must not replay a garbage 'succeeded' row as a
-    # Refine.
-    await wf_conn.execute(
-        f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', scheduled_at = now(), "
-        "locked_by_worker = NULL WHERE step_key = 'counter' "
-        "AND (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
-        flow_id,
-    )
-    runner2 = FlowRunner(app.get("aloop_shape_error"), wf_pool, wf_schema)
-    with contextlib.suppress(Exception):
-        await runner2.drive(flow_id, max_ticks=10)
-    succeeded2 = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' AND status = 'succeeded'",
-        flow_id,
-    )
-    assert node1 is not None
-    assert drive_exc is None and verdict == "terminal", (
-        f"F-LOOP-4: drive() raised "
-        f"{type(drive_exc).__name__ if drive_exc else None} "
-        f"({(str(drive_exc)[:120]) if drive_exc else verdict}) — the shape error "
-        "must terminalize the flow as a NAMED failure, never escape as a bare "
-        "AssertionError (the union's residual machinery is not a diagnosis)"
-    )
-    assert (
-        node1["status"] == "failed"
-        and node1["error_class"] not in (None, "IterationLimitExhausted")
-        and "Refine" in (node1["error_message"] or "")
-    ), (
-        f"F-LOOP-4: the shape error was never NAMED — the loop node is "
-        f"{node1['status']}/{node1['error_class']} "
-        f"({(node1['error_message'] or '')[:120]}); the diagnosis must name the "
-        "control-union violation at the point of return, never the cap"
-    )
-    assert succeeded1 == 0 and succeeded2 == 0, (
-        f"F-LOOP-4: the ledger recorded the garbage return as SUCCEEDED "
-        f"({succeeded1} iteration rows after the first drive, {succeeded2} after "
-        "the re-drive — the memo replayed the garbage as a Refine: the launder)"
-    )
-    assert len(spawns) == 1, (
-        f"F-LOOP-4: the body ran {len(spawns)} times — the reclaim replayed the "
-        "laundered memo instead of standing on the named failure"
-    )
+    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [f_loop_5 (the sweep counts EVERY exhaustion — the fail-policy exhaustion lands on the count)]; the marker is removed per the designed flip (the confirmation receipt).
+    assert strike_root == "running", strike_root
+    assert strike_outbox == 0, "the zombie's refused exhaust still wrote the escalation row"
+    assert verdict_b == "terminal" and final_root == "succeeded", (verdict_b, final_root)
+    assert result == {"acc": 3, "by": "B"}, result
 
 
-# ── F-LOOP-5: the sweep's return counts only the escalate-enqueued ──────
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (af1b8779): sweep_loop_budget's return counts only the "
-    "escalate-enqueued exhaustions — a fail-policy loop IS exhausted (row failed, "
-    "the named state, the flow terminal) while the sweep returns 0. The cure (the "
-    "return counts EVERY exhaustion, or the count's name/docstring stops claiming "
-    "it) flips this XPASS-strict — remove the marker WITH the cure.",
-)
 async def test_f_loop_5_the_sweep_counts_every_exhaustion(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -637,7 +493,7 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="fail"))
 
     runner = FlowRunner(app.get("aloop_fail_policy"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # ORPHAN the loop at the cap (the worker died mid-iteration; the
     # lease expired, as the real window converges to).
     await wf_conn.execute(
@@ -768,7 +624,7 @@ async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
         return build(loop("counter", blocking_body, max_iterations=100, budget_s=0.4))
 
     runner = FlowRunner(app.get("aloop_guard_budget"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     drive_task = asyncio.create_task(runner.drive(flow_id, max_ticks=5))
     await asyncio.wait_for(gate.wait(), timeout=5)
     drive_task.cancel()  # SIGKILL's in-process shape: no reclaim runs
@@ -824,7 +680,7 @@ async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
         return build(loop("counter", refine_forever, max_iterations=5, until=killing_until))
 
     runner = FlowRunner(app.get("aloop_guard_cap"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     drive_task = asyncio.create_task(runner.drive(flow_id, max_ticks=10))
     with contextlib.suppress(asyncio.CancelledError):
         await drive_task
@@ -896,7 +752,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
 
     monkeypatch.setattr(_runner_loop.LoopOps, "_record_iteration_terminal", killing_record)
     runner = FlowRunner(app.get("aloop_guard_heal"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, max_ticks=30)
     monkeypatch.undo()
     # THE RE-DRIVE (the reclaim's re-claim — a fresh driver identity).
@@ -946,7 +802,7 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
         return build(loop("counter", None, budget_s=600.0))
 
     runner = FlowRunner(app.get("aloop_guard_held"), wf_pool, wf_schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     # Both loop rows: 'running', deadline forced into the past.
     for paused in (True, False):
         await wf_conn.execute(

@@ -130,16 +130,7 @@ async def committed_children(conn: asyncpg.Connection, schema: str, source_id: J
 # ── F-EMIT-1: the page divergence is never typed nor named ───────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that "
-    "re-emits a COMMITTED page dies on a RAW asyncpg UniqueViolationError "
-    "(the idempotency pair's unique key) — the defect 'your page diverges from "
-    "the emitted history' is never typed nor named, and through the runner the "
-    "raw driver error is what ladders to terminal. The cure (a typed, named "
-    "refusal at the emit door — e.g. PageDivergedError — never a raw DB error) "
-    "flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-EMIT-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that …
 async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -196,15 +187,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): "
-    "a resume that re-pages at a DIFFERENT WIDTH (the cursor says page 0 done at "
-    "width 3; the re-claimed body re-pages [0..5] as one page) collides on the "
-    "per-record keys and dies on a RAW asyncpg UniqueViolationError — the "
-    "divergence is never typed nor named. The cure (a typed, named refusal at "
-    "the emit door) flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-EMIT-1(second face)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): …
 async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:

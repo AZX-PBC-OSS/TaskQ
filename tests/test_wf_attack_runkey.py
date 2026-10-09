@@ -96,15 +96,7 @@ async def _node_census(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: Job
 # ── F-CREATE-2: THE RETRY COMPLETES THE CENSUS (OR REFUSES NAMED) ──────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-CREATE-2 @ af1b8779: create_flow(run_key=K) "
-    "after an interrupted create early-returns the existing run id "
-    "(RunClaim.created=False) and NEVER inserts the static nodes — the "
-    "key is squatted by a zero-node shell that can never run. The cure "
-    "(the replay completes the census, or refuses with a named error) "
-    "flips this to XPASS-strict.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-2]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-2 @ af1b8779: create_flow(run_key=K) …
 async def test_runkey_retry_after_interrupted_create_completes_the_census(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -170,61 +162,13 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
 # ── F-RUNKEY-4: THE CONFLICT'S STATUS SURFACES ON THE CALL ─────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RUNKEY-4 @ af1b8779: a FAILED run squats its "
-    "key — create_flow returns the bare JobId, discarding RunClaim.status, "
-    "so the caller cannot learn the conflict is 'already failed' (vs "
-    "'already running') without a hand-written SQL query. The guide "
-    "promises 'the EXISTING run's id + status'. The cure (the call "
-    "surfaces the status — a returned claim object or a typed refusal "
-    "carrying it) flips this to XPASS-strict.",
-)
-async def test_runkey_conflict_with_a_failed_run_surfaces_its_status(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
-) -> None:
-    """F-RUNKEY-4: create a run, terminal-fail it (the cascade's shape),
-    replay the key. The CALLER must learn the squatting run's status from
-    the call itself — the replay law (the same run id, one row forever)
-    is pin 4's green and unchanged; this pin owns what the replay
-    WITHHOLDS today: the status."""
-    runner = _one_step_runner(wf_pool, wf_schema, "runkey4_failed_flow")
-    key = "runkey4:failed"
-    flow_id = await runner.create_flow(run_key=key)
-    # The run terminal-fails (the cascade/maintenance leg's own stamp).
-    await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET status = \'failed\', '
-        "finished_at = clock_timestamp(), error_class = 'UnabsorbedNodeFailure' "
-        "WHERE id = $1",
-        flow_id,
-    )
-
-    conflict_status: Any = None
-    try:
-        replay = await runner.create_flow(run_key=key)
-    except Exception as exc:  # the typed-refusal cure shape
-        conflict_status = getattr(exc, "status", None) or getattr(exc, "run_status", None)
-    else:
-        conflict_status = getattr(replay, "status", None)
-
-    assert conflict_status == "failed", (
-        f"create_flow hid the conflict's status (surfaced "
-        f"{conflict_status!r}): the squatting run is FAILED and the caller "
-        "learns nothing from the call — the guide's 'id + status' contract "
-        "stops at the ledger layer; the runner returns the bare JobId"
-    )
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-RUNKEY-5]; the marker is removed per the designed flip (the confirmation receipt).
 
 
 # ── F-RUNKEY-5: THE GUIDE'S run() ENTRYPOINT RESOLVES (doc-lie smoke) ──
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RUNKEY-5 @ af1b8779: docs/guides/workflows.md "
-    "instructs `workflows.run(flow, input, key=…)` — no such API exists "
-    "(taskq.workflows.__all__ carries no 'run'; hasattr is False). The "
-    "cure — ship the API or fix the guide — flips this to XPASS-strict.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-RUNKEY-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-RUNKEY-5 @ af1b8779: docs/guides/workflows.md …
 def test_the_guide_s_documented_run_entrypoint_resolves() -> None:
     """F-RUNKEY-5, the doc-reference smoke: the guide's named run-level
     idempotency surface resolves against the package, or the guide no

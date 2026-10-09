@@ -218,7 +218,7 @@ async def _seed_held_run(pool: asyncpg.Pool, schema: str) -> str:
     """A REAL run driven to its hold (the typed door's subject)."""
     compiled = sys.modules[MODULE_NAME].app.get("att_adm_hold_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id, until="held") == "held"
     return str(flow_id)
 
@@ -228,7 +228,7 @@ async def _seed_terminal_run(pool: asyncpg.Pool, schema: str) -> str:
     refuse (the refusal-redirect path's subject)."""
     compiled = sys.modules[MODULE_NAME].app.get("att_adm_plain_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     return str(flow_id)
 
@@ -263,15 +263,7 @@ async def _seed_node(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id "
-    "into WORKFLOW_MAP_PROGRESS_SQL (`WHERE c.parent_id = $1`) but the fork parents map "
-    "children at the MAP SOURCE node (and static nodes carry parent_id NULL), so the read "
-    "matches zero rows — map_children is always 0 and the hexagon collapse + n/m counter "
-    "never fire. The cure (the progress read keys children to their map-source node) flips "
-    "this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id …
 async def test_the_map_collapse_counts_the_real_children(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -286,7 +278,7 @@ async def test_the_map_collapse_counts_the_real_children(
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("att_adm_map_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
-    flow_id = await runner.create_flow()
+    flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     # The children EXIST as rows (the fork landed — per-item identity).
     child_count = await module_pg_pool.fetchval(
@@ -329,15 +321,7 @@ async def test_the_map_collapse_counts_the_real_children(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the "
-    "422 BEFORE HitlClient.resolve — the layer whose refusal IS audited — runs, so a "
-    "shape-refused resolve attempt at the page's validation layer writes ZERO admin_audit "
-    "rows while workflow_detail.html claims 'every Resolve/cancel/deliver is audited'. "
-    "The cure (audit the refused attempt, or correct the claim — the pin prefers the row) "
-    "flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-2]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the …
 async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -392,19 +376,12 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates "
-    "once at subscribe — it never wires get_session_verifier the way /sse/{topic} did for "
-    "#316 (sse.py:91-118: re-check before every frame and at every tick, fail closed) — so "
-    "a revoked admin session keeps the run stream (and its frames) until disconnect. The "
-    "cure (the same re-check per loop tick) flips this to XPASS-strict — remove the marker "
-    "WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates …
 async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
+    demo_app_module: types.ModuleType,
 ) -> None:
     """A run stream opened BEFORE session invalidation must not outlive
     it: at the next poll tick the re-check fails and the stream ENDS
@@ -412,7 +389,10 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     ASGI, a shared revocation flag, a bounded wait)."""
     monkeypatch.setattr(wf_actions, "_STREAM_POLL_S", _TICK)
     app, auth_state = _make_authed_admin_app(module_pg_pool, module_pg_schema.schema_name)
-    run_id = uuid.uuid4()  # no rows: the stream's first frame is the defined empty snapshot
+    # A REAL run (the held shape): the shipped stream endpoint serves a
+    # run that EXISTS — a no-rows id is the honest 404, never a stream;
+    # the revocation's subject is the stream's LIFETIME, not the lookup.
+    run_id = await _seed_held_run(module_pg_pool, module_pg_schema.schema_name)
 
     received: list[bytes] = []
     disconnect = asyncio.Event()
@@ -494,15 +474,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets "
-    "?error=cancel-not-applied but workflow_detail refuses ALL query params "
-    "(reject_unknown_query_params(request, ())), so the operator lands on a 400 wall "
-    "instead of the refusal banner — the jobs page's refused-op contract (declare the "
-    "'error' param, render _ERROR_MESSAGES' banner) never reached the workflow page. The "
-    "cure flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets …
 async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
