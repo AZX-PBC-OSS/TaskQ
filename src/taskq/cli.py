@@ -3419,7 +3419,10 @@ async def _job_show(
     typer.echo(f"finished_at: {row['finished_at']}")
     if row["error_class"] is not None:
         typer.echo(f"error_class: {row['error_class']}")
-        typer.echo(f"error_message: {row['error_message']}")
+        # THE DB-SOURCED TEXT'S DISCIPLINE (the class seat: the job-show's
+        # own face) — the collapse + the bound, never a raw multi-line or
+        # escape-carrying blob in a line-oriented shell surface.
+        typer.echo(f"error_message: {_format_event_detail(row['error_message'])}")
     if row["idempotency_key"] is not None:
         typer.echo(f"idempotency_key: {row['idempotency_key']}")
     if show_traceback:

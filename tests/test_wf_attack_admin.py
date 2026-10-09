@@ -92,10 +92,10 @@ _TICK = 0.02
 #: length proves boundedness at the READ.
 _HUGE_CHARS = 200_000
 
-#: The bound the pin asserts on the panel's served error text: any cap
-#: in the estate's vocabulary (120, 2000) satisfies it; only the
-#: unbounded serve fails it.
-_PANEL_FIELD_BOUND = 4096
+#: The bound the pin asserts on the panel's served error text: THE
+#: SHIPPED CONSTANT ITSELF (pin the constant, not a copy — a copy
+#: drifts from the served truth; the sweepaudit's own precedent).
+from taskq.web.admin._wf_actions import _PANEL_FIELD_CAP_CHARS as _PANEL_FIELD_BOUND  # noqa: E402  # Why: the constant must ride the shipped module; the import placement follows the corpus's own late-import discipline.
 
 
 class Approval(BaseModel):
@@ -523,15 +523,7 @@ async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (F-ADM-5, landed @af1b8779, defense-in-depth): the node panel's "
-    "SELECT returns error_message / error_traceback / metadata->>'error' unbounded — a "
-    "row carrying megabytes of failure text serves whole to the operator's browser. The "
-    "estate's precedent is a configured display cap WITH a truncation marker (jobs.py's "
-    "_truncate_traceback: 2000 chars + '... (N more characters)'; the CLI's 120-char "
-    "detail line). The cure flips this to XPASS-strict — remove the marker WITH the cure.",
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker is removed per the designed flip (the confirmation receipt).
 async def test_the_node_panel_bounds_the_error_fields_it_serves(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -574,10 +566,19 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
             "display-cap precedent (a bounded render + a truncation marker) never "
             "reached the node panel"
         )
-        assert "more characters" in value or value.endswith("...") or value.endswith("…"), (
-            f"the panel's {field} truncation must be VISIBLE (a truncation marker, "
-            "the estate's '... (N more characters)' shape) — a silent cut reads as "
-            "the whole value"
+        # THE MARKER'S SHIPPED VOCABULARY: the panel's own
+        # '[truncated: +N characters stay in the row]' suffix (Q5's cure),
+        # or the estate's older '... (N more characters)' shape — a silent
+        # cut reads as the whole value.
+        assert (
+            "[truncated:" in value
+            or "more characters" in value
+            or value.endswith("...")
+            or value.endswith("…")
+        ), (
+            f"the panel's {field} truncation must be VISIBLE (a truncation marker — "
+            "the shipped '[truncated: …]' shape or the estate's '... (N more "
+            "characters)' shape) — a silent cut reads as the whole value"
         )
 
 

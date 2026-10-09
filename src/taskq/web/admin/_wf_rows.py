@@ -215,6 +215,28 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
     )
 
 
+
+#: The display bound the jobs page's Data section carries (the same
+#: number): the node panel's error fields are row-sourced and a row can
+#: carry megabytes of failure text — the panel serves the bounded form
+#: with the remaining-count marker, truncation distinguishable from an
+#: actually-small value.
+_TRACEBACK_DISPLAY_LIMIT: int = 2000
+
+
+def _truncate_error_text(text: str | None) -> str | None:
+    """The node panel's error-field bound (the jobs page's own
+    ``_truncate_traceback`` convention, re-derived here — the import law
+    keeps the module free of the jobs-page import)."""
+    if text is None:
+        return None
+    if len(text) <= _TRACEBACK_DISPLAY_LIMIT:
+        return text
+    remaining = len(text) - _TRACEBACK_DISPLAY_LIMIT
+    suffix = f"... ({remaining} more characters)"
+    return text[: _TRACEBACK_DISPLAY_LIMIT - len(suffix)] + suffix
+
+
 def _run_view_from_rows(
     root: Mapping[str, Any],
     node_rows: Sequence[Mapping[str, Any]],
@@ -271,7 +293,7 @@ def _run_view_from_rows(
                 blocking_reason=r["blocking_reason"],
                 absorbed=r["absorbed"],
                 error_class=r["error_class"],
-                error_message=r["error_message"],
+                error_message=_truncate_error_text(r["error_message"]),
                 map_children=0 if is_map_child else total,
                 map_done=0 if is_map_child else done,
                 hold=dict(held_by_node[step_key]) if step_key in held_by_node else None,
@@ -287,7 +309,7 @@ def _run_view_from_rows(
         finished_at=_iso(root["finished_at"]),
         cancel_requested_at=_iso(root["cancel_requested_at"]),
         error_class=root["error_class"],
-        error_message=root["error_message"],
+        error_message=_truncate_error_text(root["error_message"]),
         nodes=nodes,
         holds=holds,
         root_map_done=sum(n.map_done for n in nodes if not n.map_child),
