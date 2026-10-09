@@ -1,0 +1,10 @@
+# the composed demo e2e RE-RECORDED at the head (the head-stamp law's cure: the
+# claim of record pointed at captures RED (leg3) and taken on an ancestor —
+# green-in-fact, unproven-as-recorded; this is the proof, on the claimed head)
+== e2e composed round 1 (head 7cdbeac91b149570b0f7aab45efbc276b4aea7a4) ==
+9 passed in 47.82s
+== e2e composed round 2 (head 7cdbeac91b149570b0f7aab45efbc276b4aea7a4) ==
+9 passed in 47.32s
+== e2e composed round 3 (head 7cdbeac91b149570b0f7aab45efbc276b4aea7a4) ==
+9 passed in 49.03s
+head: 7cdbeac91b149570b0f7aab45efbc276b4aea7a4

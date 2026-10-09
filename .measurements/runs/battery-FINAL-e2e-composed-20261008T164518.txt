@@ -1,1 +1,2 @@
 4 failed, 5 passed in 42.37s
+SUPERSEDED-BY: .measurements/runs/e2e-composed-20261008T223500.txt (the same composed legs RE-RECORDED at this head — the old capture is RED where its claim said green and/or predates the fix commit; never left as the live claim)
