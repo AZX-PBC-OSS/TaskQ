@@ -134,7 +134,7 @@ def _statement_kinds(sql: str) -> list[str]:
 
 
 def test_columns_file_holds_only_metadata_alters() -> None:
-    sql = (_round_by_name("01.00.23_04_pre_workflow_columns.sql")).read_text()
+    sql = (_round_by_name("01.00.24_01_pre_workflow_columns.sql")).read_text()
     kinds = _statement_kinds(sql)
     # COMMENT ON is metadata-only (a catalog write; the columns file's
     # documentation column comments ride the same instant lock) - allowed
@@ -148,7 +148,7 @@ def test_columns_file_holds_only_metadata_alters() -> None:
 
 
 def test_tables_file_holds_only_create_tables() -> None:
-    sql = (_round_by_name("01.00.23_05_pre_workflow_tables.sql")).read_text()
+    sql = (_round_by_name("01.00.24_02_pre_workflow_tables.sql")).read_text()
     kinds = _statement_kinds(sql)
     assert set(kinds) <= {"CREATE TABLE", "COMMENT ON"}, kinds
     for table in ("wf_edge", "wf_join_fire", "wf_outbox", "wf_step_ledger"):
@@ -156,7 +156,7 @@ def test_tables_file_holds_only_create_tables() -> None:
 
 
 def test_indexes_file_holds_only_create_indexes() -> None:
-    sql = (_round_by_name("01.00.23_06_pre_workflow_indexes.sql")).read_text()
+    sql = (_round_by_name("01.00.24_03_pre_workflow_indexes.sql")).read_text()
     kinds = _statement_kinds(sql)
     assert set(kinds) == {"CREATE INDEX"}, kinds
     # THE PARTIAL-INDEX DOCTRINE: the workflow-scoped indexes are partial;
@@ -570,5 +570,9 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
 
 def test_migrations_module_sees_the_round() -> None:
     keys = {m.key for m in migrate_mod.discover()}
-    for seq in ("01", "04", "05", "06", "07"):
+    for seq in ("01", "02", "03"):
         assert f"{WORKFLOW_ROUND}_{seq}:pre" in keys, keys
+    # LIB-2's split pair rides the 01.00.23 identities (main's shipped
+    # ledger file + the index's single-lock-class split home).
+    assert "01.00.23_01:pre" in keys, keys
+    assert "01.00.23_07:pre" in keys, keys
