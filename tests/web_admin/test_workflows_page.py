@@ -300,15 +300,22 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
     assert {n["key"] for n in replayed[0]["nodes"]} == {"review"}
 
 
-async def test_sse_unknown_run_streams_the_empty_snapshot(
+async def test_sse_unknown_run_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (3): a stream for an unknown/not-yet-inserted
-    run emits the snapshot with ZERO nodes — a defined state, not a
-    hang, not a blank."""
-    frames = await _stream_frames(module_pg_schema, "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f")
-    assert frames
-    assert frames[0]["nodes"] == []
+    """THE STATES MATRIX (3), Q7's cure superseding the empty-snapshot
+    pin: a stream for an UNKNOWN run id is a 404 AT SUBSCRIBE — the
+    estate's own ``/sse/{topic}`` convention (an unknown topic is
+    refused at subscribe; the empty-snapshot-forever stream was an
+    existence oracle behind the auth gate and a poll task per probe).
+    The defined empty state stays for a run that EXISTS with no node
+    rows yet (the generator's not-started arm)."""
+    app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/runs/018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f/stream")
+    assert resp.status_code == 404
 
 
 # ── the typed door + the audit ──────────────────────────────────────────

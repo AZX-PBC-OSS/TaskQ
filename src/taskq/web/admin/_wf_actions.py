@@ -10,12 +10,27 @@ FULL SNAPSHOT; the rows are the durable ring — a reconnect replays BY
 CONSTRUCTION (the next snapshot carries the whole state), and the
 seq-cursor drops stale frames client-side. A killed connection cannot
 strand the page on a stale render, and a memory ring would be a second
-copy of a ledger that already exists.
+copy of a ledger that already exists. THE SESSION LAW (Q4's cure — the
+same re-check ``/sse/{topic}`` got for #316): the stream re-invokes the
+host's ``session_verifier`` before the first frame and once per poll
+iteration — a session revoked MID-STREAM ends the stream at the next
+tick, fail-closed on any verifier error or a check that outlives
+``SESSION_RECHECK_TIMEOUT_SECS``. THE SUBSCRIBE LAW (the existence
+oracle's cure, Q7): an unknown run id is a 404 AT SUBSCRIBE — the
+estate's own SSE convention (``/sse/{topic}`` refuses an unknown topic
+at subscribe; the empty-snapshot-forever stream was an existence oracle
+behind the auth gate and a wasted poll task per probe). A run that
+EXISTS but whose node rows are not inserted yet still streams (the
+generator's not-started state).
 
 THE TYPED DOOR: deliver + resolve validate through the bound
 ``TypedGate``s of the WorkflowApp the host mounted (``create_router(
 workflow_app=...)``). Without one the endpoints answer ``501`` with the
-named reason — NO untyped deliver surface ships.
+named reason — NO untyped deliver surface ships. THE AUDITED REFUSAL
+(Q3's cure): the gate's 422 IS an operator action — the refusal writes
+its own ``admin_audit`` row (``refused`` + the reason) before the
+HTTPException propagates, so an attacker's shape-probing lands IN the
+trail the page claims covers every Resolve/deliver; the hold survives.
 
 THE AUDIT (G4): every resolve/deliver/cancel writes its ``admin_audit``
 row (principal + reason + run/node) — "who approved this" is a ROW, not
@@ -28,26 +43,28 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Final, cast
 
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
+from tors import truncate_to_bounds
 
 from taskq._json import dumps as _json_dumps
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web._sse_limit import acquire_sse_slot, release_after
+from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot, release_after
 from taskq.web.admin._factory import (
     get_admin_pool,
     get_base_path,
     get_principal,
     get_schema,
+    get_session_verifier,
     get_settings,
     get_workflow_app,
     require_actions_enabled,
@@ -82,6 +99,10 @@ _RUN_REVISION_SQL = (
     "AS revision"
 )
 
+#: The subscribe probe (Q7's cure): one indexed root-row read decides
+#: the stream's 404-before-first-frame (the existence oracle's refusal).
+_RUN_EXISTS_SQL = "SELECT 1 FROM \"{schema}\".jobs WHERE id = $1 AND step_key = '__flow__'"
+
 #: The node detail panel's read (the drill-down: status header, attempts,
 #: the trace id, captured error, one upstream hop — §10.3's causal chain
 #: via parent_id).
@@ -107,6 +128,110 @@ _NODE_LEDGER_SQL = (
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+#: The panel's display cap (CHARS): error_message / error_traceback /
+#: metadata->>'error' render bounded — the full detail stays in the ROWS
+#: (the drill-down fetch reads the same rows; the cap is the DISPLAY's,
+#: Q5's read-side cure: engine-written rows carry the write-side caps,
+#: but a row written by ANY other path — or a hostile DB write — served
+#: unbounded through this endpoint, a 15MB response from a foreign row).
+_PANEL_FIELD_CAP_CHARS: Final[int] = 10_000
+_PANEL_SUFFIX_RESERVE: Final[int] = 80
+
+
+def _bound_for_panel(text: str | None) -> str | None:
+    """The read-side bound (the display-capped delivery): an over-cap
+    field truncates WITH the dropped-character count named — the same
+    honesty the capture's ``__truncated__`` marker and the CLI's event
+    lines keep. ``truncate_to_bounds`` is grapheme-safe (tors, the house
+    call); the row itself is never touched."""
+    if text is None or len(text) <= _PANEL_FIELD_CAP_CHARS:
+        return text
+    bound = _PANEL_FIELD_CAP_CHARS - _PANEL_SUFFIX_RESERVE
+    remaining = len(text) - bound
+    suffix = f"… [truncated: +{remaining} characters stay in the row]"
+    return truncate_to_bounds(text, bound) + suffix
+
+
+def _panel_truncated(texts: list[str | None]) -> bool:
+    """Whether any of the panel's bounded fields actually truncated (the
+    'truncated' marker's boolean face — the JS can render the honesty
+    without parsing the suffix)."""
+    return any(t is not None and len(t) > _PANEL_FIELD_CAP_CHARS for t in texts)
+
+
+async def _audit_gate_refusal(
+    pool: BoundedPool,
+    *,
+    schema: str,
+    principal: Any,
+    action: str,
+    target_id: str,
+    run_id: str,
+    node_key: str,
+    reason: Any,
+    refusal: str,
+) -> None:
+    """THE AUDITED REFUSAL (Q3's cure): the typed door's 422 is an
+    operator ACTION — it writes its ``admin_audit`` row (``refused`` +
+    the gate's reason) before the HTTPException propagates. The refusal
+    moves no rows, so the row stands alone (nothing to share a tx with —
+    the same-tx discipline's degenerate case); it is written with the
+    UNsafe recorder so a failure SURFACES (a refusal the trail missed is
+    the exact invisible-probe conviction). The detail carries the run_id
+    the trail's page query keys on — the refusal renders on THE RUN's
+    trail, not just the hold's target lookup."""
+    from taskq.web.admin._audit import record_admin_action
+
+    async with pool.acquire() as conn:
+        await record_admin_action(
+            conn,
+            schema=schema,
+            principal=principal,
+            action=action,
+            target_type="hold",
+            target_id=target_id,
+            reason=reason if isinstance(reason, str) else None,
+            detail={
+                "refused": str(refusal),
+                "node": node_key,
+                "stage": "admin-payload-gate",
+                "run_id": run_id,
+            },
+        )
+
+
+async def _validated_through_gates_audited(
+    pool: BoundedPool,
+    *,
+    schema: str,
+    principal: Any,
+    wf_app: Any,
+    hold: Any,
+    decision: dict[str, object],
+    action: str,
+    target_id: str,
+    reason: Any,
+) -> dict[str, object]:
+    """The typed door + the audit-on-refusal (Q3): validate through the
+    bound gates; a 422 refusal lands its audit row FIRST, then
+    propagates. The success path is exactly ``_validate_through_gates``."""
+    try:
+        return _validate_through_gates(wf_app, hold, decision)
+    except HTTPException as exc:
+        await _audit_gate_refusal(
+            pool,
+            schema=schema,
+            principal=principal,
+            action=action,
+            target_id=target_id,
+            run_id=hold.run_id,
+            node_key=hold.node_key,
+            reason=reason,
+            refusal=str(exc.detail),
+        )
+        raise
 
 
 def _validate_through_gates(
@@ -174,10 +299,22 @@ async def _form_body(request: Request) -> dict[str, Any]:
 
 
 async def _stream_generator(
-    pool: BoundedPool, schema: str, run_id: uuid.UUID, cursor: int
+    pool: BoundedPool,
+    schema: str,
+    run_id: uuid.UUID,
+    cursor: int,
+    session_verifier: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncGenerator[str, None]:
     """The feed: snapshot-on-revision, full replacement each frame (the
     replay contract's body — see the module docstring).
+
+    THE SESSION LAW (Q4's cure, the #316 pattern ported from
+    ``sse.py``): ``session_verifier`` re-runs before the first frame and
+    once per poll iteration — a session revoked mid-stream ends the
+    stream at the next tick, before ANY further frame. Fail-closed: a
+    verifier error is revocation, and a check that outlives
+    ``SESSION_RECHECK_TIMEOUT_SECS`` (a wedged IdP introspection) is
+    unknown state, not a pass.
 
     THE GENERATOR TRAP (P2's pin 6): state crosses as PARAMETERS — a
     reassignment of a variable captured from the endpoint's scope is the
@@ -185,7 +322,44 @@ async def _stream_generator(
     seq = cursor
     last_revision: str | None = None
     since_keepalive = 0.0
+    _recheck_count = {"n": 0}
+
+    async def _session_still_valid() -> bool:
+        if session_verifier is None:
+            return True
+        first_check = _recheck_count["n"] == 0
+        try:
+            _recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            logger.warning(
+                "wf-run-sse-session-recheck-timeout",
+                run_id=str(run_id),
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
+        except Exception:
+            # Fail closed: an unknown session state must not keep an
+            # admin stream open (the caller names the revocation).
+            return False
+
     while True:
+        # THE SESSION RE-CHECK GATES EVERY ITERATION (before the poll and
+        # every frame it would yield — the revoked session's stream
+        # terminates at the next tick, never keeps receiving frames).
+        if not await _session_still_valid():
+            logger.warning(
+                "wf-run-sse-session-revoked",
+                run_id=str(run_id),
+                stream_phase="streaming",
+            )
+            return
         try:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(_RUN_REVISION_SQL.format(schema=schema), run_id)
@@ -211,10 +385,11 @@ async def _stream_generator(
             since_keepalive = 0.0
         elif revision != last_revision:
             # THE NOT-STARTED RUN (the states matrix's defined state): the
-            # revision moved but the run has no rows yet (or none at all)
-            # — emit the EMPTY snapshot once per revision change, never a
-            # silent hang (a blank stream that reads as a dead run is
-            # the #673 class).
+            # revision moved but the run has no rows yet — the subscribe
+            # 404s an UNKNOWN run id (the existence oracle's cure), so
+            # this branch is the mid-stream race only: the root row the
+            # subscribe probe found is pruned between subscribe and this
+            # poll. Still a defined state, never a silent hang.
             seq += 1
             last_revision = revision
             yield _frame(
@@ -265,9 +440,17 @@ def register_actions(router: APIRouter) -> None:
             "retry_kind": node["retry_kind"],
             "trace_id": str(node["trace_id"]) if node["trace_id"] else None,
             "error_class": node["error_class"],
-            "error_message": node["error_message"],
-            "error_traceback": node["error_traceback"],
-            "captured_error": node["captured_error"],
+            # THE READ-SIDE BOUND (Q5's cure): the display-capped
+            # delivery — a foreign/hostile row's 5MB error fields render
+            # bounded with the dropped-count named; the full detail
+            # stays in the ROWS (the CLI/SQL surface reads them
+            # uncapped).
+            "error_message": _bound_for_panel(node["error_message"]),
+            "error_traceback": _bound_for_panel(node["error_traceback"]),
+            "captured_error": _bound_for_panel(node["captured_error"]),
+            "error_truncated": _panel_truncated(
+                [node["error_message"], node["error_traceback"], node["captured_error"]]
+            ),
             "parent": dict(parent) | {"id": str(parent["id"])} if parent else None,
             "timeline": [dict(r) | {"created_at": _iso(r["created_at"])} for r in ledger],
             "created_at": _iso(node["created_at"]),
@@ -278,13 +461,36 @@ def register_actions(router: APIRouter) -> None:
     @router.get("/api/runs/{run_id}/stream")
     async def run_stream(  # pyright: ignore[reportUnusedFunction]
         run_id: uuid.UUID,
+        request: Request,
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         settings: TaskQSettings = Depends(get_settings),
+        session_verifier: Callable[[Request], Awaitable[bool]] | None = Depends(
+            get_session_verifier
+        ),
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """The run's SSE state feed (the revisioned-snapshot replay —
-        the module docstring states the contract)."""
+        the module docstring states the contract).
+
+        THE SUBSCRIBE LAW (Q7's cure): an unknown run id is a 404 HERE —
+        the estate's own SSE convention (``/sse/{topic}`` refuses an
+        unknown topic at subscribe; this endpoint refuses an unknown RUN
+        the same way). The empty-snapshot-forever stream was an
+        existence oracle behind the auth gate AND a poll task per probe,
+        held until the client let go; the 404 is the defined refusal. A
+        run that exists but has no node rows yet still streams (the
+        generator's not-started state)."""
+        # THE EXISTENCE PROBE (bounded, one indexed read, BEFORE the slot
+        # acquire — a refused stream must not consume the SSE budget the
+        # cap guards).
+        async with pool.acquire() as conn:
+            try:
+                exists = await conn.fetchval(_RUN_EXISTS_SQL.format(schema=schema), run_id)
+            except asyncpg.exceptions.UndefinedTableError:
+                exists = True  # the generator's uninstalled degrade answers the stream
+        if not exists:
+            raise HTTPException(status_code=404, detail="Workflow run not found")
         cursor = 0
         if last_event_id is not None:
             try:
@@ -298,10 +504,17 @@ def register_actions(router: APIRouter) -> None:
         sse_slot = await acquire_sse_slot(
             "wf-run-stream", settings.admin_max_sse_connections, surface="admin"
         )
+        # THE SESSION LAW's binding (the #316 pattern, sse.py): the
+        # verifier reads the same session cookie the request arrived
+        # with; a session revoked mid-stream fails the re-check at the
+        # next tick even though those bytes are unchanged.
+        _session_verifier: Callable[[], Awaitable[bool]] | None = (
+            (lambda: session_verifier(request)) if session_verifier is not None else None
+        )
         return StreamingResponse(
             release_after(
                 sse_slot,
-                _stream_generator(pool, schema, run_id, cursor),
+                _stream_generator(pool, schema, run_id, cursor, _session_verifier),
                 "wf-run-stream",
                 surface="admin",
             ),
@@ -345,7 +558,20 @@ def register_actions(router: APIRouter) -> None:
         hold = await client.get(hold_id)
         if hold is None or hold.run_id != str(run_id):
             raise HTTPException(status_code=404, detail="Hold not found on this run")
-        validated = _validate_through_gates(wf_app, hold, decision_doc)
+        # THE AUDITED REFUSAL (Q3's cure): the gate's 422 writes its
+        # admin_audit row (refused + the reason) before propagating —
+        # the shape-probing operator lands IN the trail.
+        validated = await _validated_through_gates_audited(
+            pool,
+            schema=schema,
+            principal=principal,
+            wf_app=wf_app,
+            hold=hold,
+            decision=decision_doc,
+            action="hitl.resolve",
+            target_id=hold_id,
+            reason=reason,
+        )
         result = await client.resolve(
             hold_id,
             validated,
@@ -399,7 +625,19 @@ def register_actions(router: APIRouter) -> None:
                 detail="ambiguous: the node holds "
                 f"{len(held)} signals — address one BY ID (the resolve's door)",
             )
-        validated = _validate_through_gates(wf_app, held[0], payload_doc)
+        # THE AUDITED REFUSAL (Q3's cure): the deliver door's 422 audits
+        # exactly like the resolve's (the page's claim names deliver).
+        validated = await _validated_through_gates_audited(
+            pool,
+            schema=schema,
+            principal=principal,
+            wf_app=wf_app,
+            hold=held[0],
+            decision=payload_doc,
+            action="hitl.resolve",
+            target_id=held[0].hold_id,
+            reason=reason,
+        )
         result = await client.resolve(
             held[0].hold_id,
             validated,

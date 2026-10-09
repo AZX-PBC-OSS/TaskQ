@@ -66,12 +66,23 @@
   }
 
   function paintNode(key, node) {
-    var g = graphHost.querySelector('[data-node-key="' + key + '"]');
+    // THE ESCAPED SELECTOR (the poisoned-row defense, nit 1 of 2): the
+    // row's step key is ATTACKER-CONTROLLED (a poisoned row key with a
+    // quote or backslash in it made this querySelector THROW — a
+    // SyntaxError inside applySnapshot's patch loop that blinded every
+    // later frame of the run's live updates). CSS.escape makes any key
+    // a legal attribute-selector value; no key can throw here.
+    var g = graphHost.querySelector('[data-node-key="' + CSS.escape(key) + '"]');
     if (!g || !node) return;
     STATUS_CLASSES.forEach(function (c) { g.classList.remove(c); });
-    // THE HELD NODE IS AMBER: held is not a job status (pending + the
-    // signal row) — the dedicated class is the pin's name.
-    g.classList.add(node.hold ? "wf-st-held" : "wf-st-" + node.status);
+    // THE SANITIZED STATUS CLASS (the poisoned-row defense, nit 2 of 2):
+    // a space-bearing status (a hostile row) made classList.add THROW
+    // (InvalidCharacterError) — the same live-update blinding. The
+    // class is the LEGEND's closed vocabulary: anything outside it
+    // paints as pending, exactly the server's own status_class default.
+    var cls = node.hold ? "wf-st-held" : "wf-st-" + node.status;
+    if (cls !== "wf-st-held" && STATUS_CLASSES.indexOf(cls) < 0) cls = "wf-st-pending";
+    g.classList.add(cls);
     var counter = g.querySelector(".wf-counter");
     if (node.map_children > 0) {
       if (!counter) {
@@ -102,6 +113,13 @@
     window.__wfSeq = state.seq;
     boot.state = state;
     if (derivedEl) derivedEl.textContent = state.status;
+    // THE ROOT'S MAP COUNTER (the collapse's run-level face): the frame
+    // carries the SUM across sources; the header's font-mono span
+    // patches with it (absent element or absent field = no-op).
+    var mapEl = document.querySelector('[data-wf="map-counter"]');
+    if (mapEl && typeof state.map_children === "number") {
+      mapEl.textContent = (state.map_done || 0) + "/" + state.map_children;
+    }
     (state.nodes || []).forEach(function (node) { paintNode(node.key, node); });
   }
 
