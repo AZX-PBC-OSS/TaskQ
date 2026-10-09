@@ -99,14 +99,15 @@ def rehydrate_carry(declared: object, raw: object) -> object:
     declared_type = type(declared)
     if isinstance(raw, declared_type):
         return raw
-    if isinstance(declared, BaseModel) and isinstance(declared_type, type):
+    if isinstance(declared, BaseModel):
+        model_type: type[BaseModel] = type(declared)
         if not isinstance(raw, dict):
             raise LoopCarryContractError(
                 f"the loop's declared carry ({declared_type.__name__}) arrived "
                 f"as {type(raw).__name__!r} — the jsonb value cannot be "
                 "re-hydrated through the declared type's validator"
             )
-        return declared_type.model_validate(raw)
+        return model_type.model_validate(raw)
     if isinstance(declared, dict):
         if not isinstance(raw, dict):
             raise LoopCarryContractError(
@@ -114,7 +115,12 @@ def rehydrate_carry(declared: object, raw: object) -> object:
                 f"as {type(raw).__name__!r} — the jsonb value cannot be "
                 "re-hydrated through the declared type's validator"
             )
-        return declared_type(raw)
+        # The dict-SUBCLASS constructor (collections.Counter — the
+        # counting carry): the class builds from its mapping. Pyright's
+        # type[dict] face has no per-subclass ctor signature; the
+        # targeted ignore is the declared laundering (the constructor's
+        # own contract — Counter({"acc": 3}) is the shape).
+        return declared_type(raw)  # pyright: ignore[reportCallIssue]  # Why: the type[dict] face's overload set is the base ctor's; the subclass builds from its mapping.
     if isinstance(declared, dict | list | str | int | float | bool):
         return raw
     raise LoopCarryContractError(
@@ -129,7 +135,6 @@ class LoopCarryContractError(WorkflowRunError):
     """The carry's declared type cannot round-trip the jsonb boundary —
     the declaration is refused LOUDLY (a silent type change is the lie
     the typed carry exists to refuse)."""
-
 
 
 def encode_result(value: object) -> dict[str, object] | None:

@@ -50,6 +50,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
+from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 from taskq.workflows.api._graph import (
     BodyFn,
     GateDecl,
@@ -57,7 +58,6 @@ from taskq.workflows.api._graph import (
     WorkflowBuildError,
     active_graph,
 )
-from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 
 __all__ = [
     "Done",

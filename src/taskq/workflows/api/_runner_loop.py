@@ -46,6 +46,10 @@ class _LoopHost(Protocol):
     wsql: WorkflowSql
     schema: str
     compiled: Any
+    #: THE DRIVER'S IDENTITY (the claim identity's fence): the id the
+    # node claim stamped on the row — the loop's advance/exhaust bind it
+    # (a zombie driver's write is refused by its own legs).
+    _worker_id: JobId
 
     async def _flow_input(self, flow_id: JobId) -> object: ...
 

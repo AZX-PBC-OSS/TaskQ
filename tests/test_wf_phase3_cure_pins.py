@@ -28,6 +28,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel
 
+from taskq.backend._protocol import JobId
 from taskq.workflows import (
     Done,
     Exit,
@@ -274,7 +275,6 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
 
     from taskq._ids import new_uuid as _new_uuid
     from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
-    from taskq.workflows._sweep import drain_outbox
 
     calls: list[int] = []
 
@@ -305,29 +305,49 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
     assert flow_status == "failed", flow_status
+    # The consumer's PLACEMENT rides the registered definition (the
+    # actor/queue the escalation bindings resolved) — the fleet claim
+    # routes by it, so the pin stamps the SAME actor/queue pair the
+    # drain wrote onto the row.
+    consumer_row = await wf_conn.fetchrow(
+        f'SELECT status, actor, queue, step_key FROM "{wf_schema}".jobs WHERE id = $1',
+        consumer_id,
+    )
+    assert consumer_row is not None
+    assert consumer_row["status"] == "pending"
+    assert consumer_row["step_key"] == "loop.escalation"
 
     # THE FLEET CLAIM (the real claim round, the execution fence's
     # capable-worker shape — the same stamp the boot's projection writes).
+    # The RUNNER carries the claiming worker's OWN identity from here on
+    # (the finalize's terminal-mark fence compares locked_by_worker — a
+    # runner id that differs from the claim's is fenced out by design).
     worker_id = _new_uuid()
+    runner = FlowRunner(
+        app.get("a3cure_fleet_escalation_flow"), wf_pool, wf_schema, worker_id=JobId(worker_id)
+    )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
-        "VALUES ('wf', 'default') ON CONFLICT (actor) DO NOTHING"
+        "VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING",
+        consumer_row["actor"],
+        consumer_row["queue"],
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
-        "VALUES ($1, 'wf-escalation-pin', 1, '{default}', $2::jsonb)",
+        "VALUES ($1, 'wf-escalation-pin', 1, $2::text[], $3::jsonb)",
         worker_id,
+        [consumer_row["queue"]],
         json.dumps({"workflow_execution": True}),
     )
     dispatched = await dispatch_batch(
         wf_conn,
         sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
-        queues=["default"],
+        queues=[consumer_row["queue"]],
         limit_n=5,
         worker_id=worker_id,
         lock_lease=timedelta(seconds=30),
     )
-    claimed = {str(r.id) for r in dispatched}
+    claimed = {str(r["id"]) for r in dispatched}
     assert str(consumer_id) in claimed, (
         f"the escalation consumer {consumer_id} was NOT claimable through "
         f"the fleet dispatch (claimed={sorted(claimed)}) — the fence's "
@@ -337,24 +357,25 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     # THE BODY RUNS through the fleet-claimed door: the registered
     # escalation body executes, the consumer row terminal-succeeds
     # carrying the exhaustion record.
-    job = next(r for r in dispatched if str(r.id) == str(consumer_id))
+    job = next(r for r in dispatched if str(r["id"]) == str(consumer_id))
     outcome = await runner.run_fleet_claimed_step(
         flow_id,
         {
-            "id": job.id,
+            "id": job["id"],
             "step_key": "loop.escalation",
             "map_index": None,
-            "payload": job.payload,
-            "trace_id": job.trace_id,
+            "payload": job["payload"],
+            "trace_id": job["trace_id"],
         },
-        attempt=job.attempt,
-        claim_epoch=job.claim_epoch,
+        attempt=int(job["attempt"]),
+        claim_epoch=int(job["claim_epoch"]),
     )
     assert outcome == "succeeded", outcome
     consumer = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs WHERE id = $1', consumer_id
     )
-    assert consumer is not None and consumer["status"] == "succeeded", dict(consumer)
+    assert consumer is not None
+    assert consumer["status"] == "succeeded", consumer["status"]
     assert "counter" in (consumer["result"] or ""), "the exhaustion record never reached the body"
 
 
