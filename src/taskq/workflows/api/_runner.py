@@ -816,7 +816,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             held = await cancel_run_signals(conn, schema=self.schema, workflow_id=flow_id)
             # THE AUDIT ROW (the caller owns the tx — the same-tx
             # guarantee; the lazy import keeps the layering).
-            from taskq.web.admin._audit import record_admin_action
+            from taskq.audit import record_admin_action
 
             await record_admin_action(
                 conn,

@@ -65,18 +65,19 @@ async def _held_flow(pool: asyncpg.Pool, schema: str, name: str) -> tuple[JobId,
     return flow_id, runner
 
 
-async def _cancel_state(
-    conn: asyncpg.Connection, schema: str, flow_id: JobId
-) -> dict[str, Any]:
+_ROOT_STATUS_SQL = 'SELECT status FROM "{schema}".jobs WHERE id = $1'
+_SIGNAL_STATUS_SQL = 'SELECT status FROM "{schema}".wf_signals WHERE workflow_id = $1'
+_AUDIT_COUNT_SQL = 'SELECT count(*) FROM "{schema}".admin_audit WHERE target_id = $1'
+
+
+async def _cancel_state(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> dict[str, Any]:
+    # The queries are module CONSTANTS + .format (the estate's own shape —
+    # taskq.audit's _INSERT_SQL): the schema identifier is the fixture's
+    # validated name, every value a bound parameter.
     return {
-        "root": await conn.fetchval(f'SELECT status FROM "{schema}".jobs WHERE id = $1', flow_id),
-        "signal": await conn.fetchval(
-            f'SELECT status FROM "{schema}".wf_signals WHERE workflow_id = $1', flow_id
-        ),
-        "audit_rows": await conn.fetchval(
-            f"SELECT count(*) FROM \"{schema}\".admin_audit WHERE target_id = $1",
-            str(flow_id),
-        ),
+        "root": await conn.fetchval(_ROOT_STATUS_SQL.format(schema=schema), flow_id),
+        "signal": await conn.fetchval(_SIGNAL_STATUS_SQL.format(schema=schema), flow_id),
+        "audit_rows": await conn.fetchval(_AUDIT_COUNT_SQL.format(schema=schema), str(flow_id)),
     }
 
 
@@ -132,20 +133,21 @@ async def test_cancel_on_a_one_connection_pool_completes_atomically(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING (the attack landed at af1b8779): cancel_workflow's lazy "
-    "`from taskq.web.admin._audit import record_admin_action` imports the admin "
-    "package — whose __init__ imports the fastapi extra — so a base taskq[flows] "
-    "install cannot cancel a workflow. The cure (the audit seam moves to a "
-    "deps-free module) flips this to XPASS-strict — remove the marker WITH the cure.",
-)
 def test_the_cancel_path_never_imports_the_admin_package() -> None:
     """FACE C — the import law: the workflows engine is core-deps-only;
     no module under ``taskq/workflows/`` may import ``taskq.web.admin``
     at ANY scope (module-level OR function-local). AST-walked, both
     scopes — the function-local lazy import is exactly where the
-    convicted seam lives."""
+    convicted seam lived.
+
+    THE XFAIL IS GONE (the designed flip, observed and captured — the
+    fixer's ``faceC-XPASS-flip-*.txt``): the strict marker reded as
+    XPASS the moment the cure landed (the audit seam moved to the
+    deps-free :mod:`taskq.audit`; the compat shim
+    ``taskq.web.admin._audit`` re-exports it and the engine never
+    imports the admin package). The pin now stands GREEN as the law:
+    any re-introduction of an admin import in the engine — including
+    the lazy shape that convicted the pre-cure head — reds here."""
     import ast
     from pathlib import Path
 
@@ -154,13 +156,16 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
     for path in sorted(pkg.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
+            # (target, lineno) captured INSIDE the narrowed branches: the
+            # walk's bare ast.AST carries no lineno (pyright's gate).
             target: str | None = None
+            lineno = 0
             if isinstance(node, ast.ImportFrom) and node.module:
-                target = node.module
+                target, lineno = node.module, node.lineno
             elif isinstance(node, ast.Import):
-                target = node.names[0].name if node.names else None
+                target, lineno = (node.names[0].name if node.names else None), node.lineno
             if target and target.startswith("taskq.web.admin"):
-                offenders.append(f"{path.name}:{node.lineno} imports {target}")
+                offenders.append(f"{path.name}:{lineno} imports {target}")
     assert not offenders, (
         "the workflows engine imports the admin package (the fastapi extra) — "
         "the cancel path breaks on a base install: " + "; ".join(offenders)

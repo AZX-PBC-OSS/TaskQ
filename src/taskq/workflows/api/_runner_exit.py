@@ -159,7 +159,7 @@ class ExitOps(_ExitHost):
 
         Returns ``True`` when the CAS granted the re-arm. Surfaced as
         the ``taskq flows retry`` verb (T12's ticket)."""
-        from taskq.web.admin._audit import record_admin_action
+        from taskq.audit import record_admin_action
 
         descendants = sorted(self._descendants_of(node_key))
         async with self.pool.acquire() as conn, conn.transaction():
@@ -282,7 +282,7 @@ async def cancel_workflow_run(
         held = await cancel_run_signals(conn, schema=schema, workflow_id=flow_id)
         # THE AUDIT ROW (the caller owns the tx — the same-tx
         # guarantee; the lazy import keeps the layering).
-        from taskq.web.admin._audit import record_admin_action
+        from taskq.audit import record_admin_action
 
         await record_admin_action(
             conn,
@@ -335,7 +335,7 @@ async def retry_workflow_node(
             await conn.execute(render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys)
         await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, schema), flow_id)
         # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee).
-        from taskq.web.admin._audit import record_admin_action
+        from taskq.audit import record_admin_action
 
         await record_admin_action(
             conn,

@@ -747,7 +747,7 @@ class HitlClient:
         both BEFORE the CAS and doubled under concurrency). An
         already-resolved hold is the DEFINED no-op (the idempotence
         pin)."""
-        from taskq.web.admin._audit import record_admin_action
+        from taskq.audit import record_admin_action
 
         # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
         boundary = await _boundary_refusal(
