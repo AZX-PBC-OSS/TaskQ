@@ -84,14 +84,18 @@ def test_round_is_split_into_single_lock_class_files() -> None:
     # teeth: 23_01 holds ONLY the two ADD COLUMNs, 23_07 ONLY the index.
     lib2 = _MIGRATIONS_DIR / "01.00.23_01_pre_jobs_parent_id.sql"
     split = _MIGRATIONS_DIR / "01.00.23_07_pre_jobs_parent_pending_idx.sql"
-    lib2_statements = [l for l in lib2.read_text().splitlines() if l.startswith(("ALTER TABLE", "CREATE INDEX"))]
+    lib2_statements = [
+        line
+        for line in lib2.read_text().splitlines()
+        if line.startswith(("ALTER TABLE", "CREATE INDEX"))
+    ]
     assert lib2_statements == [
         'ALTER TABLE "{schema}".jobs ADD COLUMN parent_id uuid;',
         'ALTER TABLE "{schema}".jobs_archive ADD COLUMN parent_id uuid;',
     ], lib2_statements
-    assert [l for l in split.read_text().splitlines() if l.startswith("CREATE INDEX")] != [], (
-        "01.00.23_07 must carry the fan-out ledger's index (the split's own point)"
-    )
+    assert [
+        line for line in split.read_text().splitlines() if line.startswith("CREATE INDEX")
+    ] != [], "01.00.23_07 must carry the fan-out ledger's index (the split's own point)"
 
 
 def test_every_workflow_file_is_a_pre_file() -> None:

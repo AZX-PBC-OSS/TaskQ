@@ -11,6 +11,7 @@ Usage: python docs/guides/verify_guide.py
 
 from __future__ import annotations
 
+# ruff: noqa: S608  # Why: the harness interpolates only ITS OWN scratch schema identifier (the runner's --schema argument, validated at the entry) into the guide's verification queries — never untrusted input; the same exemption the measurement scripts carry.
 import asyncio
 from typing import Any
 
