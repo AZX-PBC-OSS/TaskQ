@@ -102,6 +102,18 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
     ),
+    # The PRE-BUDGET variant: the SAME write (the same candidate ids bound
+    # as an array, the same LIMIT-ed candidate window) rendered against the
+    # schema the budget columns have not landed on — the mirror-divergence
+    # fallback's own statement. One write class, one reason, two renders.
+    "_ARCHIVE_CTE_PRE_BUDGET_SQL": (
+        "ANY($3::uuid[])",
+        "archive write, PRE-BUDGET schema variant; its write set is the "
+        "candidate ids bound as an array, selected by the LIMIT-ed "
+        "_ARCHIVE_CANDIDATE_SQL window in the same transaction (the same "
+        "class _ARCHIVE_CTE_SQL registers; this render exists only for a "
+        "schema behind the budget columns)",
+    ),
     "_SWEEP_2_ATTEMPTS_BATCH_SQL": (
         "FROM unnest($1::uuid[]",
         "sweep 2's batched synthetic attempt insert (01.00.20_04's due_at "
