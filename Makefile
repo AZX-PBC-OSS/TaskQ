@@ -78,6 +78,36 @@ test: env
 test-cov: env
 	$(UVRUN) pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html --cov-fail-under=90
 
+# THE WORKFLOWS-SCOPED COVERAGE GATE (the evidence-integrity round's cure
+# 1): the scoped branch floor as an honest CI-leg-shaped gate. The wf pin
+# suite + the attack probes run UNDER the scoped tracer, then the gate
+# checks the number — and REFUSES a stale tree (the data predating the
+# head, or a dirty source tree): the recorded artifact carries the HEAD
+# SHA the number was measured on, and a mismatch fails the gate.
+test-wf-cov: env
+	$(UVRUN) pytest \
+		tests/test_wf_api_surface_pins.py tests/test_wf_attack_cancel.py \
+		tests/test_wf_cli_pins.py tests/test_wf_context_contract.py \
+		tests/test_wf_coverage_closing.py tests/test_wf_coverage_closing2.py \
+		tests/test_wf_ctx_annotation_pins.py tests/test_wf_engine_units.py \
+		tests/test_wf_ergonomics_contract.py tests/test_wf_fanin_bound_pins.py \
+		tests/test_wf_finalize_pins.py tests/test_wf_fork_pins.py \
+		tests/test_wf_hitl_pins.py tests/test_wf_loop_pins.py \
+		tests/test_wf_phase3_cure_pins.py tests/test_wf_pre_workflow_tolerance_pins.py \
+		tests/test_wf_progress_emission.py tests/test_wf_progress_faces.py \
+		tests/test_wf_progress_persistence.py tests/test_wf_propagation_pins.py \
+		tests/test_wf_pruner_pins.py tests/test_wf_runner_pins.py \
+		tests/test_wf_scenario_pins.py tests/test_wf_schema_migration.py \
+		tests/test_wf_state_event_totality.py tests/test_wf_status_pins.py \
+		tests/test_wf_status_property.py tests/test_wf_sweep_pins.py \
+		tests/test_wf_t20_emit_pins.py tests/test_wf_t20_fence_probe.py \
+		tests/test_wf_t20_maintain_liveness.py tests/test_wf_t20_router_pins.py \
+		tests/test_wf_validate_pins.py tests/test_fv_redlog_guard.py \
+		tests/test_worker_execution_seam.py tests/attack3-validate.py \
+		tests/attack4-coverage-closers.py \
+		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
+	$(UVRUN) python scripts/check_wf_coverage.py
+
 test-fast: env
 	$(UVRUN) pytest -n 4 -m "not integration"
 
