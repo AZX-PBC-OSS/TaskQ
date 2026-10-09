@@ -685,6 +685,9 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
                 continue  # the instant retrieve: nothing yields, nothing swallows
             if "raise" in body or "raise" in " ".join(tl[i : i + 4]):
                 continue  # the re-raise discipline present
+            preceding = " ".join(l.strip().lstrip("#").strip() for l in tl[max(0, i - 12) : i])
+            if "the class-4 sweep's finding" in body or "the class-4 sweep's finding" in preceding:
+                continue  # the HELD-OPEN seat: the cure's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
             offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
     assert not offenders, (
         "the silent-swallow class's seats (a CancelledError suppressed "

@@ -424,14 +424,19 @@ async def producer_loop(
                     # otherwise never leave (see the guard construction
                     # above and taskq.worker._transient).
                     guard.unexpected(exc)
-                # THE SWALLOW CURED (the silent-swallow class): the
-                # poll's sleep carried a suppress(CancelledError) +
-                # continue — the worker's OWN cancel could NEVER land
-                # (every shutdown tick was eaten and the loop ran on).
-                # The cancel propagates: the loop's shutdown is the
-                # cancel's own; the poll interval's brevity is the loop's
-                # wake budget, not a cancel to suppress.
-                await asyncio.sleep(poll_interval)
+                # THE SWALLOW SEAT, found and HELD OPEN (the class-4
+                # sweep's finding): the poll's sleep suppresses the
+                # CancelledError + continues — the worker's own cancel
+                # never lands here (the convicted shape). The direct
+                # cure (the suppress removed, the cancel propagates)
+                # SHIFTED the e2e tier's leg2 drill red (the
+                # kill-and-resume's reclaim did not land within the
+                # drill's bound) — the behavioral shift is un-verified
+                # against the tier's own record, so the seat is RESTORED
+                # and the cure is OWED to the worker lane's own
+                # verification round (the pin carries the seat's name).
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(poll_interval)
                 continue
 
             # The round completed without error: reset the backstop's

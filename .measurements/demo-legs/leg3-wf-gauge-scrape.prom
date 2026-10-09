@@ -1,6 +1,6 @@
 # HELP target_info Target metadata
 # TYPE target_info gauge
-target_info{service_instance_id="887635e8-8ab1-4a57-ac89-32e8e06ab092",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+target_info{service_instance_id="f5ebb02f-8506-43d1-8b7f-d51c7adeca3d",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
 # HELP taskq_ratelimit_reclaim_pending Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick (scalar: bucket names are not a dimension).
 # TYPE taskq_ratelimit_reclaim_pending gauge
 taskq_ratelimit_reclaim_pending{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
@@ -26,15 +26,3 @@ taskq_heartbeat_consecutive_failures{otel_scope_name="taskq",otel_scope_schema_u
 # TYPE taskq_wf_progress_nodes_total gauge
 taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="pending",workflow="doc_ingest"} 16.0
 taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="succeeded",workflow="doc_ingest"} 1.0
-# HELP taskq_claim_latency_p50_seconds This worker's claim-statement latency p50 over the recent window, per queue. The claim path's own distribution view - the degradation shows here before the backlog explodes.
-# TYPE taskq_claim_latency_p50_seconds gauge
-taskq_claim_latency_p50_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.009982194984331727
-# HELP taskq_claim_latency_p95_seconds This worker's claim-statement latency p95 over the recent window, per queue. taskq.dispatch.duration's histogram carries the same signal as a histogram; this gauge exists so the degradation-ratio operands are directly scrapeable without histogram_quantile.
-# TYPE taskq_claim_latency_p95_seconds gauge
-taskq_claim_latency_p95_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.013197727035731077
-# HELP taskq_claim_latency_p99_seconds This worker's claim-statement latency p99 over the recent window, per queue - the numerator of the degradation ratio.
-# TYPE taskq_claim_latency_p99_seconds gauge
-taskq_claim_latency_p99_seconds{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.013197727035731077
-# HELP taskq_claim_claims_per_second This worker's claim throughput over the recent window, per queue. Read beside the degradation ratio: a rising ratio with a collapsing rate is a claim path about to stall (the death spiral's last visible stage); a rising ratio with a steady rate is headroom still being spent.
-# TYPE taskq_claim_claims_per_second gauge
-taskq_claim_claims_per_second{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",queue="default"} 0.1636708478366902
