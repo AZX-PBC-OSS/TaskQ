@@ -52,10 +52,22 @@ host's instrumentation) that rebind the shim's
 engine's. When the shim is not loaded (the base install) this module's
 own body is the writer. The resolution is a dictionary read, never an
 import: a base install never touches the fastapi extra.
+
+THE SEAM'S TWO DEFENSES (both born red — the red-team's CHANGES-
+REQUIRED; the teeth pins in ``tests/test_wf_attack_cancel.py`` convict
+each live): the FROZEN canonical identity (``_CANONICAL_RECORD`` — a
+module-attr rebind of this module's own ``record_admin_action`` cannot
+make the body route back to itself) and the RE-ENTRANCY guard (the
+``_routing`` contextvar — a delegating chain through the shim's attr
+terminates with EXACTLY ONE row per call chain). The MID-CALL WRITER-
+SWITCH boundary: the writer is resolved once at the seam's entry; a
+rebinding between the resolution and the write is observed by the NEXT
+call chain, never this one's row.
 """
 
 from __future__ import annotations
 
+import contextvars
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -260,6 +272,18 @@ _FOLD_CANCEL_PRINCIPAL_SQL = (
 #: None and this module's own body is the writer.
 _ADMIN_AUDIT_SHIM = "taskq.web.admin._audit"
 
+#: THE RE-ENTRANCY GUARD (the red-team's 1c cure): True while THIS call
+#: chain is routing through the loaded shim's writer. A CONTEXTVAR —
+#: the re-entrancy domain is the async call chain: asyncio copies the
+#: context per Task (and per thread), so two concurrent cancels never
+#: cross-see the flag (a threading.local would leak it across tasks
+#: interleaving on one loop; a sentinel attr on the wrapper fails on
+#: attribute-less callables and leaks the same way). The flag dies with
+#: the chain (the token reset) — no cleanup, no cross-talk.
+_routing: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "taskq.audit.seam-routing", default=False
+)
+
 
 def _loaded_admin_audit() -> Any:
     """The already-loaded admin shim's module object, or ``None`` — never
@@ -320,6 +344,31 @@ def principal_subject(principal: Any) -> str:
     return _bound_untyped_subject(str(principal))
 
 
+async def _record_admin_action(
+    conn: ConnLike,
+    *,
+    schema: str,
+    principal: Any,
+    action: str,
+    target_type: str,
+    target_id: str,
+    reason: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """THE LEAF: the audit row's INSERT itself (the body
+    :func:`record_admin_action` routes to — never the module attr, which
+    a rebinding can flip mid-chain)."""
+    await conn.execute(
+        _INSERT_SQL.format(schema=schema),
+        principal_subject(principal),
+        action,
+        target_type,
+        target_id,
+        reason,
+        dumps_jsonb_str(detail if detail is not None else {}),
+    )
+
+
 async def record_admin_action(
     conn: ConnLike,
     *,
@@ -344,34 +393,94 @@ async def record_admin_action(
     is already loaded, the row resolves through ITS current module
     attribute — the shim's attribute surface is the ONE seam (a rebinding
     there — a test double, a host's instrumentation — bites every writer
-    in the process). The identity guard falls through when the shim's
-    attribute IS this function (the shim re-exports it — routing through
-    the attribute would recurse).
+    in the process).
+
+    TWO DEFENSES, both born red (the red-team's CHANGES-REQUIRED; the
+    teeth pins ``test_wf_attack_cancel.py`` convict each, live):
+
+    * THE FROZEN IDENTITY (``_CANONICAL_RECORD``, bound once AFTER this
+      def): the fall-through guard compares the shim's attr against the
+      FROZEN function object, never the module global. The global IS
+      rebindable (the red-team's 1e — the newcomer's natural patch
+      target: a delegating spy on ``taskq.audit.record_admin_action``);
+      a global comparison made the body route back to itself — unbounded
+      RecursionError poisoning the whole cancel.
+    * THE RE-ENTRANCY GUARD (``_routing``, a :class:`contextvars.ContextVar`):
+      while THIS call chain is routing through the loaded shim's writer,
+      a RE-ENTRY (the red-team's 1c — a delegating wrapper on the shim's
+      attr calling the canonical body) lands its row DIRECTLY — no
+      re-routing, no loop; the wrapper's call chain terminates with
+      EXACTLY ONE row. THE CONTEXTVAR IS THE CHOICE, deliberately: the
+      re-entrancy domain is the ASYNC CALL CHAIN — asyncio copies the
+      context per Task (and per thread), so two concurrent cancels never
+      see each other's routing state (a ``threading.local`` would leak
+      the flag ACROSS tasks interleaving on one loop — a mid-await
+      handoff would make the second cancel silently BYPASS the shim's
+      seam); a sentinel attribute on the wrapper fails on callables that
+      accept no attributes (``functools.partial``, builtins) and leaks
+      the same way across tasks sharing one wrapper.
+
+    THE MID-CALL WRITER-SWITCH BOUNDARY (the honesty note): the writer
+    is resolved ONCE, at this seam's entry. A rebinding of the shim's
+    attribute (or the canonical global) BETWEEN the resolution and the
+    row's write is NOT observed by this call — the row routes to the
+    writer that was current AT RESOLUTION TIME. A mid-call switch takes
+    effect on the NEXT call chain; no call lands a row through a writer
+    that changed underneath it mid-flight.
     """
+    if _routing.get():
+        # THE RE-ENTRY: this call chain is already routing through the
+        # shim's writer — land the row HERE (the leaf). The delegation
+        # chain terminates: exactly one row per call chain.
+        await _record_admin_action(
+            conn,
+            schema=schema,
+            principal=principal,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            reason=reason,
+            detail=detail,
+        )
+        return
     mod = _loaded_admin_audit()
     if mod is not None:
         writer = getattr(mod, "record_admin_action", None)
-        if writer is not None and writer is not record_admin_action:
-            await writer(
-                conn,
-                schema=schema,
-                principal=principal,
-                action=action,
-                target_type=target_type,
-                target_id=target_id,
-                reason=reason,
-                detail=detail,
-            )
+        if writer is not None and writer is not _CANONICAL_RECORD:
+            token = _routing.set(True)
+            try:
+                await writer(
+                    conn,
+                    schema=schema,
+                    principal=principal,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    reason=reason,
+                    detail=detail,
+                )
+            finally:
+                _routing.reset(token)
             return
-    await conn.execute(
-        _INSERT_SQL.format(schema=schema),
-        principal_subject(principal),
-        action,
-        target_type,
-        target_id,
-        reason,
-        dumps_jsonb_str(detail if detail is not None else {}),
+    await _record_admin_action(
+        conn,
+        schema=schema,
+        principal=principal,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        reason=reason,
+        detail=detail,
     )
+
+
+#: THE FROZEN CANONICAL IDENTITY — bound ONCE, after the def (the
+#: red-team's 1e cure): the routing guard compares the shim's attr
+#: against THIS object, never the module global (which any rebinding
+#: flips). A delegating spy patched over the module global terminates:
+#: the body sees the shim's attr still carrying THIS object and falls
+#: through to the leaf.
+_CANONICAL_RECORD = record_admin_action
 
 
 async def record_admin_action_safe(

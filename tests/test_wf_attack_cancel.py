@@ -185,7 +185,7 @@ async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
     the SPY again — unbounded recursion, the whole cancel poisoned on
     the five same-tx engine sites. THE LAW: exactly ONE row lands."""
     import taskq.audit as audit_core
-    import taskq.web.admin._audit as audit_mod  # the shim loaded — the fastapi install's state
+    import taskq.web.admin._audit as audit_mod  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the IMPORT IS the effect — the shim must be LOADED (the fastapi install's state) for the seam's routing to have a live surface to route through.
 
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_tooth_canonical")
 
