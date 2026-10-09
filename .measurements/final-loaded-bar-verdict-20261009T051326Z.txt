@@ -1,0 +1,8 @@
+# THE LOADED BAR's honest verdict — the rounds' load table
+round | wall | failures | load window
+A | 23:39 | 1 (the fence drill's scratch child, green solo after) | neighbor 38% + my hog
+B | 25:20 | 2 (the join-fire band — unmarked, then marked; the TSL pin — solo-green) | my hog + ambient ~8
+A2 | 26:22 | 3 (rt_diff/rt_conservation — solo-green class) | load 23.45->29.77 (the ambient rising)
+
+the flake-kill's own loaded record (carried, theirs): L2/L3/L4 = 12,996 x3 at 13:11/14:40/13:12, load ~13 (their hog only, the orphans killed)
+this box today: the multi-tenant saturation (the load 23-30 through the rounds) — the bar's wall (<15:00) is unreachable at this baseline; the failures are ALL the rotating class (different victims every round, green solo); nothing deterministic remains red

@@ -1,0 +1,11 @@
+# THE FINAL CONSOLIDATION's proof — head 2ac9c84b, pg :5726
+--- ruff check . (the CI's step)
+All checks passed!
+--- ruff format --check . (the CI's step)
+1629 files already formatted
+--- pyright (FULL tree)
+0 errors, 0 warnings, 0 informations
+--- the type gate (pyright 1.1.414 + ty 0.0.85, every MUST_ERROR)
+the type gate holds: every MUST_ERROR marker (13) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+--- mkdocs strict
+INFO    -  Documentation built in 15.93 seconds

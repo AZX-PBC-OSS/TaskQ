@@ -1,0 +1,11 @@
+# THE FINAL CONSOLIDATION's proof — head 2b475ffe, pg :5726
+--- ruff check . (the CI's step)
+Found 4 errors.
+--- ruff format --check . (the CI's step)
+1 file would be reformatted, 1628 files already formatted
+--- pyright (FULL tree)
+0 errors, 0 warnings, 0 informations
+--- the type gate (both checkers)
+FileNotFoundError: [Errno 2] No such file or directory: 'ty'
+--- mkdocs strict
+INFO    -  Documentation built in 16.20 seconds
