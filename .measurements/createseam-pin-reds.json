@@ -69,3 +69,51 @@
 {"run": "20261008T230132-3309947-3e19c6da", "ts": "2026-10-08T23:01:32", "entries": []}
 {"run": "20261008T230133-3309947-7d99b5e3", "ts": "2026-10-08T23:01:33", "entries": []}
 {"run": "20261008T230133-3309947-b84a6b75", "ts": "2026-10-08T23:01:33", "entries": []}
+{"run": "20261008T230334-3309141-5a230482", "ts": "2026-10-08T23:03:34", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f42-8195-79d2-ac91-e2c660de1a6c\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T230334-3309141-cd167235", "ts": "2026-10-08T23:03:34", "entries": []}
+{"run": "20261008T230335-3309141-d92f3514", "ts": "2026-10-08T23:03:35", "entries": []}
+{"run": "20261008T230335-3309141-63ad8e61", "ts": "2026-10-08T23:03:35", "entries": []}
+{"run": "20261008T230335-3309141-58cc1a6b", "ts": "2026-10-08T23:03:35", "entries": []}
+{"run": "20261008T230335-3309141-3fb1ca62", "ts": "2026-10-08T23:03:35", "entries": []}
+{"run": "20261008T230603-3345125-82bf1d5b", "ts": "2026-10-08T23:06:03", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f44-c7a1-7530-ab8f-7f17f81d525b\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T230603-3345125-50fed0ad", "ts": "2026-10-08T23:06:03", "entries": []}
+{"run": "20261008T230604-3345125-e1724acd", "ts": "2026-10-08T23:06:04", "entries": []}
+{"run": "20261008T230604-3345125-c970c8c5", "ts": "2026-10-08T23:06:04", "entries": []}
+{"run": "20261008T230604-3345125-0276877e", "ts": "2026-10-08T23:06:04", "entries": []}
+{"run": "20261008T230604-3345125-fe8c4286", "ts": "2026-10-08T23:06:04", "entries": []}
+{"run": "20261008T232935-3459026-06a20406", "ts": "2026-10-08T23:29:35", "entries": []}
+{"run": "20261008T232935-3459023-f4b9e8ad", "ts": "2026-10-08T23:29:35", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f5a-5301-7902-bb96-0d98ecea2e9d\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T232935-3459017-ae2bc9fd", "ts": "2026-10-08T23:29:35", "entries": []}
+{"run": "20261008T232935-3459026-efdffef8", "ts": "2026-10-08T23:29:35", "entries": []}
+{"run": "20261008T232935-3459023-99768d0e", "ts": "2026-10-08T23:29:35", "entries": []}
+{"run": "20261008T232936-3459026-0a958679", "ts": "2026-10-08T23:29:36", "entries": []}
+{"run": "20261008T235227-3510392-72295282", "ts": "2026-10-08T23:52:27", "entries": []}
+{"run": "20261008T235227-3510392-74cc09af", "ts": "2026-10-08T23:52:27", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f6f-4386-7273-972c-d5f5cb4fe676\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T235228-3510392-93fc25cc", "ts": "2026-10-08T23:52:28", "entries": []}
+{"run": "20261008T235228-3510392-4ae8846e", "ts": "2026-10-08T23:52:28", "entries": []}
+{"run": "20261008T235228-3510392-785f39a4", "ts": "2026-10-08T23:52:28", "entries": []}
+{"run": "20261008T235228-3510392-2290e5b6", "ts": "2026-10-08T23:52:29", "entries": []}
+{"run": "20261008T235544-3812599-3de01df6", "ts": "2026-10-08T23:55:44", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f72-4331-70f1-b025-1eef63b8d7c0\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261008T235544-3812599-d564597d", "ts": "2026-10-08T23:55:44", "entries": []}
+{"run": "20261008T235544-3812599-7ce9f808", "ts": "2026-10-08T23:55:44", "entries": []}
+{"run": "20261008T235544-3812569-c2c1aa73", "ts": "2026-10-08T23:55:44", "entries": []}
+{"run": "20261008T235545-3812569-02c87e99", "ts": "2026-10-08T23:55:45", "entries": []}
+{"run": "20261008T235545-3812599-ab6a04a0", "ts": "2026-10-08T23:55:45", "entries": []}
+{"run": "20261009T000938-4066205-65a1e20c", "ts": "2026-10-09T00:09:38", "entries": []}
+{"run": "20261009T000938-4066205-39547def", "ts": "2026-10-09T00:09:38", "entries": []}
+{"run": "20261009T000938-4066205-0c7ed546", "ts": "2026-10-09T00:09:38", "entries": []}
+{"run": "20261009T000938-4066205-515c8dff", "ts": "2026-10-09T00:09:38", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f7e-fe9b-7683-a42c-72ac220cb807\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261009T000939-4066205-b22945b8", "ts": "2026-10-09T00:09:39", "entries": []}
+{"run": "20261009T000949-4066208-da7d558e", "ts": "2026-10-09T00:09:49", "entries": []}
+{"run": "20261009T002252-3986707-d8694484", "ts": "2026-10-09T00:22:52", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f8b-1a9a-7d33-84b9-75229fc81b33\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261009T002252-3986707-5ce81482", "ts": "2026-10-09T00:22:52", "entries": []}
+{"run": "20261009T002253-3986715-ef10d5a9", "ts": "2026-10-09T00:22:53", "entries": []}
+{"run": "20261009T002253-3986711-172bdec4", "ts": "2026-10-09T00:22:53", "entries": []}
+{"run": "20261009T002253-3986707-1a92970f", "ts": "2026-10-09T00:22:53", "entries": []}
+{"run": "20261009T002253-3986715-56e2b48a", "ts": "2026-10-09T00:22:53", "entries": []}
+{"run": "20261009T003337-140891-89df65b4", "ts": "2026-10-09T00:33:37", "entries": [{"pin": "pin_dispatch_never_claims_the_flow_root", "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)", "red": "{\"claimed\": [\"01a11f94-f383-77b3-9e81-389330768855\"], \"step_keys\": [\"__flow__\"]}"}]}
+{"run": "20261009T003338-140891-e8e796c9", "ts": "2026-10-09T00:33:38", "entries": []}
+{"run": "20261009T003338-140891-5ac32254", "ts": "2026-10-09T00:33:38", "entries": []}
+{"run": "20261009T003338-140891-a60a272e", "ts": "2026-10-09T00:33:38", "entries": []}
+{"run": "20261009T003338-140891-d7bf62ff", "ts": "2026-10-09T00:33:38", "entries": []}
+{"run": "20261009T003338-140891-b3b426a5", "ts": "2026-10-09T00:33:38", "entries": []}
