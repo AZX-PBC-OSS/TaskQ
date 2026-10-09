@@ -197,12 +197,37 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
 
         application.state.workflow_app = wf_app
         drive_task = asyncio.create_task(drive_loop(pg_pool, settings.schema_name))
-        # Task.cancel is a SYNC method (it returns bool) — pushed as a
-        # SYNC callback. push_async_callback would await the bool at
-        # teardown (TypeError: object bool can't be used in 'await' —
-        # CERT2 F-CERT2-1's demo-teardown red; the serve path itself
-        # was always fine, the live stack proves it).
-        stack.callback(drive_task.cancel)
+
+        async def _stop_drive_loop() -> None:
+            """THE TASK-CANCELLATION DISCIPLINE: the cancel AWAITS the
+            shutdown. Two swallow-shaped holes cured here:
+            (1) a bare ``drive_task.cancel()`` pushed as a sync callback
+            returns BEFORE the loop observes the cancellation — teardown
+            races the loop's next tick;
+            (2) the drive pass itself must not ride
+            ``suppress(CancelledError)`` (that SWALLOWS the cancel — the
+            loop measured ALIVE 12 s after the cancel, still ticking,
+            because a consumed cancellation is never delivered again).
+            The stop is a BOUNDED JOIN: cancelled, then awaited against
+            a wall clock; a loop that fails to stop within the bound is
+            the raised defect, never a silent leak."""
+            drive_task.cancel()
+            try:
+                await asyncio.wait_for(drive_task, timeout=5.0)
+            except asyncio.CancelledError:
+                return  # the loop stopped cancelled — the good path
+            except TimeoutError:
+                raise RuntimeError(
+                    "the workflow drive loop did not stop within the 5 s "
+                    "cancel bound — the shutdown discipline failed (the "
+                    "loop was still ticking past its own cancellation)"
+                ) from None
+
+        # The stop is an ASYNC callback (it awaits the loop's exit) —
+        # push_async_callback, not the sync bare-cancel push (CERT2
+        # F-CERT2-1's lesson stands: the callback's own type must match
+        # the push).
+        stack.push_async_callback(_stop_drive_loop)
 
         # The Backend the client built reaches the admin router too: without
         # it the admin UI's backend-mediated mutation buttons (job cancel,
@@ -349,10 +374,14 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
 
 @app.post("/workflows/{workflow_name}/run")
 async def run_workflow(workflow_name: str, request: Request) -> Response:
-    """Trigger the demo workflow; 202 + {run_id, url} — the F3 envelope."""
-    from examples.workflows import trigger_run
+    """Trigger a demo workflow; 202 + {run_id, url} — the F3 envelope.
+    Both demo workflows serve here (the README's legs point at these
+    routes; a 404 here means the name is not a demo workflow)."""
+    from examples.workflows import trigger_router_run, trigger_run
 
-    if workflow_name != "doc_ingest":
+    triggers = {"doc_ingest": trigger_run, "doc_screen_router": trigger_router_run}
+    trigger = triggers.get(workflow_name)
+    if trigger is None:
         raise HTTPException(status_code=404, detail=f"no demo workflow {workflow_name!r}")
     pool: asyncpg.Pool = request.app.state.pg_pool  # type: ignore[attr-defined]  # Why: the lifespan set it.
     settings_obj = TaskQSettings.load()
@@ -361,8 +390,8 @@ async def run_workflow(workflow_name: str, request: Request) -> Response:
         form = await request.form()
         raw_slot = form.get("slot")
         if isinstance(raw_slot, str) and raw_slot:
-            run_key = f"doc_ingest:demo:{raw_slot}"
-    run_id = await trigger_run(pool, settings_obj.schema_name, run_key)
+            run_key = f"{workflow_name}:demo:{raw_slot}"
+    run_id = await trigger(pool, settings_obj.schema_name, run_key)
     return JSONResponse(
         {"run_id": run_id, "url": f"/taskq/workflows/{run_id}"},
         status_code=202,
