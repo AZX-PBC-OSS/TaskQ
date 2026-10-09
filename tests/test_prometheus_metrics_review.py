@@ -1397,7 +1397,7 @@ def test_harness_series_are_bound_to_the_served_exposition(
     """A rule-test harness that hand-types series can drift from the
     emitted truth while every case still passes (a wrong-but-consistent
     name evaluates an empty vector and the SILENT guards still pass). The
-    binding pin: every input series name the 35 cases feed must be a name
+    binding pin: every input series name the 37 cases feed must be a name
     a real scrape actually served - the worker probes for everything a
     live worker carries, the emitter probe for the four families whose
     pathology cannot be staged live (the sweep-abort pair, the
@@ -1405,14 +1405,16 @@ def test_harness_series_are_bound_to_the_served_exposition(
     catch-up window swallows the probes' staged backlog, and the
     wf-progress gauge whose observable emission is the maintenance
     leader's admin-surface sample, never a worker scrape) - and the case
-    counts must be the honest 24 firing + 11 healthy guards covering
-    every shipped rule."""
+    counts must be the honest 25 firing + 12 healthy guards covering
+    every shipped rule (the consolidation's 25-rule estate: the
+    claim-latency degradation AND the workflow blocked-stuck both
+    landed)."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
     firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
     guards = [c for c in cases if not c["alert_rule_test"][0]["exp_alerts"]]
-    assert (len(firing), len(guards)) == (24, 11), (
-        f"the harness must stay 24 firing + 11 guards, got {len(firing)} + {len(guards)}"
+    assert (len(firing), len(guards)) == (25, 12), (
+        f"the harness must stay 25 firing + 12 guards, got {len(firing)} + {len(guards)}"
     )
     for case in cases:
         for input_entry in case["input_series"]:

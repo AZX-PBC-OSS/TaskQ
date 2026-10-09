@@ -38,12 +38,15 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import prune_terminal_jobs
 
 #: The crash window's own shape: the workflow round's COLUMN file applied
-#: (01.00.23_01 — the jobs/jobs_archive column mirrors exist, so the
-#: archive write runs), the TABLE file pending (01.00.23_02 — NO wf_edge
-#: anywhere). The three files apply in one `migrate up --phase pre` run,
-#: each in its own transaction, so a crash between them leaves exactly
-#: this schema — the window the tolerances exist for.
-PRE_WORKFLOW_TARGET = "01.00.23_01"
+#: (01.00.23_04 — the jobs/jobs_archive column mirrors exist, so the
+#: archive write runs; the CONSOLIDATION renumbered the workflow chain
+#: 23_01→23_04 because main's LIB-2 ledger file shipped first under the
+#: 23_01 identity — see tests/test_wf_schema_migration.py's family pin),
+#: the TABLE file pending (01.00.23_05 — NO wf_edge anywhere). The files
+#: apply in one `migrate up --phase pre` run, each in its own transaction,
+#: so a crash between them leaves exactly this schema — the window the
+#: tolerances exist for.
+PRE_WORKFLOW_TARGET = "01.00.23_04"
 
 
 async def _pre_workflow_schema(admin_conn: asyncpg.Connection, name: str) -> str:
@@ -57,7 +60,7 @@ async def _seed_expired_result(
     conn: asyncpg.Connection, schema: str, *, actor: str, key: str
 ) -> None:
     # NOTE: a PRE-workflow jobs table has NO step_key column (the column
-    # lands with the workflow round, 01.00.23_01) — the seed uses the
+    # lands with the workflow round, 01.00.23_04) — the seed uses the
     # schema's own columns only.
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
