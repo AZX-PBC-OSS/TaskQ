@@ -261,7 +261,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 from taskq.backend._protocol import ConnLike
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.constants import QUEUE_CONCURRENCY_PREFIX
+from taskq.constants import QUEUE_CONCURRENCY_PREFIX, WF_LOOP_ESCALATION_STEP_KEY
 from taskq.obs import (
     get_logger,
     record_claim_latency,
@@ -314,7 +314,18 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 _WF_DISPATCH_FENCE_TEMPLATE = """\
       -- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker
       -- EXECUTION capability): a workflow row is claimable only by a
-      -- worker that can EXECUTE it, and never on a TERMINAL flow.
+      -- worker that can EXECUTE it, and never on a TERMINAL flow —
+      -- EXCEPT the loop's REGISTERED ESCALATION step
+      -- (__WF_ESCALATION_STEP__; the ESCALATION-KIND exemption, and the
+      -- why: the exhaust tx commits the escalation's outbox row and the
+      -- flow's terminal TOGETHER, so the consumer row is BORN into a
+      -- terminal flow — a flow's death must not orphan its
+      -- pages-a-human duty. The operator's page is the ONE thing that
+      -- must survive the flow's terminality; the exemption — not a
+      -- re-ordering — is the only fenceable shape that keeps the
+      -- atomicity law (one tx) AND delivers the page, because the fence
+      -- is evaluated at DISPATCH time, when the flow is terminal either
+      -- way. Every OTHER workflow row on a dead flow stays fenced.)
       -- Short-circuits on the step_key probe — vanilla rows evaluate no
       -- subplan.
       --
@@ -351,11 +362,18 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
           OR (
               __WF_ALIAS__.step_key <> '__flow__'
               AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM "{schema}".jobs wf_flow
-                  WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
-                    AND wf_flow.status IN __WF_TERMINAL__
+              AND (
+                  -- THE ESCALATION-KIND exemption (the why is the
+                  -- template's header note): the loop's registered
+                  -- escalation consumer is dispatchable ON the terminal
+                  -- flow that spawned it.
+                  __WF_ALIAS__.step_key = '__WF_ESCALATION_STEP__'
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM "{schema}".jobs wf_flow
+                      WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                        AND wf_flow.status IN __WF_TERMINAL__
+                  )
               )
           )
       )
@@ -374,16 +392,24 @@ _WF_PROBE_FENCE_TEMPLATE = """\
       -- THE DISPATCH FENCE, P3 leg only (the probe carries no worker
       -- identity — see the derivation at _wf_dispatch_fence); the ROOT-
       -- MARKER leg rides too (the root is never work — the probe's
-      -- "routable row remains" answer must not count it).
+      -- "routable row remains" answer must not count it), and the
+      -- ESCALATION-KIND exemption rides EXACTLY as the claim fence
+      -- carries it (the two fences may not disagree: a probe that
+      -- misses the escalation consumer would answer "nothing remains"
+      -- for the one row the claim fence admits — the worker sleeps, the
+      -- page never expands a round).
       AND NOT (
           __WF_ALIAS__.step_key IS NOT NULL
           AND (
               __WF_ALIAS__.step_key = '__flow__'
-              OR EXISTS (
-                  SELECT 1
-                  FROM "{schema}".jobs wf_flow
-                  WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
-                    AND wf_flow.status IN __WF_TERMINAL__
+              OR (
+                  __WF_ALIAS__.step_key <> '__WF_ESCALATION_STEP__'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM "{schema}".jobs wf_flow
+                      WHERE wf_flow.id = (__WF_ALIAS__.metadata->>'flow_id')::uuid
+                        AND wf_flow.status IN __WF_TERMINAL__
+                  )
               )
           )
       )
@@ -395,10 +421,15 @@ def _wf_dispatch_fence(alias: str) -> str:
     # (the same derivation the engine's TERMINAL_SQL_SET pin covers) — the
     # substituted values are the engine's own vocabulary (a table alias
     # and that set), never caller input; every user-controlled value in
-    # the statement is $n-bound by the templates this composes into.
+    # the statement is $n-bound by the templates this composes into. The
+    # escalation step key is the constants home's own (backend and
+    # workflows read ONE constant — the exemption cannot drift from the
+    # step the loop registers).
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
-    return _WF_DISPATCH_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias).replace(
-        "__WF_TERMINAL__", terminal
+    return (
+        _WF_DISPATCH_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias)
+        .replace("__WF_TERMINAL__", terminal)
+        .replace("__WF_ESCALATION_STEP__", WF_LOOP_ESCALATION_STEP_KEY)
     )
 
 
@@ -406,10 +437,13 @@ def _wf_probe_fence(alias: str) -> str:
     # The P3-only variant the claimable probe bakes: the terminal-status
     # set renders from statemachine.TERMINAL_STATUSES (the same
     # derivation _wf_dispatch_fence applies — a table alias and that
-    # set, never caller input).
+    # set, never caller input); the escalation-kind exemption renders
+    # from the SAME constant (the two fences may not disagree).
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
-    return _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias).replace(
-        "__WF_TERMINAL__", terminal
+    return (
+        _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias)
+        .replace("__WF_TERMINAL__", terminal)
+        .replace("__WF_ESCALATION_STEP__", WF_LOOP_ESCALATION_STEP_KEY)
     )
 
 

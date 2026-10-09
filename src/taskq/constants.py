@@ -61,6 +61,7 @@ __all__ = [
     "TERMINAL_WRITE_BUDGET_SECS",
     "WAKE_CHANNEL_FMT",
     "WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS",
+    "WF_LOOP_ESCALATION_STEP_KEY",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
     "check_max_attempts_domain",
@@ -967,6 +968,22 @@ _MAX_KEYED_KEY_LEN = 255
 
 Bounds storage growth from attacker-controlled keys and base names, the
 same rationale as the character regex above.
+"""
+
+WF_LOOP_ESCALATION_STEP_KEY: Final[str] = "loop.escalation"
+"""The workflow LOOP's registered ESCALATION step key (the outbox's
+``consumer_step_key`` for every ``on_exhausted="escalate"`` loop).
+
+Lives HERE — the cross-cutting constants home — because TWO layers read
+it and neither may import the other: the workflow loop machinery
+(``taskq.workflows.api._loop``, which registers the step's body and
+addresses the outbox row) and the BACKEND's dispatch-fence templates
+(``taskq.backend._dispatch_sql``), whose terminal-flow leg carries the
+ESCALATION-KIND exemption — the one workflow row a TERMINAL flow's
+dispatch fence still admits (a flow's death must not orphan its
+pages-a-human duty). Backend must not import workflows (the §16.1
+import law), so the fence substitutes this constant as a token; the two
+faces cannot drift.
 """
 
 QUEUE_CONCURRENCY_PREFIX: Final[str] = "taskq:global:queue:"

@@ -433,9 +433,6 @@ async def sweep_loop_budget(
             # WHICH wall (the named state's truth): the metadata's
             # iteration counter vs max_iterations — the cap names
             # ``iteration_cap_exhausted``, the budget its own state.
-            # WHICH wall (the named state's truth): the metadata's
-            # iteration counter vs max_iterations — the cap names
-            # ``iteration_cap_exhausted``, the budget its own state.
             state = await conn.fetchrow(
                 LOOP_NODE_WALL_SQL.replace("{schema}", wsql.schema), loop_id
             )
@@ -448,6 +445,13 @@ async def sweep_loop_budget(
             iteration_state = (
                 ITERATION_STATE_CAP_EXHAUSTED if cap_hit else ITERATION_STATE_BUDGET_EXHAUSTED
             )
+            # THE CLAIM IDENTITY'S FENCE (the same legs the driver's
+            # exhaust carries): the identity is read under THIS arm's own
+            # row lock (FOR UPDATE — stable to statement end), so the
+            # exhaust lands exactly on the row the lock admitted — a
+            # stale identity is unrepresentable here by construction; the
+            # fence's refusal shape (a zombie driver) is the DRIVER's
+            # conviction, and the legs make the statement ONE vocabulary.
             result = await conn.fetchrow(
                 render_loop_sql(LOOP_EXHAUST_SQL, wsql.schema),
                 loop_id,
@@ -455,6 +459,9 @@ async def sweep_loop_budget(
                 f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}',
                 f"the loop's {'iteration cap' if cap_hit else 'budget'} wall fired "
                 f"(the sweep's arm; the named state: {iteration_state})",
+                loop_row["locked_by_worker"],
+                loop_row["attempt"],
+                loop_row["claim_epoch"],
             )
             if result is None or not result["loop_exhausted"]:
                 continue  # another writer got there first — the CAS held

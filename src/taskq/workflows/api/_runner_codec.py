@@ -18,8 +18,9 @@ from typing import Any, cast
 from pydantic import BaseModel, TypeAdapter
 
 from taskq._json import loads as _json_loads
+from taskq.workflows.api._runner_errors import WorkflowRunError
 
-__all__ = ["FlowEntryShim"]
+__all__ = ["FlowEntryShim", "LoopCarryContractError"]
 
 
 @dataclass(slots=True)
@@ -64,6 +65,71 @@ def encode_data_arg(value: object) -> object:
 def jsonable(value: object) -> object:
     """The carry/feedback's jsonb-safe form (the walk's boundary)."""
     return encode_data_arg(value)
+
+
+def rehydrate_carry(declared: object, raw: object) -> object:
+    """THE CARRY'S DECLARED TYPE IS THE CONTRACT: the value the body
+    receives is an instance of the DECLARED initial's type — at iteration
+    0, after EVERY resume, and on the memo-replay path alike.
+
+    The jsonb round-trip is typeless (a model dumps to a dict; the row
+    reads a plain dict back), so the driver re-hydrates through the
+    declared type's own validator at the ONE point a carry reaches a
+    body. The declared initial rides the compiled definition's spec, so
+    the validator is resolvable in ANY process that runs the body (the
+    registry is the only body source, D1) — no wire-format tag is needed
+    and the canonical dump stays a plain jsonb value. Rehydration is
+    idempotent: an already-typed carry (the in-process ``Refine``
+    feedback) passes through untouched.
+
+    * declared ``None`` — the untyped contract: the raw value passes
+      (the pre-typed-loop face is unchanged).
+    * a pydantic model declared — ``model_validate`` (the type's own
+      codec, the same validator the wiring args walk).
+    * a dict SUBCLASS declared (``collections.Counter`` — the counting
+      carry) — reconstructed through the class's dict constructor.
+    * a JSON-native declared type (dict/list/str/int/float/bool) — the
+      jsonb round-trip preserves the shape; the value passes.
+    * anything else — the LOUD refusal: the jsonb boundary cannot honor
+      the declaration (a tuple-declared carry would arrive a list), and
+      a silent type change is the exact lie this seam exists to refuse.
+    """
+    if declared is None:
+        return raw
+    declared_type = type(declared)
+    if isinstance(raw, declared_type):
+        return raw
+    if isinstance(declared, BaseModel) and isinstance(declared_type, type):
+        if not isinstance(raw, dict):
+            raise LoopCarryContractError(
+                f"the loop's declared carry ({declared_type.__name__}) arrived "
+                f"as {type(raw).__name__!r} — the jsonb value cannot be "
+                "re-hydrated through the declared type's validator"
+            )
+        return declared_type.model_validate(raw)
+    if isinstance(declared, dict):
+        if not isinstance(raw, dict):
+            raise LoopCarryContractError(
+                f"the loop's declared carry ({declared_type.__name__}) arrived "
+                f"as {type(raw).__name__!r} — the jsonb value cannot be "
+                "re-hydrated through the declared type's validator"
+            )
+        return declared_type(raw)
+    if isinstance(declared, dict | list | str | int | float | bool):
+        return raw
+    raise LoopCarryContractError(
+        f"the loop's declared carry type {declared_type.__name__!r} cannot "
+        "round-trip the jsonb boundary — declare a pydantic model, a dict "
+        "subclass, or a JSON-native type (the carry contract: the body "
+        "receives the declared type at iteration 0 AND after every resume)"
+    )
+
+
+class LoopCarryContractError(WorkflowRunError):
+    """The carry's declared type cannot round-trip the jsonb boundary —
+    the declaration is refused LOUDLY (a silent type change is the lie
+    the typed carry exists to refuse)."""
+
 
 
 def encode_result(value: object) -> dict[str, object] | None:

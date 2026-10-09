@@ -57,6 +57,7 @@ from taskq.workflows.api._graph import (
     WorkflowBuildError,
     active_graph,
 )
+from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 
 __all__ = [
     "Done",
@@ -78,7 +79,13 @@ ExhaustionPolicy = Literal["escalate", "fail"]
 #: compile; the runner's ``_resolve_body`` reads it back at claim), so the
 #: drained consumer job is never the dead-letter ghost the hardcoded
 #: ``loop_escalation`` actor was.
-ESCALATION_STEP_KEY: Final[str] = "loop.escalation"
+#:
+#: THE CONSTANT'S HOME is ``taskq.constants`` (backend and workflows read
+#: ONE constant): the dispatch fence's terminal-flow leg carries the
+#: ESCALATION-KIND exemption for THIS step key (a flow's death must not
+#: orphan its pages-a-human duty), so the loop's registration face and
+#: the fence's admission face cannot drift.
+ESCALATION_STEP_KEY: Final[str] = WF_LOOP_ESCALATION_STEP_KEY
 
 
 class Done[T]:

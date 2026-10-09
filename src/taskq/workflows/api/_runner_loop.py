@@ -136,9 +136,11 @@ class LoopOps(_LoopHost):
         failure they are)."""
         from taskq._json import loads as _loads
         from taskq.workflows.api._loop import Done, Refine
+        from taskq.workflows.api._runner_codec import rehydrate_carry
         from taskq.workflows.api._sql_loop import (
             LOOP_ADVANCE_SQL,
             LOOP_ERROR_BODY,
+            LOOP_ERROR_SHAPE,
             LOOP_INIT_SQL,
             LOOP_NODE_STATE_SQL,
             LOOP_REMAINING_SQL,
@@ -156,12 +158,15 @@ class LoopOps(_LoopHost):
         assert isinstance(meta, dict)  # the Any-contract walk (the seed wrote the shape)
         meta_doc = cast(dict[str, object], meta)  # the walk's boundary
         # THE INIT (first claim): the budget wall starts HERE (PG's
-        # clock); the iteration counter + the initial carry are set.
-        initial_carry: object
-        if isinstance(spec.carry_type, dict | list | str | int | float | bool):
-            initial_carry = jsonable(cast(object, spec.carry_type))
-        else:
-            initial_carry = None
+        # clock); the iteration counter + the initial carry are set. The
+        # initial carry is serialized through its OWN codec (jsonable —
+        # a model dumps to its dict, a Counter to its mapping): the
+        # DECLARED TYPE is re-applied at the read below (the carry's
+        # typed contract — the body receives the declared type at
+        # iteration 0 AND after every resume).
+        initial_carry: object = (
+            jsonable(cast(object, spec.carry_type)) if spec.carry_type is not None else None
+        )
         if "iteration" not in meta_doc:
             init_meta: dict[str, object] = {
                 **meta_doc,
@@ -221,7 +226,15 @@ class LoopOps(_LoopHost):
             # REACHABLE in production, never vacuous). The named state +
             # the flow terminalized in the same tx: STRANDED-FLOW.
             if spec.max_iterations is not None and iteration >= spec.max_iterations:
-                await self._exhaust_loop(flow_id, row, None, None)
+                await self._exhaust_loop(
+                    flow_id,
+                    row,
+                    None,
+                    None,
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                )
                 return
 
             iter_key = f"{row['step_key']}.iter{iteration}"
@@ -253,6 +266,25 @@ class LoopOps(_LoopHost):
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+            elif memo is not None and memo.status == "failed":
+                # THE REPLAY HONORS THE RECORDED TRUTH (the shape error's
+                # ledger law): a FAILED iteration's terminal is the named
+                # typed error the recording made — the loop exhausts with
+                # THAT class and message (the diagnosis names it), the
+                # body is never re-run (one invocation per iteration),
+                # and the raw return is never re-threaded AS A REFINE
+                # (the fabrication the pre-cure ledger committed: a
+                # SUCCEEDED row laundering a wrong-shape return).
+                await self._exhaust_loop(
+                    flow_id,
+                    row,
+                    memo.error_class or LOOP_ERROR_BODY,
+                    memo.error_message,
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                )
+                return
             else:
                 async with self.pool.acquire() as conn:
                     await claim_step_ledger(
@@ -285,6 +317,16 @@ class LoopOps(_LoopHost):
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
                 )
+                # THE CARRY'S TYPED CONTRACT, at the ONE point a carry
+                # reaches a body: re-hydrated through the DECLARED type's
+                # validator — at iteration 0 (the init's dump), after
+                # EVERY resume (the row read), on the memo replay (the
+                # recorded feedback), and on the in-memory Refine
+                # (idempotent). A dict is NEVER the body's carry when a
+                # type is declared. (BEFORE the body boundary: a contract
+                # refusal is the DECLARATION's bug — the machinery's own
+                # loud error, never a body failure to absorb.)
+                carry = rehydrate_carry(spec.carry_type, carry)
                 try:
                     outcome = await node.loop_body(loop_ctx, carry)
                 except NodeHeldError:
@@ -312,6 +354,9 @@ class LoopOps(_LoopHost):
                         row,
                         LOOP_ERROR_BODY,
                         f"the loop body failed: {type(exc).__name__}: {str(exc)[:200]}",
+                        worker_id=self._worker_id,
+                        attempt=attempt,
+                        claim_epoch=claim_epoch,
                     )
                     return
                 await self._record_iteration_terminal(flow_id, iter_key, attempt, outcome)
@@ -329,26 +374,55 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                     )
                     return
-                assert isinstance(outcome, Refine), (
-                    "the loop body must return Done(...) or Refine(...) — "
-                    "anything else is the shape error (the control union's "
-                    "residual machinery refuses the unconsumed member)"
-                )
+                if not isinstance(outcome, Refine):
+                    # THE SHAPE ERROR NAMED (the ledger's truth law): a
+                    # body returning neither Done nor Refine is the TYPED
+                    # shape error — the iteration's terminal ALREADY
+                    # recorded it (above), and the loop exhausts with the
+                    # named class so the diagnosis names it. The pre-cure
+                    # bare assert laundered the wrong-shape return into a
+                    # SUCCEEDED iteration whose memo replayed AS A REFINE.
+                    await self._exhaust_loop(
+                        flow_id,
+                        row,
+                        LOOP_ERROR_SHAPE,
+                        f"the loop body returned {type(outcome).__name__!r} — "
+                        "the body must return Done(...) or Refine(...)",
+                        worker_id=self._worker_id,
+                        attempt=attempt,
+                        claim_epoch=claim_epoch,
+                    )
+                    return
                 carry = cast(object, outcome.feedback)  # the walk's boundary
 
             # THE ADVANCE STATEMENT — the carry + THE CAP GUARD, one
             # atomic write (the guard lets the advance reach EXACTLY the
             # cap so the final iteration runs; a refused advance — a
-            # concurrent terminal — stays the backstop exhaustion).
+            # concurrent terminal — stays the backstop exhaustion). THE
+            # CLAIM IDENTITY'S FENCE rides the statement (the
+            # one-tx-finalize doctrine's legs): a zombie driver's advance
+            # — its claim lapsed, the loop reclaimed — is REFUSED, its
+            # stale payload never moves the counter backward.
             async with self.pool.acquire() as conn:
                 advanced = await conn.fetchval(
                     render_loop_sql(LOOP_ADVANCE_SQL, self.schema),
                     row["id"],
                     dumps_jsonb_str({"carry": jsonable(carry), "iteration": iteration + 1}),
                     spec.max_iterations if spec.max_iterations is not None else 2**31 - 1,
+                    self._worker_id,
+                    attempt,
+                    claim_epoch,
                 )
             if advanced is None:
-                await self._exhaust_loop(flow_id, row, None, None)
+                await self._exhaust_loop(
+                    flow_id,
+                    row,
+                    None,
+                    None,
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                )
                 return
             iteration += 1
 
@@ -363,36 +437,45 @@ class LoopOps(_LoopHost):
         self, flow_id: JobId, iter_key: str, attempt: int, outcome: object
     ) -> None:
         """The iteration's ledger terminal (the §13.3 trace shape: the
-        iteration index + the Done/Refine kind per iteration)."""
-        from taskq.workflows.api._loop import Done, Refine
+        iteration index + the Done/Refine kind per iteration).
 
-        kind = (
-            "done"
-            if isinstance(outcome, Done)
-            else "refine"
-            if isinstance(outcome, Refine)
-            else "other"
-        )
-        # The generic wrappers' payloads launder through the declared
-        # object boundary (the walk's cast).
+        THE LEDGER RECORDS THE TRUTH (the shape error's law): a body
+        returning neither Done nor Refine records a FAILED terminal with
+        the TYPED ``LoopBodyShapeError`` class — never a SUCCEEDED row
+        whose feedback-shaped payload the memo replay would re-thread as
+        a Refine (the fabrication the pre-cure recorder committed: the
+        'other' kind was laundered into ``{"done": false, "feedback":
+        …}`` and its computed kind deleted)."""
+        from taskq.workflows.api._loop import Done, Refine
+        from taskq.workflows.api._sql_loop import LOOP_ERROR_SHAPE
+
         payload: dict[str, object]
+        status = "succeeded"
+        error_class: str | None = None
+        error_message: str | None = None
         if isinstance(outcome, Done):
             payload = {"done": True, "payload": jsonable(cast(object, outcome.payload))}
         elif isinstance(outcome, Refine):
             payload = {"done": False, "feedback": jsonable(cast(object, outcome.feedback))}
         else:
-            payload = {"done": False, "feedback": jsonable(outcome)}
-        del kind
+            status = "failed"
+            error_class = LOOP_ERROR_SHAPE
+            error_message = (
+                f"the loop body returned {type(outcome).__name__!r} — the "
+                "body must return Done(...) or Refine(...); the iteration "
+                "is the shape error it is, never a replayable refine"
+            )
+            payload = {"shape": jsonable(outcome)}
         async with self.pool.acquire() as conn:
             await conn.execute(
                 self.wsql.ledger_terminal,
                 flow_id,
                 iter_key,
                 attempt,
-                "succeeded",
+                status,
                 dumps_jsonb_str(payload),
-                None,
-                None,
+                error_class,
+                error_message,
                 None,
                 None,
             )
@@ -433,6 +516,10 @@ class LoopOps(_LoopHost):
         row: dict[str, Any],
         error_class: str | None,
         message: str | None,
+        *,
+        worker_id: JobId,
+        attempt: int,
+        claim_epoch: int,
     ) -> None:
         """The NAMED exhaustion (the driver's own arms — the cap check
         and the body failure; the SWEEP's arm runs the same statement):
@@ -443,7 +530,13 @@ class LoopOps(_LoopHost):
         outbox in the SAME tx, addressed to the workflow's REGISTERED
         escalation step (the body resolves from the definition registry
         at claim — never a dead letter). ``fail`` enqueues NOTHING: the
-        flow terminal-fails and the record is the named state."""
+        flow terminal-fails and the record is the named state.
+
+        THE CLAIM IDENTITY'S FENCE: the exhaust statement carries the
+        SAME legs every other terminal write carries (worker + attempt +
+        claim_epoch) — a zombie driver's exhaust (its claim lapsed, the
+        loop reclaimed and healthy under a new driver) updates nothing:
+        no killed loop, no forged named state, no escalation row."""
         from taskq.workflows.api._loop import (
             ESCALATION_STEP_KEY,
             escalation_bindings,
@@ -452,15 +545,19 @@ class LoopOps(_LoopHost):
             ITERATION_STATE_CAP_EXHAUSTED,
             LOOP_ERROR_BODY,
             LOOP_ERROR_CAP,
+            LOOP_ERROR_SHAPE,
             LOOP_ESCALATION_OUTBOX_SQL,
             LOOP_EXHAUST_SQL,
             render_loop_sql,
         )
 
         error_class = error_class or LOOP_ERROR_CAP
-        state_name = (
-            ITERATION_STATE_CAP_EXHAUSTED if error_class != LOOP_ERROR_BODY else "loop_body_failed"
-        )
+        if error_class == LOOP_ERROR_BODY:
+            state_name = "loop_body_failed"
+        elif error_class == LOOP_ERROR_SHAPE:
+            state_name = "loop_body_shape_error"
+        else:
+            state_name = ITERATION_STATE_CAP_EXHAUSTED
         policy = "escalate"
         if node_spec := self.compiled.nodes.get(row["step_key"]):
             loop_spec = getattr(node_spec, "loop_spec", None)
@@ -473,6 +570,9 @@ class LoopOps(_LoopHost):
                 error_class,
                 f'{{"iteration_state": "{state_name}", "kind": "loop"}}',
                 message or f"the loop's wall fired (the named state: {state_name})",
+                worker_id,
+                attempt,
+                claim_epoch,
             )
             if result is None or not result["loop_exhausted"]:
                 return  # another writer got there first — the CAS held

@@ -80,12 +80,28 @@ RETURNING id
 #: This one-statement atomicity is the CARRY-OPTIMISTIC dragon's cure: a
 #: carry advanced at hold/retry time (outside this statement) is the
 #: double-apply/lost-apply variant, kept RED forever.
+#:
+#: THE CLAIM IDENTITY'S FENCE (the one-tx-finalize doctrine's
+#: terminal-write law, on the advance — the unguarded statement was the
+#: doctrine's BACK DOOR): worker + attempt + claim_epoch, the SAME legs
+#: the terminal-mark CAS carries. A zombie driver (its claim lapsed, the
+#: loop reclaimed at a fresh attempt + epoch) is REFUSED — its stale
+#: payload can never move the iteration counter BACKWARD, and the
+#: reclaimed loop's own driver advances exactly once. The
+#: NULL-tolerant form on the worker leg (``IS NOT DISTINCT FROM``): a
+#: reclaimed/never-claimed row (``locked_by_worker IS NULL``) is
+#: refuse-all for a live identity, and the sweep's under-lock identity
+#: read matches it exactly; attempt/claim_epoch are NOT NULL columns, so
+#: the form is plain equality for them.
 LOOP_ADVANCE_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
 WHERE id = $1
   AND status = 'running'
   AND (metadata->>'iteration')::int + 1 <= $3::int
+  AND locked_by_worker IS NOT DISTINCT FROM $4::uuid
+  AND attempt IS NOT DISTINCT FROM $5::int
+  AND claim_epoch IS NOT DISTINCT FROM $6::bigint
 RETURNING (metadata->>'iteration')::int AS iteration
 """
 
@@ -96,6 +112,17 @@ RETURNING (metadata->>'iteration')::int AS iteration
 #: wedged ``running`` flow that ticks forever (the spike's cut 5) is the
 #: convicted variant, kept RED forever. Idempotent: a terminal loop row
 #: (or a terminal flow) updates nothing.
+#:
+#: THE CLAIM IDENTITY'S FENCE (the same legs the advance and the
+#: terminal-mark carry — the one-tx-finalize doctrine's BACK DOOR
+#: closed): the exhaust lands only on the row the caller's own claim
+#: identity holds. A zombie driver's exhaust (its claim lapsed, the loop
+#: reclaimed and healthy under a new driver) is REFUSED — it can no
+#: longer kill the reclaimed loop, write its escalation row, or fire the
+#: named state from a stale view. The sweep's arm binds the identity it
+#: read under its own row lock (``FOR UPDATE`` — stable to statement
+#: end); the worker leg's NULL-tolerant form matches a
+#: never-claimed/reclaimed row exactly (see LOOP_ADVANCE_SQL's note).
 LOOP_EXHAUST_SQL = """\
 WITH loop_row AS (
     UPDATE {schema}.jobs
@@ -106,6 +133,9 @@ WITH loop_row AS (
         metadata = metadata || $3::jsonb
     WHERE id = $1
       AND status = 'running'
+      AND locked_by_worker IS NOT DISTINCT FROM $5::uuid
+      AND attempt IS NOT DISTINCT FROM $6::int
+      AND claim_epoch IS NOT DISTINCT FROM $7::bigint
     RETURNING id, (metadata->>'flow_id')::uuid AS flow_id
 ),
 flow_terminal AS (
@@ -140,10 +170,14 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 #: running loop at/over its iteration cap is exhausted by the SWEEP —
 #: an ``if`` in the body would red the crash pin (the worker dies, the
 #: body never runs, the cap never fires). The clock comparison is PG's
-#: ``clock_timestamp()`` (the DB-clock doctrine).
+#: ``clock_timestamp()`` (the DB-clock doctrine). The CLAIM IDENTITY
+#: columns ride the select: the sweep's exhaust binds the identity it
+#: read under this lock (the fence's under-lock read — the exhaust
+#: statement's legs).
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
-    SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key
+    SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key,
+           j.locked_by_worker, j.attempt, j.claim_epoch
     FROM {schema}.jobs j
     WHERE j.metadata @> '{{"kind": "loop"}}'::jsonb
       AND j.status = 'running'
@@ -161,7 +195,7 @@ WITH loops AS (
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 )
-SELECT l.id, l.flow_id, l.step_key
+SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch
 FROM loops l
 """
 
@@ -242,3 +276,8 @@ LOOP_KIND_MARKER: Final[str] = "loop"
 LOOP_ERROR_CAP: Final[str] = "IterationLimitExhausted"
 LOOP_ERROR_BUDGET: Final[str] = "LoopBudgetExhausted"
 LOOP_ERROR_BODY: Final[str] = "LoopBodyFailure"
+#: THE SHAPE ERROR (the ledger's truth law): a body returning neither
+#: Done nor Refine is the TYPED shape error — named at the iteration's
+#: ledger terminal AND in the loop node's diagnosis; never a SUCCEEDED
+#: row the memo replay would re-thread as a Refine.
+LOOP_ERROR_SHAPE: Final[str] = "LoopBodyShapeError"
