@@ -67,7 +67,7 @@ def _head() -> tuple[str, bool]:
     status = _git("status", "--porcelain")
     dirty = False
     for line in status.splitlines():
-        _xy, _sep, path = line.partition("\t")
+        path = line[3:]  # the porcelain v1 shape: XY<space>path
         if path.startswith(".measurements/"):
             continue
         dirty = True
