@@ -1,0 +1,4 @@
+FAILED tests/test_migrations.py::test_copy_enqueue_columns_are_copy_from_minus_server_stamped
+FAILED tests/test_sweepaudit_bounded_writes.py::test_every_write_statement_is_bounded_or_registered
+3 failed, 12979 passed, 9 skipped, 150 warnings in 1201.43s (0:20:01)
+WALL: 20:4s (1204s total)

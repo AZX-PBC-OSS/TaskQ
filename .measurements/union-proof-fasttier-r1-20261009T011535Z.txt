@@ -1,0 +1,3 @@
+FAILED tests/test_grace_boundary_timeline.py::test_kill_mid_cancel_ladder_strands_nothing_loses_no_cancel[1]
+4 failed, 12978 passed, 9 skipped, 150 warnings in 1293.44s (0:21:33)
+WALL: 1295s = 21:35

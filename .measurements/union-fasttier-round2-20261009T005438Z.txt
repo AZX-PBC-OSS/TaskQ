@@ -1,0 +1,4 @@
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+FAILED tests/test_parent_id_migration.py::test_copy_from_columns_carries_parent_id
+1 failed, 12981 passed, 9 skipped, 150 warnings in 1133.71s (0:18:53)
+WALL: 18:s (1136s total)

@@ -1,0 +1,7 @@
+# the union's final-head gates — head 93b255ff, pg :5723
+--- ruff check .
+All checks passed!
+--- ruff format --check .
+1626 files already formatted
+--- pyright FULL
+0 errors, 0 warnings, 0 informations
