@@ -231,6 +231,43 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
 
 
 @pytest.fixture(autouse=True)
+def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Clear the workflow app registry around every test.
+
+    THE LEAKED-PROJECTION CLASS (named and cured 2026-10-08; ported to
+    this lane with the evidence-integrity round's executor tests): the
+    boot projection (``project_workflow_actor_configs``) reads the
+    process-global app registry at EVERY in-process worker boot, so a
+    WorkflowApp one module constructed keeps projecting its cohorts into
+    every later test's boot on the same xdist worker. Two observed
+    victims of the same mechanism, rotating with pytest-randomly's seed:
+
+    - ``test_worker_bootstrap``: the boot synced the STRANGERS' rows
+      (``wf-demo-*`` from the imported ``examples.workflows`` app) next
+      to the test's own two — ``assert len(rows) == 2`` saw 9.
+    - ``test_health_lifecycle``: the doc fence's app (default-named
+      ``step`` actors — ``actor="wf"`` — landing on BOTH ``classify``
+      and ``cpu``) tripped the one-queue law at the boot's compile:
+      ``WorkflowActorQueueConflictError`` before the test's own stubs ran.
+
+    The registry is the src seam (``reset_app_registry_for_tests`` — the
+    projection's only input); this fixture is the suite's law that a
+    test's projection sees only what IT registered. Cleared at BOTH ends:
+    setup clears another module's import residue, teardown clears this
+    test's own constructions. A within-test app registered after setup
+    survives until teardown — the projection sees it for the test that
+    made it and nobody else.
+    """
+    from taskq.workflows._worker_execution import reset_app_registry_for_tests
+
+    reset_app_registry_for_tests()
+    try:
+        yield
+    finally:
+        reset_app_registry_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _host_signal_dispositions_restored() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
     """Restore the worker's SIGTERM/SIGINT dispositions after every test.
 

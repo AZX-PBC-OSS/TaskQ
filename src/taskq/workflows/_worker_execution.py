@@ -81,6 +81,7 @@ __all__ = [
     "project_workflow_actor_configs",
     "record_compiled",
     "register_app",
+    "reset_app_registry_for_tests",
     "workflow_execution_capable",
 ]
 
@@ -157,6 +158,37 @@ def register_app(app: object) -> None:
     """The app's boot registration (WorkflowApp.__init__ calls this).
     Weak: the registry observes the imported apps, never pins them."""
     _apps.add(app)
+
+
+def reset_app_registry_for_tests() -> None:
+    """THE TEST-ISOLATION SEAM for the app registry (the conftest's
+    ``_isolate_workflow_app_registry`` autouse fixture drives it around
+    every test).
+
+    ``_apps`` is the boot projection's ONLY input (``iter_imported_apps``),
+    and the projection runs at EVERY in-process worker boot — so a
+    WorkflowApp any test module constructed (a module-scoped fixture's
+    exec'd doc fence, an imported examples app) keeps projecting its
+    actor cohorts into every LATER test's boot on the same xdist worker:
+    the boot adds the strangers' ``actor_config`` rows to the test's own
+    (the bootstrap pin's ``9 == 2``), and a stranger whose default-named
+    actor (``step``'s ``actor="wf"`` default) lands on two queues trips
+    the one-queue law at the boot's compile step
+    (``WorkflowActorQueueConflictError`` in the health-lifecycle pins).
+    Which stranger poisons which victim rotates with pytest-randomly's
+    seed — the class is order-dependent by construction, every victim
+    green solo.
+
+    Clearing at BOTH ends makes the law explicit: a test's projection
+    sees exactly the apps ITS OWN setup registered (a within-test
+    ``WorkflowApp()`` registration happens after the setup clear and
+    survives until the teardown clear) — never another module's import
+    residue. The WeakSet clear does not destroy any app object: an owner
+    that still holds its app can re-derive everything from the object
+    itself (``app.get`` recompiles idempotently; the D1 registry's
+    absorption guard owns the name collision).
+    """
+    _apps.clear()
 
 
 def iter_imported_apps() -> list[object]:
