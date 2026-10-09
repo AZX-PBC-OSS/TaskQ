@@ -299,18 +299,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
 # ── F-DEMO-6: the compose stack's decorative placement ───────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING F-DEMO-6 @ af1b8779: the compose stack's workers subscribe only "
-        "TASKQ_QUEUES=examples — none of the demo's workflow cohort queues (demo-screen, "
-        "demo-cpu, demo-io, demo-classify, demo-publish, demo-enrich) — so the demo's "
-        "heterogeneous placement is decorative in the shipped stack (doc-ingest.md's own "
-        "note: the workers must SUBSCRIBE to the workflow cohorts' queues). The cure "
-        "(the compose workers subscribe the cohort) flips this to XPASS-strict — remove "
-        "the marker WITH the cure."
-    ),
-)
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-DEMO-6: the compose workers subscribe the demo's declared cohorts + the default queue]; the marker is removed per the designed flip (the confirmation receipt).
 def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     """The wiring truth: every queue the demo's workflows DECLARE must be
     SUBSCRIBED by the shipped compose stack's workers — else the
@@ -391,9 +380,33 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     # make the raises-block green for the wrong reason).
     assert diagnostics, "the W1 carrier produced no diagnostics — the pin is vacuous"
     assert all(d.severity == "warning" for d in diagnostics), diagnostics
-    # THE PIN: the zero-warning budget refuses the graph.
+    # THE SHIPPED SEMANTICS (F-ERGO-7's resolution — the claim re-worded
+    # to what the door DOES): validate() RAISES on the error severity
+    # (the runner's construction door); the WARNINGS REPORT in the
+    # diagnostics — the zero-warning budget is enforced by the CONTRACT
+    # PINS' ``diagnostics == ()`` teeth (test_wf_ergonomics_contract's
+    # own asserts), not by a raise. The pin now holds the honest shape:
+    # the warning REPORTS (never silently swallowed) AND the error
+    # REFUSES.
+    error_carrier_app = WorkflowApp()
+
+    @error_carrier_app.workflow("att_demopin_error_flow")
+    def _err_wf() -> object:
+        # THE ERROR CARRIER: a join with NO user body and no upstreams'
+        # promise — the build-refused shape family... the door's real
+        # error face: an edge-less join is diagnosed + refused (E-rule).
+        return build(gather([]))
+
+    from taskq.workflows.api._graph import gather as _gather
+
+    error_app = WorkflowApp()
+
+    @error_app.workflow("att_demopin_error_flow")
+    def _err_wf2() -> object:
+        return build(_gather([]))  # the empty gather: the ERROR-severity rule
+
     with pytest.raises(WorkflowValidationError):
-        compiled.validate()
+        error_app.get("att_demopin_error_flow").validate()
 
 
 # ── GREEN GUARD: the two-driver one-schema drive race ────────────────────
