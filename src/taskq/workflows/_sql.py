@@ -85,6 +85,7 @@ from taskq.workflows._sql_status import (
     WORKFLOW_ROOT_MAINTAIN_SQL,
 )
 from taskq.workflows._sql_sweep import (
+    HOLD_STAMP_RECONCILE_SQL,
     JOIN_BODY_UNAVAILABLE_SQL,
     NODELESS_ROOT_REAP_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
@@ -159,6 +160,7 @@ class WorkflowSql:
     rederive_sweep: str
     sweep_fire: str
     join_body_unavailable: str
+    hold_stamp_reconcile: str
     ledger_claim: str
     ledger_memoized: str
     ledger_terminal: str
@@ -239,6 +241,7 @@ class WorkflowSql:
             rederive_sweep=render(REDERIVE_SWEEP_SQL),
             sweep_fire=render(SWEEP_FIRE_SQL),
             join_body_unavailable=render(JOIN_BODY_UNAVAILABLE_SQL),
+            hold_stamp_reconcile=render(HOLD_STAMP_RECONCILE_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_terminal=render(LEDGER_TERMINAL_SQL),

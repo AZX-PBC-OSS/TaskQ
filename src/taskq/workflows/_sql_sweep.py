@@ -437,3 +437,52 @@ FROM orphans o
 WHERE f.id = o.id
 RETURNING f.id
 """
+
+# THE HOLD-STAMP WEDGE'S CURE (the D2 soak's P1): a non-terminal node row
+# carrying the held representation's stamp (``metadata.hold`` — the
+# claimable fence ``AND NOT metadata ? 'hold'`` excludes it from every
+# claim) whose HOLD ROW is no longer 'held' is UNCLAIMABLE FOREVER — the
+# SIGKILL-during-a-held-loop end state the soak measured TWENTY of (the
+# rows sat pending, stamped, deps_pending 0, their signals delivered,
+# hours unclaimed; nothing detected them and no stranded-row reason named
+# them). THE HOLD'S STATE DECIDES:
+#
+# * still 'held'  → the row is the legitimate HELD REPRESENTATION (the
+#   hold is the truth — the resume re-dispatches): the arm leaves it.
+# * delivered / abandoned / cancelled / ABSENT → the stamp is a DEAD
+#   POINTER: cleared (the same clear the resume writes —
+#   ``metadata - 'hold' - 'held_signal'``, the loop's budget pause
+#   released with it), the row re-claims (``scheduled_at = now()``). The
+#   body's re-execution owns the next NAMED state from there: a delivered
+#   hold's answer replays from the queue (the resume contract), an
+#   abandoned one raises the typed timeout face (the body's ladder owns
+#   it), an absent one re-asks. NOTHING wedges: every path lands in a
+#   named state.
+#
+# Lock-first (FOR UPDATE SKIP LOCKED the stamped candidates) so a
+# concurrent deliver's resume — the same clear, one tx — serializes
+# against this arm: whoever lands second finds no stamp (the clear is
+# idempotent, the race is free). The pending/scheduled scope is the
+# wedge's own: terminal rows need no fence and running rows are the
+# lease machinery's.
+HOLD_STAMP_RECONCILE_SQL = """\
+WITH stamped AS (
+    SELECT j.id, j.metadata->>'hold' AS hold_id
+    FROM {schema}.jobs j
+    WHERE j.metadata ? 'hold'
+      AND j.metadata ? 'flow_id'
+      AND j.status IN ('pending', 'scheduled')
+    ORDER BY j.id
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE {schema}.jobs j
+SET metadata = j.metadata - 'hold' - 'held_signal',
+    scheduled_at = clock_timestamp(),
+    budget_paused = false
+FROM stamped s
+LEFT JOIN {schema}.wf_signals sig ON sig.id::text = s.hold_id
+WHERE j.id = s.id
+  AND (sig.id IS NULL OR sig.status <> 'held')
+RETURNING j.id, (sig.id IS NULL) AS hold_absent
+"""

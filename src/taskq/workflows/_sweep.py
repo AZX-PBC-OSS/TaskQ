@@ -63,6 +63,7 @@ __all__ = [
     "drain_outbox",
     "reap_nodeless_roots",
     "reap_phantom_ledger",
+    "sweep_hold_stamps",
     "sweep_join_rederive",
     "sweep_progress_ring_prune",
 ]
@@ -386,6 +387,53 @@ async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     for flow_id in {r["flow_id"] for r in rows}:
         forget_flow_reducers(JobId(flow_id))
     return len(rows)
+
+
+async def sweep_hold_stamps(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    batch_size: int = 200,
+) -> int:
+    """THE HOLD-STAMP RECONCILE ARM — the SIGKILL-during-a-held-loop
+    wedge's fleet-level cure (the D2 soak's P1).
+
+    The held representation is a THREE-ROW contract: the node
+    (``pending`` + the ``metadata.hold`` stamp — the claimable fence
+    ``NOT metadata ? 'hold'`` excludes it), the ``wf_signals`` row (the
+    hold's truth), and the resume (the deliver CAS's clear). A process
+    death between the stamp and a resolution leaves the node pending +
+    STAMPED with a hold that is no longer 'held' — the soak measured
+    TWENTY such runs at close: unclaimable forever, undetected, unnamed
+    (the deliver/expiry arms only act when a signal TRANSITIONS; the
+    transition had already happened).
+
+    THE HOLD'S STATE DECIDES (:data:`~taskq.workflows._sql_sweep.`
+    ``HOLD_STAMP_RECONCILE_SQL``'s contract, restated): a hold still
+    ``'held'`` leaves the row standing as the legitimate held
+    representation — the resume re-dispatches it; a hold
+    delivered/abandoned/cancelled or ABSENT has the stamp CLEARED and the
+    row re-claimed (the body's re-execution lands the next NAMED state:
+    the answer replay, the typed timeout face, or a fresh hold). Nothing
+    wedges; every path lands in a named state.
+
+    Bounded once (LIMIT $1) and self-consuming (a cleared row loses the
+    stamp — the predicate empties behind the arm), so one pass never
+    unbounds and a deeper backlog drains over passes. Returns the CLEARED
+    count (a held-standing row is no work — it is the contract holding)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(wsql.hold_stamp_reconcile, batch_size)
+    cleared_count = len(rows)
+    if cleared_count:
+        # THE LOUDNESS LAW: a wedge the arm healed is a NAMED event, not a
+        # silent fix — the operator can correlate it with the process
+        # death that stamped it.
+        logger.warning(
+            "wf_hold_stamp_reclaimed",
+            kind="wf_hold_stamp_reconcile",
+            cleared=cleared_count,
+        )
+    return cleared_count
 
 
 async def sweep_loop_budget(

@@ -599,6 +599,26 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             schema=ctx.deps.settings.schema_name,
         )
 
+    async def wf_hold_stamp_reconcile_call() -> int:
+        # THE HOLD-STAMP RECONCILE ARM (the D2 soak's P1: the
+        # SIGKILL-during-a-held-loop wedge — a pending node whose
+        # metadata.hold stamp survived its hold's resolution is
+        # UNCLAIMABLE FOREVER under the claimable fence; the soak
+        # measured 20 runs wedged this way, undetected, unnamed). The
+        # arm's law: THE HOLD'S STATE DECIDES — still 'held' → the held
+        # representation stands (the resume re-dispatches);
+        # delivered/abandoned/cancelled/absent → the stamp cleared + the
+        # row re-claims (the body's re-execution lands the next named
+        # state). The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import sweep_hold_stamps
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_hold_stamps(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
     async def wf_loop_budget_call() -> int:
         # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
         # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
@@ -874,6 +894,23 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=False,
             dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
+        ),
+        _SweepSpec(
+            # wf_hold_stamp_reconcile — THE HOLD-STAMP WEDGE'S CURE (the
+            # D2 soak's P1): the hold's state decides — still 'held' →
+            # the held representation stands; delivered/abandoned/
+            # cancelled/absent → the stamp cleared + the row re-claims.
+            # NOT a drain: the predicate self-consumes (a cleared row
+            # loses the stamp), a second pass returns zero, and the
+            # statement is batch-bounded by LIMIT.
+            name="wf_hold_stamp_reconcile",
+            call=wf_hold_stamp_reconcile_call,
+            warn_event="sweep-wf-hold-stamp-reconcile-failed",
+            warn_kind="sweep_wf_hold_stamp_reconcile_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
         ),
         _SweepSpec(
             # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
