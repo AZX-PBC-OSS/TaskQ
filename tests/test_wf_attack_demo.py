@@ -52,6 +52,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, gather, step
 from taskq.workflows.api import GateDecl
 
@@ -466,5 +467,7 @@ async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     assert all(r["c"] == 1 for r in fires), (
         f"a join fired twice under the two-driver race: { {r['step_key']: r['c'] for r in fires} }"
     )
-    root = await module_pg_pool.fetchval(f'SELECT status FROM "{module_pg_schema.schema_name}".jobs WHERE id = $1', run_id)
+    root = await module_pg_pool.fetchval(
+        f'SELECT status FROM "{module_pg_schema.schema_name}".jobs WHERE id = $1', run_id
+    )
     assert root == "succeeded", root
