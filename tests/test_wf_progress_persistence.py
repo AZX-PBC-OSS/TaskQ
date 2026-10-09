@@ -436,8 +436,12 @@ async def test_red_every_emission_a_row_grows_unbounded(
                 "m",
             )
             # the BUILT state channel rides the same emissions (the upsert)
+            # — the pct rides the OP'S domain (0..100: the storage CHECK
+            # wf_node_progress_pct_domain, 01.00.31_01, is the backstop
+            # that REFUSES the raw i past 100 — the domain's teeth, the
+            # same DH1 shape either way: the row count is the subject).
             await wf_conn.fetchrow(
-                wf_sql.progress_state_upsert, node, "progress", i, "m", None, 1, 0, None
+                wf_sql.progress_state_upsert, node, "progress", i % 101, "m", None, 1, 0, None
             )
         log_rows = await wf_conn.fetchval(f'SELECT count(*) FROM "{wf_schema}".wf_progress_log_red')
         state_rows = await wf_conn.fetchval(
