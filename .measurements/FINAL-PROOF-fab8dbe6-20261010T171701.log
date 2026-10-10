@@ -1,0 +1,22 @@
+=== THE FINAL PROOF at fab8dbe6e80be144390089bf652858836231baa7 — 2026-10-10T17:17:01Z — the grand consolidation (ALL lines)
+
+[1/8] the wf battery + coverage (the estate's re-record):
+1 failed, 573 passed, 1 skipped, 3 warnings in 141.64s (0:02:21)
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261010T101924.json
+[2/8] the bands:
+167 passed, 1 skipped, 2 warnings in 122.46s (0:02:02)
+[3/8] the rv2+rv3+pubsub+route pin packs:
+1 failed, 77 passed in 6.67s
+[4/8] the examples' e2e x2:
+2 passed in 1.83s
+2 passed in 1.83s
+[5/8] mkdocs strict:
+INFO    -  Documentation built in 15.67 seconds
+[6/8] the verifier:
+  mkdocs-strict-docslane: the LIVE CLAIM mkdocs-strict-docslane-20261010T113000.txt is stale — recorded on 05ef07c300f5, the head is fab8dbe6e80b. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+VERIFIER-RC=0
+[7/8] THE FAST TIER AT -n 8:
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 13262 passed, 8 skipped, 1 xfailed, 150 warnings in 693.60s (0:11:33)
