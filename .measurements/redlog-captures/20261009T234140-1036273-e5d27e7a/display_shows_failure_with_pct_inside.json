@@ -1,0 +1,18 @@
+{
+  "mutation": "the liar counterfactual: the display deriving the node's state from the progress emissions (the terminal read only when no progress exists)",
+  "observed": {
+    "liar_shows": {
+      "pct": 99,
+      "status": "running"
+    },
+    "truth": {
+      "error_class": "ValueError",
+      "message": "almost done",
+      "pct": 99,
+      "status": "failed"
+    }
+  },
+  "pin": "display_shows_failure_with_pct_inside",
+  "run": "20261009T234140-1036273-e5d27e7a",
+  "ts": "2026-10-09T23:41:40"
+}

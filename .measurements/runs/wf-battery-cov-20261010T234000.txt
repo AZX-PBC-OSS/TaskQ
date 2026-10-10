@@ -1,0 +1,7 @@
+# the wf battery (tests/test_wf_*.py + tests/attack_wf_*.py + tests/attack4_wf_*.py, the CI's lane filter) + THE SCOPED COVERAGE GATE — leg 1 at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+1 failed, 441 passed, 7 deselected, 1 warning in 192.43s (0:03:12)
+the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at the source head; its cure is the measurement commit landing this estate)
+[gate] wf-scoped branch coverage 91.77% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261009T233728.json
+coverage-gate rc=0
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9

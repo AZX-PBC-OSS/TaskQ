@@ -1,0 +1,4 @@
+# the bands leg at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9 (the stamped writers; serial; quiet box)
+13 passed in 21.05s
+bands rc=0
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9

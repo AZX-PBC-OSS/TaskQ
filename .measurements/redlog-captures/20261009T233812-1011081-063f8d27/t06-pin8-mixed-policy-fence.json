@@ -1,0 +1,11 @@
+{
+  "mutation": "the flow-fenced join arm dropped (or the absorbed predicate read the edge's POLICY declaration as a ran absorption) \u2014 the collect join hangs claimable-never-fired on a failed flow, and the derivation can never say 'failed' for the failed-closed run",
+  "observed": {
+    "fires": 0,
+    "join_b_blocking_reason": "failed_parent",
+    "join_b_deps_pending": 1
+  },
+  "pin": "t06-pin8-mixed-policy-fence",
+  "run": "20261009T233812-1011081-063f8d27",
+  "ts": "2026-10-09T23:38:12"
+}
