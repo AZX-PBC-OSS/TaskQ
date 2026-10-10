@@ -1,0 +1,2 @@
+THE HEAD-STAMP LAW REDS (head d2ee16f36096):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T160235Z.txt is stale — recorded on 3addf5b80e60, the head is d2ee16f36096. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.

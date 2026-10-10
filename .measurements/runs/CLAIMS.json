@@ -7000,6 +7000,12 @@
       "file": "deslop-pin-packs-20261010T221440Z.txt",
       "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
       "captured_at": "2026-10-10T16:14:41"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261010T221530Z.txt",
+      "head_sha": "d2ee16f36096e518809141dc8ed5be77bdf1e611",
+      "captured_at": "2026-10-10T16:14:45"
     }
   ]
 }
