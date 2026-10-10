@@ -404,6 +404,64 @@ async def test_hold_id_reply_handle_and_context_contract(
     assert second.status == "no-op", second
 
 
+async def test_hold_context_reason_is_none_after_delivery(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE FOLDED PIN (the docs lane's queued conviction — the
+    held-gated read's OTHER face): ``HoldContext.reason`` is the wait's
+    reason ONLY while the hold is held. Post-delivery the payload IS
+    the decision; the reason is gone with the held state it belonged
+    to — the read returns None, never the DECISION's own reason field
+    wearing the wait's clothes.
+
+    The mutation probe: drop the ``status == 'held'`` guard in
+    ``HitlClient._context`` and this pin REDS — the decision's
+    ``reason`` field (a field this pin's gate deliberately declares)
+    would ride the context as if it were the author's wait reason.
+    The red's receipt: ``.measurements/docs-pin-reason-after-delivery.json``.
+    """
+
+    class Decision(BaseModel):
+        verdict: str
+        reason: str = ""  # deliberately homonymous with the wait's reason
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(
+            (Decision,),
+            timeout_s=120.0,
+            reason="the author's wait reason",
+            tool="approve_tool",
+            args={"doc": "d1"},
+        )
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn,
+        wf_schema,
+        wf_pool,
+        wait_body=hold_body,
+        name="reason_after_delivery_flow",
+        gates=(GateDecl(name="Decision", payload_models=(Decision,), timeout_s=120.0),),
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    # PRE-delivery: the reason reads the held row's context doc.
+    holds = await client.list(run=flow_id)
+    assert len(holds) == 1 and holds[0].reason == "the author's wait reason", holds
+    # THE DELIVERY: the decision's payload carries a homonymous
+    # ``reason`` field — the unguarded read would surface IT.
+    first = await client.resolve(
+        holds[0].hold_id,
+        {"verdict": "approve", "reason": "the decision's own reason"},
+        principal="op-1",
+    )
+    assert first.status == "delivered", first
+    # THE PIN: post-delivery the context's reason is None — the wait's
+    # reason is gone with the held state it belonged to; the decision's
+    # reason is the payload's business, never the context's.
+    after = await client.get(holds[0].hold_id)
+    assert after is not None and after.status == "delivered", after
+    assert after.reason is None, f"the delivered hold's context leaked a reason: {after.reason!r}"
+
+
 async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     wf_conn: asyncpg.Connection,
     wf_schema: str,

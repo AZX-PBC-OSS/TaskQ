@@ -1,11 +1,107 @@
 # Workflows — the DAG engine (`taskq[flows]`)
 
-> **START HERE, newcomer:** this page is the engine's REFERENCE — it
-> explains the machinery and pins every invariant. If you want the
-> thirty-second tour of how to AUTHOR a flow (the verbs, the wiring, the
-> hold), read **the API reference first** (`docs/api-reference/workflows.md`,
+> **START HERE, newcomer:** the five-minute path is the next section —
+> wire a DAG, run it, read the result, one fence. After it, this page is
+> the engine's REFERENCE — it explains the machinery and pins every
+> invariant. If you want the thirty-second tour of how to AUTHOR a flow
+> (the verbs, the wiring, the hold), read **the API reference first**
+> (`docs/api-reference/workflows.md`,
 > §"the thirty-second tour"), then the worked example
 > (`docs/examples/doc-ingest.md`), then come back here for the internals.
+
+## The five-minute path
+
+Everything you need to run a workflow: wire steps (the promise arguments
+ARE the edges), fan items out with `map_source`, run ONE call, read the
+decoded result. This fence runs as-is under the docs-example harness
+(`TASKQ_PG_DSN` supplied by the harness):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    map_source,
+    run,
+    step,
+)
+
+
+class Batch(BaseModel):
+    doc_ids: list[str] = []
+
+
+class Enriched(BaseModel):
+    doc_id: str
+    text: str
+
+
+class Report(BaseModel):
+    published: list[str]
+
+
+async def ingest_body(ctx: StepContext, params: Batch) -> list[str]:
+    return params.doc_ids or ["doc-1", "doc-2", "doc-3"]
+
+
+async def enrich_item(ctx: StepContext, doc_id: str) -> Enriched:
+    return Enriched(doc_id=doc_id, text=f"the text of {doc_id}")
+
+
+async def publish_body(ctx: StepContext, enriched: list[Enriched]) -> Report:
+    return Report(published=sorted(e.doc_id for e in enriched))
+
+
+app = WorkflowApp()
+
+
+@app.workflow("doc_pipeline")
+def doc_pipeline() -> Promise[object]:
+    ingested = step(ingest_body, Batch(), key="ingest")
+    enriched = map_source(ingested, enrich_item)  # the join: ingest.join
+    return build(step(publish_body, enriched, key="publish"))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    outcome = await run(
+        app.get("doc_pipeline"),
+        pool,
+        schema,
+        input=Batch(doc_ids=["doc-1", "doc-2", "doc-3"]),
+    )
+    print(f"claim={outcome.claim.kind} outcome={outcome.outcome} result={outcome.result}")
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema):
+
+```
+claim=created outcome=terminal result={'published': ['doc-1', 'doc-2', 'doc-3']}
+```
+
+That is the whole loop: typed payloads in, a typed result out, every
+step a row you can inspect. Where to go next, by the question you're
+asking: the human gate → [Agent fleets](agent-fleet.md); the streaming
+fan-out → [Event pipelines](event-pipeline.md); what you get vs the
+other orchestrators → [the pattern catalog](patterns.md). The rest of
+this page is the machinery those fences ride.
+
 >
 > **The reader's key** (the shorthand this page and the pin inventory
 > use): `T07`/`T10`/`T18`/… are the work-stream's ticket numbers — each
@@ -407,8 +503,10 @@ service locator) and without module globals (untestable, unswappable).
 The seam: declare a `Deps` dataclass PER APP and bind ONE instance at
 the door; bodies OPT IN by declaring it:
 
-```python
+```python no-exec — not executed: excerpt — the deps SEAM's declaration shape (the bodies' names live in the app's own module; the RUNNABLE seam demo is examples/workflows.py's EnrichClient, verified: tests/test_wf_demo_legs.py)
 from dataclasses import dataclass
+
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, map_source, step
 
 
 @dataclass(frozen=True, slots=True)

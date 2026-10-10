@@ -1,6 +1,10 @@
 # HELP target_info Target metadata
 # TYPE target_info gauge
+<<<<<<< HEAD
 target_info{service_instance_id="c0270403-4c8b-42f1-ac36-9a6c77521a0b",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+=======
+target_info{service_instance_id="20981d87-de5f-4ac4-a9bd-b2ca05f84567",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+>>>>>>> 76c00d45
 # HELP taskq_ratelimit_reclaim_pending Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick (scalar: bucket names are not a dimension).
 # TYPE taskq_ratelimit_reclaim_pending gauge
 taskq_ratelimit_reclaim_pending{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0

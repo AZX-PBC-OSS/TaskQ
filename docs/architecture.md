@@ -1359,7 +1359,8 @@ disarmed the watchdog and then joined the detached thread in
 `asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s): a released row became
 claimable while its actor still ran. The alternative closure (a hard
 `os._exit(0)` on every clean exit) is rejected because TaskQ is a library:
-embedders run the worker in-process (cennan's CLI, TAStack's `ta_worker`), and
+embedders run the worker in-process (the host's own CLI and worker
+entrypoints), and
 a hard exit on the clean path would kill the host's own cleanup. In-process
 embedders with the watchdog enabled get the closure for free: the watchdog is
 TaskQ's own task on the embedder's loop, and the trip semantics are unchanged.
@@ -1392,7 +1393,7 @@ and three properties hold that a bare `wait_for` does not give. First, the
 machinery's expiry raises its own marker (a private `TimeoutError` subclass),
 so an actor that raises its own `TimeoutError` (a nested wait, a socket
 read) is classified as the actor's failure, never as a deadline hit
-(dramatiq #791's conflation). Second, the deadline wins over the body: a
+(the queue-library conflation the private marker exists to prevent). Second, the deadline wins over the body: a
 body that catches the expiry's cancellation and returns does not succeed
 past its own time limit, the result is discarded and the attempt is a
 timeout. Third, the deadline is not deferrable: a body whose `finally`

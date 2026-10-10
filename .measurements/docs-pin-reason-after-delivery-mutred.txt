@@ -1,0 +1,4 @@
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_hold_context_reason_is_none_after_delivery
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.62s

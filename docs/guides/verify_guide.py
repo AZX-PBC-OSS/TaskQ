@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is identifier-validated by the runner under test; every value is $-bound — the guide runs the same statements the product ships.
-"""THE VERIFICATION HARNESS for the staged migrating-from-langgraph guide.
+"""THE VERIFICATION HARNESS for the staged migrating-graph-checkpoints guide.
 
 Runs the guide's code blocks against the BUILT TaskQflow surface (the
 carrying tree itself, branch feat/taskqflow — the consolidation head) on
@@ -146,7 +146,11 @@ async def main() -> None:
         runner = FlowRunner(app.get("doc_ingest"), pool, schema)
         flow_id = await runner.create_flow(input={"doc_id": "d1"})
         await runner.drive(flow_id, until="held")
-        verdict("A2 held-not-crashed", True, "the run pauses: a ROW (the MemorySaver hole gone)")
+        verdict(
+            "A2 held-not-crashed",
+            True,
+            "the run pauses: a ROW (the in-memory-checkpoint hole gone)",
+        )
 
         from taskq.workflows import HitlClient
 
