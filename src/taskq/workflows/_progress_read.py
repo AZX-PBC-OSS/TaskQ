@@ -47,6 +47,8 @@ from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
     "AggregateRead",
+    "display_key",
+    "keyed_display",
     "map_progress_line",
     "progress_sse_face",
     "progress_stream_generator",
@@ -120,6 +122,52 @@ async def progress_sse_face(
 # ── THE DISPLAY MODEL (the progress-lie fence, DH4/DH7) ─────────────────
 
 
+def _empty_entry() -> dict[str, Any]:
+    """One display entry's blank shape — status/pct/message/error_class
+    PLUS the node's IDENTITY (``step_key`` + ``map_index``, the
+    consumer-face lane's CURE 1: the uuid alone cannot say which node
+    the entry renders). The ghost's identity fills when the ledger row
+    lands (the LEDGER-WINS pass)."""
+    return {
+        "status": None,
+        "pct": None,
+        "message": None,
+        "error_class": None,
+        "step_key": None,
+        "map_index": None,
+    }
+
+
+def display_key(step_key: object, map_index: object) -> str | None:
+    """One display entry's KEY in the keyed view: the step_key itself
+    for a static node (``"ocr_node"``), the step_key + the map index for
+    a map child (``"fetch.item[3]"`` — the siblings SHARE the step_key;
+    keying bare would collapse them last-wins), and ``None`` for an
+    entry no ledger row has named yet (a ghost cannot be keyed — it is
+    omitted from the keyed view, still present in the uuid view)."""
+    if not isinstance(step_key, str) or not step_key:
+        return None
+    if map_index is None:
+        return step_key
+    return f"{step_key}[{map_index}]"
+
+
+def keyed_display(display: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The KEYED VIEW over a display (:func:`run_display` /
+    :func:`rebuild_display`'s product): the step_key'd dict —
+    ``{"ocr_node": {"pct": 45, ...}}`` — the consumer's render WITHOUT
+    the out-of-band ledger join. The values are the SAME entry dicts the
+    uuid view holds (one display, two keyings — never a second model);
+    entries the ledger has not named (``display_key`` → ``None``) are
+    omitted, never invented."""
+    keyed: dict[str, dict[str, Any]] = {}
+    for entry in display.values():
+        key = display_key(entry.get("step_key"), entry.get("map_index"))
+        if key is not None:
+            keyed[key] = entry
+    return keyed
+
+
 def rebuild_display(
     ledger_rows: list[dict[str, Any]],
     state_rows: list[dict[str, Any]],
@@ -131,6 +179,13 @@ def rebuild_display(
     THE FENCE (DH4/DH7): the node's STATUS renders from the LEDGER rows —
     the user progress renders INSIDE whatever the state is; it can never
     flip a terminal state back to running. The progress row is ADVISORY.
+
+    THE IDENTITY (the consumer-face lane's CURE 1): every entry carries
+    ``step_key`` + ``map_index`` — the LEDGER ROW'S OWN fields, stamped
+    at the first pass and again at the LEDGER-WINS pass (a ghost the
+    first pass missed still gets named when the ledger lands). The
+    keyed view (:func:`keyed_display`) is the consumer's render over
+    these.
 
     * ``ledger_rows`` — the LEDGER read (the authority: the jobs rows).
     * ``state_rows`` — the STATE channel's latest-wins backfill (the
@@ -147,24 +202,20 @@ def rebuild_display(
             "pct": None,
             "message": None,
             "error_class": r.get("error_class"),
+            "step_key": r.get("step_key"),
+            "map_index": r.get("map_index"),
         }
     # The STATE channel's latest-wins backfill (the pruned window's cure).
     for s in state_rows:
         if s["channel"] != "progress":
             continue
-        d = disp.setdefault(
-            str(s["node_id"]),
-            {"status": None, "pct": None, "message": None, "error_class": None},
-        )
+        d = disp.setdefault(str(s["node_id"]), _empty_entry())
         if d["pct"] is None:
             d["pct"] = s["pct"]
             d["message"] = s["message"]
     # The replay, in SEQ ORDER — the seq-cursor law.
     for e in sorted(events, key=lambda e: int(e["seq"])):
-        d = disp.setdefault(
-            str(e["node_id"]),
-            {"status": None, "pct": None, "message": None, "error_class": None},
-        )
+        d = disp.setdefault(str(e["node_id"]), _empty_entry())
         p = e["payload"]
         if isinstance(p, str):
             p = _loads(p)
@@ -178,9 +229,15 @@ def rebuild_display(
             d["status"] = p.get("outcome", d["status"])
     # THE LEDGER WINS (the fence's teeth): where a ledger row exists its
     # status is the final word — a projection that missed it cannot lie.
+    # The IDENTITY rides the same pass: a ghost named here carries the
+    # row's own step_key/map_index (the named view never renders an
+    # unnamed lie).
     for r in ledger_rows:
         if str(r["id"]) in disp:
-            disp[str(r["id"])]["status"] = r["status"]
+            d = disp[str(r["id"])]
+            d["status"] = r["status"]
+            d["step_key"] = r.get("step_key")
+            d["map_index"] = r.get("map_index")
     return disp
 
 
@@ -191,7 +248,10 @@ async def run_display(
     the STATE channel — the replayed tail applies on top via
     :func:`rebuild_display` as the SSE delivers it. THE DISPLAY'S STATE IS
     LEDGER-DERIVED AT EVERY CONNECT (the DH7 law) — a stale progress row
-    costs freshness, never the state."""
+    costs freshness, never the state. THE DISPLAY'S IDENTITY IS THE
+    ROW'S OWN (CURE 1): every entry carries ``step_key`` +
+    ``map_index`` off the ledger read; the keyed view
+    (:func:`keyed_display`) renders it name-first."""
     async with pool.acquire() as conn:
         ledger_rows = await conn.fetch(wsql.workflow_nodes, flow_id)
         state_rows = await conn.fetch(wsql.progress_state_read_run, flow_id)

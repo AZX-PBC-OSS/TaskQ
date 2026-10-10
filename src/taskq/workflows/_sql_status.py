@@ -61,7 +61,9 @@ GROUP BY status
 
 
 # The PER-NODE variant (the admin page's read, bounded by the run's own
-# node count): the node's derived view fields ride the row — the join
+# node count): the node's identity rides the row TOO (step_key +
+# map_index — the display's named view reads them; the consumer-face
+# lane's CURE 1), the derived view fields ride the row — the join
 # counter (join-wait), the blocked-with-reason stamp, the hold shape (the
 # future scheduled_at + the unresolved signal), the ABSORPTION record
 # (the edge ledger's declared policy for this node's failure + the
@@ -73,7 +75,7 @@ GROUP BY status
 # envelope never lies, T07's C).
 WORKFLOW_NODES_SQL = (
     """\
-SELECT j.id, j.step_key, j.status, j.deps_pending, j.parent_id,
+SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'blocking_reason' AS blocking_reason,
        j.attempt, j.max_attempts,
        """
