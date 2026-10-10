@@ -290,6 +290,19 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "keyed single running job, the finalize's fenced terminal CAS "
         "(status + worker + attempt + claim_epoch)",
     ),
+    "STEP_CACHE_RECEIPT_SQL": (
+        "WHERE id = $1",
+        "the cross-run cache's receipt merge (T25): a keyed single-row "
+        "UPDATE — the HIT run's own node row (jobs.id = $1), the "
+        "metadata provenance write; never a scan, never the backlog",
+    ),
+    "STEP_CACHE_STORE_SQL": (
+        "ON CONFLICT (content_address)",
+        "the cross-run cache's store (T25): an INSERT of exactly ONE row "
+        "keyed by the content address (the table's PRIMARY KEY) — the "
+        "CAS's ON CONFLICT resolves the concurrent writers; the write "
+        "set is one row per terminal-succeeded body, never a scan",
+    ),
     "DECREMENT_SQL": (
         "WHERE e.parent_id = $1",
         "the finalize's tx2 decrement: its write set is the joined children "

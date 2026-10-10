@@ -1,0 +1,7 @@
+# THE FAST TIER at -n 8 (full capture) — the source content b135ad0aa3c0 == the build commit 77e14679 (git diff empty modulo the tracked bytecode; verified) — captured 2026-10-10T21:44Z
+# 2 failed / 13304 passed / 8 skipped / 1 xfailed:
+#  - test_rv2_13: the head-stamp law's pin, RED TRUTHFULLY at the source head (its cure is the measurement commit landing this estate — cured at cdb3f11f, the pin greens there)
+#  - test_rt_conservation_chaos2::test_unheld_walk_x_claim_loss_reconcile_contended_tight_lease[0]: the pre-existing contended tight-lease timing flake — passes solo ×3, in a contended subset, and at the base head 37ab05b8; untouched by this lane's surface (the vanilla reconcile/lease path, no cache/sweep/runner leg in its closure)
+FAILED tests/test_rt_conservation_chaos2.py::test_unheld_walk_x_claim_loss_reconcile_contended_tight_lease[0]
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+2 failed, 13304 passed, 8 skipped, 1 xfailed, 150 warnings in 905.11s (0:15:05)

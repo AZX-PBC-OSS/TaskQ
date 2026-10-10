@@ -1,0 +1,5 @@
+# the T25 pins ×2 at the head b135ad0aa3c0
+-- run 1
+11 passed in 2.92s
+-- run 2
+11 passed in 3.04s

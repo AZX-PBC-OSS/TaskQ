@@ -23,6 +23,7 @@ from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
 from taskq.obs import get_logger
 from taskq.workflows._progress import ProgressEmitter
+from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
@@ -71,7 +72,7 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
-    ) -> None: ...
+    ) -> FinalizeResult: ...
 
 
 class LoopOps(_LoopHost):

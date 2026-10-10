@@ -109,6 +109,10 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     "wf_join_fire",
     "wf_step_ledger",
     "wf_edge",
+    # The cross-run step cache (T25) is FK-less like its ledger kin (the
+    # no-FK decision) — the CASCADE never reaches it; a cache-asserting
+    # suite must not see the previous test's entries.
+    "wf_step_cache",
     "reservation_slots",
     "rate_limit_window_entries",
     "rate_limit_buckets",

@@ -1,0 +1,41 @@
+# the pin packs (rv2+rv3+pubsub+route) at the T25 head b135ad0aa3c0 — the single failure = test_rv2_13 (the head-stamp law's pin, red truthfully at the source head)
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head b135ad0aa3c0):
+E           deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T210216.txt is stale — recorded on 13c6e49d82b1, the head is b135ad0aa3c0. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T150947-8743.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T151001-fbcc.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T150947-261c.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T205937.txt is stale — recorded on 13c6e49d82b1, the head is b135ad0aa3c0. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T151007-a266.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T151008-c5e3.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T151014-2e60.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T150943-e1fe.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T151000-cd0b.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261010T205804.txt is stale — recorded on 13c6e49d82b1, the head is b135ad0aa3c0. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261010T205937.txt is stale — recorded on 13c6e49d82b1, the head is b135ad0aa3c0. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T151000-2b87.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T135540.json is stale — recorded on 13c6e49d82b1, the head is b135ad0aa3c0. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-cache/.venv/bin/python', '/tmp/opencode/wt-cache/scripts/verify_evidence_head... Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 75 passed in 27.42s

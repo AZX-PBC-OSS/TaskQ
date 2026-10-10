@@ -658,6 +658,8 @@ _WF_ARMS = (
     "wf_phantom_reap",
     "wf_nodeless_root_reap",
     "wf_progress_ring_prune",
+    # T25's step-cache expiry arm: pure append, same as every arm before.
+    "wf_step_cache_retention",
 )
 
 

@@ -1,0 +1,6 @@
+# mkdocs build --strict at the T25 head d3a7361e2c11 — green (built in 17.14s)
+  - design/tors-adoption-map.md
+  - design/workflows-spec.md
+  - examples/doc-ingest.md
+  - guides/migrating-from-langgraph.md
+INFO    -  Documentation built in 17.14 seconds

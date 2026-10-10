@@ -65,6 +65,7 @@ __all__ = [
     "SweepResult",
     "drain_outbox",
     "prune_delivered_outbox",
+    "prune_expired_step_cache",
     "reap_nodeless_roots",
     "reap_phantom_ledger",
     "sweep_hold_stamps",
@@ -468,6 +469,27 @@ async def prune_delivered_outbox(
     settings gate skips the arm entirely at ``timedelta(0)``."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.outbox_retention, batch_size, retention)
+    return len(rows)
+
+
+async def prune_expired_step_cache(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    batch_size: int = 200,
+) -> int:
+    """THE STEP CACHE'S RETENTION ARM (T25): an EXPIRED cache row is
+    dead weight — the lookup's freshness leg already refuses it (a
+    miss; the body re-runs and the store's CAS re-fills the corpse on
+    success), and without this arm the expired population grows
+    monotone-forever (the delivered-outbox arm's own conviction class).
+    This arm deletes ``expires_at <= clock_timestamp()`` rows (the DB
+    clock's comparison), one bounded batch per pass. The TTL's
+    freshness decision is the LOOKUP's — this arm never touches a
+    fresh row (a deleted fresh row is a re-execution the next run
+    would have skipped)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(wsql.step_cache_retention, batch_size)
     return len(rows)
 
 
