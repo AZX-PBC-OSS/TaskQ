@@ -93,6 +93,7 @@ test-wf-cov: env
 		tests/test_wf_attack_loop.py tests/test_wf_attack_loop_docs.py \
 		tests/test_wf_attack_progress.py tests/test_wf_attack_runkey.py \
 		tests/test_wf_attack_rv2.py tests/test_wf_cli_pins.py \
+		tests/test_wf_typed_route_rv4_pins.py \
 		tests/test_wf_context_contract.py \
 		tests/test_wf_coverage_closing.py tests/test_wf_coverage_closing2.py \
 		tests/test_wf_coverage_gate_wiring.py tests/test_wf_create_seam_pins.py \
