@@ -569,10 +569,20 @@ def map_source[S, R](
             f"map_source's promise {source.key!r} is not a node of this "
             "graph — maps attach to a wired source"
         )
-    if source_node.map_item is not None:
+    if source_node.map_item is not None or source_node.map_arms is not None:
+        # THE DOUBLE-ATTACH REFUSAL, BOTH SPELLINGS (the rv4 cure — the
+        # message-level lie fixed): the pre-cure check read map_item
+        # only — a map over a ROUTED source attached ON TOP silently
+        # (the map_item clobbered the route's placement fields, the
+        # route's arms dead, the runner's map branch winning the elif),
+        # and the error's own text ("already carries a map") lied about
+        # the attachment it refused. Both attachments refused, the text
+        # names WHICH.
+        carried = "a map" if source_node.map_item is not None else "a typed route"
         raise WorkflowBuildError(
-            f"node {source.key!r} already carries a map — a node finalizes "
-            "once (one fork); wire the second map from a distinct source"
+            f"node {source.key!r} already carries {carried} — a node "
+            "finalizes once (one fork); wire the second map or route "
+            "from a distinct source"
         )
     source_node.map_item = body
     source_node.map_queue = queue
@@ -647,6 +657,7 @@ def _attach_route[S](
             "least one arm per union member"
         )
     normalized: dict[str, RouteArm[object]] = {}
+    tag_owners: dict[str, type] = {}  # the tag injectivity's ledger (the twin refusal reads it)
     for key, value in arms.items():
         if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the keys are statically `type` — but the STRING KEY is the lie this door convicts (the corpus's probe rides it; E13's own pattern: the runtime check IS the subject).
             raise WorkflowBuildError(
@@ -654,13 +665,33 @@ def _attach_route[S](
                 "are the source's union MEMBERS (the type IS the tag; a "
                 "string key is the enum face's habit, refused here)"
             )
+        # THE TAG-INJECTIVITY REFUSAL (the rv4 cure — the same-qualname
+        # twin): the tag (module.qualname) is the arms' IDENTITY — two
+        # distinct classes sharing one tag (the same-qualname twin:
+        # same module, same qualname — a class defined twice, a helper
+        # factory's products) collapsed SILENTLY, the second arm
+        # overwriting the first in the normalized map (the route routed
+        # the twin's elements to the WRONG body, clean at build). The
+        # refusal names both owners and the fix.
+        tag = type_tag(key)
+        owner = tag_owners.get(tag)
+        if owner is not None and owner is not key:
+            raise WorkflowBuildError(
+                f"route() arms {owner!r} and {key!r} collapse to the same "
+                f"type tag {tag!r} — the tags are the arms' identity and "
+                "they are not injective here (the same-qualname twin: "
+                "the second arm silently overwrote the first). Rename one "
+                "class, or move it to its own module, so each arm owns "
+                "its tag"
+            )
+        tag_owners[tag] = key
         # The R-erase at the attachment (the SUM rides the promise's
         # static type, never the decl's field — the cast is the seam).
         arm = cast(
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
-        normalized[type_tag(key)] = arm
+        normalized[tag] = arm
     graph = source.graph
     source_node = graph.nodes.get(source.key)
     if source_node is None:
@@ -682,6 +713,21 @@ def _attach_route[S](
         hints = body_hints(inner_fn(source_body))
         returned = hints.get("return")
         members: set[type[BaseModel]] = set()
+        if returned is None:
+            # THE MESSAGE'S TRUTH (the rv4 cure — the "does not declare"
+            # lie fixed): an UNRESOLVABLE return annotation (a
+            # function-scope model, a string the compile cannot chase —
+            # body_hints resolved {}) is not a body that "does not
+            # declare" — it declared and the compile CANNOT RESOLVE it.
+            # The refusal names the resolution failure (the fix: name
+            # the model at module scope so the annotation resolves).
+            raise WorkflowBuildError(
+                f"route's source {source.key!r} has a return annotation "
+                "the compile CANNOT RESOLVE — the route keys its arms by "
+                "the union MEMBERS (the resolved hints are the only "
+                "resolution): move the element models to module scope so "
+                "the list[...] return resolves"
+            )
         if get_origin(returned) is list:
             (element_type,) = get_args(cast("type[object]", returned))
             union_members = (

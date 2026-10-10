@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-=======
->>>>>>> 76c00d45
 {"hold_to_resume_ms": 4.265, "band_ms": 50}
 {"run": "02b0bd98", "hold_to_resume_ms": 3.186, "band_ms": 50}
 {"run": "054be3fc", "hold_to_resume_ms": 2.713, "band_ms": 50}
@@ -199,3 +196,6 @@
 {"run": "42b30eca", "hold_to_resume_ms": 2.576, "band_ms": 50}
 {"run": "661f1040", "hold_to_resume_ms": 2.216, "band_ms": 50}
 {"run": "7ddcaa06", "hold_to_resume_ms": 3.134, "band_ms": 50}
+{"run": "07aff84d", "hold_to_resume_ms": 1.682, "band_ms": 50}
+{"run": "72d25b05", "hold_to_resume_ms": 3.054, "band_ms": 50}
+{"run": "9c955712", "hold_to_resume_ms": 1.874, "band_ms": 50}

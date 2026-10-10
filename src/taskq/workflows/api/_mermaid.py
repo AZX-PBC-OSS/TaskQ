@@ -28,11 +28,21 @@ if TYPE_CHECKING:
 __all__ = ["render_mermaid"]
 
 
+def _body_name(body: object) -> str:
+    """The body's short name for the label (an unreadable body — a
+    partial, a callable object — renders the type's name; the emission
+    never crashes on a declaration's shape)."""
+    name = getattr(body, "__name__", None)
+    if isinstance(name, str):
+        return name
+    return type(body).__name__
+
+
 def _shape(node_kind: str, gated: bool) -> tuple[str, str]:
     """(open, close) delimiters per node kind — the §10.1 vocabulary."""
     if gated:
         return ("([(", ")])")  # the HOLD node — the HITL interrupt point
-    if node_kind == "map_source":
+    if node_kind in ("map_source", "route_source"):
         return ("([", "])")
     if node_kind == "map_join":
         return ("{{", "}}")
@@ -59,7 +69,16 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
         node = compiled.nodes[key]
         gated = bool(node.gates)
         glyph = " ⇅" if gated else ""
-        open_, close = _shape(node.kind, gated)
+        # THE FORK-CARRYING NODE'S SHAPE (the rv4 cure — the Mermaid
+        # arms' render): a node carrying the plain map's item body or
+        # the typed route's arms IS a map source — it finalizes into
+        # fork children the rows will name. The pre-cure render drew it
+        # as the plain rectangle (the route's branches invisible — the
+        # diagram lied about the fork the wiring declared); the stadium
+        # + the arms ON the label render the branches the compile
+        # carries (byte-stable: sorted tags, declared body names).
+        is_map_source = node.map_item is not None or node.map_arms is not None
+        open_, close = _shape("route_source" if is_map_source else node.kind, gated)
         gate_note = ""
         if gated:
             policies = ",".join(
@@ -67,7 +86,16 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
                 for g in node.gates
             )
             gate_note = f" ⏳{policies}"
-        lines.append(f'    {key}{open_}"{key}{glyph}{gate_note}"{close}')
+        arms_note = ""
+        if node.map_arms is not None:
+            arms = ", ".join(
+                f"{tag.rsplit('.', 1)[-1]}→{_body_name(arm.body)}"
+                for tag, arm in sorted(node.map_arms.items())
+            )
+            arms_note = f" ⇢ route: {arms}"
+        elif node.map_item is not None:
+            arms_note = f" ⇢ map: {_body_name(node.map_item)}"
+        lines.append(f'    {key}{open_}"{key}{glyph}{gate_note}{arms_note}"{close}')
     edges: list[str] = []
     for key in sorted(compiled.nodes):
         node = compiled.nodes[key]

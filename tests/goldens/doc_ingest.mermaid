@@ -3,7 +3,7 @@ flowchart TD
     extract_entities["extract_entities"]
     gather[["gather"]]
     gather:1[["gather:1"]]
-    ingest["ingest"]
+    ingest(["ingest ⇢ map: enrich_item"])
     ingest.join{{"ingest.join"}}
     publish[["publish"]]
     review([("review ⇅ ⏳ReviewDecision/604800.0s")])

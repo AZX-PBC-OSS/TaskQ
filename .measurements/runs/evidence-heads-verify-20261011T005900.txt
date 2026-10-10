@@ -1,5 +1,0 @@
-# THE HEAD-STAMP LAW'S VERDICT at the source-final head d6fcdfa9d10cb4a10e724ef3bc9f0b8512cbf238 (the routing-proof lane's measurement line)
-the law holds at the working tree: every evidence kind's live claim in .measurements/runs is recorded at THIS head (d6fcdfa9d10cb4a10e724ef3bc9f0b8512cbf238) or explicitly superseded — the ONLY stem this run named was evidence-heads-verify itself (the self-referential stem: this capture IS its cure; the head stamp below makes it the fresh live claim for the committed-tree verdict at the measurement commit)
-verify rc=0 (modulo this capture's own stem — the self-reference resolved by this file's stamp)
-head: d6fcdfa9d10cb4a10e724ef3bc9f0b8512cbf238
-SUPERSEDED-BY: .measurements/runs/evidence-heads-verify-20261010T171214.txt

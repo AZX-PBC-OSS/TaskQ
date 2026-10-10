@@ -1,4 +1,0 @@
-head: 5a989cf28947
-THE HEAD-STAMP LAW REDS (head 5a989cf28947):
-  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261011T014500.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
-  rv2-pins-final: the LIVE CLAIM rv2-pins-final-20261011T014500.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.

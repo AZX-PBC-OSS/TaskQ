@@ -107,6 +107,7 @@ from taskq.workflows.api._sql_runner import (
     WF_ARGS_KEY,
     render_sql,
 )
+from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
     RunClaim,
@@ -743,15 +744,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
         await emitter.aclose()
-        await self._finalize_success(
-            flow_id,
-            row,
-            attempt,
-            node,
-            result,
-            claim_epoch=claim_epoch,
-            prebuilt_route_fork=route_fork,
-        )
+        # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
+        # cure): the map fork's build (and the fork's own validation,
+        # insert_fork's door) runs INSIDE _finalize_success — before this
+        # wrapper, the fan-in bound's exceed escaped the ladder's
+        # boundary, the finalize tx rolled back, and the reclaim
+        # re-crashed the node FOREVER (the wedge the conviction named).
+        # The typed FanInBoundExceededError is a DETERMINISTIC authoring
+        # failure: the ladder's deterministic route terminal-fails it on
+        # the first attempt, the error class on the record — the reclaim
+        # path heals or fails named, never wedges.
+        try:
+            await self._finalize_success(
+                flow_id,
+                row,
+                attempt,
+                node,
+                result,
+                claim_epoch=claim_epoch,
+                prebuilt_route_fork=route_fork,
+            )
+        except FanInBoundExceededError as exc:
+            await emitter.aclose()
+            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            return "laddered"
         return "succeeded"
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
@@ -1158,10 +1174,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         terminal-FAILED finalize with ``error_class='RouterNotTotal'``
         (the chain face's exact shape; nothing routes, the run fails).
 
-        ``None`` when the body returned no list or an empty one — the
-        source succeeds with its own (empty) result; an empty fork is
-        refused by the engine's validators (a join over zero children is
-        the stranded invisible join), so no fork is carried at all."""
+        ``None`` when the body returned no list (the route over nothing —
+        no fork is carried at all). An EMPTY LIST is NOT that case (the
+        rv4 F1 cure — the empty-join precedent): the empty list IS the
+        typed sum's honest value, so the fork fires its join with zero
+        children — the join is born ``deps_pending=0``, fires
+        immediately, and ``result() == []`` (the run terminal, SUCCESS
+        truthful — a night with no documents chunked zero documents, and
+        that is correct). The pre-cure ``None``-on-empty wedged the run
+        (the join row never existed, the consumers' reserved deps never
+        released — stuck ``running`` with zero error rows) or
+        terminalized succeeded with the lying ``result() is None``."""
         from taskq.workflows._types import ConsumerBinding
         from taskq.workflows.chain import RouterNotTotal, type_tag
 
@@ -1209,9 +1232,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     map_index=i,
                 )
             )
-        if not children:
-            return None
-        return ForkSpec(
+        spec = ForkSpec(
             children=tuple(children),
             join=JoinSpec(
                 step_key=join_key,
@@ -1222,6 +1243,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             ),
             max_attempts=node.map_max_attempts,
         )
+        # THE VALIDATED FORK (rv4 F8's cure — the raise INTO the ladder's
+        # try): the fork validates HERE, at the body path — this call
+        # site sits inside the execution ladder's try, so the fan-in
+        # bound's exceed is the DETERMINISTIC named refusal
+        # (FanInBoundExceededError → the immediate named terminal), never
+        # the mid-finalize raise the reclaim re-crashed forever.
+        validate_fork(spec)
+        return spec
 
     async def _finalize_skipped(
         self, flow_id: JobId, row: dict[str, Any], node: Any, *, claim_epoch: int = 0

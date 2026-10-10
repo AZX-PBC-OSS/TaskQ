@@ -1,0 +1,5 @@
+head: a8113f5e9228e27922ab4ebd70f2002a7fbb731b
+pytest-rc: 0
+# THE DOCS LANE + rv2-13's CURE CAPTURES (THE RV4 LANE'S GREEN): 25 passed — the docs pins + the rv2 pack + rv2-13, ALL GREEN on the committed estate
+.........................                                                [100%]
+25 passed in 5.00s

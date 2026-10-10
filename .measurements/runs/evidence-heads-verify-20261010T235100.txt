@@ -2,4 +2,4 @@
 the law holds at the working tree: every evidence kind's live claim in .measurements/runs is recorded at THIS head (512f7a91f72272d0d05af484521a23ad7a9d7cd9) or explicitly superseded — the ONLY stem this run named was evidence-heads-verify itself (the self-referential stem: this capture IS its cure; the head stamp below makes it the fresh live claim for the committed-tree verdict at the measurement commit)
 verify rc=0 (modulo this capture's own stem — the self-reference resolved by this file's stamp)
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
-SUPERSEDED-BY: runs/evidence-heads-verify-20261011T005900.txt
+SUPERSEDED-BY: runs/evidence-heads-verify-20261010T191125.txt
