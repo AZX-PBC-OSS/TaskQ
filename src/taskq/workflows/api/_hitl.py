@@ -827,7 +827,6 @@ class HitlClient:
         self,
         pool: asyncpg.Pool,
         schema: str,
-        *,
         redact: Any = None,
     ) -> None:
         """The read face's constructor — ONE schema convention (the
@@ -1019,11 +1018,7 @@ class HitlClient:
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,
-<<<<<<< HEAD
             reason=reason,
-=======
-            reason=reason_value,
->>>>>>> 63c60660
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             status=row["status"],
