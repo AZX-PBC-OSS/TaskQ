@@ -18,3 +18,4 @@ head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
 THE DISPOSITION: the round's one-off red (test_two_drivers) is the
 rotating-victim class — green solo ×2 immediately after (see the prior
 capture's disposition note). head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T071222.txt
