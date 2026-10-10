@@ -1,0 +1,10 @@
+{
+  "mutation": "the guard stripped from the expiry arm \u2014 the children's results expire BEFORE the join fires, the reduce reads holes (the silent partial)",
+  "observed": {
+    "expired": 0,
+    "survivors": 1000
+  },
+  "pin": "t18-pin1-expiry-eats-children",
+  "run": "20261010T013607-2791868-7be4aa19",
+  "ts": "2026-10-10T01:36:07"
+}
