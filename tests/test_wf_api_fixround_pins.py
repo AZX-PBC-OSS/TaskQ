@@ -220,23 +220,54 @@ def test_e10_the_message_states_the_signature_actually_declared() -> None:
 
 
 def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
-    """The provided-count face: a body of 3 declared params wired 2
-    sources reports ``wired 2 argument(s)`` — the message's second
-    number is the wiring's OWN count, and the pin asserts it."""
+    """The provided-count face: a body of 4 declared params wired 2
+    sources reports ``takes 4 param(s)`` + ``wired 2 argument(s)`` — the
+    message's numbers are the signature's OWN counts, and the pin
+    asserts them. THE PARTITION (the E12 merge's ruling): exactly ONE
+    param beyond the wiring is the deps contract's opt-in (E12's class —
+    it names the bind-or-drop fix); TWO OR MORE beyond the wiring can
+    never be a deps shape — the arity mismatch is E10's, and the
+    message counts the real signature (inspect.signature — hints miss
+    the unannotated)."""
+    app = WorkflowApp()
+
+    async def four(ctx: Any, a: Ingest, b: Ingest, c: Ingest, d: Ingest) -> Ingest:
+        return a
+
+    @app.workflow("e10_provided_count")
+    def e10_provided_count() -> object:
+        return build(step(four, Ingest(doc_id="1"), Ingest(doc_id="2"), key="solo"))
+
+    with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
+        app._compile("e10_provided_count").validate()
+    message = str(exc_info.value)
+    assert "takes 4 param(s)" in message, f"the message under-counts the signature: {message}"
+    assert "wired 2 argument(s)" in message, f"the message miscounts the wiring: {message}"
+
+
+def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
+    """THE PARTITION'S OTHER FACE (the E12 merge's ruling, pinned from
+    the boundary): a body of 3 declared params wired 2 sources — the
+    +1 shape — is E12's class, NOT E10's: the wiring never provides the
+    third, so the deps contract owns it (refused here because the app
+    binds no deps; the message names the fix). A pin written against
+    the pre-E12 world (this shape expecting E10-arity) was the merge
+    collision's conviction — the partition is now pinned from BOTH
+    sides."""
     app = WorkflowApp()
 
     async def three(ctx: Any, a: Ingest, b: Ingest, c: Ingest) -> Ingest:
         return a
 
-    @app.workflow("e10_provided_count")
-    def e10_provided_count() -> object:
+    @app.workflow("e12_owns_the_plus_one_shape")
+    def e12_plus_one() -> Promise[object]:
         return build(step(three, Ingest(doc_id="1"), Ingest(doc_id="2"), key="solo"))
 
-    with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
-        app._compile("e10_provided_count").validate()
+    with pytest.raises(WorkflowValidationError, match="E12-deps-contract") as exc_info:
+        app.get("e12_owns_the_plus_one_shape")
     message = str(exc_info.value)
-    assert "takes 3 param(s)" in message, f"the message under-counts the signature: {message}"
-    assert "wired 2 argument(s)" in message, f"the message miscounts the wiring: {message}"
+    assert "E10" not in message, f"the +1 shape leaked into E10's class: {message}"
+    assert "bind ONE instance at the door" in message, f"the message lost the fix: {message}"
 
 
 # ── finding 12: E11 walks the carry's STRUCTURE ──────────────────────────
