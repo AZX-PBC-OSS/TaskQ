@@ -50,5 +50,46 @@ head and the cut carries the rest).
 
 ## THE OUTCOME AT THE CURE LANE (the flips)
 
-Recorded per cure below (each cure lands WITH its pin in the same
-commit — the marker removed, the pin the green guard):
+Recorded per cure (each cure lands WITH its pin in the same commit —
+the marker removed, the pin the green guard):
+
+| Finding | The cure's root cause | The cure's SHA | The pin's flip |
+|---|---|---|---|
+| F-RV3-4 | the validator walked the gate SEAT (E13) but never the gate WIRING — the compile knew the GateDecls and never read the bodies' waits against them (E2's analogy unextended) | `a7560072` — E14-gate-wiring (the AST source walk, `_wait_signal_sites` + `_hints.inner_fn`, the two provable faces; the conditional-interior bound kept) | 4a/4b markers REMOVED (green guards); 4c stayed green throughout |
+| F-RV3-7 | `result()` read the terminal row's jsonb without reading the RUN's status — the failure verdict lived on the rows (the node's error_class/message) unread by the face | `da7ac919` — the status check + `_failure_verdict` (the newest terminal-failed node row's class + message; the root's `UnabsorbedNodeFailure` named as the cascade's face) | rv3-7 marker REMOVED |
+| F-RV3-5 | the `__main__` block sat at `cli.py:2676` — `main()` fired mid-module, the typer app ran on the half-built registry and SystemExit'ed before the tails registered | `0a0b328a` — the block at EOF (the module fully loads before `main()`; the -m path serves the console script's own face) | rv3-5 marker REMOVED |
+| F-RV3-2 | the packaged door (`run`) never wrapped its first contact in the client arm's translation | `301a103e` — the UndefinedTableError → `SchemaNotMigratedError` translation at `create_flow` (chained, the remedy in the message) | rv3-2 marker REMOVED |
+| F-RV3-3 | the annotation promised a `Connection`, the runtime never checked; a Pool died the `AttributeError` at the first `transaction()` | `301a103e` — the Connection-or-Pool union + `MigrationConnectionError` (the Pool refused BY NAME, the acquire-and-pass remedy in the message) | rv3-3 marker REMOVED |
+| F-RV3-8 | the stamper read the node body's identity raw — the `@app.actor` handle IS the body at the node, and `getsource` refuses an instance | `5a35a1c8` — `_stamp_code_version` unwraps through `_hints.inner_fn` (the one-unwrap seam; each canonical node stamps its OWN body's hash) | rv3-8 marker REMOVED |
+| F-RV3-6 | two conventions among the read-face siblings; the minority (keyword-only) sat on the unreleased class | `5a35a1c8` — `HitlClient(pool, schema, *, redact=None)` — POSITIONAL (the majority), keyword call sites keep working | rv3-6 marker REMOVED |
+| F-RV3-9 | `_context` hardcoded `reason=None` — the reason's only home was the payload doc the INSERT wrote | `5a35a1c8` — `.reason` is the typed read face fed from the payload (the masked text the redact chain wrote) | rv3-9 marker REMOVED |
+| F-RV3-10 | the timeout's two sources had no precedence statement and no cross-check; the declaration's docstring documented the raise face, not the split | `565b8bd7` — the union face on `GateDecl` (+ the runtime half on `wait_signal`) and `W4-gate-timeout-split` (both literals, disagreeing → the named drift; the match key is the payload model's NAME) | rv3-10/rv3-10b markers REMOVED |
+| F-RV3-1 | the `key=` param was the accept-and-REFUSE seat — a param whose every value raises is a trap, not API | `565b8bd7` — the param DELETED; the removal documented (the changelog's Unreleased section + the guide's map section — the preserve law) | rv3-1 marker REMOVED; rv3-1b stayed green (the documentation face) |
+| F-RV3-12 | the loop's shape law lived only in the docstring; the conditional-wait mis-index (the T26 review's C9) had no name | `565b8bd7` — `W5-loop-wait-shape` (the LOOP-kind conditional-interior wait is the named warning; the unconditional shape kept; the plain STEP's conditional wait is the per-attempt cursor's honest replay) | rv3-12 marker REMOVED; rv3-12b stayed green |
+
+The E-state after the lane: E1–E14; the W-state: W1, W2 (two faces),
+W3, W4, W5. The reference's validate table carries ALL of them (the
+count sentence says TWENTY); the docs-numbers pin (DOCS-5) greens at
+the final head.
+
+## THE CAPABILITY RE-VERIFICATION (the review-head discrepancy)
+
+The teardown reviewer's "rate limiting + DI verified absent" ran
+against a STALE head. At THIS lane's head, BOTH capabilities are
+LANDED and pinned green:
+
+* **DI** — `WorkflowApp(deps=…)` (the authoring door,
+  `api/_app.py`), the runner door's `deps=` override, the packaged
+  door's compiled binding, and the E12-deps-contract rule's build-time
+  convictions: `tests/test_wf_deps_pins.py` — 12 pins green (the happy
+  path, the map child, the loop, the hold-wake — the SAME instance
+  through every invocation face — plus the four refusal faces and both
+  door-binding pins).
+* **the flow rate-limit gate** — `tests/test_wf_flow_rate_limit_pins.py`
+  — 5 pins green (the deny observable naming the bucket, the cadence
+  one-slot-never-bursts, the no-caps fast path, the dependency failure
+  fail-closed, the door releasing the slot while the flow holds).
+
+The discrepancy is the census's honesty row: the review's ABSENT
+verdict was true at ITS head and false at the lane's — the
+capabilities landed between the two heads.

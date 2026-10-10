@@ -102,3 +102,13 @@ unexpected XPASS), the 3 guards green.
 * The lane's PG container is destroyed at close; the receipts live in
   `/tmp/opencode/rv3-receipts/` (the /tmp-ephemeral law: the durable
   record is THIS file + PINMAP.md beside the pins).
+
+## THE FLIPS (the cures' strict-xfail exits)
+
+Every marker's removal is the cure's own commit (the PINMAP's outcome
+table carries the SHA per cure). The pack's final face: **16 passed,
+0 xfailed, 0 failed** — 13 LIVE FINDINGS flipped green by their cures,
+3 guards green by design (4c the conditional-interior bound, 12b the
+unconditional loop wait, 1b the removal's documentation face). The
+consolidated proof at the stamped head carries the full battery
+numbers.
