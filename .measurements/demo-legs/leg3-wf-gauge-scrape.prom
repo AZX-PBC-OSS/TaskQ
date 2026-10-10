@@ -1,6 +1,6 @@
 # HELP target_info Target metadata
 # TYPE target_info gauge
-target_info{service_instance_id="2606319b-d017-4737-a02d-4cff89becb9c",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
+target_info{service_instance_id="22e1c482-3f28-4a4c-b536-056912fe2ac6",service_name="unknown_service:python",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.45.0"} 1.0
 # HELP taskq_ratelimit_reclaim_pending Evicted keyed bucket names, reservations and rate limits alike, waiting for their rows (slot or bucket) to be reclaimed by the next drain tick (scalar: bucket names are not a dimension).
 # TYPE taskq_ratelimit_reclaim_pending gauge
 taskq_ratelimit_reclaim_pending{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
@@ -24,5 +24,5 @@ taskq_jobs_running_lease_expired{otel_scope_name="taskq",otel_scope_schema_url="
 taskq_heartbeat_consecutive_failures{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2"} 0.0
 # HELP taskq_wf_progress_nodes_total Workflow node rows per declared workflow and derived node state, sampled by the maintenance leader on the admin surface. Unregistered workflows collapse onto the _other_ bucket (summed); never per-node labels — the per-node truth is the row and the run's admin page. The alert: TaskQWorkflowBlockedStuck (a run pinned blocked past the bound, no transition).
 # TYPE taskq_wf_progress_nodes_total gauge
-taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="pending",workflow="doc_ingest"} 16.0
 taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="succeeded",workflow="doc_ingest"} 1.0
+taskq_wf_progress_nodes_total{otel_scope_name="taskq",otel_scope_schema_url="",otel_scope_version="0.2.2",state="pending",workflow="doc_ingest"} 16.0
