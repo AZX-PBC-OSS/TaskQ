@@ -45,6 +45,7 @@ import asyncpg
 import structlog
 
 from taskq._json import dumps as _json_dumps
+from taskq._json import dumps_str as _dumps_str
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import _jsonb
@@ -60,10 +61,12 @@ __all__ = [
     "KIND_VOCABULARY",
     "MESSAGE_MAX",
     "MESSAGE_TERMINAL_MAX",
+    "PROGRESS_NOTIFY_CHANNEL",
     "PROGRESS_RING_BOUND",
     "STREAM_CHANNEL",
     "ProgressEmitter",
     "ProgressRefusedError",
+    "knock_progress",
     "project_auto_event",
     "validate_emission",
 ]
@@ -95,6 +98,32 @@ KIND_VOCABULARY: Final[frozenset[str]] = frozenset(
 #: The STATE channel's row for a node's stream counters (the dropped
 #: counter's home — the honest emitted-vs-delivered pair).
 STREAM_CHANNEL: Final[str] = "__stream__"
+
+#: THE PROGRESS PUSH'S CHANNEL (the consumer-face lane's CURE 3 — the
+#: SAME transport the HITL broadcast landed): ONE global channel; the
+#: SCHEMA RIDES THE PAYLOAD (pg_notify is per-database and the
+#: schema-per-module estate shares one database — the listener filters
+#: by the payload's ``schema`` field, P8's law). The payload is THE
+#: POINTER ONLY — schema, flow, node, seq; the ROW is the truth, never
+#: the knock (the redact law holds at the knock; a consumer that misses
+#: every knock still converges by the seq-cursor read).
+PROGRESS_NOTIFY_CHANNEL: Final[str] = "taskq_wf_progress"
+
+
+async def knock_progress(
+    conn: asyncpg.Connection, *, schema: str, flow_id: JobId, node_id: JobId, seq: int
+) -> None:
+    """ONE ``pg_notify`` on the WRITE'S OWN CONNECTION (the HITL
+    broadcast's leg discipline): the knock rides the same connection the
+    write used, AFTER the write's statements — the pointer (schema,
+    flow, node, seq) only. A knock failure is a FRESHNESS loss, never a
+    correctness one — the callers count it with the write's own
+    best-effort accounting (the asymmetry's law: observability degrades
+    first)."""
+    payload = _dumps_str(
+        {"schema": schema, "flow_id": str(flow_id), "node_id": str(node_id), "seq": seq}
+    )
+    await conn.execute("SELECT pg_notify($1, $2)", PROGRESS_NOTIFY_CHANNEL, payload)
 
 # ── THE BOUNDS (decision a + e) ──────────────────────────────────────────
 
@@ -355,6 +384,16 @@ class ProgressEmitter:
                     dropped,
                     seq,
                 )
+                # THE PUSH'S KNOCK (CURE 3): the write's own connection —
+                # the pointer only. A knock failure is a freshness loss;
+                # it counts with the flush's own best-effort accounting.
+                await knock_progress(
+                    conn,
+                    schema=self._wsql.schema,
+                    flow_id=self._flow_id,
+                    node_id=self._node_id,
+                    seq=seq,
+                )
                 self.appended += 1
         except asyncio.CancelledError:
             raise
@@ -476,4 +515,7 @@ async def project_auto_event(
             dropped,
             seq,
         )
+        # THE PUSH'S KNOCK (CURE 3): the same channel the user flush
+        # knocks — the ring's every event class rides one transport.
+        await knock_progress(conn, schema=wsql.schema, flow_id=flow_id, node_id=node_id, seq=seq)
     return seq

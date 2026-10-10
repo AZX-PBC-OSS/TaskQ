@@ -35,7 +35,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
@@ -44,6 +44,9 @@ from taskq._json import loads as _loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._progress import CLASS_USER, KIND_PROGRESS
 from taskq.workflows._sql import WorkflowSql
+
+if TYPE_CHECKING:
+    from taskq.workflows.api._progress_listen import ProgressListener
 
 __all__ = [
     "AggregateRead",
@@ -389,6 +392,7 @@ async def progress_stream_generator(
     last_event_id: int = 0,
     poll_s: float = 1.0,
     stop: asyncio.Event | None = None,
+    listener: ProgressListener | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """The run's progress SSE stream — the frames the HTTP face maps onto
     ``sse-starlette`` (the route is the thin mapping; this generator is
@@ -402,7 +406,16 @@ async def progress_stream_generator(
     the ring pruned past yields the NAMED ``resync`` frame (the partial
     mode + the state payload) BEFORE the tail — never a silent
     empty-success. Idle ticks emit nothing (the keepalive is the HTTP
-    layer's)."""
+    layer's).
+
+    THE PUSH PRIMARY, THE POLL BELT (the consumer-face lane's CURE 3):
+    with *listener* wired (a started :class:`ProgressListener` — the
+    SAME LISTEN/NOTIFY transport the HITL broadcast landed), the write's
+    own knock wakes the replay IMMEDIATELY — sub-poll latency, the
+    frames still the seq-cursor read's own (the read is the truth, the
+    push buys latency). The poll tick stays as the FALLBACK BELT: a
+    missed knock (the PgBouncer landmine, a dead session) costs one
+    ``poll_s`` interval, never correctness."""
     import asyncio as _asyncio
 
     cursor = last_event_id
@@ -438,4 +451,9 @@ async def progress_stream_generator(
                 "id": str(seq),
                 "data": _dumps_str(e),
             }
-        await _asyncio.sleep(poll_s)
+        # THE PUSH OR THE BELT: the knock wakes the replay; the timeout
+        # is the poll cadence (a missed knock costs freshness only).
+        if listener is None:
+            await _asyncio.sleep(poll_s)
+        else:
+            await listener.wait(poll_s)

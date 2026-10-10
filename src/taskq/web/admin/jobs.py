@@ -1105,11 +1105,30 @@ def register(router: APIRouter) -> None:
         # the guard's stream-resolver exception), so the generator takes
         # the raw pool the BoundedPool wraps: the bound stays on every
         # handler-side checkout, the stream's own poll acquire is its own.
+        #
+        # THE PUSH PRIMARY, THE POLL BELT (the consumer-face lane's CURE
+        # 3): the ProgressListener (the HitlListener's sibling) rides the
+        # SAME LISTEN/NOTIFY transport — the write's own knock wakes the
+        # replay, sub-poll latency; the 1s poll stays as the fallback
+        # belt. THE CAPACITY TAX (the listener's own docstring): this
+        # stream now holds TWO connections for its life — the poll/belt
+        # checkouts + the listener's dedicated LISTEN connection; the SSE
+        # cap above bounds both faces.
         async def _frames() -> AsyncGenerator[ServerSentEvent, None]:
-            async for frame in progress_stream_generator(
-                pool.pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor
-            ):
-                yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
+            from taskq.workflows.api._progress_listen import ProgressListener
+
+            listener = ProgressListener(pool.pool, schema, flow_id=JobId(flow_id))
+            await listener.start()
+            try:
+                async for frame in progress_stream_generator(
+                    pool.pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor,
+                    listener=listener,
+                ):
+                    yield ServerSentEvent(
+                        event=frame["event"], id=frame["id"], data=frame["data"]
+                    )
+            finally:
+                await listener.stop()
 
         return _EventSourceResponse(
             release_after(sse_slot, _frames(), "flow-progress-stream", surface="admin"),

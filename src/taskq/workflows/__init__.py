@@ -61,6 +61,12 @@ from taskq.workflows.api._hitl_listen import (
     HoldExpired,
     HoldResolved,
 )
+from taskq.workflows.api._progress_listen import (
+    ProgressBackfilled,
+    ProgressEvent,
+    ProgressListener,
+    ProgressUpdated,
+)
 from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._run import WorkflowRunResult, run
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
@@ -95,6 +101,10 @@ __all__ = [
     "HoldResolved",
     "LoopWaitShapeError",
     "Promise",
+    "ProgressBackfilled",
+    "ProgressEvent",
+    "ProgressListener",
+    "ProgressUpdated",
     "Refine",
     "Route",
     "RouteArm",
