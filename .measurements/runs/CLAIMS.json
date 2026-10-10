@@ -6400,6 +6400,24 @@
       "file": "wf-rollup-band-20261010T143059-d4c2.json",
       "head_sha": "5612280122e864f47d7ca202a65825c853795bd0",
       "captured_at": "2026-10-10T14:30:59"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T143335-ba7d.json",
+      "head_sha": "cddfdbde283111cba7541b2ae14568ca53f07588",
+      "captured_at": "2026-10-10T14:33:35"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T143335-f9e5.json",
+      "head_sha": "cddfdbde283111cba7541b2ae14568ca53f07588",
+      "captured_at": "2026-10-10T14:33:35"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T143341-e659.json",
+      "head_sha": "cddfdbde283111cba7541b2ae14568ca53f07588",
+      "captured_at": "2026-10-10T14:33:41"
     }
   ]
 }
