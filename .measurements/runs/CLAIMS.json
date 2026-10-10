@@ -5,7 +5,8 @@
       "stem": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
       "file": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
       "head_sha": "55bb1b22f10fb0011e45eaeb158a28d70d0d02d1",
-      "captured_at": "2026-10-10T13:11:04"
+      "captured_at": "2026-10-10T13:11:04",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "wf-rollup-band",
@@ -4696,7 +4697,8 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T101500-docslane.txt",
       "head_sha": "890bd5ed1966f08b068b29e043ee8de476df3a0b",
-      "captured_at": "2026-10-10T10:15:00"
+      "captured_at": "2026-10-10T10:15:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fanout-1000-tx-band",
@@ -4811,7 +4813,8 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index"
+      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -4823,13 +4826,15 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T105500-docslane.txt",
       "head_sha": "7900e5c78fdfa916ca802abab396b26ca56e8831",
-      "captured_at": "2026-10-10T10:55:00"
+      "captured_at": "2026-10-10T10:55:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fasttier-final",
       "file": "fasttier-final-20261010T110500-docslane.txt",
       "head_sha": "16a137fdbdafcbcab6b08b78a402bbf15f40230b",
-      "captured_at": "2026-10-10T11:05:00"
+      "captured_at": "2026-10-10T11:05:00",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -4841,13 +4846,15 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T112000-docslane.txt",
       "head_sha": "113e7572aceb277b135945073582b0f12c8cd285",
-      "captured_at": "2026-10-10T11:20:00"
+      "captured_at": "2026-10-10T11:20:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T112424.txt",
       "head_sha": "",
-      "captured_at": "2026-10-10T11:24:24"
+      "captured_at": "2026-10-10T11:24:24",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -4865,7 +4872,8 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T112909.txt",
       "head_sha": "",
-      "captured_at": "2026-10-10T11:29:09"
+      "captured_at": "2026-10-10T11:29:09",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -4877,19 +4885,22 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T112946.txt",
       "head_sha": "",
-      "captured_at": "2026-10-10T11:29:46"
+      "captured_at": "2026-10-10T11:29:46",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fasttier-final",
       "file": "fasttier-final-20261010T112955-55c5e6b3.txt",
       "head_sha": "55c5e6b3",
-      "captured_at": "2026-10-10T11:29:55"
+      "captured_at": "2026-10-10T11:29:55",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "mkdocs-strict-docslane",
       "file": "mkdocs-strict-docslane-20261010T113000.txt",
       "head_sha": "05ef07c300f5e6667051acc8617cb0f195182770",
-      "captured_at": "2026-10-10T11:30:00"
+      "captured_at": "2026-10-10T11:30:00",
+      "superseded_by": "runs/mkdocs-strict-20261010T133838-deslop.txt"
     },
     {
       "stem": "wf-scoped-coverage",
@@ -5315,13 +5326,15 @@
       "stem": "fasttier-final",
       "file": "fasttier-final-20261010T162947-82c90273.txt",
       "head_sha": "82c9027334ddd54de7963315fa25b8acc2a2aa6d",
-      "captured_at": "2026-10-10T16:29:47"
+      "captured_at": "2026-10-10T16:29:47",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T162947-82c90273.txt",
       "head_sha": "82c9027334ddd54de7963315fa25b8acc2a2aa6d",
-      "captured_at": "2026-10-10T16:29:47"
+      "captured_at": "2026-10-10T16:29:47",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5387,7 +5400,8 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T171335.txt",
       "head_sha": "468b9a9956c59b1228c3afa1630cb9e73f40e1e1",
-      "captured_at": "2026-10-10T17:13:35"
+      "captured_at": "2026-10-10T17:13:35",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5399,7 +5413,8 @@
       "stem": "mkdocs-strict-docslane",
       "file": "mkdocs-strict-docslane-20261010T173408.txt",
       "head_sha": "fab8dbe6e80be144390089bf652858836231baa7",
-      "captured_at": "2026-10-10T17:34:08"
+      "captured_at": "2026-10-10T17:34:08",
+      "superseded_by": "runs/mkdocs-strict-20261010T133838-deslop.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
@@ -5431,13 +5446,15 @@
       "stem": "mkdocs-strict-docslane",
       "file": "mkdocs-strict-docslane-20261010T190521.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
-      "captured_at": "2026-10-10T19:05:21"
+      "captured_at": "2026-10-10T19:05:21",
+      "superseded_by": "runs/mkdocs-strict-20261010T133838-deslop.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
       "file": "docs-lane-rv2-13-cure-captures-20261010T191125.txt",
       "head_sha": "fb777b23952a203586bc7fa8228154559d349e18",
-      "captured_at": "2026-10-10T19:11:25"
+      "captured_at": "2026-10-10T19:11:25",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5449,31 +5466,36 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T191125.txt",
       "head_sha": "fb777b23952a203586bc7fa8228154559d349e18",
-      "captured_at": "2026-10-10T19:11:25"
+      "captured_at": "2026-10-10T19:11:25",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
       "file": "docs-lane-rv2-13-cure-captures-20261010T191146.txt",
       "head_sha": "a8113f5e9228e27922ab4ebd70f2002a7fbb731b",
-      "captured_at": "2026-10-10T19:11:46"
+      "captured_at": "2026-10-10T19:11:46",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T191146.txt",
       "head_sha": "a8113f5e9228e27922ab4ebd70f2002a7fbb731b",
-      "captured_at": "2026-10-10T19:11:46"
+      "captured_at": "2026-10-10T19:11:46",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fasttier-final",
       "file": "fasttier-final-20261010T191401-n8.txt",
       "head_sha": "3106c2c75f629a141b1cfd65658d268697d5539a",
-      "captured_at": "2026-10-10T19:14:01"
+      "captured_at": "2026-10-10T19:14:01",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T191415.txt",
       "head_sha": "691e12c6b3e4bff2ebf071fb02260fd9994aac2d",
-      "captured_at": "2026-10-10T19:14:15"
+      "captured_at": "2026-10-10T19:14:15",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5485,13 +5507,15 @@
       "stem": "wf-bands-rv4",
       "file": "wf-bands-rv4-20261010T191500.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
-      "captured_at": "2026-10-10T19:15:00"
+      "captured_at": "2026-10-10T19:15:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
       "file": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3-20261010T191709.txt",
       "head_sha": "7a587f45c17d638c0c39a24174f77ec2cb807ba3",
-      "captured_at": "2026-10-10T19:17:09"
+      "captured_at": "2026-10-10T19:17:09",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5503,55 +5527,64 @@
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T192758.txt",
       "head_sha": "cd1506106bddc5e29b09de3e6f2af3b43f1360e0",
-      "captured_at": "2026-10-10T19:27:58"
+      "captured_at": "2026-10-10T19:27:58",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv4-pin-packs",
       "file": "rv4-pin-packs-20261010T193000.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
-      "captured_at": "2026-10-10T19:30:00"
+      "captured_at": "2026-10-10T19:30:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T193034.txt",
       "head_sha": "4283baa7f92ccf808c27b59c437bc3bb8eddcb66",
-      "captured_at": "2026-10-10T19:30:34"
+      "captured_at": "2026-10-10T19:30:34",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final-20261010T193500-precommit-red.txt",
       "file": "rv2-pins-final-20261010T193500-precommit-red.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
-      "captured_at": "2026-10-10T19:35:00"
+      "captured_at": "2026-10-10T19:35:00",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "fasttier-final",
       "file": "fasttier-final-20261010T195500-n8.txt",
       "head_sha": "88efb59f786e87ca2ce48be7c0d9d8c6018c5786",
-      "captured_at": "2026-10-10T19:55:00"
+      "captured_at": "2026-10-10T19:55:00",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T200401.txt",
       "head_sha": "1124c7378a386b233aae851ad61754379b43d913",
-      "captured_at": "2026-10-10T20:04:01"
+      "captured_at": "2026-10-10T20:04:01",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
       "file": "docs-lane-rv2-13-cure-captures-20261010T200443.txt",
       "head_sha": "54f19915d796eae29736b9c1d7479c4d37aa8ae7",
-      "captured_at": "2026-10-10T20:04:43"
+      "captured_at": "2026-10-10T20:04:43",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
       "file": "docs-lane-rv2-13-cure-captures-20261010T200530.txt",
       "head_sha": "54f19915d796eae29736b9c1d7479c4d37aa8ae7",
-      "captured_at": "2026-10-10T20:05:30"
+      "captured_at": "2026-10-10T20:05:30",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T200818.txt",
       "head_sha": "54f19915d796eae29736b9c1d7479c4d37aa8ae7",
-      "captured_at": "2026-10-10T20:08:18"
+      "captured_at": "2026-10-10T20:08:18",
+      "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
       "stem": "lint-format",
@@ -5767,6 +5800,103 @@
       "file": "mkdocs-strict-20261010T132527-deslop.txt",
       "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
       "captured_at": "2026-10-10T13:25:27"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T133302-1529.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:02"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T133304-799b.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:04"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T133311-da42.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:11"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T133353-28cc.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:53"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T133354-b9c2.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:54"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T133354-d9c4.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:54"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T133357-8f4a.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:33:57"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T133403-aa48.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:34:03"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T133405-3613.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:34:05"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T133458.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:34:58"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T133603-f0af.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:36:03"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T133603-1e70.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:36:03"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T133609-f8f9.json",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:36:09"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-20261010T133838-deslop.txt",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:38:43"
+    },
+    {
+      "stem": "fasttier-final",
+      "file": "fasttier-final-20261010T133838-deslop.txt",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:38:43",
+      "superseded_by": "runs/fasttier-final-20261010T133838-deslop.txt"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261010T133838-deslop.txt",
+      "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
+      "captured_at": "2026-10-10T13:38:43"
     }
   ]
 }

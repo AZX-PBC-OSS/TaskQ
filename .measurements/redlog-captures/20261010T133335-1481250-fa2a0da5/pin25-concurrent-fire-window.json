@@ -1,0 +1,10 @@
+{
+  "mutation": "two fire paths racing one join (finalize tx2 x sweep rederive) \u2014 the belt's outcome record",
+  "observed": {
+    "fire_rows": 1,
+    "winner": "finalize"
+  },
+  "pin": "pin25-concurrent-fire-window",
+  "run": "20261010T133335-1481250-fa2a0da5",
+  "ts": "2026-10-10T13:33:35"
+}
