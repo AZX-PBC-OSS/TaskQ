@@ -723,10 +723,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         stamp reads the INNER function through
         :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
         seam the validator's own walk shares."""
-        import inspect
 
         from taskq.workflows._version import compute_code_version
-        from taskq.workflows.api._hints import inner_fn
+        from taskq.workflows.api._hints import inner_fn, own_source
 
         target = (
             body
@@ -736,14 +735,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         if target is None:
             return  # the join/gather kinds: the identity packer is the engine's own code
         target = inner_fn(target)
+        # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
+        # slice-identity guard): the fence's exec'd bodies re-slice to
+        # PROSE — a prose stamp is a hash nobody can reproduce, the
+        # same unreadable-source skip the validator's walk keeps.
+        source = own_source(target)
+        if source is None:
+            logger.warning(
+                "node.code-version-unstamped",
+                node=node_key,
+                error="the body's own source is not verifiable (unreadable, or not its own slice)",
+            )
+            return
         try:
             version = compute_code_version(
                 getattr(target, "__module__", "") or "",
                 getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
-                # The callable-shaped cast IS the stamp's boundary: the
-                # source reader refuses every non-sourceable shape —
-                # the TypeError IS the logged loss's face.
-                inspect.getsource(cast("Callable[..., object]", target)),
+                source,
             )
         except (
             Exception

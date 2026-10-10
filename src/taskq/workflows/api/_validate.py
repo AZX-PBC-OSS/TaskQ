@@ -89,15 +89,13 @@ from __future__ import annotations
 
 import ast
 import inspect
-import textwrap
-import tokenize
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
 from taskq.workflows.api._graph import GateDecl
-from taskq.workflows.api._hints import body_hints, inner_fn
+from taskq.workflows.api._hints import body_hints, own_source
 from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
 if TYPE_CHECKING:
@@ -660,24 +658,15 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
     zero-false-positive doctrine: a guess is never convicted). The
     wrapper forms are unwrapped first (:func:`inner_fn` — the
     ``@app.actor`` handle's source is the INNER function's)."""
-    fn = inner_fn(body)
-    try:
-        # The callable-shaped cast IS the walk's boundary: the source
-        # reader refuses every non-sourceable shape (builtin, partial,
-        # the wrapper) — the TypeError IS the skip's face.
-        source = inspect.getsource(cast("Callable[..., object]", fn))
-    except (OSError, TypeError):
+    # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
+    # slice-identity guard + the parse-family skip): the fence's
+    # exec'd bodies, the builtins, the partials, the wrapper — every
+    # unreadable or unprovable source SKIPS (a guess is never
+    # convicted).
+    source = own_source(body)
+    if source is None:
         return None
-    try:
-        tree = ast.parse(textwrap.dedent(source))
-    except (SyntaxError, ValueError, tokenize.TokenError):
-        # THE UNRE-SLICEABLE SOURCE (the docs-fence's exec'd bodies: a
-        # body defined by ``exec(code, FENCE_PATH)`` carries the .md's
-        # filename, and the re-sliced def's text is not a standalone
-        # Python string — the tokenizer reds mid-slice). The walk SKIPS
-        # — the same seam discipline body_hints keeps (an unreadable
-        # source is never convicted on a guess).
-        return None
+    tree = ast.parse(source)
 
     sites: list[_WaitSite] = []
 

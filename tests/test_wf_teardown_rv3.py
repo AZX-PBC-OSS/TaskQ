@@ -72,6 +72,7 @@ from __future__ import annotations
 import inspect
 import subprocess  # Why: the -m pin IS a subprocess question — the -m path only exists in a fresh interpreter.
 import sys
+import textwrap
 from typing import Any
 
 import asyncpg
@@ -379,16 +380,19 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
     )
     stamps = {r["step_key"]: r["code_version"] for r in rows}
     assert set(stamps) == {"alpha_body", "beta_body"}, f"the run's nodes: {sorted(stamps)}"
+    # THE CANON IS THE DEDENTED SLICE (own_source's face — the hash of a
+    # body is independent of its nesting depth; the pin spells the canon
+    # explicitly, never calling the stamper's own helper to derive it).
     expected = {
         "alpha_body": compute_code_version(
             alpha_body.fn.__module__,
             alpha_body.fn.__qualname__,
-            inspect.getsource(alpha_body.fn),
+            textwrap.dedent(inspect.getsource(alpha_body.fn)),
         ),
         "beta_body": compute_code_version(
             beta_body.fn.__module__,
             beta_body.fn.__qualname__,
-            inspect.getsource(beta_body.fn),
+            textwrap.dedent(inspect.getsource(beta_body.fn)),
         ),
     }
     assert stamps["alpha_body"] == expected["alpha_body"], (

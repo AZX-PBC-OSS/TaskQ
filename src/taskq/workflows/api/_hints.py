@@ -10,10 +10,16 @@ convicted on a guess)."""
 
 from __future__ import annotations
 
+import ast
+import inspect
+import re
+import textwrap
+import tokenize
 import typing
 from collections.abc import Callable
+from typing import cast
 
-__all__ = ["body_hints", "inner_fn"]
+__all__ = ["body_hints", "inner_fn", "own_source"]
 
 
 def inner_fn(body: object) -> object:
@@ -33,6 +39,47 @@ def inner_fn(body: object) -> object:
     if isinstance(body, WorkflowActor):
         return body.fn
     return body
+
+
+def own_source(body: object) -> str | None:
+    """The body's OWN source text, VERIFIED (the source reads' one home):
+    ``inspect.getsource`` unwrapped (:func:`inner_fn`), dedented — and
+    the slice PROVEN to be this function's.
+
+    THE SLICE-IDENTITY GUARD (the rv3 teardown round's doc-fence
+    conviction): a body defined by ``exec(code, FENCE_PATH)`` (the docs
+    fences) carries the .md's filename and a ``co_firstlineno`` in the
+    .md's OWN line numbering, not the extracted code's — the re-sliced
+    text is PROSE (a one-line fragment, the bash fence's text): the
+    wrong slice either fails the tokenizer loudly or — the dangerous
+    half — PARSES as a fragment nobody can reproduce. The guard demands
+    the slice actually DECLARE the function's name; anything else
+    returns ``None`` (the unreadable source — the caller SKIPS: a guess
+    is never convicted, a prose stamp is never written)."""
+    fn = inner_fn(body)
+    try:
+        # The callable-shaped cast IS the seam's boundary: the source
+        # reader refuses every non-sourceable shape (builtin, partial,
+        # the wrapper) — the TypeError IS the skip's face.
+        source = inspect.getsource(cast("Callable[..., object]", fn))
+        dedented = textwrap.dedent(source)
+        name = getattr(fn, "__name__", "")
+        if not name or not re.search(
+            rf"^\s*(?:async\s+)?def\s+{re.escape(name)}\s*\(", dedented, re.MULTILINE
+        ):
+            return None
+        ast.parse(
+            dedented
+        )  # the parse check rides the read (the TokenError face — getblock re-tokenizes the slice)
+        return dedented
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        SyntaxError,
+        tokenize.TokenError,
+    ):
+        return None
 
 
 def body_hints(body: Callable[..., object]) -> dict[str, object]:
