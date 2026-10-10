@@ -1,0 +1,10 @@
+{
+  "mutation": "a consumer that trusts the CHANNEL (pg_notify is per-DATABASE, the channels are global) hears EVERY schema's holds \u2014 the payload filter is the isolation, and without it the estate's schemas leak",
+  "observed": {
+    "foreign_knocks": 1,
+    "foreign_schema": "tq_e7301db9_b"
+  },
+  "pin": "T26-P8-unfiltered-channel-ear",
+  "run": "20261010T132929-1430063-efa9feea",
+  "ts": "2026-10-10T13:29:29"
+}

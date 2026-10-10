@@ -715,17 +715,23 @@ def _attach_route[S](
         returned = hints.get("return")
         members: set[type[BaseModel]] = set()
         if returned is None:
-            # THE TWO FACES, DISTINGUISHED (the rv4 cure's own boundary —
-            # the green guard pins it): the RAW annotation's presence is
-            # the discriminator — a body with NO return annotation at all
-            # "does not declare" (the hard refusal, named); a body that
-            # DECLARED a return the compile cannot chase (a function-
-            # scope model, a string that died resolving — body_hints
-            # resolved {}) "CANNOT RESOLVE" (the refusal names the
-            # resolution failure + the fix). Collapsing them was the
-            # message lie the cure's own green guard convicts.
-            raw_return = getattr(inner, "__annotations__", {}).get("return")
-            if raw_return is not None:
+            # THE MESSAGE'S TRUTH (the rv4 cure — the "does not declare"
+            # lie fixed): an UNRESOLVABLE return annotation (a
+            # function-scope model, a string the compile cannot chase —
+            # body_hints resolved {}) is not a body that "does not
+            # declare" — it declared and the compile CANNOT RESOLVE it.
+            # The refusal names the resolution failure (the fix: name
+            # the model at module scope so the annotation resolves).
+            #
+            # THE TWO FACES, DISTINGUISHED (the de-slop round's finding —
+            # the pre-fix cure collapsed them: a body with NO return
+            # annotation also resolves to hints {} and got the
+            # CANNOT-RESOLVE refusal — a lie in the OTHER direction). The
+            # discriminator is the RAW annotation dict's own "return" key
+            # (presence survives every resolution failure; the strings'
+            # VALUES never resolve here):
+            declared_raw = getattr(inner_fn(source_body), "__annotations__", {})
+            if "return" in declared_raw:
                 raise WorkflowBuildError(
                     f"route's source {source.key!r} has a return annotation "
                     "the compile CANNOT RESOLVE — the route keys its arms by "
@@ -735,10 +741,15 @@ def _attach_route[S](
                 )
             raise WorkflowBuildError(
                 f"route's source {source.key!r} does not declare a "
+<<<<<<< HEAD
                 "list[...] return — the route keys its arms by the union "
                 "MEMBERS (the resolved hints are the only resolution): "
                 "annotate the body's return as list[TextDoc | ImageDoc | "
                 "...]"
+=======
+                "list[...] return — the route is a MAP face: the source "
+                "produces the elements' list, the arms key its members"
+>>>>>>> 6e563fdd
             )
         if get_origin(returned) is list:
             (element_type,) = get_args(cast("type[object]", returned))

@@ -84,46 +84,23 @@ test-cov: env
 # checks the number — and REFUSES a stale tree (the data predating the
 # head, or a dirty source tree): the recorded artifact carries the HEAD
 # SHA the number was measured on, and a mismatch fails the gate.
+#
+# THE LIST IS THE WALK (the de-slop round's cure 1): the wf pin files are
+# DIRECTORY-DERIVED (`ls tests/test_wf_*.py`), never a hand-maintained
+# list — a hand list drifts (a new pin file unwired = its executions
+# invisible to the coverage number, the gate reporting 90% of a partially
+# seen suite). With the derivation, the drift class is structurally
+# impossible: a pin file that exists is IN the run, by construction.
+# (The former walk-guard pin, tests/test_wf_coverage_gate_wiring.py, is
+# DELETED — it sniffed the Makefile's file list against a second list,
+# the exact structure-coupling this cure removes; its behavioral residue
+# — the scoped run EXECUTES the pin files — lives on as the measured
+# assert in tests/test_wf_coverage_gate.py. The four explicit tests/
+# paths below are the deliberate NON-wf-named additions.)
 test-wf-cov: env
 	$(UVRUN) pytest \
-		tests/test_wf_api_fixround_pins.py tests/test_wf_api_surface_pins.py \
-		tests/test_wf_attack_admin.py tests/test_wf_attack_cancel.py \
-		tests/test_wf_attack_cli.py tests/test_wf_attack_demo.py \
-		tests/test_wf_attack_emit.py tests/test_wf_attack_engine.py \
-		tests/test_wf_attack_loop.py tests/test_wf_attack_loop_docs.py \
-		tests/test_wf_attack_progress.py tests/test_wf_attack_runkey.py \
-		tests/test_wf_attack_rv2.py tests/test_wf_cli_pins.py \
-		tests/test_wf_typed_route_rv4_pins.py \
-		tests/test_wf_context_contract.py \
-		tests/test_wf_coverage_closing.py tests/test_wf_coverage_closing2.py \
-		tests/test_wf_coverage_gate_wiring.py tests/test_wf_create_seam_pins.py \
-		tests/test_wf_ctx_annotation_pins.py tests/test_wf_demo_legs.py \
-		tests/test_wf_deps_pins.py tests/test_wf_engine_units.py \
-		tests/test_wf_ergonomics_contract.py tests/test_wf_execution_py.py \
-		tests/test_wf_fanin_bound_pins.py tests/test_wf_flow_rate_limit_pins.py \
-		tests/test_wf_finalize_pins.py tests/test_wf_fork_pins.py \
-		tests/test_wf_hold_stamp_wedge_pins.py \
-		tests/test_wf_hitl_pins.py tests/test_wf_hitl_pubsub_pins.py \
-		tests/test_wf_hitl_web_demo.py tests/test_wf_loop_pins.py \
-		tests/test_wf_outbox_retention_pins.py \
-		tests/test_wf_perf_bands.py \
-		tests/test_wf_phase3_cure_pins.py tests/test_wf_pre_workflow_tolerance_pins.py \
-		tests/test_wf_progress_emission.py tests/test_wf_progress_faces.py \
-		tests/test_wf_progress_persistence.py tests/test_wf_propagation_pins.py \
-		tests/test_wf_pruner_pins.py tests/test_wf_rv4_route_cures.py \
-		tests/test_wf_runner_pins.py \
-		tests/test_wf_scenario_pins.py tests/test_wf_schema_migration.py \
-		tests/test_wf_state_event_totality.py tests/test_wf_status_pins.py \
-		tests/test_wf_status_property.py tests/test_wf_sweep_pins.py \
-		tests/test_wf_t20_backpressure_pins.py \
-		tests/test_wf_t20_crashed_terminal_wedge.py \
-		tests/test_wf_t20_emit_pins.py tests/test_wf_t20_fence_probe.py \
-		tests/test_wf_t20_maintain_liveness.py tests/test_wf_t20_router_pins.py \
-		tests/test_wf_t2021_gate_cures.py \
-		tests/test_wf_teardown_rv3.py \
-		tests/test_wf_typed_route_pins.py \
-		tests/test_wf_type_tagged_route_refutation.py \
-		tests/test_wf_validate_pins.py tests/test_fv_redlog_guard.py \
+		$(shell ls tests/test_wf_*.py 2>/dev/null) \
+		tests/test_fv_redlog_guard.py \
 		tests/test_worker_execution_seam.py tests/attack3-validate.py \
 		tests/attack4-coverage-closers.py \
 		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term

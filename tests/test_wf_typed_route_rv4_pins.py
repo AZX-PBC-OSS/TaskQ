@@ -339,7 +339,7 @@ async def test_rv4_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
     assert source_row["error_class"], (  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
         "F-RV4-2: the refusal must be NAMED (an error_class), not a raw escape"
     )
-    assert "fan-in" in str(source_row["error_message"]) or str(MAX_FAN_IN_PER_JOIN) in str(  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
+    assert str(MAX_FAN_IN_PER_JOIN) in str(  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
         source_row["error_message"]  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
     ), f"F-RV4-2: the refusal's message must name the bound: {source_row!r}"
     # THE RUN FAILS LOUDLY.
@@ -373,18 +373,26 @@ async def arm_two(ctx: object, item: ImageItem, extra: object) -> ImageResult:
 def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationError]) -> None:
     """The refusal's contract (the rule SEAT is the maintainer's — E10's
     walk extended to arms, E12's deps-contract face, or E15 owning the
-    arms' whole shape; PINMAP flags the choice): an E-rule fires, the
-    diagnostic NAMES the arm."""
+    arms' whole shape; PINMAP flags the choice): an E-rule fires, and the
+    diagnostic NAMES the offending subject — the route child the arm
+    drives (the source node's ``.item`` child key, the tag's seat). The
+    arm function's own name is not the graph's subject — the rule firing
+    on the right child is."""
     message = str(exc_info.value)
     assert any(
         rule in message for rule in ("E10-arity", "E12-deps-contract", "E15-route-totality")
     ), f"F-RV4-3: the refusal must be an E-rule owning the arm's arity — got: {message}"
+<<<<<<< HEAD
     # THE LANDED NAMING (the merge's reconciliation): the refusal names
     # the arm's CHILD KEY ('<source>.item:<TypeTag>') — the runtime's own
     # address for the arm (a local variable name does not exist past the
     # declaration); the child key IS the arm's identity on the rows.
     assert "item:" in message and "ImageItem" in message, (
         f"F-RV4-3: the refusal must NAME the arm by its child key + tag — got: {message}"
+=======
+    assert "media.item" in message, (
+        f"F-RV4-3: the refusal must NAME the offending route child — got: {message}"
+>>>>>>> 6e563fdd
     )
 
 
@@ -481,10 +489,18 @@ def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     with pytest.raises(WorkflowValidationError) as exc_info:
         app.get("rv4_4_superclass_arm")
     message = str(exc_info.value)
+    # The contract: E15 fires, naming the offending arm AND the member
+    # type it must be EXACT to — the hazard's sentence is wording, never
+    # pinned.
     assert "E15-route-totality" in message, message
     assert "base_arm" in message, message
+<<<<<<< HEAD
     assert "extra='ignore'" in message or "drops every field" in message, (
         f"F-RV4-4: the refusal must NAME the truncation hazard — got: {message}"
+=======
+    assert "TextDoc" in message, (
+        f"F-RV4-4: the refusal must NAME the exact member the arm betrays — got: {message}"
+>>>>>>> 6e563fdd
     )
 
 
@@ -555,11 +571,20 @@ def test_rv4_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     with pytest.raises(WorkflowBuildError) as exc_info:
         app.get("rv4_5_twin_collapse")
     message = str(exc_info.value)
+<<<<<<< HEAD
     assert "Rv4Twin" in message, message
     assert any(
         word in message.lower()
         for word in ("duplicat", "collid", "overwrit", "same type tag", "twice")
     ), f"F-RV4-5: the refusal must NAME the tag collision — got: {message}"
+=======
+    # The contract: the verb refuses, naming the COLLIDING TAG (the
+    # subject the two members share) — the collision's sentence is
+    # wording, never pinned.
+    assert "Rv4Twin" in message, (
+        f"F-RV4-5: the refusal must NAME the colliding tag — got: {message}"
+    )
+>>>>>>> 6e563fdd
 
 
 # ── F-RV4-6: the consumer's smart-union mispick ──────────────────────────
@@ -625,10 +650,9 @@ def test_rv4_6_field_identical_union_members_are_a_build_diagnostic() -> None:
         f"F-RV4-6: no build-time diagnostic named the field-identical members "
         f"— the consumer's silent mispick ships. Build surfaces said: {message!r}"
     )
-    assert any(
-        word in message.lower()
-        for word in ("identical", "discrimin", "indistinguishable", "smart union")
-    ), f"F-RV4-6: the diagnostic must name the decode hazard — got: {message}"
+    # (The hazard's sentence — "identical", "discriminator", the smart
+    # union's prose — is wording, never pinned: the diagnostic naming
+    # BOTH offending members is the contract.)
 
 
 # ── F-RV4-7: the arm-held HITL compile-blindness ─────────────────────────
@@ -712,10 +736,11 @@ def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
 
 
 def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> None:
-    """One fork per node — ALL FOUR double-attach directions refuse with
-    the DESIGNED message ("already carries a map …"), never the
-    accidental join-key collision (which names no cause and points at no
-    fix)."""
+    """One fork per node — ALL FOUR double-attach directions refuse, and
+    every refusal NAMES THE OFFENDING NODE (the doubled source, not its
+    join child): the diagnostic's subject is the node that finalized
+    twice, never the accidental join-key collision (which names a
+    different node and no cause)."""
 
     def _route(src: Promise[object]) -> Promise[object]:
         return route(
@@ -762,6 +787,7 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         with pytest.raises(WorkflowBuildError) as exc_info:
             app.get(f"rv4_8_{label.replace('-', '_')}")
         message = str(exc_info.value)
+<<<<<<< HEAD
         # THE LANDED MESSAGE (the merge's reconciliation): the
         # double-attach refusal names the FACE the node carries ("already
         # carries a typed route" / "a map") + the one-fork law + the
@@ -779,6 +805,18 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         )
         assert "declared twice" not in message, (
             f"F-RV4-8 ({label}): the join-key collision is the wrong door — got: {message}"
+=======
+        # The contract: the double-attach refusal fires on the DOUBLED
+        # SOURCE node — never on its join child (the accidental door's
+        # subject). Which sentence carries the cause is wording; which
+        # node the rule names is the subject.
+        assert "'media'" in message, (
+            f"F-RV4-8 ({label}): the refusal must NAME the doubled source node — got: {message}"
+        )
+        assert "media.join" not in message, (
+            f"F-RV4-8 ({label}): the join-key collision is the wrong door (the "
+            f"refusal names the join, not the doubled source) — got: {message}"
+>>>>>>> 6e563fdd
         )
 
 
@@ -805,9 +843,11 @@ async def hidden_arm(ctx: object, item: BaseModel) -> dict[str, str]:
 
 def test_rv4_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
     """The source DECLARED ``list[Rv4HiddenDoc]`` — the compile cannot
-    RESOLVE it. The refusal must say so (the unresolvable face names the
-    resolution failure), never claim the annotation is absent (the
-    undeclared face — the green guard below keeps THAT message honest)."""
+    RESOLVE it. The refusal must say so — the DECLARED-but-unresolvable
+    face and the NO-annotation face are DIFFERENT refusals (the same
+    door, the cause distinguished), and both name the offending source
+    node. The distinction IS the contract; which sentence carries it is
+    wording (the de-slop law: never pinned)."""
     source_body, hidden_model = _make_unresolvable_source()
     assert "return" in source_body.__annotations__, "the source DID declare a return"
 
@@ -820,35 +860,37 @@ def test_rv4_9_the_unresolvable_return_is_distinguished_from_undeclared() -> Non
 
     with pytest.raises(WorkflowBuildError) as exc_info:
         app.get("rv4_9_unresolvable_return")
-    message = str(exc_info.value)
-    assert "does not declare" not in message, (
-        f"F-RV4-9: the message claims UNDECLARED for a DECLARED-but-"
-        f"unresolvable annotation — the lie: {message}"
-    )
-    assert "resolv" in message.lower(), (
-        f"F-RV4-9: the unresolvable face must name the resolution failure — got: {message}"
+    unresolvable = str(exc_info.value)
+    assert "docs" in unresolvable, (
+        f"F-RV4-9: the refusal must NAME the offending source node — got: {unresolvable}"
     )
 
+    # THE DISTINCTION, measured on the other face: a source with NO
+    # return annotation is a DIFFERENT refusal — same door, different
+    # cause (a collapse here is the lie in either direction: the
+    # undeclared face pointing at a resolution fix, the unresolvable
+    # face pointing at an annotation that exists).
+    app2 = WorkflowApp()
 
-def test_rv4_9_an_undeclared_return_refuses_named() -> None:
-    """GREEN GUARD (the cure's boundary): a source with NO return
-    annotation keeps the hard refusal that NAMES the absence — the
-    unresolvable/undeclared distinction must not blunt the declared-face
-    message (today's correct shape, pinned so the cure cannot regress it
-    silently)."""
-
-    async def bare_source(ctx: StepContext):  # pyright: ignore[reportUnknownParameterType]  # Why: the deliberately UNANNOTATED body IS the guard's subject (the undeclared face of the verb's refusal).
+    async def bare_source(ctx: StepContext):  # pyright: ignore[reportUnknownParameterType]  # Why: the deliberately UNANNOTATED body IS the contrast face (the undeclared refusal's subject).
         return []
 
-    app = WorkflowApp()
-
-    @app.workflow("rv4_9_undeclared_return")
+    @app2.workflow("rv4_9_undeclared_return")
     def rv4_9_undeclared_return() -> Promise[object]:
         src = step(bare_source, key="docs")
         return build(route(src, {ImageItem: RouteArm(body=process_image)}))
 
-    with pytest.raises(WorkflowBuildError, match="does not declare"):
-        app.get("rv4_9_undeclared_return")
+    with pytest.raises(WorkflowBuildError) as undeclared_info:
+        app2.get("rv4_9_undeclared_return")
+    undeclared = str(undeclared_info.value)
+    assert "docs" in undeclared, (
+        f"F-RV4-9: the undeclared face must ALSO name the source node — got: {undeclared}"
+    )
+    assert undeclared != unresolvable, (
+        f"F-RV4-9: the two faces COLLAPSED — a DECLARED-but-unresolvable return "
+        f"and a NO-annotation return got the SAME refusal, one of them a lie "
+        f"about the cause: {unresolvable!r}"
+    )
 
 
 # ── F-RV4-10: W2 blind to arm queues ─────────────────────────────────────

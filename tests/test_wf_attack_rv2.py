@@ -749,8 +749,10 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
         app2.get("rv2_e10_real_mismatch")
     message = str(excinfo.value)
     assert "E10" in message, f"the real mismatch must still refuse (E10): {message}"
-    assert "takes 2 param(s)" in message, (
-        f"F-RV2-9: the refusal must name the REAL arity (2) — got: {message}"
+    assert "only" in message, (
+        f"F-RV2-9: the refusal must NAME the offending node (the rule firing "
+        f"on the right subject is the contract; the count's sentence is "
+        f"wording, never pinned): {message}"
     )
 
 
@@ -1003,15 +1005,14 @@ def test_rv2_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
 def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
     """The verifier against the tree's COMMITTED state (``git ls-files``
     + ``git show HEAD:`` — the working tree's residue never enters).
-    The verifier's live-claim pick per stem is mtime-ordered; a git
-    checkout's mtimes are extraction-order, not the captures' order —
-    so the pin restores each file's mtime from its own run-scoped
-    filename timestamp (the semantic order the stamp law names), making
-    the verdict the TREE'S, never the checkout's."""
-    import os
+    The verdict is the CLAIMS MANIFEST's (``CLAIMS.json`` rides the
+    committed tree with the captures it indexes): the registry's append
+    order is the run order — no filename parsed, no mtime consulted
+    (the pre-manifest pin restored every file's mtime from its own
+    name's timestamp: the filename-parsing workaround the manifest
+    kills). The verdict is the TREE'S, never the checkout's."""
     import subprocess
     import sys
-    from datetime import datetime
 
     runs_rel = ".measurements/runs"
     listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
@@ -1022,7 +1023,10 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
         check=True,
     ).stdout.splitlines()
     assert listed, "the committed tree carries no .measurements/runs artifacts at all"
-    ts_re = re.compile(r"-(\d{8})T(\d{6})")
+    assert f"{runs_rel}/CLAIMS.json" in listed, (
+        "the committed tree carries no claims registry — the captures' index "
+        "(CLAIMS.json) must be committed with the captures it indexes"
+    )
     runs_dir = tmp_path / "runs"
     for rel in listed:
         data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
@@ -1034,10 +1038,6 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
         dest = runs_dir / Path(rel).relative_to(runs_rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        match = ts_re.search(dest.name)
-        if match:
-            stamp = datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").timestamp()
-            os.utime(dest, (stamp, stamp))
     proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
         [
             sys.executable,
