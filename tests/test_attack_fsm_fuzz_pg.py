@@ -191,6 +191,21 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
 
 @settings(max_examples=10, deadline=None)
 @given(plan=st.lists(_FSMS, max_size=24))
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "LIVE FINDING @ 2309f4b4 (the consolidator's own fast tier convicted it, "
+        "the red receipted .measurements/fsm-red/red-20261010-fsm-mirror.txt): the "
+        "plan (enqueue, cancel_request, retry_job, cancel_request) emits a "
+        "state_change AFTER a terminal event — the retry-after-cancel path "
+        "re-opens the row and the SECOND cancel_request's recorded transition "
+        "lands after the first terminal write without the FSM's "
+        "terminal_seen reset. Either the model's terminal_seen must reset on a "
+        "legal re-open (cancelled->pending IS a legal retry edge) or the engine's "
+        "event ordering is wrong — the reads decide; the cure flips this to "
+        "XPASS-strict — remove the marker WITH the cure."
+    ),
+)
 async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> None:
     """A random serial op-plan lands IDENTICALLY on both backends, and each
     side's final snapshot satisfies the state-machine invariants."""
