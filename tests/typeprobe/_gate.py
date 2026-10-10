@@ -84,6 +84,11 @@ _CORPUS: tuple[str, ...] = (
     # CHECKER forces the fail-close arm (the bare unwrap + the
     # fall-through match red; the green door — both arms — stays clean).
     "wf_wait_expired_negative_types.py",
+    # THE TYPE-TAGGED ROUTE'S PROBES (the routing proof's cure): the
+    # Route literal's keys are checker-gated on BOTH faces — a raw
+    # string key (neither an enum member nor a payload type) reds; the
+    # type-keyed green face stays clean.
+    "wf_type_tagged_route_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
