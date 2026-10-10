@@ -2647,6 +2647,31 @@ async def _main(
                 # earlier would make the detector dead code on the only path
                 # that matters. Both calls swallow their own errors.
                 #
+                # ── THE GROUP'S OWN QUIT-CUT, CONSUMED (the d24f17b9 CI
+                # conviction) ──
+                # A failing sibling's completion handler cancels THIS task
+                # (the TaskGroup's abort: "stop the body, the group is
+                # quitting"). When that handler loses its race with this
+                # finally — the sibling's _guarded already raised the
+                # shutdown_event, so the body exits CLEANLY (et=None) and
+                # __aexit__'s uncancel-at-entry guard reads the flag FALSE
+                # before the handler sets it — the abort's cancel is left
+                # UNCONSUMED on this task's count. The disarm's reaper then
+                # reads cancelling() > 0, believes a shutdown cut belongs to
+                # it, re-raises, and the finally DIES before deregister_worker
+                # — the exact statement this block's own law (every statement
+                # non-raising so the ones after it still run) exists to keep
+                # alive. The body has quit; the quit-cut's purpose is served;
+                # the in-flight ExceptionGroup still propagates after this
+                # finally; and a REAL external cut raised the body through its
+                # own delivery already (its exception is the one in flight,
+                # not this count). So the count is consumed to zero: the
+                # disarm's reaper reads the truth — no cut belongs to it —
+                # and the teardown runs to its end on the crash path.
+                _quit_task = asyncio.current_task()
+                while _quit_task is not None and _quit_task.cancelling():
+                    _quit_task.uncancel()
+                #
                 # ── The tracked-actor reap gate (the exit bound) ───
                 # Disarming now (the pre-existing shape) is only safe
                 # when no actor can outlive the TaskGroup. A sync actor's

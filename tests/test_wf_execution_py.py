@@ -137,6 +137,13 @@ def test_projection_the_split_placement_cohorts() -> None:
     async def _screen(ctx: Any, item: dict[str, object]) -> ScreenOutcome:
         return ScreenOutcome.CLEAN  # pragma: no cover - the compile only needs the body
 
+    async def _split_source(ctx: Any) -> None:
+        """The source's OWN body — ctx only (the chain source is the
+        wiring's origin: no payload arrives wired, and E10's arity law
+        convicts a step-shaped body standing in here — the d24f17b9
+        CI conviction: the projection skipped the workflow LOUDLY and
+        the cohort pair never projected)."""
+
     app = WorkflowApp()
     chain = Chain(
         name="wf-exec-split-chain",
@@ -154,7 +161,7 @@ def test_projection_the_split_placement_cohorts() -> None:
 
     @app.workflow("wf-exec-split")
     def _workflow() -> object:
-        src = chain_source(chain, _exec_body, key="doc_source")
+        src = chain_source(chain, _split_source, key="doc_source")
         return build(src)
 
     configs = _project_with([app])
