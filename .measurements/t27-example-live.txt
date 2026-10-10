@@ -1,0 +1,5 @@
+# THE WORKED EXAMPLE, LIVE — examples/doc_mime_route.py (the maintainer's use case) at the lane head e5fcdcda355622f50822abf0ea9544fc54fa4958
+TASKQ_PG_DSN=postgresql://postgres:taskq@localhost:5774/taskq TASKQ_PG_SCHEMA=mime_demo uv run python examples/doc_mime_route.py
+the document sync pipeline's report: {'dead': ['doc-5 (application/x-unknown: unsupported mime)'], 'indexed': 12}
+# the mixed corpus: doc-1/doc-3 (text) chunked on cpu, doc-2/doc-4 (image) OCR'd on gpu, doc-5 (application/x-unknown) dead-lettered — the flow LIVES, the envelope on the report
+head: e5fcdcda355622f50822abf0ea9544fc54fa4958
