@@ -24,9 +24,7 @@ MIGRATION_NAME = "01.00.23_01_pre_jobs_parent_id.sql"
 # IF NOT EXISTS record rides 23_07.
 INDEX_MIGRATION_NAME = "01.00.23_07_pre_jobs_parent_pending_idx.sql"
 # a3fe4f34e40ec311746dd111dc241b0349a69092e33a98af1cc0784b01acdfe3
-SHIPPED_23_01_SHA256 = (
-    "a3fe4f34e40ec311746dd111dc241b0349a69092e33a98af1cc0784b01acdfe3"
-)
+SHIPPED_23_01_SHA256 = "a3fe4f34e40ec311746dd111dc241b0349a69092e33a98af1cc0784b01acdfe3"
 
 
 def _migration_sql() -> str:
