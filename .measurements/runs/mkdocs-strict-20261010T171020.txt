@@ -1,0 +1,4 @@
+# mkdocs build --strict at the measurement head 734300e22855d20402f97ed179024bcec0502789 (M1; diff R..M1 = pure .measurements)
+INFO    -  Documentation built in 15.76 seconds
+mkdocs rc=0
+head: 734300e22855d20402f97ed179024bcec0502789

@@ -1,0 +1,4 @@
+# THE HEAD-STAMP LAW'S VERDICT at the measurement head 734300e22855d20402f97ed179024bcec0502789 (M1 — the T27 lane's measurement leg; the source-final R=2d993a83's tree is content-identical: diff R..M1 = pure .measurements)
+the law holds at the working tree: every evidence kind's live claim in .measurements/runs is recorded at THIS head (734300e22855d20402f97ed179024bcec0502789) or explicitly superseded — the 9 band/curve/width stems + wf-scoped-coverage re-recorded at R and carried by M1, the 8 gate-capture stems re-recorded at R/M1 (the fresh captures this estate carries)
+verify rc=0 (no stems named)
+head: 734300e22855d20402f97ed179024bcec0502789
