@@ -66,12 +66,12 @@ from taskq.workflows._progress import (
 )
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
-from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
+from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb, _row_metadata
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
-from taskq.workflows.api._graph import Exit, route_child_key
+from taskq.workflows.api._graph import Exit, rate_limit_names, route_child_key
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
     FlowEntryShim,
@@ -296,6 +296,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 deps_pending=0,
                 max_attempts=node.max_attempts,
             )
+            # THE STATIC ROW'S OWN TERMS (CURE 2): a step declaring
+            # rate_limits carries the names on its metadata (the claim
+            # path's read); the no-bucket rows keep the base shape
+            # byte-identical.
+            row_meta = (
+                _row_metadata(
+                    flow_id,
+                    rate_limits=rate_limit_names(
+                        node.rate_limits, what=f"step {key!r}'s rate_limits"
+                    ),
+                )
+                if node.rate_limits
+                else {"flow_id": str(flow_id)}
+            )
             await conn.execute(
                 render_sql(NODE_INSERT_SQL, self.schema),
                 new_uuid(),
@@ -309,7 +323,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 spec.step_key,
                 spec.deps_pending,
                 None,
-                _jsonb({"flow_id": str(flow_id)}),
+                _jsonb(row_meta),
                 step_idempotency_scope(flow_id),
                 step_idempotency_key(spec.step_key),
             )
@@ -1146,6 +1160,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     queue=node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(item)},
                     map_index=i,
+                    # THE ADMISSION TERMS STAMPED (CURE 2): the map's
+                    # declared buckets' NAMES on every child row — the
+                    # claim path's read.
+                    rate_limits=rate_limit_names(
+                        node.map_rate_limits, what="map_source's rate_limits"
+                    ),
                 )
                 for i, item in enumerate(items)
             ),
@@ -1230,6 +1250,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     queue=arm.queue or node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(element)},
                     map_index=i,
+                    # THE ARM'S ADMISSION TERMS STAMPED (CURE 2): the arm's
+                    # own buckets' NAMES on ITS children's rows.
+                    rate_limits=rate_limit_names(arm.rate_limits, what="route arm's rate_limits"),
                 )
             )
         spec = ForkSpec(

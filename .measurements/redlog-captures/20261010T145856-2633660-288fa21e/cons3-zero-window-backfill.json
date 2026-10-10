@@ -1,0 +1,9 @@
+{
+  "mutation": "the ProgressListener surface does not exist at the pre-cure head (ModuleNotFoundError: taskq.workflows.api._progress_listen) \u2014 the LISTEN/NOTIFY transport's backfill+tail+dedup discipline has no progress sibling",
+  "observed": {
+    "error": "ModuleNotFoundError: No module named 'taskq.workflows.api._progress_listen'"
+  },
+  "pin": "cons3-zero-window-backfill",
+  "run": "20261010T145856-2633660-288fa21e",
+  "ts": "2026-10-10T14:58:56"
+}

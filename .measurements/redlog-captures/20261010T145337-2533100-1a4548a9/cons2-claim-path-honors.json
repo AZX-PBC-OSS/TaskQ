@@ -1,0 +1,9 @@
+{
+  "mutation": "_flow_rate_limit_gate at 37ab05b8 reads only the queue cap \u2014 a row whose metadata names a bucket is admitted unconditionally (never-bursts broken); the drill: gate(job metadata rate_limits=['b']) twice \u2192 both pass, capacity-1 bucket never denies",
+  "observed": {
+    "observed": "no rate_limits read in the gate; the metadata key is dead"
+  },
+  "pin": "cons2-claim-path-honors",
+  "run": "20261010T145337-2533100-1a4548a9",
+  "ts": "2026-10-10T14:53:37"
+}

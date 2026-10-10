@@ -443,6 +443,132 @@ named partial mode on a pruned window), and
 is ADVISORY: a node that reported 99% and failed shows **failed with
 pct=99 inside**, never 99%-running).
 
+### The display's identity + the keyed view
+
+Every entry of the display carries the node's OWN identity — `step_key`
++ `map_index` read off the LEDGER, not the row UUID. The uuid-keyed
+shape is unchanged (the run explorer's fold needs it); the CONSUMER's
+render is the KEYED VIEW — the step_key'd dict, no out-of-band join.
+This fence runs as-is under the docs-example harness:
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    FlowRunner,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    map_source,
+    step,
+)
+from taskq.workflows._progress_read import keyed_display, run_display
+
+
+class Ingest(BaseModel):
+    doc_id: str = "d1"
+
+
+async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
+    return [0, 1, 2]
+
+
+async def ocr_item(ctx: StepContext, value: int) -> dict:
+    await ctx.progress(((value + 1) * 100) // 3, f"ocr {value}")
+    return {"page": value}
+
+
+app = WorkflowApp()
+
+
+@app.workflow("progress_identity_demo")
+def demo() -> Promise[object]:
+    source = step(fetch, Ingest(), key="ocr_source")
+    return build(map_source(source, ocr_item))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+    runner = FlowRunner(app.get("progress_identity_demo"), pool, schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="terminal")
+    display = await run_display(pool, runner.wsql, flow_id)
+    keyed = keyed_display(display)
+    # keyed["ocr_source"]["status"] == "succeeded" — the node BY NAME;
+    # the map's children render as "ocr_source.item[0]", "ocr_source.item[1]", ...
+    print(sorted(keyed))
+    print(keyed["ocr_source"]["status"], keyed["ocr_source.item[0]"]["pct"])
+    await pool.close()
+
+
+asyncio.run(main())
+```
+
+Two laws to know:
+
+- **A map's children share one `step_key`** (`<source>.item`), so a
+  child's keyed entry carries its `map_index`:
+  `ocr_item[3]`. Keying bare would silently collapse the siblings
+  last-wins — the keyed view never does that.
+- **An entry the ledger has not named yet** (a state-channel ghost) is
+  omitted from the keyed view, never invented — and the LEDGER-WINS
+  pass stamps its identity the moment the ledger row lands.
+
+### The push transport (the SSE stream's primary leg)
+
+The workflow progress SSE is a PUSH stream: the write's own
+`pg_notify` (the `taskq_wf_progress` channel — the SAME LISTEN/NOTIFY
+transport the approval broadcast rides) wakes the seq-cursor replay,
+and the frames flow at write latency, not at the poll's round trip.
+The knock is the POINTER only — schema, flow, node, seq — the ROW is
+the truth (a consumer that misses every knock still converges by the
+`Last-Event-ID` replay; the push buys latency, never correctness).
+The 1s poll stays as the FALLBACK BELT: a missed knock (a PgBouncer
+transaction-pooling port silently breaking LISTEN — the approval
+guide's landmine #1) costs one poll interval, never correctness.
+
+The listener is the approval listener's sibling — same discipline, same
+four operational landmines (a DIRECT connection bypassing PgBouncer,
+one pool slot for the stream's life, fork safety, and the run-scoped
+backfill's bound):
+
+```python no-exec — not executed: a long-running LISTEN listener, the shape the SSE route itself holds
+from taskq.workflows import ProgressListener, ProgressUpdated
+
+listener = ProgressListener(pool, schema, flow_id=flow_id)
+async with listener:
+    async for event in listener.updates():
+        match event:
+            case ProgressUpdated():
+                # the pointer: flow_id, node_id, last_seq — read the
+                # state/stream rows for the payload
+                ...
+            case ProgressBackfilled():
+                # the reconcile snapshot: node → last_seq as the rows
+                # witness them NOW; drop cards it has moved past
+                ...
+```
+
+The zero-window construction is inherited from the approval listener:
+LISTEN first, THEN the backfill snapshot — an emission written before
+the listener started is announced by the BACKFILL
+(`source="backfill"`), and its own queued knock is deduped against the
+snapshot (one emission, ONE event). The fan-out is per-subscriber
+queues (two consumers each see every event), and the coalesce order is
+the backpressure law: the bounded queues drop the OLDEST event on
+overflow — the writer never blocks, the newest survives, observability
+degrades FIRST, correctness never.
+
 **The migration shims** (the fleet's two SSE vocabularies → the ONE
 vocabulary): each old vocabulary is a documented MAPPING over the one
 stream's rows — vocabulary A

@@ -37,6 +37,7 @@ __all__ = [
     "_join_metadata",
     "_jsonb",
     "_metadata",
+    "_row_metadata",
 ]
 
 #: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
@@ -118,6 +119,11 @@ class ChildSpec:
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
+    #: The child's ADMISSION TERMS (the consumer-face lane's CURE 2): the
+    #: buckets' NAMES, stamped onto the child row's metadata — the claim
+    #: path acquires them through the same registry + the same denial
+    #: path the queue-concurrency fence rides. ``()`` = no bucket.
+    rate_limits: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +367,22 @@ def _metadata(
             }
             for c in consumers
         ]
+    return meta
+
+
+def _row_metadata(
+    flow_id: JobId,
+    *,
+    rate_limits: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """The node row's metadata WITH admission terms (CURE 2): the base
+    flow link plus the ``rate_limits`` names when the node declares
+    buckets — the row its own admission terms, the claim path's read.
+    ``rate_limits`` empty = the base metadata, byte-identical (the
+    no-buckets rows never change shape)."""
+    meta = _metadata(flow_id, blocking_reason=None)
+    if rate_limits:
+        meta["rate_limits"] = list(rate_limits)
     return meta
 
 

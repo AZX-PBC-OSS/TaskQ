@@ -27,6 +27,9 @@ from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
+from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.ratelimit.sliding_window import SlidingWindow
+from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.workflows._types import EdgeFailurePolicy
 from taskq.workflows.chain import Chain
 
@@ -44,12 +47,14 @@ __all__ = [
     "GateDecl",
     "NodeDecl",
     "Promise",
+    "RateLimitDecl",
     "RouteArm",
     "WorkflowBuildError",
     "active_graph",
     "build",
     "gather",
     "map_source",
+    "rate_limit_names",
     "route",
     "route_child_key",
     "sink",
@@ -95,6 +100,39 @@ BodyFn = Callable[..., Awaitable[object]]
 #: for routing an element by what it is.
 SkipPredicate = Callable[[dict[str, object]], bool]
 
+#: THE AUTHORING UNION for the per-step admission terms (CURE 2 — the
+#: vanilla ``@actor``'s own ``rate_limits=`` shapes): a primitive
+#: instance, a plain name (resolved against the worker's registry — W2's
+#: warning register when nothing registers it), or a keyed ref. The KEYED
+#: REF is refused on the WORKFLOW surface (the wiring verbs' loud door):
+#: its concrete bucket materializes per payload, and the fork stamps
+#: NAMES onto the child rows — a declaration that cannot name what it
+#: stamps is the admitted-never-limited lie wearing the signature.
+RateLimitDecl = str | KeyedRateLimitRef | TokenBucket | SlidingWindow
+
+
+def rate_limit_names(
+    decls: tuple[RateLimitDecl, ...], *, what: str = "rate_limits"
+) -> tuple[str, ...]:
+    """The DECLARATION's concrete bucket NAMES — the fork's stamp source:
+    an instance contributes its ``.name`` (the registry's own
+    normalization, ``acquire_for_actor``'s), a plain name passes through.
+    A keyed ref is the REFUSED shape (the union's own docstring) — the
+    wiring verbs call this helper, so the refusal lands at the wiring
+    site, before any row exists."""
+    names: list[str] = []
+    for entry in decls:
+        if isinstance(entry, KeyedRateLimitRef):
+            raise WorkflowBuildError(
+                f"{what}: a KeyedRateLimitRef names no concrete bucket — "
+                "its bucket materializes PER PAYLOAD, and a workflow row's "
+                "admission terms are stamped as NAMES at the fork. Declare "
+                "the static buckets (rate_limits=[TokenBucket(...)]) or "
+                "route the keyed shape through a vanilla @actor."
+            )
+        names.append(entry.name if isinstance(entry, TokenBucket | SlidingWindow) else entry)
+    return tuple(names)
+
 
 class WorkflowBuildError(TypeError):
     """The wiring itself is malformed — refused at compile, before any
@@ -138,12 +176,14 @@ class Exit[T]:
 class RouteArm[R]:
     """ONE typed route arm (T27): the arm's body + the PER-ARM placement
     override (R4 — ``processA`` on the gpu queue, ``processB`` on the io
-    queue). The generic ``R`` is the arm body's declared return — the
-    route's join promise solves its ``Promise[list[R]]`` to the UNION of
-    the arms' returns (the typed sum). A bare ``Callable`` arm (no
-    placement) is accepted at the verb and normalized to
-    ``RouteArm(body=fn)`` — the placement defaults to the route's own
-    (``queue=``) and the source's actor."""
+    queue) + the PER-ARM admission terms (the consumer-face lane's CURE
+    2 — ``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
+    "50/min" under varying latency). The generic ``R`` is the arm body's
+    declared return — the route's join promise solves its
+    ``Promise[list[R]]`` to the UNION of the arms' returns (the typed
+    sum). A bare ``Callable`` arm (no placement) is accepted at the verb
+    and normalized to ``RouteArm(body=fn)`` — the placement defaults to
+    the route's own (``queue=``) and the source's actor."""
 
     body: Callable[..., Awaitable[R]]
     #: ``None`` = the source node's actor (the route carries no actor of
@@ -151,6 +191,12 @@ class RouteArm[R]:
     actor: str | None = None
     #: ``None`` = the route's declared queue (the verb's ``queue=``).
     queue: str | None = None
+    #: The arm's children's ADMISSION TERMS (CURE 2): the fork stamps
+    #: the buckets' NAMES onto the child rows' metadata; the claim path
+    #: acquires them through the SAME registry + the SAME denial path
+    #: the queue-concurrency fence rides (one mechanism, the authoring
+    #: face added). ``()`` = the arm declares no bucket.
+    rate_limits: tuple[RateLimitDecl, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +263,12 @@ class NodeDecl:
     retry_kind: str | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
+    #: THE NODE'S OWN ADMISSION TERMS (CURE 2): the claim path acquires
+    #: these buckets before the body runs — the vanilla ``@actor``'s
+    #: ``rate_limits=`` face on the workflow surface, the SAME registry,
+    #: the SAME denial-snooze path. The fork's children carry the MAP's
+    #: (``map_rate_limits``) / the ARM's (``RouteArm.rate_limits``).
+    rate_limits: tuple[RateLimitDecl, ...] = ()
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
     # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
     # pattern): a pydantic model the node's ``ctx.progress`` data
@@ -230,6 +282,9 @@ class NodeDecl:
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
+    #: The map's CHILDREN's admission terms (CURE 2 — the plain map's
+    #: face; the typed route's arms carry their own on the RouteArm).
+    map_rate_limits: tuple[RateLimitDecl, ...] = ()
     # THE TYPED ROUTE ATTACHMENT (T27 — the type-tagged Route's machinery
     # extended to the graph level): the arms dict keyed by the source's
     # union members' TYPE TAGS (``module.qualname`` — the chain's
@@ -398,6 +453,7 @@ def step[R](
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
+    rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
 ) -> Promise[R]:
     """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
     ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
@@ -413,6 +469,13 @@ def step[R](
     body's ``ctx.progress`` data emissions are validated against it, a
     wrong shape refused (the declaration is what makes a separate UI
     render the emission — the context-contract law).
+
+    ``rate_limits=`` is the node's ADMISSION TERMS (the consumer-face
+    lane's CURE 2 — the vanilla ``@actor``'s own face): the claim path
+    acquires the buckets through the SAME registry the vanilla pre-flight
+    reads (a denial snoozes the row budget-free — the queue-concurrency
+    fence's own path); the fork stamps the names onto the child rows so
+    the row carries its own terms.
 
     THE TWO FACES (be honest about the boundary): the checker reads the
     HANDLE flow (R's inference, the promise threading, build's
@@ -454,6 +517,10 @@ def step[R](
             sources.append(("p", arg.key))
         else:
             sources.append(("d", arg))
+    # THE LOUD DOOR at the wiring site (the keyed-ref refusal — before
+    # any row exists); the DECLS ride the node (the boot's collect pass
+    # registers the instances, the fork stamps the names).
+    rate_limit_names(tuple(rate_limits), what=f"step {node_key!r}'s rate_limits")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -468,6 +535,7 @@ def step[R](
             skip=skip,
             gates=gates,
             progress_schema=progress_schema,
+            rate_limits=tuple(rate_limits),
             kind="gather" if len(keys) > 1 else "step",
         )
     )
@@ -486,6 +554,7 @@ def map_source[S, R](
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
+    rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
 ) -> Promise[list[R]]: ...
 
 
@@ -498,6 +567,7 @@ def map_source[S, R](
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
+    rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
 ) -> Promise[list[R]]: ...
 
 
@@ -509,6 +579,7 @@ def map_source[S, R](
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
+    rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
 ) -> Promise[list[R]]:
     """Wire a MAP over *source*'s items: the source's body returns the
     list; each item runs *body* as a FRESH job (per-item ledger
@@ -549,7 +620,13 @@ def map_source[S, R](
     evaluated AT READ TIME by the aggregation surfaces
     (:func:`taskq.workflows._progress_read.read_map_aggregate`) — NEVER a
     blocking fan-in (DH8's fence: the join node is for DATAFLOW; a
-    progress question is answered at read, unblocked, mid-flight)."""
+    progress question is answered at read, unblocked, mid-flight).
+
+    ``rate_limits=`` is the CHILDREN's admission terms (CURE 2 — the
+    plain map's face): the fork stamps the names onto every child row;
+    the typed route's dict form carries the per-arm buckets on the
+    ``RouteArm``s instead (a route-level ``rate_limits=`` would lie about
+    which arm pays which bucket)."""
     if isinstance(body, Mapping):
         return cast(
             "Promise[list[R]]",
@@ -562,6 +639,9 @@ def map_source[S, R](
                 aggregate=aggregate,
             ),
         )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved at the call site); the attachment erases to list[object] — the cast is the seam.
+    # THE LOUD DOOR at the wiring site (the keyed-ref refusal — the same
+    # door step() keeps).
+    rate_limit_names(tuple(rate_limits), what=f"map_source {source.key!r}'s rate_limits")
     graph = source.graph
     source_node = graph.nodes.get(source.key)
     if source_node is None:
@@ -589,6 +669,7 @@ def map_source[S, R](
     source_node.map_max_attempts = max_attempts
     source_node.map_on_failure = on_failure
     source_node.map_aggregate = aggregate
+    source_node.map_rate_limits = tuple(rate_limits)
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
@@ -829,7 +910,9 @@ def route[S, R](
     ``RouteArm(body=process_image, queue="gpu")`` stamps ITS children's
     actor/queue — ``processA`` on the gpu queue, ``processB`` on the io
     queue, the ROWS the receipt. A bare ``Callable`` arm defaults to the
-    route's own ``queue=`` and the source's actor.
+    route's own ``queue=`` and the source's actor. The PER-ARM ADMISSION
+    TERMS (CURE 2) ride the same shape: ``RouteArm(rate_limits=[...])``
+    stamps the arm's own token buckets onto its children's rows.
 
     THE DECODED TYPED MODELS (R3): the arm body's declared param type IS
     the decode's target — the jsonb element re-validates into the arm's
