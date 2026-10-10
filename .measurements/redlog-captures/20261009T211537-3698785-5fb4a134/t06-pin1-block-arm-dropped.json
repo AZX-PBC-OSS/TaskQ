@@ -1,0 +1,11 @@
+{
+  "mutation": "the cascade's block arm dead in the REAL engine's tx2 \u2014 the join never resolves (the pre-T06 shipped shape: the record shows a hanging join) and the flow's flip never lands (the flow arm is gated on the block arm)",
+  "observed": {
+    "blocking_reason": "join",
+    "deps_pending": 2,
+    "flow_status": "running"
+  },
+  "pin": "t06-pin1-block-arm-dropped",
+  "run": "20261009T211537-3698785-5fb4a134",
+  "ts": "2026-10-09T21:15:37"
+}

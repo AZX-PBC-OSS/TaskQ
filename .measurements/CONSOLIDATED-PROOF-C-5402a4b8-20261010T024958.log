@@ -1,0 +1,52 @@
+=== THE CONSOLIDATED PROOF, PHASE C at 5402a4b8c25a69c742792489d0087124e320296b — 2026-10-10T02:49:58Z — FULL CAPTURE (no tail truncation)
+
+=== the type gate:
+the type gate holds: every MUST_ERROR marker (34) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+
+=== the wf battery x2 (full failure lists):
+--- round 1:
+503 passed, 1 skipped, 3 warnings in 167.55s (0:02:47)
+--- round 2:
+503 passed, 1 skipped, 3 warnings in 189.90s (0:03:09)
+
+=== the fast tier at -n 8 (full failure lists):
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+_ ERROR at setup of TestRateLimitFamily.test_acquire_dependency_failures_failed_closed _
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+        Any other state - running, failed, cancelled, abandoned - is a lost
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+ERROR tests/test_prometheus_metrics_review.py::TestCancellationFamily::test_cancellation_requested_per_call
+ERROR tests/test_prometheus_metrics_review.py::test_every_alert_rule_fires_on_real_names_and_labels
+ERROR tests/test_prometheus_metrics_review.py::TestRateLimitFamily::test_denials_surfaced_with_source
+ERROR tests/test_prometheus_metrics_review.py::TestConsumedAndBackpressure::test_backpressure_errors_by_kind
+ERROR tests/test_prometheus_metrics_review.py::test_harness_series_are_bound_to_the_served_exposition
+ERROR tests/test_prometheus_metrics_review.py::TestConsumedAndBackpressure::test_consumed_outcomes
+ERROR tests/test_prometheus_metrics_review.py::TestRateLimitFamily::test_acquire_dependency_failures_failed_closed
+ERROR tests/test_prometheus_metrics_review.py::TestConsumedAndBackpressure::test_published_messages_per_actor
+ERROR tests/test_prometheus_metrics_review.py::TestConsumedAndBackpressure::test_timeout_kind_start_to_close
+ERROR tests/test_prometheus_metrics_review.py::TestConsumedAndBackpressure::test_attempt_failures_split_retryable
+ERROR tests/test_prometheus_metrics_review.py::TestDurations::test_process_duration_by_outcome
+ERROR tests/test_prometheus_metrics_review.py::TestDurations::test_dispatch_duration_histogram
+ERROR tests/test_prometheus_metrics_review.py::TestHeartbeatFamily::test_lock_expires_histogram_has_documented_buckets
+ERROR tests/test_prometheus_metrics_review.py::TestHeartbeatFamily::test_tick_duration_histogram
+FAILED tests/test_auth_pool_init_integration.py::test_init_hook_registers_codec_on_every_physical_connection
+FAILED tests/test_grace_boundary_timeline.py::test_grace_expiry_hard_exit_requeues_within_derived_hold_bound[0]

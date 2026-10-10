@@ -1,0 +1,9 @@
+{
+  "mutation": "the failed arm gating on has_active (running/crashed/abandoned) ONLY \u2014 pending/scheduled siblings do not hold a failing run: the root flips 'failed' while the batch's other chains are live, and the dispatch fence strands them pending forever (the 149-stranded-chains wedge)",
+  "observed": {
+    "root_status_with_149_live_siblings": "running"
+  },
+  "pin": "t20-failed-arm-live-siblings",
+  "run": "20261009T195303-3083866-282c04b9",
+  "ts": "2026-10-09T19:53:04"
+}

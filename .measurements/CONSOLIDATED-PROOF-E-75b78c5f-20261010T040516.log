@@ -1,0 +1,12 @@
+=== THE CONSOLIDATED PROOF, PHASE E at 75b78c5fe7beb2929ad46ba9346536d861d36496 — 2026-10-10T04:05:16Z
+=== the fast tier at -n 8, the contract-true container, FULL CAPTURE
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+FAILED tests/test_suite_hygiene.py::test_no_pytest_xdist_worker_derived_schema_names
+FAILED tests/test_batch_reset_hotspot_pg.py::test_burst_drain_wider_than_the_tail_bound_still_completes
+2 failed, 13187 passed, 8 skipped, 150 warnings in 1123.30s (0:18:43)

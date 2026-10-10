@@ -1,0 +1,15 @@
+{
+  "mutation": "the attempt-counting join \u2014 fires on the first-success-count mismatch (counting ATTEMPTS instead of CHILDREN)",
+  "observed": {
+    "deps_pending": 8,
+    "metadata": {
+      "blocking_reason": "join",
+      "flow_id": "01a123c9-31f3-72c3-a079-ae8ffa42a13f"
+    },
+    "result": null,
+    "status": "pending"
+  },
+  "pin": "map-retry-barrier-(a)-early-fire",
+  "run": "20261009T200910-3110279-10c39121",
+  "ts": "2026-10-09T20:09:10"
+}
