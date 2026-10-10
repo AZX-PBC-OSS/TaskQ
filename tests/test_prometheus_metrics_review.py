@@ -44,8 +44,8 @@ pytest.importorskip("opentelemetry.exporter.prometheus")
 
 from tests._prom_review import (
     Exposition,
-    _once_per_invocation,
     docker_available,
+    once_per_invocation,
     parse_exposition,
     run_emitter_probe,
     run_hostile_probe,
@@ -108,7 +108,7 @@ def worker_scrapes(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) ->
     state_dir = invocation_state_dir(tmp_path_factory)
     workdir = state_dir / "prom-worker-probe"
     workdir.mkdir(parents=True, exist_ok=True)
-    return _once_per_invocation(
+    return once_per_invocation(
         "worker",
         state_dir,
         lambda: run_worker_probe(
@@ -143,7 +143,7 @@ def hostile(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[s
     state_dir = invocation_state_dir(tmp_path_factory)
     workdir = state_dir / "prom-hostile-probe"
     workdir.mkdir(parents=True, exist_ok=True)
-    return _once_per_invocation(
+    return once_per_invocation(
         "hostile",
         state_dir,
         lambda: (lambda mid, recovered: {"MID": mid, "RECOVERED": recovered})(

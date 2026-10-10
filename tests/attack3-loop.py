@@ -187,6 +187,7 @@ async def test_a3_cursor_replay_through_a_retry(
 
     async def body(ctx: StepContext, params: Ingest) -> Ingest:
         answer = await ctx.wait_signal(Approval, timeout_s=30.0)
+        assert isinstance(answer, Approval), "the delivered answer — never the expiry member"
         seen.append(answer.verdict)
         fail_once["n"] += 1
         if fail_once["n"] == 1:

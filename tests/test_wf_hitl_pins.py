@@ -176,6 +176,10 @@ async def test_resume_does_not_burn_the_retry_ladder(
         # ladder) then succeeds — the holds never touched the ladder.
         first = await ctx.wait_signal(Approval, timeout_s=120.0)
         second = await ctx.wait_signal(Approval, timeout_s=120.0)
+        assert isinstance(first, Approval) and isinstance(second, Approval), (
+            "the chained holds' answers replayed — never the expiry member "
+            "(the delivery landed on both sites before the body resumed)"
+        )
         failures["n"] += 1
         if failures["n"] == 1:
             raise ValueError("transient after the holds")
@@ -250,6 +254,9 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
         # signal name — the multi-hold.
         first = await ctx.wait_signal(Approval, timeout_s=120.0)
         second = await ctx.wait_signal(Approval, timeout_s=120.0)
+        assert isinstance(first, Approval) and isinstance(second, Approval), (
+            "the chained holds' answers replayed — never the expiry member"
+        )
         return {"verdict": second.verdict or first.verdict}
 
     app = WorkflowApp()
@@ -429,14 +436,28 @@ async def test_signal_timeout_fires_on_db_clock(
     """Pin 13 (G6): the expiry arm compares PG's clock — the expired
     hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
     REAL (the vacuous-audit's cure — the shipped pin's docstring claimed
-    the face it never exercised): the resume's wait site RAISES
-    :class:`taskq.exceptions.SignalTimeoutError` (the glossary
-    exception; the body's ladder/except owns it from there), the node
-    terminal-fails, and NO new epoch is ever minted — hold → expire →
-    re-hold → ∞ is the convicted dragon, kept red by the attack probe."""
+    the face it never exercised). T26'S AMENDMENT: the face is a VALUE —
+    the wait returns the ``Expired`` MEMBER (the closed union's second
+    arm; the checker forces the fail-close); the body that wants the
+    FAILURE raises :class:`taskq.exceptions.SignalTimeoutError` ITSELF
+    off the member (the escalation ladder's own use) — the node
+    terminal-fails through the ladder, and NO new epoch is ever minted
+    — hold → expire → re-hold → ∞ is the convicted dragon, kept red by
+    the attack probe."""
+    from taskq.exceptions import SignalTimeoutError
+    from taskq.workflows import Expired
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
-        return await ctx.wait_signal(Approval, timeout_s=1.0)
+        outcome = await ctx.wait_signal(Approval, timeout_s=1.0)
+        match outcome:
+            case Approval() as approval:
+                return approval
+            case Expired():
+                # THE BODY'S CONVERSION (the failure-wanting body): the
+                # expiry member is the typed face; the raise is ITS OWN.
+                raise SignalTimeoutError(
+                    "the hold expired — this body treats the expiry as the failure"
+                )
 
     flow_id, runner, _node = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="timeout_flow"
@@ -449,9 +470,9 @@ async def test_signal_timeout_fires_on_db_clock(
         f'SELECT status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
     )
     assert status == "abandoned"
-    # THE FACE: the resume's wait site raises the typed timeout (the
-    # ladder burns through its attempts — the body's except owns the
-    # raise), the node terminal-fails, the flow with it.
+    # THE FACE: the resume's wait site RETURNS the Expired member; the
+    # body's own conversion raises it into the ladder (the ladder burns
+    # through its attempts), the node terminal-fails, the flow with it.
     await runner.drive(flow_id, max_ticks=40)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed", (

@@ -19,9 +19,10 @@ subprocesses, one real Postgres — the deploy matrix's harness):
    back and reconciled against the march's own decisions.
 5. THE PARTIAL REPORT + THE TIMEOUT FACE — the publish step's typed
    wait is left UNRESOLVED on purpose: the expiry sweep's abandonment
-   raises ``SignalTimeoutError`` in the body, the body CATCHES it and
-   pivots to the degraded report — the report NAMES the failed source
-   and its own degradation, never wedges.
+   RETURNS the ``Expired`` member in the body (T26's amendment — the
+   timeout face is a value), the body MATCHES it and pivots to the
+   degraded report — the report NAMES the failed source and its own
+   degradation, never wedges.
 6. THE STREAMING EMIT — the T20 router lived on the tier: the paged
    source emits TWO pages while running (the children + edges + cursor
    checkpoint per emit tx); the per-record chains route on the body's

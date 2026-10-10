@@ -40,13 +40,23 @@ class Ingest(BaseModel):
 
 def _wedge_app(name: str) -> WorkflowApp:
     """A one-node workflow whose node HOLDS on an Approval — the demo's
-    review shape (the registry is exact: a unique name per app)."""
+    review shape (the registry is exact: a unique name per app). T26'S
+    AMENDMENT: the wait's expiry face is the ``Expired`` MEMBER — the
+    body converts it into the RAISED failure (the ladder's own use)."""
+    from taskq.exceptions import SignalTimeoutError
+    from taskq.workflows import Expired
+
     app = WorkflowApp()
 
     @app.workflow(name)
     def wedge_flow() -> Promise[object]:
         async def review(ctx: StepContext, params: Ingest) -> object:
-            return await ctx.wait_signal(Approval, timeout_s=120.0)
+            outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+            match outcome:
+                case Approval() as approval:
+                    return approval
+                case Expired():
+                    raise SignalTimeoutError("the hold expired — the wedge pin's conversion")
 
         return build(step(review, Ingest(doc_id="d1"), key="review"))
 

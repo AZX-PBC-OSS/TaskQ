@@ -809,7 +809,7 @@ def _migrate_schema(pg_dsn: str, schema: str) -> None:
     assert result.returncode == 0, f"migration failed: {result.stderr}"
 
 
-def _once_per_invocation(
+def once_per_invocation(
     name: str,
     state_dir: Path,
     producer: Callable[[], dict[str, str]],

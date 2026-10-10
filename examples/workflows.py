@@ -38,9 +38,11 @@ from taskq import ActorRef
 from taskq import actor as vanilla_actor
 from taskq.workflows import (
     Done,
+    Expired,
     FlowRunner,
     Promise,
     Refine,
+    StepContext,
     WorkflowApp,
     build,
     chain_source,
@@ -276,15 +278,22 @@ async def classify_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[
     return _readable(enriched)
 
 
-async def review_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
+async def review_iteration(ctx: StepContext, carry: int) -> Done[str] | Refine[int]:
     # THE HOLD INSIDE THE LOOP (property 2): the typed review pauses the
-    # budget; a reject refines with the note; the walls are named.
-    decision = await ctx.wait_signal(
+    # budget; a reject refines with the note; the walls are named. THE
+    # EXPIRY IS A VALUE (T26): the demo's timeout is a WEEK — a body
+    # that wants the failure raises SignalTimeoutError off the Expired
+    # member itself; this one treats the expiry as a stop.
+    outcome = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=7 * 24 * 3600.0, reason="editorial review (the demo)"
     )
-    if decision.verdict == "approve":
-        return Done(decision.note)
-    return Refine(carry + 1)
+    match outcome:
+        case ReviewDecision() as decision:
+            if decision.verdict == "approve":
+                return Done(decision.note)
+            return Refine(carry + 1)
+        case Expired():
+            return Done("the review expired — shipping with what we have")
 
 
 async def publish_body(

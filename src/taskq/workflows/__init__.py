@@ -49,7 +49,15 @@ from taskq.workflows.api import (
     sink,
     step,
 )
+from taskq.workflows.api._ctx_wait import Expired
 from taskq.workflows.api._hitl import DeliveryResult, HitlClient
+from taskq.workflows.api._hitl_listen import (
+    HitlListener,
+    HoldCreated,
+    HoldEvent,
+    HoldExpired,
+    HoldResolved,
+)
 from taskq.workflows.api._loop import Done, Refine, loop
 from taskq.workflows.api._run import WorkflowRunResult, run
 from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
@@ -72,9 +80,15 @@ __all__ = [
     "DeliveryResult",
     "Done",
     "Exit",
+    "Expired",
     "FlowRunner",
     "GateDecl",
     "HitlClient",
+    "HitlListener",
+    "HoldCreated",
+    "HoldEvent",
+    "HoldExpired",
+    "HoldResolved",
     "Promise",
     "Refine",
     "Route",

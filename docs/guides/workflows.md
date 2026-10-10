@@ -1074,6 +1074,61 @@ notify discipline); the notification carries THE POINTER (hold id + run
 id + event) — a lost knock costs latency, never correctness: the
 consumer converges by polling `HitlClient.list(run=…)`.
 
+**THE BROADCAST, TYPED (T26)**: the knob's legs are now three
+TRANSACTIONAL broadcast channels — `taskq_wf_hold` (the hold CREATED,
+inside the insert's own tx), `taskq_wf_hold_resolved` (inside the
+CAS-winning resolve/deliver tx, carrying `verdict_kind`: the payload
+model the typed door validated against), and `taskq_wf_hold_expired`
+(the sweep abandoned it). The channels are GLOBAL and the payload
+carries the SCHEMA (`pg_notify` is per-database; the schema-per-module
+estate shares one database across many schemas — the listener filters
+by payload, never by channel arithmetic). A rolled-back hold-create is
+SILENT by construction: PG delivers a NOTIFY only when its transaction
+commits. The typed consumer is `taskq.workflows.HitlListener` —
+DIRECTLY ASYNC-ITERABLE, the events a CLOSED union — and it BACKFILLS
+FROM THE ROWS at start (LISTEN first, then the open-hold snapshot): a
+hold created before the listener existed is still delivered, and its
+own late NOTIFY is deduped by `hold_id` — the missed-event window is
+ZERO by construction. The admin's `/sse/{topic}` surface gained the
+`holds` topic: the same typed events (backfilled at subscribe)
+streamed to the browser over the same session re-check every other
+topic keeps. The resolve door is unchanged.
+
+**THE EXPIRY IS A VALUE, NOT AN EXCEPTION (T26's amendment)**: the
+wait's outcome is the CLOSED UNION of the declared models joined with
+`Expired` — the CHECKER FORCES the fail-close arm. From the REAL
+example (`examples/deep_research.py`):
+
+```python no-exec — not executed: fragment, the body's spine — the
+REAL file is examples/deep_research.py (the demo's fake corpus + the
+loop wiring live there)
+outcome = await ctx.wait_signal(
+    (ContinueApproval,),
+    timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
+    reason="the research loop wants to continue past the free passes",
+)
+match outcome:
+    case ContinueApproval() as approval:
+        if not approval.approved:
+            return Done(carry.finish_with_what_you_have(note=approval.note))
+        carry = carry.model_copy(update={"approved": True})
+    case Expired():
+        # THE FAIL-CLOSE: nobody watching — finish with what you have.
+        return Done(carry.finish_with_what_you_have())
+```
+
+The typed expiry is a RESULT the body matches: the run SUCCEEDS
+carrying the finish-with-what-you-have state — the user not watching
+is a RESULT, typed and named, never a hang and never a failure. A body
+that ignores the arm reds the checker (the fall-through against the
+body's declared return; the bare unwrap against the missing attribute —
+the type-probe corpus holds both markers). `SignalTimeoutError` stays
+in the vocabulary for the body that WANTS the failure — the escalation
+ladder's own use: raise it yourself off the `Expired` member. (The
+example honors the loop's shape law — ONE wait per iteration; the
+scenario's "three loops" are three research passes inside the first
+iteration, because the answer queue's cursor IS the iteration counter.)
+
 **THE TIMERS**: the deadline is DB-CLOCK compared (the signal sweep's
 expiry arm is the ONLY live timer on a held row); the expired hold →
 the DEFINED `abandoned` state (the typed `SignalTimeoutError` /

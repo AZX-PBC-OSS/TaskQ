@@ -121,6 +121,13 @@ When `batch_finalizer` runs while child jobs are still in-flight, `wait_for_batc
 graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
 behind HTTP, with the admin's run explorer attached.
 
+The HITL broadcast's worked example lives beside it:
+`examples/deep_research.py` — the **deep-research loop** (T26): three free
+research passes, then the typed `ContinueApproval` gate broadcast over PG
+LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
+expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
+carrying the `finished_with_what_you_have` result.
+
 ### Run it
 
 ```bash
