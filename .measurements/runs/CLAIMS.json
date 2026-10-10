@@ -6562,6 +6562,24 @@
       "file": "wf-rollup-band-20261010T160740-b8c9.json",
       "head_sha": "e5d01dff005b099ce8ad2391465a1e5591e84487",
       "captured_at": "2026-10-10T16:07:40"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T160839.json",
+      "head_sha": "756747f05a8cd45561811345ee34588f0fb38d93",
+      "captured_at": "2026-10-10T16:08:39"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-cons-final.txt",
+      "head_sha": "756747f05a8cd45561811345ee34588f0fb38d93",
+      "captured_at": "2026-10-10T16:08:43"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-cons-final.txt",
+      "head_sha": "756747f05a8cd45561811345ee34588f0fb38d93",
+      "captured_at": "2026-10-10T16:08:43"
     }
   ]
 }
