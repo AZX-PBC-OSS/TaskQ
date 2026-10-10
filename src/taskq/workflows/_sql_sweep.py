@@ -520,3 +520,24 @@ DELETE FROM {schema}.wf_outbox o USING doomed d
 WHERE o.id = d.id
 RETURNING o.id
 """
+
+
+# THE STEP CACHE'S RETENTION ARM (T25): the cross-run cache's expired
+# corpses are dead weight — the lookup's freshness leg already refuses
+# them (a miss, the body re-runs), and without this arm the expired
+# population grows monotone-forever (the delivered-outbox arm's own
+# conviction class). The store's CAS re-fills an expired row on the
+# re-run's success; this arm deletes what no re-run ever visits. The
+# DB clock is the comparison (the estate's doctrine); one bounded
+# committed batch per pass.
+STEP_CACHE_RETENTION_SQL = """\
+WITH doomed AS (
+    SELECT content_address FROM {schema}.wf_step_cache
+    WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at
+    LIMIT $1
+)
+DELETE FROM {schema}.wf_step_cache o USING doomed d
+WHERE o.content_address = d.content_address
+RETURNING o.content_address
+"""

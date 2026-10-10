@@ -356,6 +356,136 @@ exist (a future statement-order regression's debris) is reaped `failed`
 (`NodelessRunReaped`) once past the reap grace — the re-run is then a
 NEW key, the typed claim says `existing-terminal`.
 
+## The cross-run step cache (T25)
+
+The arbiter's dedups are CONCURRENT and scoped: two callers racing one
+run key get one run, and `ctx.substep`'s memo dedups a retry WITHIN a
+run. Neither answers the temporal, cross-run question: the re-run (a
+new run key, the same input) of an EXPENSIVE body — the OCR's pixels,
+the LLM's tokens — executes everything again. The cross-run step cache
+is the opt-in that closes it:
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    run,
+    step,
+)
+
+
+class Doc(BaseModel):
+    doc_id: str
+
+
+class Report(BaseModel):
+    ref: str
+
+
+calls = {"ocr": 0}
+
+
+async def ocr(ctx: StepContext, d: Doc) -> Report:
+    calls["ocr"] += 1
+    return Report(ref=d.doc_id)
+
+
+async def consume(ctx: StepContext, r: Report) -> str:
+    return r.ref
+
+
+app = WorkflowApp()
+
+
+@app.workflow("cache_flow")
+def cache_flow() -> Promise[object]:
+    report = step(ocr, Doc(doc_id="d1"), key="ocr", cache=True, cache_ttl=3600.0)
+    return build(step(consume, report, key="consume"))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    first = await run(app.get("cache_flow"), pool, schema, input=None, key="cache:demo-1")
+    second = await run(app.get("cache_flow"), pool, schema, input=None, key="cache:demo-2")
+    receipt = await pool.fetchval(
+        f"SELECT metadata->'wf_cache_hit'->>'run_id' FROM \"{schema}\".jobs "
+        "WHERE metadata->>'flow_id' = $1 AND step_key = 'ocr'",
+        str(second.flow_id),
+    )
+    print(f"first={first.claim.kind} second={second.claim.kind} ocr_calls={calls['ocr']}")
+    print(f"the hit's receipt names the producing run: {receipt == str(first.flow_id)}")
+
+
+asyncio.run(main())
+```
+
+THE TWO-CLAIMS LAW — read it before opting in:
+
+- **The arbiter dedups CONCURRENT** — two runs racing one key are one
+  run. The cache does NOT dedup concurrency: two concurrent misses both
+  run their bodies (that is the arbiter's claim, and the cache never
+  takes it over).
+- **The cache dedups TEMPORAL** — a LATER run over the same body and
+  the same input reads the EARLIER run's result. The address is the
+  Nix-style recursive hash: the body's code-version canon (the
+  §22.1 stamper's — module, qualname, the body's own source) RECURSED
+  with the resolved input's canonical jsonb. A body's code change IS a
+  new address (the stale-code face is dead by construction); the same
+  body over the same input at any position in any run is the SAME
+  address (position-independent on purpose — the cross-run face's
+  point).
+
+The store is SUCCESS-ONLY: the result fills `wf_step_cache` on
+terminal-succeeded only (`ON CONFLICT` keeps one winner per address; an
+expired row is re-filled by the re-run's success). A failed run writes
+NOTHING — the failed-run-squats-the-key bug is closed by construction;
+the second run after a failure re-executes the body, never a cached
+failure. A cache HIT delivers the cached envelope through the ordinary
+fenced finalize: the body never runs, the downstream decodes the SAME
+typed shape, and the node row's `metadata.wf_cache_hit` carries THE
+RECEIPT — the address, the producing run's id, the store instant — the
+hit is auditable from the row alone.
+
+Verified output (this guide's capture, on a fresh schema — the SECOND
+run's body never ran):
+
+```
+first=created second=created ocr_calls=1
+the hit's receipt names the producing run: True
+```
+
+THE DETERMINISM HAZARD, stated plainly: the cache assumes the body is
+DETERMINISTIC for the same input. A non-deterministic body — a
+clock-reader, a random walker, a now() sampler — with `cache=True`
+delivers the STALE TRUTH BY CHOICE: the address promises "same body,
+same input", never "the world stood still". Opt in only for bodies
+whose result is a pure function of the input; the default is OFF (the
+cache is a decision, not a surprise), `cache_ttl` without `cache=True`
+is refused at the wiring site, a non-positive TTL is refused, and a
+cache on the multi-parent gather is refused (the v1 surface is the
+plain step).
+
+The TTL is the in-DB expiry (`expires_at`, compared against the DB
+clock): an expired row IS a miss — the re-run re-executes and re-fills.
+The sweep's retention arm (`wf_step_cache_retention`, the
+`TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD` setting, default 1h,
+`timedelta(0)` disables) prunes the expired rows — the freshness
+decision is the lookup's; the pruner only deletes the dead weight.
+
 ## The sweep arms (wired)
 
 Four healing arms register in the leader's maintenance sweep loop
@@ -377,6 +507,10 @@ arms off):
 * `wf_nodeless_root_reap` — the orphan root's belt: a flow root with
   ZERO node rows (the create-atomicity's convicted debris shape) is
   reaped `failed` past the grace — the derivation can never develop it.
+* `wf_step_cache_retention` — the cross-run step cache's expiry arm
+  (T25): the expired rows pruned (the in-DB TTL's dead weight; the
+  freshness decision is the lookup's — the pruner never touches a fresh
+  row).
 
 The arms' imports stay inside the spec calls (nothing outside the package
 may import `taskq.workflows` at module scope).
@@ -579,6 +713,7 @@ families:
 | `tests/test_wf_progress_emission.py` + `test_wf_progress_faces.py` + `test_wf_progress_persistence.py` | the T21 progress family: the emission op's typed gate (the validated dump is the record), the coalesce cadence + the constant rows, the auto projections' counted trims, the two-channel persistence, the faces' contracts |
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
+| `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit (R3's face), the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
 
 History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in

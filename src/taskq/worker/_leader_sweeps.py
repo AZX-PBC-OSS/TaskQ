@@ -638,6 +638,30 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    async def wf_step_cache_retention_call() -> int:
+        # THE STEP CACHE'S RETENTION ARM (T25): the cross-run cache's
+        # EXPIRED rows pruned — the lookup's freshness leg already
+        # refuses them (a miss; the body re-runs and the store's CAS
+        # re-fills), this arm deletes the dead weight so the expired
+        # population never grows monotone-forever (the delivered-outbox
+        # arm's own conviction class). The period gate is the
+        # settings-level disable sentinel (timedelta(0) → the spec's
+        # period gate skips the arm — a brand-new deletion loop's safe
+        # misconfiguration is off). UndefinedTableError rides the
+        # tolerance set (pre-migration tolerance, the rolling-deploy
+        # pattern): a rolling deploy runs this code against a schema
+        # whose wf_step_cache has not landed yet, which is a per-tick
+        # warn until migration 01.00.33 applies, not the arm's death.
+        # The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import prune_expired_step_cache
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await prune_expired_step_cache(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
     async def wf_loop_budget_call() -> int:
         # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
         # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
@@ -1011,6 +1035,23 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=True,
             dbg_tick=_dbg_tick("wf_progress_ring_prune_tick"),
+        ),
+        _SweepSpec(
+            # wf_step_cache_retention — THE CROSS-RUN STEP CACHE'S
+            # EXPIRY ARM (T25): the in-DB TTL's corpses deleted — the
+            # lookup's freshness leg already refuses them (a miss; the
+            # body re-runs and the store's CAS re-fills), this arm
+            # deletes the dead weight. NOT a drain (the retention
+            # family's one-batch-per-pass discipline). The period gate
+            # is the zero-means-off sentinel.
+            name="wf_step_cache_retention",
+            call=wf_step_cache_retention_call,
+            warn_event="sweep-wf-step-cache-retention-failed",
+            warn_kind="sweep_wf_step_cache_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_step_cache_sweep_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_step_cache_retention_tick"),
         ),
     )
 

@@ -259,6 +259,14 @@ class NodeDecl:
     # (no NodeDecl); the runner resolves their routes from the compiled
     # workflow's chains. ``chain is not None`` IS the source marker.
     chain: object | None = None
+    # THE CROSS-RUN CACHE OPT-IN (T25): the node's result may serve a
+    # LATER run over the same body + the same input (the TEMPORAL dedup
+    # — the arbiter owns the CONCURRENT one). Default OFF: the cache is
+    # a decision, never a surprise. ``cache_ttl`` is the in-DB expiry's
+    # seconds (``None`` = the cache module's 24h default); the wiring
+    # face refuses a TTL without the opt-in and a non-positive TTL.
+    cache: bool = False
+    cache_ttl: float | None = None
 
 
 class Promise[T_co]:
@@ -398,6 +406,8 @@ def step[R](
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
+    cache: bool = False,
+    cache_ttl: float | None = None,
 ) -> Promise[R]:
     """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
     ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
@@ -413,6 +423,20 @@ def step[R](
     body's ``ctx.progress`` data emissions are validated against it, a
     wrong shape refused (the declaration is what makes a separate UI
     render the emission — the context-contract law).
+
+    THE CROSS-RUN CACHE OPT-IN (T25): ``cache=True`` lets this step's
+    result serve a LATER run over the same body + the same input — the
+    TEMPORAL dedup (the run-key arbiter owns the CONCURRENT one; two
+    concurrent misses both run their bodies). The cache stores on
+    TERMINAL-SUCCEEDED only (a failure never squats the address),
+    delivers a hit through the ordinary finalize (the downstream
+    decodes the same typed shape), and stamps the node row's metadata
+    with the receipt (the address + the producing run's id).
+    ``cache_ttl=`` is the in-DB expiry's seconds (default 24h).
+    THE DETERMINISM HAZARD, stated plainly: the cache assumes the body
+    is DETERMINISTIC for the same input — a non-deterministic body with
+    ``cache=True`` is the stale truth BY CHOICE (the address promises
+    "same body, same input"; it cannot promise the world stood still).
 
     THE TWO FACES (be honest about the boundary): the checker reads the
     HANDLE flow (R's inference, the promise threading, build's
@@ -434,6 +458,32 @@ def step[R](
             f"node key {node_key!r} carries a dot — the dot is the engine's "
             "derived namespace (the map's <key>.item / <key>.join, the "
             "loop's <key>.iter<i>); a wiring key may not collide with it"
+        )
+    # THE CACHE OPT-IN'S OWN REFUSALS (T25): the mechanically-impossible
+    # at the wiring site (the dotted-key precedent). A TTL on a
+    # NON-cache is a silent no-op parameter (the surprise family); a
+    # non-positive TTL is an always-expired cache (the lie); a cache on
+    # the MULTI-PARENT fan-in is outside the v1 surface (the plain step
+    # is the cached shape — the gather's join face is the engine's own
+    # machinery).
+    if cache_ttl is not None and not cache:
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache_ttl without cache=True — "
+            "a TTL on a cache that does not exist is a silent no-op "
+            "(the cache is a decision, never a surprise): pass cache=True"
+        )
+    if cache and cache_ttl is not None and cache_ttl <= 0:
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache_ttl={cache_ttl} — a "
+            "non-positive TTL is an always-expired cache (the lie): a "
+            "cached result must outlive at least one freshness window"
+        )
+    if cache and len(keys) > 1:
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache=True on a gather (the "
+            "multi-parent fan-in) — the v1 cache surface is the plain "
+            "step: the gather's join face is the engine's own machinery, "
+            "not a cacheable body's"
         )
     # THE SMUGGLE CHECK (attack-3 M3's cure): a promise arg whose home
     # recorder is NOT this graph is RECORDED — validate convicts it
@@ -468,6 +518,8 @@ def step[R](
             skip=skip,
             gates=gates,
             progress_schema=progress_schema,
+            cache=cache,
+            cache_ttl=cache_ttl,
             kind="gather" if len(keys) > 1 else "step",
         )
     )

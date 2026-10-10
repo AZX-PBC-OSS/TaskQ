@@ -58,6 +58,7 @@ from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
+from taskq.workflows._cache import CachedStep
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -66,7 +67,7 @@ from taskq.workflows._progress import (
 )
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
-from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
+from taskq.workflows._types import ChildSpec, FinalizeResult, ForkSpec, JoinSpec, NodeSpec, _jsonb
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
@@ -633,6 +634,55 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
             payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
             args = self._resolve_args(node, body, parents_by_key, payload_doc)
+
+            # THE CROSS-RUN CACHE'S CLAIM-PATH SEAM (T25 — the TEMPORAL
+            # dedup; the arbiter owns the CONCURRENT one). Opt-in per
+            # step (``cache=``), the PLAIN step face only: the address
+            # is the Nix-style recursive hash — the body's §22.1
+            # code-version canon + the resolved input's canonical jsonb
+            # — computed HERE, on the rows. A HIT (the row's freshness
+            # leg, the DB clock) delivers the cached envelope through
+            # the ordinary fenced finalize — the body NEVER runs, the
+            # node row carries the receipt. A MISS runs the body; the
+            # store happens ON TERMINAL-SUCCEEDED ONLY (the
+            # failed-run-squats-the-key bug closed by construction).
+            cache_address: str | None = None
+            if node is not None and node.cache and body is not None and node.kind == "step":
+                code_version = self._body_code_version(row["step_key"], node, body)
+                if code_version is None:
+                    logger.warning(
+                        "step-cache-unaddressable",
+                        run_id=str(flow_id),
+                        node=row["step_key"],
+                        error="the body's code-version hash is not reproducible — caching NOTHING",
+                    )
+                else:
+                    from taskq.workflows._cache import cache_address as _cache_address
+                    from taskq.workflows.api._runner_codec import encode_data_arg
+
+                    cache_address = _cache_address(code_version, [encode_data_arg(a) for a in args])
+                    from taskq.workflows._cache import lookup_step_cache
+
+                    hit = await lookup_step_cache(self.pool, self.wsql, address=cache_address)
+                    if hit is not None:
+                        # THE HIT: the cached envelope IS the result —
+                        # the same fenced finalize, the same typed
+                        # decode downstream (the body NEVER runs).
+                        final = await self._finalize_success(
+                            flow_id,
+                            row,
+                            attempt,
+                            node,
+                            hit.envelope,
+                            claim_epoch=claim_epoch,
+                        )
+                        await emitter.aclose()
+                        if final.applied:
+                            await self._write_cache_receipt(
+                                JobId(row["id"]), row["step_key"], flow_id, hit
+                            )
+                        return "succeeded"
+
             if body is None:
                 # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
                 # join's result IS the decoded parents' list — the FLAT
@@ -755,7 +805,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # the first attempt, the error class on the record — the reclaim
         # path heals or fails named, never wedges.
         try:
-            await self._finalize_success(
+            final = await self._finalize_success(
                 flow_id,
                 row,
                 attempt,
@@ -768,6 +818,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await emitter.aclose()
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
+        # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
+        # cache fill happens ONLY on the terminal that actually landed
+        # (a fenced write is a zombie's, never a terminal-succeeded).
+        # The CAS inside the store keeps ONE winner per address.
+        if final.applied and cache_address is not None and result is not None:
+            await self._store_step_result(cache_address, result, flow_id, row["step_key"])
         return "succeeded"
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
@@ -786,7 +842,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         stamp reads the INNER function through
         :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
         seam the validator's own walk shares."""
+        version = self._body_code_version(node_key, node, body)
+        if version is None:
+            return
+        async with self.pool.acquire() as conn:
+            # S608: the schema identifier is the settings boundary the
+            # runner validated at build; the values are $-bound.
+            await conn.execute(
+                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',  # noqa: S608
+                job_id,
+                version,
+            )
 
+    def _body_code_version(self, node_key: str, node: Any, body: Any) -> str | None:
+        """The body's §22.1 canonical hash — the pure computation the
+        per-attempt RECORD's write (above) and the cross-run cache's
+        ADDRESS (T25) both consume; ``None`` when the hash cannot read
+        the body (a builtin, a partial, an unreadable source): the
+        record's loss is logged, and an UNADDRESSABLE body caches
+        NOTHING (the cache seam decides — a key that cannot be
+        reproduced is the stale-truth hazard itself)."""
         from taskq.workflows._version import compute_code_version
         from taskq.workflows.api._hints import inner_fn, own_source
 
@@ -796,7 +871,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             else (getattr(node, "body", None) if node is not None else None)
         )
         if target is None:
-            return  # the join/gather kinds: the identity packer is the engine's own code
+            return None  # the join/gather kinds: the identity packer is the engine's own code
         target = inner_fn(target)
         # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
         # slice-identity guard): the fence's exec'd bodies re-slice to
@@ -809,9 +884,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 node=node_key,
                 error="the body's own source is not verifiable (unreadable, or not its own slice)",
             )
-            return
+            return None
         try:
-            version = compute_code_version(
+            return compute_code_version(
                 getattr(target, "__module__", "") or "",
                 getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
                 source,
@@ -824,15 +899,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 node=node_key,
                 error=str(exc)[:200],
             )
-            return
-        async with self.pool.acquire() as conn:
-            # S608: the schema identifier is the settings boundary the
-            # runner validated at build; the values are $-bound.
-            await conn.execute(
-                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',  # noqa: S608
-                job_id,
-                version,
-            )
+            return None
 
     def _redact_hook(self) -> Callable[[str], str] | None:
         """The workflow's OWN redact hook from the REGISTERED DEFINITION
@@ -1031,7 +1098,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
-    ) -> None:
+    ) -> FinalizeResult:
+        """The success finalize (the fenced terminal + the ledger row +
+        the fork): the FinalizeResult is RETURNED now (T25) — the
+        cross-run cache's SUCCESS-ONLY store and the hit path's receipt
+        merge both key on ``applied`` (a fenced write is a zombie's,
+        never a terminal-succeeded)."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
             fork = self._map_fork(row, node, result)
@@ -1066,6 +1138,80 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 JobId(row["id"]),
                 KIND_NODE_TERMINAL,
                 {"outcome": "succeeded", "step_key": row["step_key"]},
+            )
+        return final
+
+    async def _store_step_result(
+        self, address: str, result: dict[str, object], flow_id: JobId, node_key: str
+    ) -> None:
+        """THE SUCCESS-ONLY STORE (T25): the terminal-succeeded body's
+        result fills the cache — the CAS inside keeps ONE winner per
+        address (a fresh winner never loses its row; an expired corpse
+        is re-filled). Best-effort (the projection's asymmetry): a lost
+        store is a logged freshness loss (the next run re-executes —
+        the cache's miss face is ALWAYS safe), never a node failure."""
+        from taskq.workflows._cache import STEP_CACHE_TTL_DEFAULT_S, store_step_cache
+
+        node = self.compiled.nodes.get(node_key)
+        ttl = (
+            float(node.cache_ttl)
+            if node is not None and node.cache_ttl is not None
+            else STEP_CACHE_TTL_DEFAULT_S
+        )
+        try:
+            winner = await store_step_cache(
+                self.pool,
+                self.wsql,
+                address=address,
+                envelope=result,
+                run_id=flow_id,
+                ttl_s=ttl,
+            )
+        except Exception as exc:  # Why: the asymmetry — a lost store degrades to the miss face, never a node failure.
+            logger.warning(
+                "step-cache-store-lost",
+                run_id=str(flow_id),
+                node=node_key,
+                error=str(exc)[:200],
+            )
+            return
+        if not winner:
+            logger.debug(
+                "step-cache-cas-lost",
+                run_id=str(flow_id),
+                node=node_key,
+                detail="a fresher winner holds the address (the CAS's loser)",
+            )
+
+    async def _write_cache_receipt(
+        self, job_id: JobId, node_key: str, flow_id: JobId, hit: CachedStep
+    ) -> None:
+        """THE RECEIPT'S WRITE (T25): the hit run's node row carries the
+        provenance (the address + the producing run's id + the store
+        instant) in its metadata. Best-effort (the projection's
+        asymmetry — a lost receipt is a logged freshness loss, never a
+        node failure; the LEDGER owns the state)."""
+        from taskq.workflows._cache import cache_receipt_metadata, merge_cache_receipt
+
+        try:
+            await merge_cache_receipt(
+                self.pool,
+                self.wsql,
+                job_id=job_id,
+                receipt=cache_receipt_metadata(
+                    address=hit.address,
+                    run_id=hit.run_id,
+                    stored_at=hit.stored_at,
+                ),
+            )
+        except (
+            Exception
+        ) as exc:  # Why: the asymmetry — a lost receipt degrades the audit, never correctness.
+            logger.warning(
+                "step-cache-receipt-lost",
+                run_id=str(flow_id),
+                node=node_key,
+                error=str(exc)[:200],
             )
 
     async def _project_auto(
