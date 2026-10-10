@@ -1,3 +1,4 @@
+SUPERSEDED-BY: runs/rv2-pins-final-20261010T191125.txt
 head: da82b2e3e426b0490071e44579a3c4c9a2017d72
 .................                                                        [100%]
 17 passed in 4.52s

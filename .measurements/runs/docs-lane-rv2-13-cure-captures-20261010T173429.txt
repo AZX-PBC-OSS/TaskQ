@@ -1,3 +1,4 @@
+SUPERSEDED-BY: runs/docs-lane-rv2-13-cure-captures-20261010T191125.txt
 head: fab8dbe6e80be144390089bf652858836231baa7
 pytest-rc: 1
 ....F............                                                        [100%]
