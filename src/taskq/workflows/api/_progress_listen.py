@@ -112,9 +112,7 @@ class ProgressBackfilled(BaseModel):
 
 #: The TYPED event union (the discriminated kind): the backfill leg + the
 #: live knocks.
-ProgressEvent = Annotated[
-    ProgressUpdated | ProgressBackfilled, Field(discriminator="event")
-]
+ProgressEvent = Annotated[ProgressUpdated | ProgressBackfilled, Field(discriminator="event")]
 
 type _Raw = tuple[str, str]
 
@@ -243,7 +241,7 @@ class ProgressListener:
         async for event in self._iterate(self._keepalive):
             yield event
 
-    async def wait(self, timeout: float) -> bool:
+    async def wait(self, timeout: float) -> bool:  # noqa: ASYNC109  # Why: a `timeout` parameter is the point — the SSE face passes its poll interval as the belt bound, not an enclosing asyncio.timeout scope; the repo's established wait-helper shape.
         """THE KNOCK-WAIT (the SSE face's own primitive): ``True`` = an
         event arrived (a replay read is owed — the push primary);
         ``False`` = the belt's timeout (the poll tick — the fallback).
@@ -317,8 +315,7 @@ class ProgressListener:
                     except TimeoutError:
                         if conn.is_closed():
                             raise ConnectionError(
-                                "the progress listener's connection was closed "
-                                "underneath the pump"
+                                "the progress listener's connection was closed underneath the pump"
                             ) from None
                         continue
                     if raw is None:
@@ -431,9 +428,7 @@ class ProgressListener:
         if last is not None and seq <= last:
             return None  # THE DEDUP (the zero-window's other half): the snapshot already announced this seq
         self._last_seqs[node_id] = seq
-        return ProgressUpdated(
-            flow_id=flow_id, node_id=node_id, last_seq=seq, source="notify"
-        )
+        return ProgressUpdated(flow_id=flow_id, node_id=node_id, last_seq=seq, source="notify")
 
     def _emit(self, event: ProgressEvent) -> None:
         """The typed event to EVERY subscriber (the fan-out — never a

@@ -1121,12 +1121,13 @@ def register(router: APIRouter) -> None:
             await listener.start()
             try:
                 async for frame in progress_stream_generator(
-                    pool.pool, wsql, flow_id=JobId(flow_id), last_event_id=cursor,
+                    pool.pool,
+                    wsql,
+                    flow_id=JobId(flow_id),
+                    last_event_id=cursor,
                     listener=listener,
                 ):
-                    yield ServerSentEvent(
-                        event=frame["event"], id=frame["id"], data=frame["data"]
-                    )
+                    yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
             finally:
                 await listener.stop()
 

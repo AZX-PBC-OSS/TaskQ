@@ -1,0 +1,9 @@
+{
+  "mutation": "the SSE generator accepts no listener= \u2014 the push transport's absence; poll_s is the only leg",
+  "observed": {
+    "error": "TypeError: progress_stream_generator() got an unexpected keyword argument 'listener'"
+  },
+  "pin": "cons3-sse-push",
+  "run": "20261010T145856-2633660-288fa21e",
+  "ts": "2026-10-10T14:58:56"
+}

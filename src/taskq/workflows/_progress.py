@@ -46,7 +46,7 @@ import structlog
 
 from taskq._json import dumps as _json_dumps
 from taskq._json import dumps_str as _dumps_str
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import _jsonb
 
@@ -111,7 +111,7 @@ PROGRESS_NOTIFY_CHANNEL: Final[str] = "taskq_wf_progress"
 
 
 async def knock_progress(
-    conn: asyncpg.Connection, *, schema: str, flow_id: JobId, node_id: JobId, seq: int
+    conn: ConnLike, *, schema: str, flow_id: JobId, node_id: JobId, seq: int
 ) -> None:
     """ONE ``pg_notify`` on the WRITE'S OWN CONNECTION (the HITL
     broadcast's leg discipline): the knock rides the same connection the
@@ -124,6 +124,7 @@ async def knock_progress(
         {"schema": schema, "flow_id": str(flow_id), "node_id": str(node_id), "seq": seq}
     )
     await conn.execute("SELECT pg_notify($1, $2)", PROGRESS_NOTIFY_CHANNEL, payload)
+
 
 # ── THE BOUNDS (decision a + e) ──────────────────────────────────────────
 

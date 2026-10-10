@@ -45,8 +45,8 @@ from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId, JobRow
 from taskq.backend.clock import Clock
-from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
@@ -226,11 +226,10 @@ def test_route_arms_carry_their_own_rate_limits(cons2_redlog: RedLog) -> None:
     from taskq.workflows.chain import type_tag
 
     image_key, audio_key = type_tag(Image), type_tag(Audio)
-    if not (arms[image_key].rate_limits == (gpu_bucket,)):
+    if arms[image_key].rate_limits != (gpu_bucket,):
         cons2_redlog.red(
             "cons2-route-arm-buckets",
-            "RouteArm accepts no rate_limits= — the per-arm admission terms "
-            "cannot be declared",
+            "RouteArm accepts no rate_limits= — the per-arm admission terms cannot be declared",
             {"arm_fields": sorted(arms[image_key].__dataclass_fields__)},
         )
     assert arms[image_key].rate_limits == (gpu_bucket,)
@@ -266,12 +265,16 @@ def test_a_keyed_ref_names_no_concrete_bucket_and_is_refused() -> None:
     payload — the fork stamps NAMES onto rows, so a keyed ref on a
     workflow step is the refused shape (named at the wiring site, before
     any row exists)."""
+
     class Tenant(BaseModel):
         tenant_id: str
 
     app = WorkflowApp()
     keyed = KeyedRateLimitRef.typed(
-        Tenant, base_name="cons2-tenant", key_fn=lambda p: p.tenant_id, capacity=1,
+        Tenant,
+        base_name="cons2-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=1,
         refill_per_second=1.0,
     )
 
@@ -279,7 +282,7 @@ def test_a_keyed_ref_names_no_concrete_bucket_and_is_refused() -> None:
     def w() -> Promise[object]:
         return build(step(_ocr_body, Ingest(doc_id="d1"), key="ocr", rate_limits=[keyed]))
 
-    with pytest.raises(Exception, match="keyed|concrete|per-payload"):
+    with pytest.raises(Exception, match=r"keyed|concrete|per-payload"):
         app.get("cons2_keyed_refusal")
 
 
@@ -320,12 +323,14 @@ async def test_the_fork_stamps_the_buckets_onto_the_child_rows(
     rows = await wf_pool.fetch(
         f"""SELECT step_key, map_index, metadata FROM "{wf_schema}".jobs
             WHERE (metadata->>'flow_id')::uuid = $1::uuid
-              AND step_key = 'src.item' ORDER BY map_index""",
+              AND step_key = 'src.item' ORDER BY map_index""",  # noqa: S608  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
         flow_id,
     )
     assert len(rows) == 2, "the fork created the two children"
     stamped = [
-        (_loads(r["metadata"]) if isinstance(r["metadata"], str) else r["metadata"]).get("rate_limits")
+        (_loads(r["metadata"]) if isinstance(r["metadata"], str) else r["metadata"]).get(
+            "rate_limits"
+        )
         for r in rows
     ]
     if stamped != [["cons2-fork-stamp"], ["cons2-fork-stamp"]]:
@@ -354,7 +359,7 @@ async def test_a_static_step_row_carries_its_own_bucket_names(
     flow_id = (await runner.create_flow()).flow_id
     raw = await wf_pool.fetchval(
         f"""SELECT metadata FROM "{wf_schema}".jobs
-            WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'ocr'""",
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'ocr'""",  # noqa: S608  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
         flow_id,
     )
     assert raw is not None
@@ -389,7 +394,9 @@ def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
 
     @app.workflow("cons2_collect")
     def w() -> Promise[object]:
-        source = step(_src_body, Ingest(doc_id="d1"), key="named", rate_limits=[bucket, "cons2-foreign"])
+        source = step(
+            _src_body, Ingest(doc_id="d1"), key="named", rate_limits=[bucket, "cons2-foreign"]
+        )
         mapped = map_source(source, _item_body, rate_limits=[TokenBucket("cons2-map-col", 1, 0)])
         return build(mapped)
 
@@ -501,11 +508,21 @@ async def test_the_no_registry_fast_path_still_passes_through(
     queue-concurrency fence's own pins)."""
     clock = FakeClock(_START)
     bare = await _flow_rate_limit_gate(
-        None, clock, _bucket_job(["cons2-never-registered"]), CAPABLE_WORKER, _deps(wf_pool, wf_schema), job_log=JOB_LOG
+        None,
+        clock,
+        _bucket_job(["cons2-never-registered"]),
+        CAPABLE_WORKER,
+        _deps(wf_pool, wf_schema),
+        job_log=JOB_LOG,
     )
     assert bare.acquired == [] and bare.denied is None
     plain = await _flow_rate_limit_gate(
-        RateLimitRegistry(), clock, _bucket_job(None), CAPABLE_WORKER, _deps(wf_pool, wf_schema), job_log=JOB_LOG
+        RateLimitRegistry(),
+        clock,
+        _bucket_job(None),
+        CAPABLE_WORKER,
+        _deps(wf_pool, wf_schema),
+        job_log=JOB_LOG,
     )
     assert plain.acquired == [] and plain.denied is None
 

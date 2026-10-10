@@ -178,13 +178,12 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
     backfill ends with ONE reconcile snapshot (the last_seqs the dedup
     reads). AND THE DEDUP: a knock whose seq the snapshot already
     covered yields NOTHING (one emission, ONE event)."""
-    from tests._wf_fixtures import seed_flow, seed_running_node
-
     from taskq.workflows.api._progress_listen import (
         ProgressBackfilled,
         ProgressListener,
         ProgressUpdated,
     )
+    from tests._wf_fixtures import seed_flow, seed_running_node
 
     flow_id = await seed_flow(wf_conn, wf_schema)
     node_id = await seed_running_node(wf_conn, wf_schema, flow_id)
@@ -239,17 +238,23 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
             _stale_knock_payload(wf_schema, flow_id, node_id, int(last_seq)),
         )
         await asyncio.sleep(0.6)
-        assert not any(
-            isinstance(e, ProgressUpdated) and e.source == "notify" for e in seen
-        ), "the backfill-covered knock re-announced — the dedup is broken"
+        assert not any(isinstance(e, ProgressUpdated) and e.source == "notify" for e in seen), (
+            "the backfill-covered knock re-announced — the dedup is broken"
+        )
 
         # A FRESH knock (a seq past the snapshot) announces.
-        await _raw_knock(module_pg_schema.pg_dsn, _stale_knock_payload(wf_schema, flow_id, node_id, int(last_seq) + 5000))
+        await _raw_knock(
+            module_pg_schema.pg_dsn,
+            _stale_knock_payload(wf_schema, flow_id, node_id, int(last_seq) + 5000),
+        )
 
         async def _wait_fresh() -> None:
-            while not any(
-                isinstance(e, ProgressUpdated) and e.source == "notify" for e in seen
-            ):
+            # THE DRILL'S OWN POLL CADENCE (bounded ticks — the wake
+            # condition is the collector's list, not an event this test
+            # owns).
+            for _tick in range(100):
+                if any(isinstance(e, ProgressUpdated) and e.source == "notify" for e in seen):
+                    return
                 await asyncio.sleep(0.05)
 
         await asyncio.wait_for(_wait_fresh(), timeout=5.0)
@@ -291,10 +296,9 @@ async def test_the_listener_fans_out_and_degrades_first(
     subscribers each see EVERY event. THE COALESCE ORDER (the
     backpressure's law): the bounded queues drop the OLDEST — the writer
     never blocks, the newest survives, correctness never."""
-    from tests._wf_fixtures import seed_flow, seed_running_node
-
     from taskq.workflows.api import _progress_listen
     from taskq.workflows.api._progress_listen import ProgressListener, ProgressUpdated
+    from tests._wf_fixtures import seed_flow, seed_running_node
 
     flow_id = await seed_flow(wf_conn, wf_schema)
     node_id = await seed_running_node(wf_conn, wf_schema, flow_id)
@@ -379,14 +383,16 @@ async def test_the_listener_isolates_another_runs_events(
 
         task = asyncio.create_task(_collect())
         # Flow B's knock rides the global channel while A listens.
-        await _raw_knock(module_pg_schema.pg_dsn, _stale_knock_payload(wf_schema, flow_b, node_b, 700))
+        await _raw_knock(
+            module_pg_schema.pg_dsn, _stale_knock_payload(wf_schema, flow_b, node_b, 700)
+        )
         await asyncio.sleep(0.5)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    assert not any(
-        isinstance(e, ProgressUpdated) and e.flow_id == str(flow_b) for e in seen
-    ), "another run's knock reached this run's listener"
+    assert not any(isinstance(e, ProgressUpdated) and e.flow_id == str(flow_b) for e in seen), (
+        "another run's knock reached this run's listener"
+    )
 
 
 # ── THE SSE FACE UPGRADED ────────────────────────────────────────────────

@@ -144,9 +144,7 @@ async def test_every_display_entry_carries_the_rows_own_identity(
     by_key = {e.get("step_key"): e for e in entries if e.get("map_index") is None}
     assert by_key.get("fetch") is not None, "the source step's entry is keyed 'fetch'"
     children = {
-        (e.get("step_key"), e.get("map_index"))
-        for e in entries
-        if e.get("map_index") is not None
+        (e.get("step_key"), e.get("map_index")) for e in entries if e.get("map_index") is not None
     }
     assert children == {("fetch.item", 0), ("fetch.item", 1), ("fetch.item", 2)}, (
         "the map children carry their OWN step_key + map_index"

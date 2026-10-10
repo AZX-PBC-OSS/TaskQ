@@ -2011,8 +2011,8 @@ async def _main(
                 # nothing registers is the WARNING (W2's register —
                 # probably a typo, never a refusal; the claim path's
                 # fail-closed arm is the teeth).
-                _wf_rl_registered, _wf_rl_unknown = (
-                    _wf_execution.collect_workflow_rate_limits(resolved_rl_registry)
+                _wf_rl_registered, _wf_rl_unknown = _wf_execution.collect_workflow_rate_limits(
+                    resolved_rl_registry
                 )
                 if _wf_rl_registered:
                     _startup_log.info(

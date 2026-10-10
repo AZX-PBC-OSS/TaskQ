@@ -68,7 +68,11 @@ async def insert_fork(
             # 2 — the arm's/map's bucket names) carries them on its OWN
             # row; the no-bucket rows keep the base shape byte-identical.
             [
-                _jsonb(_row_metadata(flow_id, rate_limits=c.rate_limits) if c.rate_limits else _metadata(flow_id, blocking_reason=None))
+                _jsonb(
+                    _row_metadata(flow_id, rate_limits=c.rate_limits)
+                    if c.rate_limits
+                    else _metadata(flow_id, blocking_reason=None)
+                )
                 for c in chunk
             ],
             [f"workflow:{flow_id}"] * len(chunk),

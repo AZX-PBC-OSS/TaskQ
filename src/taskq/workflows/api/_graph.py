@@ -111,7 +111,9 @@ SkipPredicate = Callable[[dict[str, object]], bool]
 RateLimitDecl = str | KeyedRateLimitRef | TokenBucket | SlidingWindow
 
 
-def rate_limit_names(decls: tuple[RateLimitDecl, ...], *, what: str = "rate_limits") -> tuple[str, ...]:
+def rate_limit_names(
+    decls: tuple[RateLimitDecl, ...], *, what: str = "rate_limits"
+) -> tuple[str, ...]:
     """The DECLARATION's concrete bucket NAMES — the fork's stamp source:
     an instance contributes its ``.name`` (the registry's own
     normalization, ``acquire_for_actor``'s), a plain name passes through.

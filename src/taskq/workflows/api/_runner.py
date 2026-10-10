@@ -301,7 +301,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             # path's read); the no-bucket rows keep the base shape
             # byte-identical.
             row_meta = (
-                _row_metadata(flow_id, rate_limits=rate_limit_names(node.rate_limits, what=f"step {key!r}'s rate_limits"))
+                _row_metadata(
+                    flow_id,
+                    rate_limits=rate_limit_names(
+                        node.rate_limits, what=f"step {key!r}'s rate_limits"
+                    ),
+                )
                 if node.rate_limits
                 else {"flow_id": str(flow_id)}
             )
@@ -1158,7 +1163,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     # THE ADMISSION TERMS STAMPED (CURE 2): the map's
                     # declared buckets' NAMES on every child row — the
                     # claim path's read.
-                    rate_limits=rate_limit_names(node.map_rate_limits, what="map_source's rate_limits"),
+                    rate_limits=rate_limit_names(
+                        node.map_rate_limits, what="map_source's rate_limits"
+                    ),
                 )
                 for i, item in enumerate(items)
             ),

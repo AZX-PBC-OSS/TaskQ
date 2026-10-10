@@ -37,6 +37,7 @@ __all__ = [
     "_join_metadata",
     "_jsonb",
     "_metadata",
+    "_row_metadata",
 ]
 
 #: THE MAP_INDEX CEILING — the wire-format fact the ceiling error

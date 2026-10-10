@@ -775,6 +775,29 @@ class _UnknownFlowRateLimitError(RuntimeError):
     row)."""
 
 
+def _str_list_metadata(metadata: dict[str, object], key: str) -> list[str] | None:
+    """THE METADATA'S WALK IS THE GUARD (the jsonb boundary — the
+    isinstance pass IS the runtime shape check, the estate's
+    Any-contract walk's own shape): the row's ``key`` as a list of str,
+    ``[]`` when the row declares none, ``None`` when the shape lies (a
+    non-list, a non-str member — the hand-crafted row)."""
+    raw = metadata.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return None
+    names: list[str] = []
+    # The cast is the jsonb boundary's own seam: asyncpg's decode hands
+    # back Unknown members; the isinstance walk below is the runtime
+    # shape check (the estate's Any-contract walk, cast-typed).
+    for entry in cast("list[object]", raw):
+        if isinstance(entry, str):
+            names.append(entry)
+        else:
+            return None
+    return names
+
+
 async def _flow_rate_limit_gate(
     rl_registry: RateLimitRegistry | None,
     clock: Clock,
@@ -821,17 +844,17 @@ async def _flow_rate_limit_gate(
     # stamped. A non-list or non-str entry is the hand-crafted row's
     # shape — the same fail-closed arm (the metadata lies, the row
     # parks).
-    raw_names = job.metadata.get("rate_limits")
-    names: list[str] = []
-    if raw_names is not None:
-        if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
-            job_log.warning(
-                "dispatch-flow-rate-limit-metadata-malformed",
-                job_id=str(job.id),
-                queue=job.queue,
-            )
-            return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(str(job.id)))
-        names = list(raw_names)
+    names_raw = _str_list_metadata(job.metadata, "rate_limits")
+    if names_raw is None:
+        # THE HAND-CRAFTED ROW'S SHAPE (the metadata lies): the same
+        # fail-closed arm — the row parks.
+        job_log.warning(
+            "dispatch-flow-rate-limit-metadata-malformed",
+            job_id=str(job.id),
+            queue=job.queue,
+        )
+        return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(str(job.id)))
+    names = names_raw
     unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
     if unknown:
         # THE FAIL-CLOSED ARM: the row names a bucket this worker's
