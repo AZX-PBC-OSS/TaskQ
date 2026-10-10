@@ -5695,6 +5695,78 @@
       "head_sha": "512f7a91f72272d0d05af484521a23ad7a9d7cd9",
       "captured_at": "2026-10-10T23:51:00",
       "superseded_by": "runs/evidence-heads-verify-20261010T191125.txt"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T132336-7ba7.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:23:36"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T132336-01cb.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:23:36"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T132340-cedd.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:23:40"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T132408-d205.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:08"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T132424-2bda.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:24"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T132425-d582.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:25"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T132425-9ff7.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:25"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T132430-ad79.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:30"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T132437-11a3.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:37"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T132458.json",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:24:58"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-20261010T132521-deslop.txt",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:25:27"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261010T132527-deslop.txt",
+      "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
+      "captured_at": "2026-10-10T13:25:27"
     }
   ]
 }
