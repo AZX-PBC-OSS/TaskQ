@@ -1,0 +1,3 @@
+# ruff check + ruff format --check at the T25 lane head 1c561135b5300ee5cb7a4bd84f18668b0ee31bb8
+All checks passed!
+1700 files already formatted

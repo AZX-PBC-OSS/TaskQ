@@ -6970,6 +6970,36 @@
       "file": "wf-scoped-coverage-20261010T160950.json",
       "head_sha": "11e3e187f5b8ee3a28ab28349f8fe158a8e3ed9b",
       "captured_at": "2026-10-10T16:12:49"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261010T221400Z.txt",
+      "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
+      "captured_at": "2026-10-10T16:14:41"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261010T221410Z.txt",
+      "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
+      "captured_at": "2026-10-10T16:14:41"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261010T221420Z.txt",
+      "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
+      "captured_at": "2026-10-10T16:14:41"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261010T221430Z.txt",
+      "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
+      "captured_at": "2026-10-10T16:14:41"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-20261010T221440Z.txt",
+      "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
+      "captured_at": "2026-10-10T16:14:41"
     }
   ]
 }
