@@ -1190,6 +1190,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 reason=reason,
                 detail={"held_signals_cancelled": held},
             )
+
+        # THE CANCEL CASCADE (T28 — the same walk _runner_exit's
+        # id-addressed form carries): the parent's receipts name its
+        # child flows; each child cancels through the SAME verb
+        # recursively (each child's cancel atomic in its own tx — the
+        # cascade is eventually-consistent per child, idempotent by the
+        # terminal-refusal).
+        from taskq.workflows._childflow import CHILD_RECEIPTS_SQL_TEMPLATE
+
+        async with self.pool.acquire() as conn:
+            receipt_rows = await conn.fetch(
+                render_sql(CHILD_RECEIPTS_SQL_TEMPLATE, self.schema), flow_id
+            )
+        for receipt in receipt_rows:
+            held += await self.cancel_workflow(
+                JobId(receipt["child_id"]),
+                reason=f"cascaded from {flow_id}: {reason or 'cancel_workflow'}",
+                principal=principal,
+            )
         return held + 1
 
     async def _finalize_success(

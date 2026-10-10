@@ -4913,7 +4913,7 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
+      "kind": "THE DOCS LANE'S RV2-13 CURE — the superseded-capture index",
       "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
@@ -7102,6 +7102,54 @@
       "file": "fast-tier-n8-20261010T221700Z.txt",
       "head_sha": "cdb3f11fc783b86fd961302cbd734f7ab167d91e",
       "captured_at": "2026-10-10T16:15:31"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T165836-555b.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:37"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T165837-0d0d.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:37"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T165848-a701.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:48"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T165848-9e1b.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:48"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T165848-6e8c.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:48"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T165854-a8f5.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:58:54"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T165900-f86b.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:59:00"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T165900-6f43.json",
+      "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
+      "captured_at": "2026-10-10T16:59:00"
     }
   ]
 }

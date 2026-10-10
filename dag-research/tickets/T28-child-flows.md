@@ -32,9 +32,9 @@ The API (the mixin's home: `workflows/_childflow.py`, composed into
 
 ```python
 handle = await ctx.spawn_flow(
-    "sub_investigation",          # the child's REGISTERED name
-    input=SubProbe(topic="x"),    # the child's input (the root's payload)
-    result=SubReport,             # type[M]: the child's typed result contract
+    "sub_investigation",  # the child's REGISTERED name
+    input=SubProbe(topic="x"),  # the child's input (the root's payload)
+    result=SubReport,  # type[M]: the child's typed result contract
 )
 ```
 
@@ -70,10 +70,14 @@ that wants a FRESH child per retry spells it: `key=f"probe-{ctx.attempt}"`.
 ```python
 outcome = await handle.wait(timeout_s=600.0)
 match outcome:
-    case ChildOk(result=report): ...      # the child's TYPED result
-    case ChildFailed(): ...               # the child failed — the body decides
-    case ChildCancelled(): ...            # the child was cancelled
-    case Expired(): ...                   # the JOIN's own patience expired
+    case ChildOk(result=report):
+        ...  # the child's TYPED result
+    case ChildFailed():
+        ...  # the child failed — the body decides
+    case ChildCancelled():
+        ...  # the child was cancelled
+    case Expired():
+        ...  # the JOIN's own patience expired
 ```
 
 The wait is the HITL machinery's OWN shape (the certified hold): the join
@@ -165,7 +169,7 @@ ALL-members semantics at the flow level, spelled by the body:
 
 ```python
 handles = [await ctx.spawn_flow("sub_investigation", input=p, result=SubReport) for p in probes]
-results = [await h.wait() for h in handles]   # the fan-in: the typed results list
+results = [await h.wait() for h in handles]  # the fan-in: the typed results list
 ```
 
 No new join primitive: the handles' waits are independent holds (distinct
@@ -217,3 +221,26 @@ ruff + format + pyright FULL 0/0/0 + the type gate + the pins +
 the wf battery ×2 + the fast tier ×1 at `-n 8` (full capture) +
 mkdocs strict (the guide's child-flows section — the sub-investigations
 snippet VERIFIED by the docs-examples harness, exec fence).
+
+## AMENDMENT (the build's honest deviation, recorded per the house law)
+
+The ticket's slot law said a LOOP-kind node's spawn slot reads the
+row's `iteration`. The reads decided BETTER: the loop driver runs each
+iteration on ITS OWN job row (`<loop>.iter<i>` — the ledger's
+per-iteration identity), so ONE rule covers every shape — the
+per-attempt spawn cursor on the EXECUTING node's row
+(``metadata.spawn_cursor_{attempt}``). Distinct iteration rows carry
+distinct cursors; a retry of an iteration re-derives the same slots;
+the arbiter adopts. No loop special case shipped — the rule is
+SIMPLER than the ticket's, and the ticket's law (retry-stable slots,
+adoption never duplication) holds exactly.
+
+Second deviation, face-plumbing: the wake arm lives in
+``api/_hitl.py`` beside ``sweep_expired_signals`` (the statement-reuse
+law — the arm reuses ``_DELIVER_RESUME_SQL``/``_broadcast`` from the
+same module; a cross-module private import is the
+``reportPrivateUsage`` tax), and the join's wait-site host is a PUBLIC
+``JoinSite`` record (the handle reads its own fields — the protected
+access never crosses the class boundary). The cancel cascade landed on
+BOTH cancel faces (``cancel_workflow_run`` and the runner's
+``cancel_workflow`` — one law, two surfaces, the same walk).
