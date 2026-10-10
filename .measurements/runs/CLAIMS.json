@@ -62,7 +62,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261008T224032.txt",
    "head_sha": "4bf53c869f87be86419056fb90795c383ef1633d",
-   "captured_at": "2026-10-08T22:40:32"
+   "captured_at": "2026-10-08T22:40:32",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "stealth-mutant-shipped-drill",
@@ -561,7 +562,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T140955.txt",
    "head_sha": "8b95e4e6c06b12cae43a0ade5f859407a865c71b",
-   "captured_at": "2026-10-09T14:09:55"
+   "captured_at": "2026-10-09T14:09:55",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "typeprobe-gate",
@@ -670,7 +672,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T142407.txt",
    "head_sha": "9a0148487d9c6364f56527cfa47dd6b42583ffa0",
-   "captured_at": "2026-10-09T14:24:07"
+   "captured_at": "2026-10-09T14:24:07",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -918,7 +921,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T151457.txt",
    "head_sha": "f92cd7e83378b68b21b6e92ee2f2400ef9be017f",
-   "captured_at": "2026-10-09T15:14:57"
+   "captured_at": "2026-10-09T15:14:57",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -992,7 +996,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T152354.txt",
    "head_sha": "b4534d29edc132aca4e6501a8c5a0146576679cb",
-   "captured_at": "2026-10-09T15:23:54"
+   "captured_at": "2026-10-09T15:23:54",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -1128,7 +1133,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T163238.txt",
    "head_sha": "75dc69d34e2c543f79d32d02aa6e597d3ab686a5",
-   "captured_at": "2026-10-09T16:32:38"
+   "captured_at": "2026-10-09T16:32:38",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -1249,7 +1255,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261009T164056.txt",
    "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
-   "captured_at": "2026-10-09T16:40:56"
+   "captured_at": "2026-10-09T16:40:56",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -4151,7 +4158,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T063145.txt",
    "head_sha": "a858272b18c66e28a69cfebaa664279568ca6d30",
-   "captured_at": "2026-10-10T06:31:45"
+   "captured_at": "2026-10-10T06:31:45",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -4217,7 +4225,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T070905.txt",
    "head_sha": "96d5ff1b1e233b14e6e18b877b8e9a252e868621",
-   "captured_at": "2026-10-10T07:09:05"
+   "captured_at": "2026-10-10T07:09:05",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -4361,7 +4370,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T091005.txt",
    "head_sha": "0ec0ca46eb7fa7e749a98a52613d968a8df4dc03",
-   "captured_at": "2026-10-10T09:10:05"
+   "captured_at": "2026-10-10T09:10:05",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "wf-perf-bands",
@@ -5352,7 +5362,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T171020.txt",
    "head_sha": "734300e22855d20402f97ed179024bcec0502789",
-   "captured_at": "2026-10-10T17:10:20"
+   "captured_at": "2026-10-10T17:10:20",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -5435,14 +5446,14 @@
    "file": "wf-battery-rv4-20261010T185500-run1.txt",
    "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
    "captured_at": "2026-10-10T18:55:00",
-   "superseded_by": "27b367bddf472e7d98334f75e60287c188bb74f9"
+   "superseded_by": "wf-scoped-coverage-20261010T135540.json"
   },
   {
    "stem": "wf-battery-rv4",
    "file": "wf-battery-rv4-20261010T190200-run2.txt",
    "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
    "captured_at": "2026-10-10T19:02:00",
-   "superseded_by": "27b367bddf472e7d98334f75e60287c188bb74f9"
+   "superseded_by": "wf-scoped-coverage-20261010T135540.json"
   },
   {
    "stem": "mkdocs-strict-docslane",
@@ -5604,7 +5615,8 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T223100.txt",
    "head_sha": "906bf384a60916f9e975ccb8c2e0f7bd14f97362",
-   "captured_at": "2026-10-10T22:31:00"
+   "captured_at": "2026-10-10T22:31:00",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pyright-full",
@@ -5796,13 +5808,14 @@
    "file": "wf-battery-rv4-20261010T132521-deslop.txt",
    "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
    "captured_at": "2026-10-10T13:25:27",
-   "superseded_by": "27b367bddf472e7d98334f75e60287c188bb74f9"
+   "superseded_by": "wf-scoped-coverage-20261010T135540.json"
   },
   {
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T132527-deslop.txt",
    "head_sha": "89bd82780d85957e368e7a5b22fefde0da18911d",
-   "captured_at": "2026-10-10T13:25:27"
+   "captured_at": "2026-10-10T13:25:27",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "pin1-row-width",
@@ -5887,7 +5900,7 @@
    "file": "wf-battery-rv4-20261010T133838-deslop.txt",
    "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
    "captured_at": "2026-10-10T13:38:43",
-   "superseded_by": "27b367bddf472e7d98334f75e60287c188bb74f9"
+   "superseded_by": "wf-scoped-coverage-20261010T135540.json"
   },
   {
    "stem": "fasttier-final",
@@ -5900,13 +5913,15 @@
    "stem": "mkdocs-strict",
    "file": "mkdocs-strict-20261010T133838-deslop.txt",
    "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
-   "captured_at": "2026-10-10T13:38:43"
+   "captured_at": "2026-10-10T13:38:43",
+   "superseded_by": "-mkdocs-strict"
   },
   {
    "stem": "deslop-pin-packs",
    "file": "deslop-pin-packs-20261010T134042.txt",
    "head_sha": "cd593a06929d9acfe570d329f3435d319d3e09eb",
-   "captured_at": "2026-10-10T13:40:42"
+   "captured_at": "2026-10-10T13:40:42",
+   "superseded_by": "deslop-pin-packs-20261010T210216.txt"
   },
   {
    "stem": "join-fire-latency",
@@ -5967,6 +5982,208 @@
    "file": "wf-scoped-coverage-20261010T135135.json",
    "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
    "captured_at": "2026-10-10T13:51:35"
+  },
+  {
+   "stem": "edge-scale-curve",
+   "file": "edge-scale-curve-20261010T135348-8838.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:53:48"
+  },
+  {
+   "stem": "join-fire-latency",
+   "file": "join-fire-latency-20261010T135348-24c4.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:53:48"
+  },
+  {
+   "stem": "pin4-enqueue-band",
+   "file": "pin4-enqueue-band-20261010T135349-a663.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:53:49"
+  },
+  {
+   "stem": "pin5-dispatch-band",
+   "file": "pin5-dispatch-band-20261010T135357-c010.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:53:57"
+  },
+  {
+   "stem": "fanout-1000-tx-band",
+   "file": "fanout-1000-tx-band-20261010T135358-ef53.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:53:58"
+  },
+  {
+   "stem": "pin1-red-pad-drift",
+   "file": "pin1-red-pad-drift-20261010T135423-d36f.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:54:23"
+  },
+  {
+   "stem": "pin1-row-width",
+   "file": "pin1-row-width-20261010T135426-13ac.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:54:26"
+  },
+  {
+   "stem": "pin2-partial-index",
+   "file": "pin2-partial-index-20261010T135432-fed8.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:54:32"
+  },
+  {
+   "stem": "wf-rollup-band",
+   "file": "wf-rollup-band-20261010T135432-36c5.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:54:32"
+  },
+  {
+   "stem": "wf-scoped-coverage",
+   "file": "wf-scoped-coverage-20261010T135540.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:55:40"
+  },
+  {
+   "stem": "pin5-dispatch-band",
+   "file": "pin5-dispatch-band-20261010T135619-42ae.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:56:19"
+  },
+  {
+   "stem": "join-fire-latency",
+   "file": "join-fire-latency-20261010T135619-653b.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:56:19"
+  },
+  {
+   "stem": "edge-scale-curve",
+   "file": "edge-scale-curve-20261010T135623-0390.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:56:23"
+  },
+  {
+   "stem": "fanout-1000-tx-band",
+   "file": "fanout-1000-tx-band-20261010T135623-fbc5.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:56:23"
+  },
+  {
+   "stem": "pin4-enqueue-band",
+   "file": "pin4-enqueue-band-20261010T135722-eff8.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:57:22"
+  },
+  {
+   "stem": "join-fire-latency",
+   "file": "join-fire-latency-20261010T135848-851b.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:58:48"
+  },
+  {
+   "stem": "pin5-dispatch-band",
+   "file": "pin5-dispatch-band-20261010T135903-34ae.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:59:03"
+  },
+  {
+   "stem": "fanout-1000-tx-band",
+   "file": "fanout-1000-tx-band-20261010T135903-7bf9.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:59:03"
+  },
+  {
+   "stem": "edge-scale-curve",
+   "file": "edge-scale-curve-20261010T135906-d7ef.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:59:06"
+  },
+  {
+   "stem": "pin4-enqueue-band",
+   "file": "pin4-enqueue-band-20261010T135907-21d5.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T13:59:07"
+  },
+  {
+   "stem": "pin4-enqueue-band",
+   "file": "pin4-enqueue-band-20261010T140021-8e0b.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:21"
+  },
+  {
+   "stem": "fanout-1000-tx-band",
+   "file": "fanout-1000-tx-band-20261010T140021-3e94.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:21"
+  },
+  {
+   "stem": "join-fire-latency",
+   "file": "join-fire-latency-20261010T140021-d30d.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:21"
+  },
+  {
+   "stem": "pin5-dispatch-band",
+   "file": "pin5-dispatch-band-20261010T140033-5725.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:33"
+  },
+  {
+   "stem": "wf-rollup-band",
+   "file": "wf-rollup-band-20261010T140036-b25c.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:36"
+  },
+  {
+   "stem": "edge-scale-curve",
+   "file": "edge-scale-curve-20261010T140036-872b.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:00:36"
+  },
+  {
+   "stem": "pin1-row-width",
+   "file": "pin1-row-width-20261010T140139-ca0e.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:01:39"
+  },
+  {
+   "stem": "pin1-red-pad-drift",
+   "file": "pin1-red-pad-drift-20261010T140139-1315.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:01:39"
+  },
+  {
+   "stem": "pin2-partial-index",
+   "file": "pin2-partial-index-20261010T140147-3f30.json",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T14:01:47"
+  },
+  {
+   "stem": "wf-bands-rv4",
+   "file": "wf-bands-rv4-20261010T205804.txt",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T205937",
+   "kind": "capture"
+  },
+  {
+   "stem": "wf-battery-rv4",
+   "file": "wf-battery-rv4-20261010T205937.txt",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T205937",
+   "kind": "capture"
+  },
+  {
+   "stem": "mkdocs-strict",
+   "file": "mkdocs-strict-20261010T205937.txt",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T205937",
+   "kind": "capture"
+  },
+  {
+   "stem": "deslop-pin-packs",
+   "file": "deslop-pin-packs-20261010T210216.txt",
+   "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
+   "captured_at": "2026-10-10T210216",
+   "kind": "capture"
   }
  ]
 }
