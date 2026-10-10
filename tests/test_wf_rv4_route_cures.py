@@ -21,16 +21,24 @@ its pin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import Promise, StepContext, build, route, sink, step
+from taskq.workflows import (
+    FlowRunner,
+    Promise,
+    RouteArm,
+    StepContext,
+    WorkflowApp,
+    WorkflowBuildError,
+    build,
+    gather,
+    map_source,
+    route,
+    sink,
+    step,
+)
 from taskq.workflows.api._validate import WorkflowValidationError
-
-if TYPE_CHECKING:
-    from taskq.workflows import WorkflowApp
 
 
 class ImageItem(BaseModel):
@@ -75,7 +83,6 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
     TERMINALIZES, ``result() == []`` (the empty list IS the typed sum's
     honest value), and ZERO rows stick non-terminal (the wedge's row
     receipt)."""
-    from taskq.workflows import FlowRunner, RouteArm, WorkflowApp
 
     app = WorkflowApp()
 
@@ -103,7 +110,7 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
     assert result is not None, "result() is None on a succeeded route — the lying empty read"
     # THE ROWS ARE THE RECEIPT: zero stuck rows — every row of the run
     # is terminal.
-    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeType]  # Why: the object-typed fixture.
+    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
         f'SELECT step_key, status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1",
         flow_id,
@@ -120,7 +127,6 @@ async def test_f1_the_empty_map_corpus_fires_the_join_with_the_empty_list(
 ) -> None:
     """F1's map face: the plain map_source over an empty corpus — the
     join fires with [], the run terminalizes, the collect states []."""
-    from taskq.workflows import FlowRunner, WorkflowApp, map_source
 
     async def tiny_source(ctx: StepContext) -> list[ImageItem]:
         return []
@@ -147,7 +153,7 @@ async def test_f1_the_empty_map_corpus_fires_the_join_with_the_empty_list(
     assert verdict == "terminal", f"the empty MAP wedged (drive returned {verdict!r})"
     result = await runner.result(flow_id)
     assert result is not None, "result() is None on a succeeded empty map"
-    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeType]  # Why: the object-typed fixture.
+    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
         f'SELECT step_key, status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1",
         flow_id,
@@ -172,15 +178,11 @@ def test_f8_the_fan_in_refusal_at_build_names_the_bound_and_the_escape() -> None
     """The >1000 fan-in refusal fires AT BUILD (the wiring verb's door —
     E-rule), the message names the bound AND the child_driven escape —
     the remedy reachable from the refusal's own text."""
-    from taskq.workflows import Promise, WorkflowApp, gather
 
     app = WorkflowApp()
 
     async def leaf(ctx: object) -> int:
         return 1
-
-    async def joiner(ctx: object, items: list[int]) -> int:
-        return sum(items)
 
     @app.workflow("rv4_f8_fan_in")
     def rv4_f8_fan_in() -> Promise[object]:
@@ -211,7 +213,6 @@ def test_the_arm_arity_convicts_at_build() -> None:
     over the map_arms) — never the raw mid-flow TypeError. The
     zero-param arm is E10's conviction (0 ≠ the wired 1); the two-param
     arm is the deps SHAPE, so E12 owns it (the app binds no deps)."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
@@ -223,12 +224,14 @@ def test_the_arm_arity_convicts_at_build() -> None:
         app = WorkflowApp()
 
         @app.workflow(f"rv4_arity_{label}")
-        def wired() -> Promise[object]:
+        def wired(
+            body: object = body,
+        ) -> Promise[object]:  # the loop binding (B023): the arm's body bound at definition
             src_p = step(src, key="media")
             routed = route(
                 src_p,
                 {
-                    ImageItem: RouteArm(body=body),
+                    ImageItem: RouteArm(body=body),  # type: ignore[dict-item]  # Why: the drill's union — the convicted arm shapes ride the type contract.
                     AudioItem: RouteArm(body=process_audio),
                 },
             )
@@ -254,7 +257,6 @@ def test_e15_a_superclass_arm_param_refuses_at_build() -> None:
     ``DocItem`` member) is the named build refusal — the subclass's
     fields would be dropped (``extra='ignore'``) at the runtime decode.
     The exact union member is the law."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
 
     async def superclass_arm(ctx: object, item: DocBase) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the pin's own subject — the superclass IS the convicted shape.
         return ImageResult(doc_id=item.doc_id)
@@ -277,7 +279,6 @@ def test_e15_a_superclass_arm_param_refuses_at_build() -> None:
 def test_e15_an_unrelated_arm_param_refuses_at_build() -> None:
     """An arm declared with an UNRELATED model is the named build
     refusal (the E-rule, not the raw runtime death)."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
 
     async def unrelated_arm(ctx: object, item: AudioItem) -> ImageResult:
         return ImageResult(doc_id=item.doc_id)  # type: ignore[arg-type]  # Why: the pin's own subject — the unrelated model IS the convicted shape.
@@ -354,7 +355,6 @@ def test_e16_field_identical_union_members_are_the_hard_refusal() -> None:
     """Field-identical union members at a CONSUMER param — the decode
     picks the first member for every payload (the guaranteed silent
     mispick): the hard E16 refusal at build."""
-    from taskq.workflows import Promise, WorkflowApp, build, sink, step
 
     app = WorkflowApp()
 
@@ -373,7 +373,6 @@ def test_e16_subset_union_members_warn_the_mispick_risk() -> None:
     """Subset-relared members (the richer payloads decode as the thinner
     first member): the E16 WARNING naming the mispick risk + the Literal
     fix."""
-    from taskq.workflows import Promise, WorkflowApp, build, sink, step
 
     app = WorkflowApp()
 
@@ -391,7 +390,6 @@ def test_e16_subset_union_members_warn_the_mispick_risk() -> None:
 def test_e16_distinct_union_members_are_clean() -> None:
     """Distinct members (each requires a field the other lacks): the
     decode falls through to the true member — no E16 diagnostic."""
-    from taskq.workflows import Promise, WorkflowApp, build, sink, step
 
     app = WorkflowApp()
 
@@ -413,7 +411,6 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
     """Two distinct classes sharing one type tag (module.qualname) — the
     second arm SILENTLY overwrote the first (the same-qualname twin's
     overwrite): the tag-injectivity refusal at the wiring verb."""
-    from taskq.workflows import RouteArm, WorkflowApp, WorkflowBuildError, route, step
     from taskq.workflows.chain import type_tag
 
     TwinA = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_rv4_route_cures"})  # noqa: N806  # Why: the twin IS the subject — two distinct class objects, one tag.
@@ -452,7 +449,9 @@ async def _waiting_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     """The arm-held HITL: the arm body WAITS on a signal with no declared
     gate — the hold was COMPILE-invisible (the pre-cure E14 walk skipped
     the arms)."""
-    await ctx.wait_signal((ImageResult,), timeout_s=30.0)  # pragma: no cover - the compile reads the source; the runner never runs this body
+    await ctx.wait_signal(
+        (ImageResult,), timeout_s=30.0
+    )  # pragma: no cover - the compile reads the source; the runner never runs this body
     return ImageResult(doc_id=item.doc_id)
 
 
@@ -461,7 +460,6 @@ def test_the_arm_held_hitl_is_compile_visible() -> None:
     ``ctx.wait_signal`` with no declared gate produces the E14 warning
     NAMING the arm's child key (the per-arm gates' face) — the hold is
     no longer compile-invisible."""
-    from taskq.workflows import Promise, RouteArm, WorkflowApp, build, route, step
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
@@ -492,12 +490,13 @@ def test_the_typod_arm_queue_warns_w2() -> None:
     warning NAMES the arm's child key and the typo'd queue (the
     pre-cure walk read node.queue only; the arm's children dispatched
     onto a queue no worker may listen on, clean at build)."""
-    from taskq.workflows import Promise, RouteArm, WorkflowApp, build, route, step
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
 
-    app = WorkflowApp()  # no actors: the declared universe is {"default"} — both arm queues are outside it
+    app = (
+        WorkflowApp()
+    )  # no actors: the declared universe is {"default"} — both arm queues are outside it
 
     @app.workflow("rv4_typo_queue")
     def rv4_typo_queue() -> Promise[object]:
@@ -525,7 +524,6 @@ def test_the_mermaid_arms_render() -> None:
     compile carries — the pre-cure render drew the route source as the
     plain rectangle, the route's branches invisible), and the
     fork-carrying node wears the map-source shape."""
-    from taskq.workflows import Promise, RouteArm, WorkflowApp, build, route, step
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
@@ -556,7 +554,6 @@ def test_the_double_attach_lie_is_fixed() -> None:
     attached ON TOP silently, clobbering the route's placement fields;
     when it did refuse, the text said 'already carries a map' — a lie
     about the attachment it refused)."""
-    from taskq.workflows import Promise, RouteArm, WorkflowApp, WorkflowBuildError, map_source, route, step
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
@@ -589,7 +586,6 @@ def test_the_cannot_resolve_message_is_truthful() -> None:
     function-scope model) refuses with the 'CANNOT RESOLVE' message —
     the pre-cure text said 'does not declare', a lie about a body that
     DID declare."""
-    from taskq.workflows import Promise, RouteArm, WorkflowApp, WorkflowBuildError, route, step
 
     class Local(BaseModel):  # the function-scope model — the annotation cannot resolve
         doc_id: str

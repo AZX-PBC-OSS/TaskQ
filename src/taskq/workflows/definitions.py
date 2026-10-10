@@ -203,16 +203,16 @@ def validate_fork(fork: ForkSpec) -> None:
     behind was the route/map source over an empty corpus either sticking
     ``running`` forever with zero error rows or terminalizing with the
     lying ``result() is None``."""
-    if not fork.children:
-        if fork.join is None:
-            raise ValueError(
-                "an empty fork (zero children) with no join is refused at "
-                "build time: it carries no work and no collect — the "
-                "stranded invisible join's shape"
-            )
-        # THE EMPTY-JOIN PRECEDENT: the join fires with the empty list.
-        # Fall through — the join's own declared policy and bound still
-        # validate below.
+    if not fork.children and fork.join is None:
+        raise ValueError(
+            "an empty fork (zero children) with no join is refused at "
+            "build time: it carries no work and no collect — the "
+            "stranded invisible join's shape"
+        )
+    # THE EMPTY-JOIN PRECEDENT (fall-through): a zero-children fork WITH
+    # a join passes the refusal above — the join fires with the empty
+    # list; the join's own declared policy and bound still validate
+    # below.
     if fork.join is not None and fork.join.failure_policy not in FAILURE_POLICIES:
         raise ValueError(
             f"join {fork.join.step_key!r} declares unknown failure_policy "

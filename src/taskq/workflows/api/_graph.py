@@ -578,9 +578,7 @@ def map_source[S, R](
         # and the error's own text ("already carries a map") lied about
         # the attachment it refused. Both attachments refused, the text
         # names WHICH.
-        carried = (
-            "a map" if source_node.map_item is not None else "a typed route"
-        )
+        carried = "a map" if source_node.map_item is not None else "a typed route"
         raise WorkflowBuildError(
             f"node {source.key!r} already carries {carried} — a node "
             "finalizes once (one fork); wire the second map or route "

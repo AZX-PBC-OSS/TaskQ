@@ -67,7 +67,6 @@ from taskq.workflows._progress import (
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
 from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
-from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
@@ -108,6 +107,7 @@ from taskq.workflows.api._sql_runner import (
     WF_ARGS_KEY,
     render_sql,
 )
+from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
     RunClaim,

@@ -858,9 +858,7 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
                                 )
                             )
                         elif thin_in_rich or rich_in_thin:
-                            first, second = (
-                                (thinner, richer) if thin_in_rich else (richer, thinner)
-                            )
+                            first, second = (thinner, richer) if thin_in_rich else (richer, thinner)
                             diagnostics.append(
                                 WorkflowValidationError(
                                     "E16-union-discriminator",
@@ -1339,8 +1337,7 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
         # RouteArm(queue="gp") typo built CLEAN and the arm's children
         # dispatched onto a queue no worker may listen on.
         projections: list[tuple[str, str]] = [(node.key, node.queue)]
-        if node.map_queue is not None:
-            projections.append((f"{node.key}.join", node.map_queue))
+        projections.append((f"{node.key}.join", node.map_queue))
         if node.map_arms is not None:
             for tag, arm in node.map_arms.items():
                 effective = arm.queue or node.map_queue or node.queue
