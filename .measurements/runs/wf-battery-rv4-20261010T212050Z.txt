@@ -1,0 +1,6 @@
+# the wf battery + THE SCOPED COVERAGE GATE at the docs-currency head 6e2297fe87ae2b1ad273c537f30fe7d82aa7019a
+1 failed, 527 passed, 7 deselected, 1 warning in 252.89s (0:04:12)
+the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at the source head; its cure is the measurement commit landing this estate)
+[gate] REFUSED: the working tree is dirty — a coverage number measured now is not 6e2297fe87ae's number. Commit (or pass --allow-dirty and wear the stain).
+coverage-gate rc=2
+head: 6e2297fe87ae2b1ad273c537f30fe7d82aa7019a

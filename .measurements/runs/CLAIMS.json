@@ -6358,6 +6358,12 @@
       "file": "wf-battery-rv4-20261010T212050Z.txt",
       "head_sha": "6e2297fe87ae2b1ad273c537f30fe7d82aa7019a",
       "captured_at": "2026-10-10T14:27:37"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T142823.json",
+      "head_sha": "2a97ce99a5fed73c2af4e43f6282c688e7a158ad",
+      "captured_at": "2026-10-10T14:28:23"
     }
   ]
 }
