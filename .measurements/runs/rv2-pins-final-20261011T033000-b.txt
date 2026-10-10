@@ -71,3 +71,4 @@ tests/test_wf_attack_rv2.py:1053: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
 1 failed, 16 passed in 4.19s
+SUPERSEDED-BY: runs/rv2-pins-final-20261010T162947-82c90273.txt
