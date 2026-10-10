@@ -60,7 +60,7 @@ module → same compile, byte-stable).
 | `map_source(source, body, *, queue="default", on_failure="fail_closed", max_attempts=3)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). The join key is DERIVED (`<source>.join`) — the engine's fork addresses the map join by the source's own key; a custom join key is refused, never silently ignored. |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
 | `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
-| `loop(name, body, *, carry=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
+| `loop(name, body, *, initial=None, carry_type=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `initial=` is the initial carry VALUE, `carry_type=` the DECLARED carrier-type (derived from the instance when `initial=` is a model); `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
 
 ## The loop (`wf.loop`, `Done`, `Refine`)
 
@@ -83,8 +83,9 @@ CONTROL UNION:
   the memo replay would re-thread as a Refine), the loop exhausts with
   the named class, and the flow terminalizes.
 
-**THE CARRY'S TYPE IS THE CONTRACT**: the declared `carry=` value's type
-is re-applied at the ONE point a carry reaches the body — at iteration 0
+**THE CARRY'S TYPE IS THE CONTRACT**: the declared carrier-type
+(`carry_type=`, or derived from the `initial=` model instance) is
+re-applied at the ONE point a carry reaches the body — at iteration 0
 AND after EVERY resume and on the memo-replay path (the jsonb round-trip
 is typeless; the driver re-hydrates through the declared type's
 validator: a pydantic model, a dict subclass, or a JSON-native type). A
@@ -192,7 +193,9 @@ the test/demo driver:
   loop; the drive is BOUNDED (`max_ticks` — a hang is a defect with no
   stack trace).
 - `result(flow_id)` — the terminal node's result, DECODED (cuts
-  #14/#19: never a raw jsonb string).
+  #14/#19: never a raw jsonb string). A FAILED run's read raises the
+  typed `WorkflowRunError` carrying the failing node's error class +
+  message — the failure face is AT the read.
 
 The dispatch contract: bodies resolve from the REGISTERED DEFINITION
 (D1 — the registry is the only body source); the claim is fenced; the

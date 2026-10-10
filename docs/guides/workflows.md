@@ -468,8 +468,14 @@ load-bearing end to end.
 ## The build-time validators
 
 A malformed graph is a coding error, refused before any row is written:
-`validate_fork` refuses the empty fork (zero children owe a join that can
-never fire); `validate_join_spec` refuses a join node with zero incoming
+`validate_fork` refuses the empty fork that carries NO join (zero
+children, nothing to collect — the stranded invisible join's shape);
+an empty fork WITH a join is the legitimate shape (the born-zero
+receipt — the rv4 F1 cure: the route/map over a legitimately-empty
+corpus declares its join, the join is BORN `deps_pending=0`, fires
+immediately, and packs the EMPTY list — `result() == []`, the run
+terminal, SUCCESS truthful: a night with no documents chunked zero
+documents, and that is correct); `validate_join_spec` refuses a join node with zero incoming
 edges (the stranded invisible join — before the sweep's LEFT-JOIN
 hardening it was not even diagnosable). The runtime backstop: the rederive
 arm enumerates edge-less join-wait rows (a LEFT JOIN on the edge ledger)
@@ -656,7 +662,15 @@ and PURE — that SPELLS the graph by dataflow:
   declared param type is the decode's target (the element arrives AS
   the declared model — never a dict), and the derived `<source>.join`
   packs the arms' returns (the typed sum — the flat `Promise[list[R]]`,
-  R the union of the arms' returns). The children's rows are graph
+  R the union of the arms' returns). THE ARM CONTRACT IS EXACT (the
+  rv4 cure — E15's exact-member law at `validate()`): the declared
+  model must BE the union member — a SUPERCLASS builds clean past the
+  old issubclass fence and the runtime decode then drops the
+  subclass's own fields (pydantic's `extra='ignore'` default, the
+  silent data loss the sum's reader cannot see), and an UNRELATED
+  model is the wiring promising data the arm cannot accept; both are
+  the build-time refusal. The
+  children's rows are graph
   nodes whose step keys NAME their arm
   (`<source>.item:<module.qualname>`), and the join feeds the
   downstream wiring like any node's — FORK, FAN BACK IN at the next
@@ -723,7 +737,11 @@ The barrier's semantics, stated exactly:
   cannot make the chunk fire early or twice: the fire ledger
   (`wf_join_fire`, `UNIQUE(join_job_id)`) carries at most one fire per
   joined node, ever, and the chunk's claim starts strictly after the
-  LAST child's terminal.
+  LAST child's terminal. THE EMPTY CORPUS IS TRUTHFUL (the born-zero
+  receipt — §the build-time validators): a source whose body returns
+  `[]` forks zero children, the join fires immediately with the EMPTY
+  list, and the run terminalizes SUCCEEDED — `result() == []` is the
+  typed sum's honest value, never a wedge and never a lying `None`.
 * **THE DECODE AT THE BARRIER** — the chunk body's list param is the
   decode's target: the collected list re-validates into the DECLARED
   models (the typed sum — `list[ExtractedText | DeadLettered]` here);
@@ -749,6 +767,26 @@ the payload codec — the runner re-validates the jsonb round-trip into
 the DECLARED model; a body sees the type it declared, never a raw
 dict. `wf.validate()` refuses an unannotated body (E4 — the annotation
 IS the wiring).
+
+**THE UNION CONSUMER'S DISCRIMINATOR LAW (E16 — the rv4 cure)**: a body
+param decoded as a UNION of models (the join's downstream reads
+`list[ImageResult | AudioResult]`) is decoded by the codec's
+left-to-right smart union — the FIRST member whose required fields the
+payload satisfies WINS. When two members' required fields stand in the
+subset relation, the richer member's payload satisfies the thinner
+contract and the decode picks the first-annotated member — the richer
+member's own fields silently never surface (the mispick).
+`validate()` walks every body the runner injects into (the steps, the
+map's item children, the route's arms, the loop bodies) and names the
+risk by the members' declared fields — the only evidence the compile
+has: FIELD-IDENTICAL required faces are the hard refusal (the mispick
+is GUARANTEED — every payload decodes as the first member); the
+one-directional subset is the warning naming it; distinct members
+(each requires a field the other lacks) are clean — the thinner
+validation fails on the missing field, the union falls through to the
+true member. The fix either way: a `Literal` discriminator field on
+each member (`kind: Literal["image"]` / `Literal["audio"]`) — the
+discriminated union decodes by the tag, never by field-count luck.
 
 **THE TYPED EARLY-EXIT — `Exit[DoneT]`** (§17.1, the None-end's
 sanctioned escape): a body returns `Exit(payload)` to TERMINAL-SUCCEED
@@ -781,8 +819,12 @@ attempts re-pend with backoff and emit NO terminal until exhaustion
 (P3 rule 7), then T06's propagation takes over.
 
 The reads (cuts #14/#19's cures): `FlowRunner.result(flow_id)` — the
-terminal's result, DECODED ONCE through the estate's JSON seam; the
-driver `drive(flow_id, until="held" | "terminal")` (cut #10's cure —
+terminal's result, DECODED ONCE through the estate's JSON seam; on a
+FAILED run the read is the FAILURE's face — the typed
+`WorkflowRunError` carrying the failing node row's error class +
+message (WHAT failed, and why, answered AT the read; failed and
+running are never indistinguishable). The driver
+`drive(flow_id, until="held" | "terminal")` (cut #10's cure —
 landed with T19's loop; the bound `max_ticks` is the hang's fence).
 
 ## §2 — The type contract (T01's two tables)
@@ -1146,7 +1188,10 @@ its own face of the same machinery — `route(promise, arms)` (§1's
 typed route): the union MEMBERS key the arms, the per-arm placement
 rides `RouteArm`, the arm bodies receive the DECODED typed models, and
 the children's rows ARE graph nodes feeding the derived join (the
-fan-back-in the chain cannot spell). The totality fence is the same
+fan-back-in the chain cannot spell). The arm contract is EXACT: each
+arm body declares ITS OWN member on the item param — a superclass (or
+an unrelated model) is the build refusal (E15's exact-member law, §1).
+The totality fence is the same
 vocabulary at both levels, at THREE doors: the wiring verb's refusal
 (missing/unknown members, NAMED), the validator's
 `E15-route-totality` (the checker-independent re-proof from the
