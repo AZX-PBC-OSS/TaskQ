@@ -1,0 +1,10 @@
+{
+  "mutation": "the auto projection discarding the append's drop count \u2014 the honest emitted-vs-delivered pair was user-class-only",
+  "observed": {
+    "dropped": 6,
+    "occurrences": 70
+  },
+  "pin": "t21-auto-class-drop-count",
+  "run": "20261010T131041-1203965-5d4b1d1e",
+  "ts": "2026-10-10T13:10:41"
+}
