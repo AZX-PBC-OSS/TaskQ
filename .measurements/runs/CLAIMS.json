@@ -7012,6 +7012,12 @@
       "file": "evidence-heads-verify-20261010T231459Z.txt",
       "head_sha": "406546d4fb29510c900e374ab2386e0cce90dbd7",
       "captured_at": "2026-10-10T16:15:00"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-20261010T221700Z.txt",
+      "head_sha": "cdb3f11fc783b86fd961302cbd734f7ab167d91e",
+      "captured_at": "2026-10-10T16:15:31"
     }
   ]
 }
