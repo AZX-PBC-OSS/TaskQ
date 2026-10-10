@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -49,6 +49,9 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
+
+if TYPE_CHECKING:
+    from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
     "HOLD_CHANNEL",
@@ -783,6 +786,92 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
                     "flow_id": str(row["workflow_id"]),
                     "signal": row["signal_name"],
                     "node_key": row["node_key"],
+                },
+            )
+    return len(rows)
+
+
+# ── the child-join wake (T28 — the child's terminal is the hold's resolver) ─
+
+#: The join hold's signal-name prefix (the arm's query keys on it; the
+#: payload contract is the child's declared result model). ONE home: the
+#: join site (``workflows/_childflow.py``) imports it.
+CHILD_JOIN_SIGNAL_PREFIX = "__child__:"
+
+#: THE BROADCAST'S CHANNEL (the T26 transport's own discipline): the
+#: child's terminal wake — ONE knock per delivered join hold, the
+#: pointer-only payload (the row is the truth).
+CHILD_TERMINAL_CHANNEL = "taskq_wf_child_terminal"
+
+_CHILD_WAKE_DELIVER_SQL = """
+WITH due AS (
+    SELECT s.id, s.workflow_id, s.node_key, s.signal_name,
+           substring(s.signal_name FROM $2::int)::uuid AS child_id
+    FROM {schema}.wf_signals s
+    WHERE s.status = 'held' AND s.signal_name LIKE '__child__:%'
+    LIMIT $1
+), verdicts AS (
+    SELECT d.id, d.workflow_id, d.node_key, d.signal_name, d.child_id,
+           j.status AS child_status
+    FROM due d
+    LEFT JOIN {schema}.jobs j ON j.id = d.child_id AND j.step_key = '__flow__'
+    WHERE j.id IS NULL OR j.status IN
+        ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+)
+UPDATE {schema}.wf_signals s
+SET status = 'delivered',
+    resolved_at = clock_timestamp(),
+    payload = jsonb_build_object('child_flow_id', v.child_id::text,
+                                 'child_status', coalesce(v.child_status::text, 'missing'))
+FROM verdicts v
+WHERE s.id = v.id
+RETURNING s.id, s.workflow_id, s.node_key, s.signal_name, v.child_id, v.child_status
+"""
+
+
+async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 100) -> int:
+    """THE CHILD-JOIN WAKE ARM (T28 — the sweep's resolver half + its
+    reaper half): every held join whose child flow is TERMINAL (or whose
+    child's root row is GONE — the fail-close face) is CAS-delivered,
+    its parent node resumed, and the T26 transport knocks
+    :data:`CHILD_TERMINAL_CHANNEL`. The wait site's resume reads the
+    child's row and returns the typed member (the union's arms —
+    ``workflows/_childflow.py``).
+
+    The arm is idempotent (the CAS's ``status='held'`` predicate) and
+    bounded (LIMIT); a lost resume (the crash between the CAS and the
+    resume statement) is the hold-stamp reconcile arm's own belt — the
+    delivered hold's stamp is cleared and the row re-claims."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            _render(_CHILD_WAKE_DELIVER_SQL, wsql.schema),
+            batch_size,
+            len(CHILD_JOIN_SIGNAL_PREFIX) + 1,
+        )
+        for row in rows:
+            node_id = await conn.fetchval(
+                _render(
+                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
+                    wsql.schema,
+                ),
+                row["node_key"],
+                row["workflow_id"],
+            )
+            if node_id is not None:
+                await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)
+            # THE BROADCAST (the pointer law): the knock rides AFTER the
+            # CAS committed (the convicted order's cure — T26's P1).
+            await _broadcast(
+                conn,
+                CHILD_TERMINAL_CHANNEL,
+                {
+                    "schema": wsql.schema,
+                    "parent_flow_id": str(row["workflow_id"]),
+                    "node_key": row["node_key"],
+                    "hold_id": str(row["id"]),
+                    "child_flow_id": str(row["child_id"]),
+                    "child_status": row["child_status"],
                 },
             )
     return len(rows)

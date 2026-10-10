@@ -303,6 +303,26 @@ async def cancel_workflow_run(
             reason=reason,
             detail={"held_signals_cancelled": held},
         )
+
+    # THE CANCEL CASCADE (T28 — the reverse-edge walk's extension): the
+    # parent's receipts name its child flows; each child cancels
+    # through THIS SAME verb recursively (each child's cancel atomic in
+    # its own tx — the cascade is eventually-consistent per child,
+    # idempotent by the terminal-refusal above). The tx committed first:
+    # the parent's cancel is the linearization point, the children's
+    # cancels follow it.
+    from taskq.workflows._childflow import CHILD_RECEIPTS_SQL_TEMPLATE
+
+    async with pool.acquire() as conn:
+        receipt_rows = await conn.fetch(render_sql(CHILD_RECEIPTS_SQL_TEMPLATE, schema), flow_id)
+    for receipt in receipt_rows:
+        held += await cancel_workflow_run(
+            pool,
+            schema=schema,
+            flow_id=JobId(receipt["child_id"]),
+            reason=f"cascaded from {flow_id}: {reason or 'cancel_workflow'}",
+            principal=principal,
+        )
     return held + 1
 
 

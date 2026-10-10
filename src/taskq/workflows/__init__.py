@@ -35,6 +35,14 @@ their homes WITHOUT the tax:
   progress plumbing; ``_status`` the derivation.
 """
 
+from taskq.workflows._childflow import (
+    ChildCancelled,
+    ChildFailed,
+    ChildHandle,
+    ChildOk,
+    ChildOutcome,
+    ChildWorkflowUnknownError,
+)
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
@@ -86,6 +94,12 @@ __all__ = [
     "DONE",
     "Backfilled",
     "Chain",
+    "ChildCancelled",
+    "ChildFailed",
+    "ChildHandle",
+    "ChildOk",
+    "ChildOutcome",
+    "ChildWorkflowUnknownError",
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",

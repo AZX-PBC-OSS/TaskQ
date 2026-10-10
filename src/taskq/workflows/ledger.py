@@ -270,6 +270,7 @@ async def insert_flow_run(
     *,
     entry: FlowEntry,
     run_key: str,
+    extra_metadata: dict[str, object] | None = None,
 ) -> RunClaim:
     """The RUN-KEY claim (G2): the flow's root row inserted under the
     ``workflow-run:<flow name>`` scope with the caller's key — the composite
@@ -278,7 +279,9 @@ async def insert_flow_run(
 
     *entry* is the flow definition's registered shape (T09's API; the
     TYPED door — :class:`FlowEntry`, the protocol the negative probes
-    pin).
+    pin). *extra_metadata* rides the SAME insert (T28's provenance
+    stamps — the child root's parent pointers land in the create's ONE
+    transaction; ``None`` = the shipped shape byte-identical).
     """
     flow_id = new_uuid()
     # THE WORKFLOW NAME STAMP (the reducer resolution's durable leg): the
@@ -290,6 +293,8 @@ async def insert_flow_run(
     root_metadata: dict[str, object] = {"flow_id": str(flow_id)}
     if entry.name:
         root_metadata["workflow"] = entry.name
+    if extra_metadata:
+        root_metadata.update(extra_metadata)
     inserted = await conn.fetchrow(
         wsql.flow_run_insert,
         flow_id,
