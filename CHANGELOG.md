@@ -5,21 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Changed (workflows — the teardown round)
-
-* **`map_source` no longer takes `key=`.** The map's join key is DERIVED
-  (the engine's fork addresses the map join by the source's own key +
-  `.join` — the addressing is load-bearing across the fork's atomic
-  write set and the consumption door), so a custom join key could never
-  be honored: the param's every value raised the build error (the
-  accept-and-refuse seat). A parameter whose only possible outcome is
-  the author's own refusal is a trap, not API — the param is GONE. To
-  name the node, name the SOURCE (`step(source_body, key=…)`) — the
-  join's key follows. Callers passing `key=` today: delete the argument
-  (the value was refused anyway; nothing else changes).
-
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 
 
