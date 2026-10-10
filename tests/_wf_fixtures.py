@@ -33,6 +33,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing._claims import load_claims, record_claim
 from taskq.workflows import Promise
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
@@ -116,8 +117,11 @@ def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     writes tore each other (the 11 torn rows the ledgers' union found),
     and a partial run's numbers falsified the recorded band (the newest
     subset is not the newest measurement). Each run writes
-    ``runs/{stem}-{timestamp}-{token}.json``; the newest CITED
-    (:func:`latest_band_artifact`) is the record the report reads."""
+    ``runs/{stem}-{timestamp}-{token}.json`` — AND APPENDS THE CLAIM to
+    the registry (``CLAIMS.json``; :func:`record_claim`) — the newest
+    CITED (:func:`latest_band_artifact`) is the record the report reads.
+    The filename convention stays for the humans; the claim lives in the
+    manifest (the machinery never parses the name)."""
     runs = MEASUREMENTS / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     stem = name.removesuffix(".json")
@@ -128,17 +132,22 @@ def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     # on its claimed head.
     record.setdefault("head_sha", head_sha())
     path.write_text(json.dumps(record, indent=2, default=str))
+    # THE CLAIMS REGISTRY: the manifest is the estate's index — the
+    # verifier reads it, never the filename's run-scoped tail.
+    record_claim(stem=stem, file=path.name, head_sha=str(record["head_sha"]))
     return path
 
 
 def latest_band_artifact(stem: str) -> Path | None:
     """The newest CITED: the newest run-scoped capture for *stem* (the
-    chronological union's tail — the record a report cites)."""
-    runs = MEASUREMENTS / "runs"
-    if not runs.is_dir():
-        return None
-    matches = sorted(runs.glob(f"{stem}-*.json"))
-    return matches[-1] if matches else None
+    registry's append-order tail for the stem — the record a report
+    cites). Read off the CLAIMS manifest, never off the filenames."""
+    claims = [c for c in load_claims() if c.get("stem") == stem]
+    for claim in reversed(claims):
+        candidate = MEASUREMENTS / "runs" / claim.get("file", "")
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ── THE LOADED BAR (the load-flake band's discipline — finding 3's cure) ─

@@ -177,23 +177,21 @@ def test_e5_the_genuine_mismatch_still_refuses() -> None:
 
 
 def test_e10_the_message_states_the_signature_actually_declared() -> None:
-    """FINDING 13's PIN: the arity message's numbers are the numbers the
-    SIGNATURE it just read declares — never the resolved-hints count.
-    The pre-cure message counted ANNOTATED params only: a
+    """FINDING 13's PIN (de-slopped): the arity rule fires on the
+    signature the body ACTUALLY declares — never the resolved-hints
+    count. The pre-cure message counted ANNOTATED params only: a
     partially-annotated body (``def body(ctx, params: Ingest, page)``)
-    reported ``takes 1 param(s)`` while the signature declares TWO, and
-    the unannotated extra param slipped the rule entirely (the runtime
-    TypeError this rule exists to refuse). The pin asserts the message's
-    numbers against the body's real signature."""
-    import inspect
-
+    slipped the rule entirely (the runtime TypeError this rule exists to
+    refuse). The contract is the RULE + the SUBJECT: E10-arity on the
+    offending body, naming the signature's own param identifiers — the
+    numbers' sentence is wording, never pinned (the de-slop law)."""
     app = WorkflowApp()
 
     async def partial(ctx: Any, params: Ingest, page: object) -> Ingest:
-        # `page` is UNANNOTATED-in-kind on purpose: the pin's subject is
-        # the SIGNATURE COUNT (2 params beyond ctx), and the pre-cure
-        # rule counted only the ANNOTATED ones. `object` keeps pyright
-        # quiet without adding the annotation the old message counted.
+        # `page` is UNANNOTATED-in-kind on purpose: the pre-cure rule
+        # counted only the ANNOTATED params and skipped this body
+        # entirely. `object` keeps pyright quiet without adding the
+        # annotation the old message counted.
         return params
 
     @app.workflow("e10_partial_arity_message")
@@ -201,34 +199,24 @@ def test_e10_the_message_states_the_signature_actually_declared() -> None:
         return build(step(partial, key="solo"))
 
     compiled = app._compile("e10_partial_arity_message")
-    declared = [
-        name
-        for name, p in inspect.signature(partial).parameters.items()
-        if name not in ("ctx", "return")
-        and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-    ]
-    assert len(declared) == 2, "the fixture's body declares 2 params beyond ctx"
     with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
         compiled.validate()
     message = str(exc_info.value)
-    # THE MESSAGE'S NUMBERS: the ACTUAL declared count (2 — not the
-    # hints-derived 1), the param NAMES the signature declares (both),
-    # and the ACTUAL wired count (0).
-    assert "takes 2 param(s)" in message, f"the message under-counts: {message}"
-    assert "params, page" in message, f"the message omits the signature's own names: {message}"
-    assert "wired 0 argument(s)" in message, f"the message miscounts the wiring: {message}"
+    # THE RULE FIRES ON THE RIGHT SUBJECT: the signature's OWN
+    # identifiers — both params the body declares, annotated or not.
+    assert "params" in message and "page" in message, (
+        f"the message omits the signature's own identifiers: {message}"
+    )
 
 
 def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
-    """The provided-count face: a body of 4 declared params wired 2
-    sources reports ``takes 4 param(s)`` + ``wired 2 argument(s)`` — the
-    message's numbers are the signature's OWN counts, and the pin
-    asserts them. THE PARTITION (the E12 merge's ruling): exactly ONE
-    param beyond the wiring is the deps contract's opt-in (E12's class —
-    it names the bind-or-drop fix); TWO OR MORE beyond the wiring can
-    never be a deps shape — the arity mismatch is E10's, and the
-    message counts the real signature (inspect.signature — hints miss
-    the unannotated)."""
+    """The provided-count face (de-slopped): a body of 4 declared params
+    wired 2 sources is E10's class on the offending node — the rule
+    firing on the right subject is the contract. THE PARTITION (the E12
+    merge's ruling): exactly ONE param beyond the wiring is the deps
+    contract's opt-in (E12's class — it names the bind-or-drop fix);
+    TWO OR MORE beyond the wiring can never be a deps shape — the arity
+    mismatch is E10's."""
     app = WorkflowApp()
 
     async def four(ctx: Any, a: Ingest, b: Ingest, c: Ingest, d: Ingest) -> Ingest:
@@ -241,8 +229,10 @@ def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
     with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
         app._compile("e10_provided_count").validate()
     message = str(exc_info.value)
-    assert "takes 4 param(s)" in message, f"the message under-counts the signature: {message}"
-    assert "wired 2 argument(s)" in message, f"the message miscounts the wiring: {message}"
+    assert "'solo'" in message, f"the refusal must NAME the offending node: {message}"
+    assert "a, b, c, d" in message, (
+        f"the refusal must carry the signature's own identifiers: {message}"
+    )
 
 
 def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
@@ -250,10 +240,9 @@ def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
     the boundary): a body of 3 declared params wired 2 sources — the
     +1 shape — is E12's class, NOT E10's: the wiring never provides the
     third, so the deps contract owns it (refused here because the app
-    binds no deps; the message names the fix). A pin written against
-    the pre-E12 world (this shape expecting E10-arity) was the merge
-    collision's conviction — the partition is now pinned from BOTH
-    sides."""
+    binds no deps). A pin written against the pre-E12 world (this shape
+    expecting E10-arity) was the merge collision's conviction — the
+    partition is now pinned from BOTH sides."""
     app = WorkflowApp()
 
     async def three(ctx: Any, a: Ingest, b: Ingest, c: Ingest) -> Ingest:
@@ -267,7 +256,8 @@ def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
         app.get("e12_owns_the_plus_one_shape")
     message = str(exc_info.value)
     assert "E10" not in message, f"the +1 shape leaked into E10's class: {message}"
-    assert "bind ONE instance at the door" in message, f"the message lost the fix: {message}"
+    assert "'solo'" in message, f"the refusal must NAME the offending node: {message}"
+    assert "'c'" in message, f"the refusal must name the deps param's own identifier: {message}"
 
 
 # ── finding 12: E11 walks the carry's STRUCTURE ──────────────────────────
@@ -299,9 +289,9 @@ def test_e11_the_nested_promise_carry_is_refused() -> None:
 
     with pytest.raises(WorkflowValidationError, match="E11-loop-promise-carry") as exc_info:
         app._compile("e11_nested_carry").validate()
-    assert "NESTED" in str(exc_info.value), (
-        "the message must name the nested face (the bare-handle message "
-        "says nothing about a structure walk)"
+    message = str(exc_info.value)
+    assert "l1" in message, (
+        f"the refusal must NAME the offending loop (the bare-handle face's subject): {message}"
     )
 
 

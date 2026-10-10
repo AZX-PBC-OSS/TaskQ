@@ -41,6 +41,8 @@ from pathlib import Path
 
 from coverage import Coverage
 
+from taskq.testing._claims import record_claim
+
 #: The floor (the honest measured number is recorded beside the verdict).
 DEFAULT_FLOOR = 90.0
 
@@ -169,6 +171,16 @@ def main() -> int:
     runs.mkdir(parents=True, exist_ok=True)
     out = runs / f"wf-scoped-coverage-{time.strftime('%Y%m%dT%H%M%S')}.json"
     out.write_text(json.dumps(record, indent=2))
+    # THE CLAIMS REGISTRY (the de-slop round's cure 3): the manifest is
+    # the estate's ONE index — the verifier reads CLAIMS.json, never the
+    # filename's run-scoped tail. The writer appends the claim at the
+    # write (atomic under the registry lock).
+    record_claim(
+        stem="wf-scoped-coverage",
+        file=out.name,
+        head_sha=head_sha,
+        captured_at=str(record["captured_at"]),
+    )
     print(table)
     print(f"[gate] head {head_sha[:12]} (dirty={dirty})")
     print(f"[gate] wf-scoped branch coverage {pct:.2f}% vs floor {args.floor}% — {verdict}")

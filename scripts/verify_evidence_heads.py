@@ -10,12 +10,22 @@ them) — green-in-fact, unproven-as-recorded. A capture without its head
 is a rumor; a capture against a stale head is history, never the live
 claim.
 
-THE MECHANICS (what this verifier enforces over
-``.measurements/runs/``):
+THE MECHANICS (what this verifier enforces over the estate's registry,
+``.measurements/runs/CLAIMS.json``):
 
-* Artifacts group by STEM (the filename minus its run-scoped
-  timestamp/token suffix). The NEWEST artifact of a stem is that
-  evidence kind's LIVE CLAIM.
+* The claims registry is ONE JSON manifest — an append-ordered array of
+  ``{stem, file, head_sha, captured_at}`` entries (the writers append:
+  ``scripts/check_wf_coverage.py``, ``tests/_wf_fixtures.py``'s band
+  writer; the migration pass built the initial index). The verdict is
+  THE MANIFEST'S ENTRIES vs HEAD — no filename is ever parsed. (The
+  de-slop round's conviction: the verifier's ``_stem``/``_run_order``
+  heuristics parsed each filename's run-scoped tail — a NAME-FORMAT law
+  the machines enforced, drift-prone by construction: the
+  sha-in-the-name one-off stems split wrong. The name is for humans;
+  the manifest is for the machinery.)
+* Artifacts group by STEM (the evidence kind). The NEWEST entry of a
+  stem — the registry's append order — is that evidence kind's LIVE
+  CLAIM; every older entry is history, implicitly superseded.
 * The live claim must carry ``head_sha`` EQUAL to the current HEAD —
   the verification re-runs the artifact on its claimed head, so the
   claim and the tree can never diverge silently.
@@ -25,20 +35,16 @@ THE MECHANICS (what this verifier enforces over
   ``.measurements/`` changed since the claimed head — the source tree
   the claim verifies is content-identical). A source change since the
   claimed head makes the claim stale.
-* An OLDER artifact of a stem is history — implicitly SUPERSEDED-BY the
-  newer live claim (the append-only run-scoped conversion's shape).
-* An artifact whose stem's newest instance is STALE (wrong or missing
-  ``head_sha``) and which is not superseded — FAILS. The cure is
-  re-record at the head, or mark the stale file
-  ``SUPERSEDED-BY: <newer artifact>`` (text) / ``"superseded_by": …``
-  (JSON) with the link — never left as the live claim.
-
-Text artifacts record the stamp as a trailing line
-(``head: <sha>`` / ``SUPERSEDED-BY: <path>``); JSON artifacts as the
-``head_sha`` / ``superseded_by`` keys. The writers stamp mechanically
-(``scripts/check_wf_coverage.py``, ``tests/_wf_fixtures.py``'s band
-writer + the redlog's flush) — an unstamped artifact is a writer bug,
-and this verifier is the pin that catches it.
+* A live claim may be marked ``superseded_by`` (the manifest entry's
+  field — the migration bakes in the text files' ``SUPERSEDED-BY:``
+  lines): history by its own declaration, the link must resolve.
+* A live claim declared ``kind: CITED-IMPORT…`` (the imported
+  provenance record — the primary drill's session evidence gone, the
+  import IS the provenance) is history by its own declaration: never a
+  live claim of the current tree, never re-recordable.
+* A registry entry whose capture FILE is missing, and a registry that
+  is missing entirely, FAIL — an index naming ghosts is the estate's
+  own rot, and an estate without an index is unverifiable.
 
 Usage:  python scripts/verify_evidence_heads.py [--runs-dir .measurements/runs]
 
@@ -50,11 +56,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+
+from taskq.testing._claims import RUNS, load_claims
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -107,125 +113,51 @@ def _source_changes_since(head_sha: str) -> bool:
     return bool(proc.stdout.strip())
 
 
-def _stem(name: str) -> str:
-    """The artifact's stem: the run-scoped tail (timestamp + optional
-    token) stripped — ``fanout-1000-tx-band-20261008T090350-60a4`` →
-    ``fanout-1000-tx-band``."""
-    parts = name.rsplit("-", 2)
-    if len(parts) == 3 and parts[1][:8].isdigit() and "T" in parts[1]:
-        return parts[0]
-    parts = name.rsplit("-", 1)
-    if len(parts) == 2 and parts[1][:8].isdigit() and "T" in parts[1]:
-        return parts[0]
-    return name
-
-
-def _text_field(path: Path, marker: str) -> str | None:
-    """A text artifact's recorded field (``marker: value`` on its own
-    line) — the human-capture shape."""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(f"{marker}:"):
-            return stripped[len(marker) + 1 :].strip()
-    return None
-
-
-def _recorded_head(path: Path) -> str | None:
-    """The artifact's recorded head sha (JSON key or the text stamp)."""
-    if path.suffix == ".json":
-        try:
-            data: object = json.loads(path.read_text())
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-            data = None
-        else:
-            if isinstance(data, dict):
-                record = cast("dict[str, object]", data)
-                head = record.get("head_sha")
-                if isinstance(head, str) and head:
-                    return head
-    return _text_field(path, "head")
-
-
-def _superseded_by(path: Path) -> str | None:
-    if path.suffix == ".json":
-        try:
-            data: object = json.loads(path.read_text())
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-            data = None
-        if isinstance(data, dict):
-            record = cast("dict[str, object]", data)
-            marked = record.get("superseded_by")
-            if isinstance(marked, str):
-                return marked
-        return None
-    return _text_field(path, "SUPERSEDED-BY")
-
-
-def _cited_import(path: Path) -> bool:
-    """Whether the artifact DECLARES itself a CITED-IMPORT (the imported
-    provenance record — the primary drill's session evidence gone, the
-    import IS the provenance). JSON: the ``kind`` key's exact value; text:
-    a ``kind: CITED-IMPORT`` line. Such an artifact is history by its own
-    declaration — never a live claim of the current tree, never
-    re-recordable."""
-    if path.suffix == ".json":
-        try:
-            data: object = json.loads(path.read_text())
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-            return False
-        if isinstance(data, dict):
-            record = cast("dict[str, object]", data)
-            kind = record.get("kind")
-            return isinstance(kind, str) and kind.startswith("CITED-IMPORT")
-        return False
-    field = _text_field(path, "kind")
-    return field == "CITED-IMPORT"
-
-
-def _run_order(p: Path) -> tuple[str, float]:
-    """The run-scoped sort key: the NAME's embedded run timestamp (the
-    convention's own order — git-immune), the mtime only the tie-break
-    for the pre-convention names."""
-    m = re.search(r"(\d{8}T\d{6})", p.name)
-    return (m.group(1) if m else "", p.stat().st_mtime)
-
-
 def verify(runs_dir: Path, head: str) -> list[str]:
     """The stale live claims, named (empty = the estate holds)."""
-    if not runs_dir.is_dir():
-        return [f"{runs_dir}: no runs directory — the estate has no captures at all"]
-    # Group by stem; within a stem, newest RUN first — the run-scoped
-    # name's own timestamp, NOT the filesystem mtime: git's add/checkout
-    # refresh mtimes (the 2026-10-11 conviction: a STALE capture sorted
-    # newest after a merge's add -f swept it, the live-claim pointer
-    # chased the ghost, and the estate red'd on a file whose name said
-    # it was older than the real live claim). The name's timestamp IS
-    # the run's time — deterministic, git-immune, the convention's own
-    # order.
-    stems: dict[str, list[Path]] = {}
-    for path in sorted(runs_dir.rglob("*")):
-        if path.is_file() and path.suffix in (".json", ".txt", ".md"):
-            stems.setdefault(_stem(path.name), []).append(path)
+    if not (runs_dir / "CLAIMS.json").is_file():
+        return [
+            f"{runs_dir / 'CLAIMS.json'}: the claims registry is missing — "
+            "the estate has no index, so no capture is verifiable (the writers "
+            "append one entry per capture; the migration pass built the initial one)"
+        ]
+    # Group by stem; the registry's append order is the run order — the
+    # LAST entry of a stem is the live claim. No filename is parsed: the
+    # manifest is the index (the name only ever points at the file).
+    stems: dict[str, list[dict[str, str]]] = {}
+    for entry in load_claims(runs_dir):
+        stem = entry.get("stem", "")
+        file = entry.get("file", "")
+        if not stem or not file:
+            failures_entry = entry.get("file") or entry.get("stem") or json.dumps(entry)
+            return [f"the claims registry carries a malformed entry: {failures_entry}"]
+        stems.setdefault(stem, []).append(entry)
     failures: list[str] = []
-    for stem, paths in sorted(stems.items()):
-        paths.sort(key=_run_order, reverse=True)
-        live = paths[0]
-        recorded = _recorded_head(live)
-        marked = _superseded_by(live)
+    for stem, entries in sorted(stems.items()):
+        live = entries[-1]
+        marked = live.get("superseded_by")
         if marked:
-            target = (
-                REPO / marked if marked.startswith(".measurements") else runs_dir.parent / marked
-            )
+            if marked.startswith(".measurements"):
+                target = REPO / marked
+            elif Path(marked).is_absolute():
+                target = Path(marked)
+            else:
+                target = REPO / runs_dir.parent / marked
             if not target.is_file():
                 failures.append(
-                    f"{stem}: {live.name} is marked SUPERSEDED-BY {marked} but the "
+                    f"{stem}: {live['file']} is marked superseded_by {marked} but the "
                     "target does not exist — the link is dead"
                 )
             continue
+        missing = REPO / runs_dir / live["file"]
+        if not missing.is_file():
+            failures.append(
+                f"{stem}: the LIVE CLAIM {live['file']} is a GHOST — the registry "
+                "names a capture that is not on disk (the index and the estate "
+                "disagree; restore the file or drop the entry)"
+            )
+            continue
+        recorded = live.get("head_sha") or None
         if recorded == head:
             continue  # the live claim is FRESH — verified on its own head
         if recorded is not None and not _source_changes_since(recorded):
@@ -233,31 +165,32 @@ def verify(runs_dir: Path, head: str) -> list[str]:
             # estate changed since the claimed head — the source tree
             # the claim verifies is content-identical. Fresh.
             continue
-        if _cited_import(live):
+        if str(live.get("kind", "")).startswith("CITED-IMPORT"):
             # THE CITED-IMPORT DECLARATION (the docs-numbers round's own
-            # marker): the artifact is an IMPORTED provenance record — the
-            # primary drill's session evidence is GONE, the imported record
-            # IS the provenance (``_sweep.py``'s curve cites it as such).
-            # It is not a live claim of THIS tree and cannot be re-recorded;
-            # the SOURCE claim built on it is a doc claim whose substance is
-            # owned by the scope pin. History by its own declaration.
+            # marker): the artifact is an IMPORTED provenance record —
+            # the primary drill's session evidence is GONE, the imported
+            # record IS the provenance (``_sweep.py``'s curve cites it as
+            # such). It is not a live claim of THIS tree and cannot be
+            # re-recorded; the SOURCE claim built on it is a doc claim
+            # whose substance is owned by the scope pin. History by its
+            # own declaration.
             continue
         failures.append(
-            f"{stem}: the LIVE CLAIM {live.name} is "
+            f"{stem}: the LIVE CLAIM {live['file']} is "
             + (
                 f"stale — recorded on {recorded[:12]}, the head is {head[:12]}"
                 if recorded
                 else "unstamped — no head_sha recorded"
             )
-            + ". Re-record it at the head, or mark it SUPERSEDED-BY with "
-            "the link — never left as the live claim."
+            + ". Re-record it at the head, or mark the entry superseded_by "
+            "with the link — never left as the live claim."
         )
     return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-dir", type=Path, default=REPO / ".measurements" / "runs")
+    parser.add_argument("--runs-dir", type=Path, default=RUNS)
     args = parser.parse_args()
     head = _head()
     failures = verify(args.runs_dir, head)

@@ -721,12 +721,27 @@ def _attach_route[S](
             # declare" — it declared and the compile CANNOT RESOLVE it.
             # The refusal names the resolution failure (the fix: name
             # the model at module scope so the annotation resolves).
+            #
+            # THE TWO FACES, DISTINGUISHED (the de-slop round's finding —
+            # the pre-fix cure collapsed them: a body with NO return
+            # annotation also resolves to hints {} and got the
+            # CANNOT-RESOLVE refusal — a lie in the OTHER direction). The
+            # discriminator is the RAW annotation dict's own "return" key
+            # (presence survives every resolution failure; the strings'
+            # VALUES never resolve here):
+            declared_raw = getattr(inner_fn(source_body), "__annotations__", {})
+            if "return" in declared_raw:
+                raise WorkflowBuildError(
+                    f"route's source {source.key!r} has a return annotation "
+                    "the compile CANNOT RESOLVE — the route keys its arms by "
+                    "the union MEMBERS (the resolved hints are the only "
+                    "resolution): move the element models to module scope so "
+                    "the list[...] return resolves"
+                )
             raise WorkflowBuildError(
-                f"route's source {source.key!r} has a return annotation "
-                "the compile CANNOT RESOLVE — the route keys its arms by "
-                "the union MEMBERS (the resolved hints are the only "
-                "resolution): move the element models to module scope so "
-                "the list[...] return resolves"
+                f"route's source {source.key!r} does not declare a "
+                "list[...] return — the route is a MAP face: the source "
+                "produces the elements' list, the arms key its members"
             )
         if get_origin(returned) is list:
             (element_type,) = get_args(cast("type[object]", returned))
