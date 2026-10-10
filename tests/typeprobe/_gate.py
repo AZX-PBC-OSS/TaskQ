@@ -74,6 +74,11 @@ _CORPUS: tuple[str, ...] = (
     # residual slot's door still reds on both checkers with the
     # declared rules).
     "wf_gather_negative_types.py",
+    # THE BUILD LANE'S DOOR PROBES (the typed decorator's negative
+    # faces — the object decl, the direct-call decl, the async decl):
+    # a -> object decl is a static error at the decoration site, both
+    # checkers; these hold that line in the corpus.
+    "wf_workflow_decl_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

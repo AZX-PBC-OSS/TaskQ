@@ -27,6 +27,7 @@ seam on a live deployment; these pins hold it on every battery run:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -40,7 +41,7 @@ from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId, JobRow
 from taskq.backend._records import _job_row_from_record
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows import _worker_execution as seam
 
 if TYPE_CHECKING:
@@ -55,6 +56,13 @@ def _claimed_row(record: asyncpg.Record) -> JobRow:
 
 class Ingest(BaseModel):
     doc_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichDeps:
+    """The deps seam's demo shape (the app's declared Deps)."""
+
+    marker: str = "bound-once"
 
 
 class Report(BaseModel):
@@ -113,6 +121,33 @@ def test_the_compiled_cache_round_trips_and_misses_loud() -> None:
 # ── the boot projection (F3's call site) ─────────────────────────────────
 
 
+def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
+    """THE DEPS SEAM'S WORKER DOOR (the DI capability): the compile
+    carries the app's bound instance (``WorkflowApp(deps=…)``) and
+    ``_runner_for`` — the worker-hosted execution door's runner factory —
+    hands THE instance to its runner, the SAME binding the vanilla door
+    and the packaged run read. No re-mint, no registry probe, no
+    getattr-string: the instance rides the compiled object."""
+    seam.reset_app_registry_for_tests()
+    try:
+        deps = EnrichDeps(marker="worker-door")
+        app = WorkflowApp(deps=deps)
+
+        @app.workflow("seam_deps_flow")
+        def seam_deps_flow() -> Promise[object]:
+            node = step(
+                _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
+            )
+            return build(node)
+
+        app.get("seam_deps_flow")  # the door's compile + registration
+        worker_id = JobId(new_uuid())
+        runner = seam._runner_for("seam_deps_flow", wf_pool, "deps_probe_schema", worker_id)
+        assert runner._deps is deps
+    finally:
+        seam.reset_app_registry_for_tests()
+
+
 def test_the_projection_projects_the_declared_cohorts() -> None:
     """Every imported app's workflows compile HERE (the D1 registry
     populates as a side effect) and the graphs' (actor, queue) cohorts
@@ -123,7 +158,7 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_projection_flow")
-        def seam_projection_flow() -> object:
+        def seam_projection_flow() -> Promise[object]:
             node = step(
                 _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
             )
@@ -163,7 +198,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_conflict_flow")
-        def seam_conflict_flow() -> object:
+        def seam_conflict_flow() -> Promise[object]:
             node = step(_observed_body, Ingest(doc_id="d"), key="solo", actor="wf-split")
             second = step(_observed_body, node, key="two", actor="wf-split", queue="gpu")
             return build(second)
@@ -184,7 +219,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         healthy = WorkflowApp()
 
         @healthy.workflow("seam_conflict_other")
-        def seam_conflict_other() -> object:
+        def seam_conflict_other() -> Promise[object]:
             third = step(
                 _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q1"
             )
@@ -193,7 +228,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         second_app = WorkflowApp()
 
         @second_app.workflow("seam_conflict_rival")
-        def seam_conflict_rival() -> object:
+        def seam_conflict_rival() -> Promise[object]:
             fourth = step(
                 _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q2"
             )
@@ -215,13 +250,13 @@ def test_the_projection_is_deterministically_ordered() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_order_flow_b")
-        def seam_order_flow_b() -> object:
+        def seam_order_flow_b() -> Promise[object]:
             return build(
                 step(_observed_body, Ingest(doc_id="d"), key="s", actor="wf-b", queue="qb")
             )
 
         @app.workflow("seam_order_flow_a")
-        def seam_order_flow_a() -> object:
+        def seam_order_flow_a() -> Promise[object]:
             return build(
                 step(_observed_body, Ingest(doc_id="d"), key="s", actor="wf-a", queue="qa")
             )
@@ -278,7 +313,7 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
         app = WorkflowApp()
 
         @app.workflow("seam_door_flow")
-        def seam_door_flow() -> object:
+        def seam_door_flow() -> Promise[object]:
             return build(step(_observed_body, Ingest(doc_id="claimed"), key="solo"))
 
         await _project_cohorts_into(wf_conn, wf_schema)

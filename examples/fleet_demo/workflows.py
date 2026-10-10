@@ -24,6 +24,7 @@ from taskq.workflows import (
     Chain,
     GateDecl,
     HitlClient,
+    Promise,
     Route,
     Step,
     StepContext,
@@ -102,7 +103,7 @@ SCREEN_CHAIN = Chain(
 
 
 @wf_app.workflow("fleet_doc_ingest")
-def fleet_doc_ingest() -> object:
+def fleet_doc_ingest() -> Promise[object]:
     return build(chain_source(SCREEN_CHAIN, source_body, key="screen_source"))
 
 

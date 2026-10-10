@@ -24,7 +24,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
     HitlClient,
@@ -60,7 +60,7 @@ async def _held_flow(
     app = WorkflowApp()
 
     @app.workflow(name)
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         return build(step(wait_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
@@ -184,7 +184,7 @@ async def test_resume_does_not_burn_the_retry_ladder(
     app = WorkflowApp()
 
     @app.workflow("resume_flow")
-    def resume_flow() -> object:
+    def resume_flow() -> Promise[object]:
         return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
 
     runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
@@ -255,7 +255,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
     app = WorkflowApp()
 
     @app.workflow("multihold_flow")
-    def multihold_flow() -> object:
+    def multihold_flow() -> Promise[object]:
         return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)

@@ -143,6 +143,15 @@ class CompiledWorkflow:
     sunk: tuple[str, ...]
     terminal: str | None
     channel: SignalChannel
+    #: THE DEPS SEAM'S BOUND INSTANCE (the DI capability): the app's ONE
+    #: instance, bound at the door (``WorkflowApp(deps=…)``) and carried
+    #: by the compile — validate's E12-deps-contract rule reads it (the
+    #: bodies' declared deps parameters are checked against THE BINDING),
+    #: and every runner door (the direct door, the packaged ``run``, the
+    #: worker-hosted ``_runner_for``) hands the SAME instance to the body
+    #: invocations. ``None`` = the app binds no deps — a body declaring
+    #: the deps shape is E12's refusal.
+    deps: object | None = None
     input_type: object = None
     #: The workflow's declared chains (T20) — the chain SOURCE node owns
     #: its Chain; the runner resolves chain-step routes from here.
@@ -195,10 +204,24 @@ class CompiledWorkflow:
 
 class WorkflowApp:
     """The authoring surface: one app, many workflows; the definitions'
-    registry is shared with the engine (D1 — no second registry)."""
+    registry is shared with the engine (D1 — no second registry).
 
-    def __init__(self, *, actor: str = "wf") -> None:
+    THE DEPS SEAM'S DOOR (the DI capability — SAI migration blocker #1):
+    ``WorkflowApp(deps=…)`` binds ONE deps instance at the door — the
+    app's bodies that declare the deps parameter (``(ctx, params,
+    deps)``) receive THE instance; the compile carries it (E12 checks
+    the bodies' declarations against the binding at build), and every
+    runner door hands the SAME instance to every body invocation — the
+    step bodies, the map's item children, the loop driver's bodies, the
+    hold-wake's re-execution. The instance is held as ``object`` through
+    the runner — the runner never inspects it; the TYPING is proven at
+    the body's own declaration (the checker verifies the body's
+    ``deps.*`` reads against the declared type) and at build (E12's
+    runtime check of the binding against the declared type)."""
+
+    def __init__(self, *, actor: str = "wf", deps: object | None = None) -> None:
         self._actor = actor
+        self._deps: object | None = deps
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
@@ -278,27 +301,35 @@ class WorkflowApp:
             return decorate(fn)
         return decorate
 
-    def workflow(
+    def workflow[R](
         self,
         name: str,
         *,
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
-    ) -> Callable[[Callable[[], object]], Callable[[], object]]:
+    ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
         """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
         — the per-workflow declaration (§10.3's policies). The
         declaration is what T04's capture writer and every export surface
         consume; ``redact=fn`` POST-COMPOSES on the default chain's
         output (it can only redact more, never less — TORS-REV-0.16 §G1).
 
-        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round): the
-        build function is SYNC and PURE (``get``'s docstring — the
-        recorder's verbs never await), so the decorator takes
-        ``Callable[[], object]``, NOT ``Callable[..., Awaitable[object]]``
-        — the old annotation red every honest sync builder under a strict
-        config (the probe corpus's unmarked decorator reds). An async fn
-        ALSO satisfies ``Callable[[], object]`` — nothing is refused.
+        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round, then the
+        TYPED-DOOR round): the build function is SYNC and PURE
+        (``get``'s docstring — the recorder's verbs never await), and its
+        return IS the terminal promise — so the decorator takes
+        ``Callable[[], Promise[R]]``, NOT ``Callable[[], object]``.
+        :class:`Promise` is COVARIANT, so every ``Promise[X]`` is a
+        ``Promise[object]`` — the whole fleet's builders satisfy the door,
+        R carried intact through the generic (the registry's root keeps
+        the terminal's own type). And the OLD declaration face — a build
+        function annotated ``-> object`` (or left unannotated, or
+        ``async``) — is a STATIC ERROR at the decoration site: the
+        decorator's parameter refuses it (the probe corpus's
+        ``wf_workflow_decl_negative_types.py`` pins the refusal on both
+        checkers). The type story no longer dies at the first line the
+        user writes: the builder's own signature is the typed door.
 
         THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
@@ -317,7 +348,7 @@ class WorkflowApp:
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
-        def decorate(build_fn: Callable[[], object]) -> Callable[[], object]:
+        def decorate(build_fn: Callable[[], Promise[R]]) -> Callable[[], Promise[R]]:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
             build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]
@@ -330,6 +361,13 @@ class WorkflowApp:
     def channel(self) -> SignalChannel:
         """The per-workflow signal channel (the declared gates' registry)."""
         return SignalChannel(self._actor)
+
+    @property
+    def deps(self) -> object | None:
+        """The app's bound deps instance (``None`` = none bound — a body
+        declaring the deps shape is E12's refusal). THE instance: every
+        body invocation receives this object, never a copy."""
+        return self._deps
 
     def has(self, name: str) -> bool:
         return name in self._workflows
@@ -400,6 +438,7 @@ class WorkflowApp:
             sunk=graph.sunk,
             terminal=graph.terminal,
             channel=channel,
+            deps=self._deps,
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),

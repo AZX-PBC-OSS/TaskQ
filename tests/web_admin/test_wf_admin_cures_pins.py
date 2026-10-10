@@ -52,7 +52,7 @@ from fastapi import FastAPI, HTTPException, Request
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth._session import IdentityClaims
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = pytest.mark.integration
@@ -109,19 +109,19 @@ def cure_app_module() -> Iterator[types.ModuleType]:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("cure_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("cure_map_flow")
-    def map_flow() -> object:
+    def map_flow() -> Promise[object]:
         source = step(_src, Ingest(doc_id="d1"), key="src")
         mapped = map_source(source, _item_ok)
         del mapped
         return build(step(_tail, source, key="tail"))
 
     @app_obj.workflow("cure_map_doomed_flow")
-    def map_doomed_flow() -> object:
+    def map_doomed_flow() -> Promise[object]:
         source = step(_doomed_src, Ingest(doc_id="d1"), key="src")
         mapped = map_source(source, _item_doomed)
         del mapped

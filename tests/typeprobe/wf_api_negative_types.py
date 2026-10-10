@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import Exit, WorkflowApp, build, map_source, step
+from taskq.workflows import Exit, Promise, WorkflowApp, build, map_source, step
 
 
 class Ingest(BaseModel):
@@ -49,7 +49,7 @@ async def probe_awaiting_a_promise() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_await")
-    async def probe_await() -> object:
+    def probe_await() -> Promise[object]:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
         return asyncio.ensure_future(
             fetched
@@ -64,9 +64,9 @@ async def probe_promise_where_data_is_wanted() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_direct")
-    async def probe_direct() -> object:
+    def probe_direct() -> Promise[object]:
         fetched = step(_body, Ingest(doc_id="d"), key="fetch")
-        return await _body(
+        return _body(
             None, fetched
         )  # MUST_ERROR(reportArgumentType, invalid-argument-type): promise, not the data
 
@@ -83,7 +83,7 @@ def probe_exit_bare_return() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_exit_bare")
-    def probe_exit_bare() -> object:
+    def probe_exit_bare() -> Promise[object]:
         exit_body = _exit_body()
         return build(step(exit_body, Ingest(doc_id="d"), key="exit_bare"))
 
@@ -106,7 +106,7 @@ def probe_exit_bare_return_none() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_exit_bare_none")
-    def probe_exit_bare_none() -> object:
+    def probe_exit_bare_none() -> Promise[object]:
         exit_body = _exit_body_none()
         return build(step(exit_body, Ingest(doc_id="d"), key="exit_bare_none"))
 
@@ -134,7 +134,7 @@ async def probe_map_promise_where_data_is_wanted() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_map_direct")
-    async def probe_map_direct() -> object:
+    def probe_map_direct() -> Promise[object]:
         src = step(_body, Ingest(doc_id="d"), key="src")
         mapped = map_source(src, _map_body)
         return await _map_tail_exit_body()(

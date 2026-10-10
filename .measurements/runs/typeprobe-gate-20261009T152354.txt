@@ -1,0 +1,4 @@
+# the type gate — the MUST_ERROR corpus on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85)
+the type gate holds: every MUST_ERROR marker (30) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: b4534d29edc132aca4e6501a8c5a0146576679cb

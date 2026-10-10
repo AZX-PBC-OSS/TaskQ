@@ -349,7 +349,7 @@ CHAIN = Chain(
 
 
 @app.workflow("ingest")
-def ingest() -> object:
+def ingest() -> Promise[object]:
     src = chain_source(CHAIN, source_body, key="doc_source")  # actor 'wf', queue 'default'
     return build(src)
 ```
@@ -390,10 +390,73 @@ unseen) · **E6** the fan-in bound · **E7** the cross-graph promise (a
 promise wired from ANOTHER app's recorder — recorded by the verbs,
 convicted here; the colliding-key smuggle builds a silently wrong edge) ·
 **E8** the loop CARRIER-TYPE (a body refining an unrelated model against
-the declared `carry_type=` (or the model instance passed as `initial=`) — the recorded declaration is enforced) · **W1**
+the declared `carry_type=` (or the model instance passed as `initial=`) — the recorded declaration is enforced) · **E9** the ctx
+annotation (must BE `StepContext` or the declared-unchecked
+`Any`/`object`) · **E10** the arity (the body's params beyond ctx must
+match the wired sources' count) · **E12** the deps contract (below) ·
+**W1**
 the eternal wait (the warning class) · **W2** the unknown queue (a queue
 no actor declares and TASKQ_QUEUES does not name — the warning class;
 the worker-boot fail-fast stays the runtime door).
+
+## THE DEPS SEAM — the body's dependency door (the DI capability)
+
+Step bodies need dependencies — a client, a store handle, a queue —
+WITHOUT reaching through `ctx` (the context is the RUN's contract, not a
+service locator) and without module globals (untestable, unswappable).
+The seam: declare a `Deps` dataclass PER APP and bind ONE instance at
+the door; bodies OPT IN by declaring it:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichDeps:
+    marker: str = "enrich-client"
+
+
+app = WorkflowApp(deps=EnrichDeps())  # ONE instance, bound ONCE at the door
+
+
+@app.actor(queue="cpu")
+async def enrich(ctx: StepContext, doc_id: str, deps: EnrichDeps) -> Summary:
+    # the THIRD parameter is the deps contract — the runner hands the
+    # app's bound instance in; the signature is the opt-in.
+    return Summary(doc_id=doc_id, text=deps.fetch(doc_id))
+
+
+@app.workflow("doc_ingest")
+def doc_ingest() -> Promise[object]:
+    ingested = step(ingest_body, IngestBatch(doc_ids=["d1"]), key="ingest")
+    enriched = map_source(ingested, enrich)  # the map's children get the SAME instance
+    return build(step(publish_body, enriched, key="publish"))
+```
+
+The contract, enforced at build by **E12-deps-contract** (the SAME arity
+discipline E10 owns, extended honestly — one param beyond `ctx` + the
+wired sources IS the deps shape):
+
+* a body declaring the deps shape where the app binds **no** deps is
+  refused at `app.get(...)` — the message names the fix (bind `deps=` on
+  the app, or drop the parameter: it is never a fourth data source);
+* a body whose deps annotation the bound instance does not **satisfy**
+  is refused — both type names in the message;
+* a true arity mismatch (two params beyond the wiring) stays **E10**'s.
+
+The bound instance is THE instance — the step bodies, the map's item
+children, the loop driver's bodies, and the hold-wake's re-execution all
+receive the same object (bound once at the door, never re-minted per
+claim). The runner never inspects it (`object` through the runner); the
+TYPING is proven at the decoration — E12's runtime check of the body's
+declared type against the binding. Every door binds the same way:
+`WorkflowApp(deps=…)` (the compile carries the binding — the packaged
+`run(flow, pool, schema)` and the worker-hosted execution door read it
+from the compiled object), or `FlowRunner(…, deps=…)` / `run(…, deps=…)`
+(the direct doors — the runner's binding wins, and the validation
+re-runs against the effective binding). The InMemoryBackend has NO
+workflow execution surface (the named landmine): the seam's test face is
+the real `FlowRunner` against the pg fixtures.
 
 ## The pin inventory
 
@@ -607,7 +670,7 @@ cascade downstream — is spelled (never glued):
 ```python
 from pydantic import BaseModel
 
-from taskq.workflows import StepContext, WorkflowApp, build, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
 
 app = WorkflowApp()
 
@@ -643,7 +706,7 @@ async def tail(ctx: StepContext, total: Stats) -> Stats:
 
 
 @app.workflow("doc_ingest")
-def doc_ingest() -> object:
+def doc_ingest() -> Promise[object]:
     a = step(stage_a, Ingest(doc_id="d1"), key="a")
     b = step(stage_b, Ingest(doc_id="d1"), key="b")
     reducer = step(reduce, a, b, key="reducer")  # the fan-in: TWO parents
@@ -872,7 +935,7 @@ CHAIN = Chain(
 
 # the SOURCE is the paged generator — each yield = ONE emit tx:
 @app.workflow("application_sync")
-def application_sync() -> object:
+def application_sync() -> Promise[object]:
     return build(chain_source(CHAIN, source_body, key="source"))
 ```
 

@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 from taskq.backend._protocol import JobId
 from taskq.cli import app
 from taskq.testing.assertions import plain_cli_output
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows._cli import (
     FlowNodeRow,
     derive_flow_status,
@@ -71,12 +71,12 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("cli_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("cli_fail_flow")
-    def fail_flow() -> object:
+    def fail_flow() -> Promise[object]:
         return build(step(_explode_once, Ingest(doc_id="d1"), key="doomed", max_attempts=1))
 
     module.app = app_obj  # type: ignore[attr-defined]  # Why: the module:attr contract's dynamic half.

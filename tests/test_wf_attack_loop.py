@@ -60,6 +60,7 @@ from taskq.backend._protocol import JobId
 from taskq.workflows import (
     Done,
     FlowRunner,
+    Promise,
     Refine,
     StepContext,
     WorkflowApp,
@@ -108,7 +109,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     app = WorkflowApp()
 
     @app.workflow("aloop_carry_door")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", trusting_body, initial=Counter(acc=0), max_iterations=5))
 
     runner = FlowRunner(app.get("aloop_carry_door"), wf_pool, wf_schema)
@@ -158,7 +159,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     app = WorkflowApp()
 
     @app.workflow("aloop_carry_resume")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", counting_body, initial=Counter(acc=0), max_iterations=5))
 
     # THE CRASH, DETERMINISTIC: iteration 0's terminal write COMMITS,
@@ -244,7 +245,7 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     app = WorkflowApp()
 
     @app.workflow("aloop_shape_error")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", raw_body, max_iterations=3))
 
     runner = FlowRunner(app.get("aloop_shape_error"), wf_pool, wf_schema)
@@ -377,7 +378,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     app = WorkflowApp()
 
     @app.workflow("aloop_escalation_dispatch")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(
             loop(
                 "counter",
@@ -506,7 +507,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
     app = WorkflowApp()
 
     @app.workflow("aloop_zombie")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", gated_body, max_iterations=5))
 
     runner_a = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
@@ -593,7 +594,7 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
     app = WorkflowApp()
 
     @app.workflow("aloop_fail_policy")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="fail"))
 
     runner = FlowRunner(app.get("aloop_fail_policy"), wf_pool, wf_schema)
@@ -645,7 +646,7 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
     app = WorkflowApp()
 
     @app.workflow("aloop_nowalls")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", refine_forever))
 
     diagnostics = _run_rules(app.get("aloop_nowalls"))
@@ -685,7 +686,7 @@ def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
     app = WorkflowApp()
 
     @app.workflow("aloop_e8_late")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", foo_body, initial=Bar(), max_iterations=2))
 
     from taskq.workflows.api._validate import WorkflowValidationError
@@ -717,7 +718,7 @@ async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
     app = WorkflowApp()
 
     @app.workflow("aloop_guard_budget")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", blocking_body, max_iterations=100, budget_s=0.4))
 
     runner = FlowRunner(app.get("aloop_guard_budget"), wf_pool, wf_schema)
@@ -773,7 +774,7 @@ async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
     app = WorkflowApp()
 
     @app.workflow("aloop_guard_cap")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=5, until=killing_until))
 
     runner = FlowRunner(app.get("aloop_guard_cap"), wf_pool, wf_schema)
@@ -831,7 +832,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     app = WorkflowApp()
 
     @app.workflow("aloop_guard_heal")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", counting_body, initial=Counter(acc=0), max_iterations=5))
 
     real_record = _runner_loop.LoopOps._record_iteration_terminal
@@ -895,7 +896,7 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     app = WorkflowApp()
 
     @app.workflow("aloop_guard_held")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(loop("counter", None, budget_s=600.0))
 
     runner = FlowRunner(app.get("aloop_guard_held"), wf_pool, wf_schema)
@@ -957,7 +958,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
     app = WorkflowApp()
 
     @app.workflow("aloop_pinit")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         p = step(produce_body, key="produce")
         lp = loop("scan", refine_forever, initial=p, max_iterations=10)
         return build(lp, p)
@@ -970,7 +971,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
         app.get("aloop_pinit")
 
     @app.workflow("aloop_value_init")
-    def _wf_ok() -> object:
+    def _wf_ok() -> Promise[object]:
         return build(loop("counter", refine_forever, initial={"n": 0}, max_iterations=10))
 
     # The honest alternative still builds clean: a VALUE initial carries

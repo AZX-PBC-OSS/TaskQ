@@ -69,7 +69,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import reconstruct_workflow_status
 from taskq.workflows._sweep import reap_phantom_ledger, sweep_join_rederive
@@ -223,7 +223,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
     app = WorkflowApp()
 
     @app.workflow("create_seam_orphan")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(step(_create_body, _CreateIn(doc_id="d1"), key="only"))
 
     runner = FlowRunner(app.get("create_seam_orphan"), wf_pool, wf_schema)

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, WorkflowApp, build, loop, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, loop, map_source, step
 
 
 class Ingest(BaseModel):
@@ -71,7 +71,7 @@ async def test_the_context_contract_every_field_a_body_asserts_on(
     app_obj = app
 
     @app_obj.workflow("context_contract")
-    def context_contract() -> object:
+    def context_contract() -> Promise[object]:
         first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
 
         async def tail(ctx: Any, items: list[str]) -> int:
@@ -114,7 +114,7 @@ async def test_the_loop_ctx_carries_the_budget_wall(wf_pool: Any, wf_schema: str
         return Done("finished")
 
     @app.workflow("ctx_budget")
-    def ctx_budget() -> object:
+    def ctx_budget() -> Promise[object]:
         return build(loop("the_loop", loop_body, initial=0, budget_s=3600.0))
 
     runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)

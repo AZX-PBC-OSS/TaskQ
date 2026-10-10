@@ -53,7 +53,7 @@ async def probe_heterogeneous_gather_infers_the_union() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_hetero_union")
-    def probe_hetero_union() -> object:
+    def probe_hetero_union() -> Promise[object]:
         p_report = step(report_body, Ingest(doc_id="d"), key="r")
         p_config = step(config_body, key="c")
         joined = gather([p_report, p_config])  # Promise[list[Report | Config]] — the union infers
@@ -69,7 +69,7 @@ async def probe_heterogeneous_gather_explicit_upcast() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_hetero_explicit")
-    def probe_hetero_explicit() -> object:
+    def probe_hetero_explicit() -> Promise[object]:
         p_report = step(report_body, Ingest(doc_id="d"), key="r")
         p_config = step(config_body, key="c")
         mixed: list[Promise[object]] = [p_report, p_config]
@@ -91,7 +91,7 @@ async def probe_residual_takes_real_promise() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_residual")
-    def probe_residual() -> object:
+    def probe_residual() -> Promise[object]:
         p_report = step(report_body, Ingest(doc_id="d"), key="r")
         other = step(config_body, key="c")
         sink(other)

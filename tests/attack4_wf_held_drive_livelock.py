@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 
 
 class Approval(BaseModel):
@@ -40,7 +40,7 @@ async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_sche
     app = WorkflowApp()
 
     @app.workflow("attack4_held_no_deadline")
-    def attack4_held_no_deadline() -> object:
+    def attack4_held_no_deadline() -> Promise[object]:
         async def body(ctx: object, params: Ingest) -> str:
             await ctx.wait_signal(Approval, reason="the legal eternal wait")  # type: ignore[attr-defined]  # Why: ctx is the runner's StepContext; the attribute is real.
             return "published"

@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._progress import (
     PROGRESS_RING_BOUND,
     STREAM_CHANNEL,
@@ -89,7 +89,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
         return {"ok": True}
 
     @app.workflow("t21_validated_dump")
-    def t21_validated_dump() -> object:
+    def t21_validated_dump() -> Promise[object]:
         return build(step(lax_body, Ingest(doc_id="d1"), key="lax", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_validated_dump"), wf_pool, wf_schema)

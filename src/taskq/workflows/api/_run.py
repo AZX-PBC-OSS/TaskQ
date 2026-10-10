@@ -24,11 +24,12 @@ execution seam); this surface is the dev loop's and the tools' door.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import asyncpg
 
 from taskq.backend._protocol import JobId
+from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner import FlowRunner
 from taskq.workflows.ledger import RunClaim
 
@@ -59,7 +60,7 @@ class WorkflowRunResult:
 
 
 async def run(
-    flow: Any,
+    flow: CompiledWorkflow,
     pool: asyncpg.Pool,
     schema: str,
     *,
@@ -68,6 +69,7 @@ async def run(
     until: Literal["terminal", "held"] = "terminal",
     max_ticks: int = 5000,
     execute: bool = True,
+    deps: object | None = None,
 ) -> WorkflowRunResult:
     """THE ONE-CALL RUN: create the run (the typed claim — *key* is the
     run key, the G2 arbiter's rememberer), drive it to ``until``
@@ -79,8 +81,14 @@ async def run(
     (the default) runs the bodies in THIS process (the dev loop's
     driver); ``execute=False`` is the orchestration-only pass — the
     fleet's workers execute the rows through the queue.
+
+    *deps* is THE DEPS SEAM'S binding (the DI capability): ``None`` (the
+    default) rides the compiled's own binding — the app's ONE instance,
+    bound at ``WorkflowApp(deps=…)``; an explicit *deps* is the direct
+    door's override (the runner-side binding upgrades the validation's
+    view — the E12 contract reads the effective binding).
     """
-    runner = FlowRunner(flow, pool, schema)
+    runner = FlowRunner(flow, pool, schema, deps=deps if deps is not None else flow.deps)
     claim = await runner.create_flow(input=input, run_key=key)
     outcome_raw = await runner.drive(
         claim.flow_id, until=until, max_ticks=max_ticks, execute=execute

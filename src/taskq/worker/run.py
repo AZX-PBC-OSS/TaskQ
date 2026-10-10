@@ -35,7 +35,7 @@ import time
 from collections.abc import Mapping
 from datetime import timedelta
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from uuid import UUID
 
 import asyncpg
@@ -57,17 +57,24 @@ from taskq.constants import (
     require_schema,
 )
 from taskq.context import JobContext
-from taskq.exceptions import MissingProvider
+from taskq.exceptions import MissingProvider, ReservationUnavailable
 from taskq.obs import (
     ConsumedOutcome,
     bind_job_context,
     get_logger,
     record_consumed_message,
+    record_ratelimit_denial,
 )
+from taskq.ratelimit.composition import AcquiredResource
 from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
+from taskq.worker._consumer import (
+    _RATE_LIMIT_DEPENDENCY_EXCEPTIONS,
+    _acquire_for_actor_with_denial_retry,
+)
 from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the SlotPoolAcquireError arm disowns the claimed row exactly as dispatch's terminal-write-infra arm does; same private-seam rationale.
     _disown_job,
 )
@@ -745,6 +752,82 @@ _FLOW_OUTCOME_TO_CONSUMED: Final[dict[str, ConsumedOutcome]] = {
 }
 
 
+class _FlowSlotGate(NamedTuple):
+    """The workflow path's rate-limit gate result (the intercept's
+    pre-flight read): the acquired resources + the registry that owns
+    them (the door releases through it), or the denial/failure that
+    parked the row instead."""
+
+    acquired: list[AcquiredResource]
+    registry: RateLimitRegistry | None
+    denied: ReservationUnavailable | None
+    dependency_failure: BaseException | None
+
+
+async def _flow_rate_limit_gate(
+    rl_registry: RateLimitRegistry | None,
+    clock: Clock,
+    job: JobRow,
+    worker_id: UUID,
+    deps: WorkerDeps,
+    *,
+    job_log: structlog.stdlib.BoundLogger,
+) -> _FlowSlotGate:
+    """THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the one-mechanism
+    law): a workflow row's claim honors the SAME queue rate limits the
+    vanilla actors honor — the queue-cap reservation the fleet's
+    dispatch already prepends for vanilla jobs
+    (:func:`taskq.worker.dispatch._effective_reservations`), acquired
+    from the SAME registry the vanilla pre-flight reads (passed in —
+    the caller's loop-scope read, the vanilla read's own pattern),
+    through the SAME acquire helper (the denial-retry budget included).
+    ONE mechanism, not a second one.
+
+    THE SLOT LAW (the holds' own): a denial HOLDS THE STEP'S CLAIM —
+    the row is snoozed back to the pending pool by the caller (the
+    worker is NOT parked; the consumer loop moves on) and the
+    acquired-empty result tells the intercept to release the claim. The
+    deny is observable (``record_ratelimit_denial`` — the vanilla
+    denials counter, the postgres backend label). A registry/store
+    dependency failure is the fail-closed denial (the vanilla
+    pre-flight's own shape: an outage is not a job outcome; the snooze
+    is budget-free).
+
+    The gate is a DAMPER at the intercept only where the vanilla damper
+    cannot see: the dispatch SQL's headroom fold reads
+    ``reservation_slots.job_id → jobs.actor`` regardless of row kind, so
+    a workflow row's held slot damps the fleet's next claim round the
+    same way a vanilla row's does. A ``None`` registry (the worker's
+    scope never resolved one) is the NO-CAPS fleet: the gate passes
+    everything through, the vanilla path's own shape."""
+    if rl_registry is None:
+        return _FlowSlotGate([], None, None, None)  # no registry — no caps anywhere
+    queue_cap = queue_concurrency_reservation_name(job.queue)
+    if not rl_registry.has_reservation(queue_cap):
+        return _FlowSlotGate([], None, None, None)  # the common case: no cap on this queue
+    try:
+        acquired = await _acquire_for_actor_with_denial_retry(
+            rl_registry,
+            rate_limits=(),
+            reservations=[queue_cap],
+            job_id=job.id,
+            worker_id=worker_id,
+            payload=None,  # the queue cap is a plain name — no keyed resolution
+            redis_client=None,
+            pg_pool=deps.worker_pool,
+            clock=clock,
+            settings=deps.settings,
+            job_log=job_log,
+        )
+    except ReservationUnavailable as exc:
+        record_ratelimit_denial("postgres")
+        return _FlowSlotGate([], None, exc, None)
+    except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
+        record_ratelimit_denial("postgres")
+        return _FlowSlotGate([], None, None, exc)
+    return _FlowSlotGate(acquired, rl_registry, None, None)
+
+
 async def _dispatch_flow_job(
     *,
     deps: WorkerDeps,
@@ -752,6 +835,7 @@ async def _dispatch_flow_job(
     worker_id: UUID,
     enqueuer: SubJobEnqueuer,
     flow_seam: ModuleType,
+    flow_slot: "tuple[list[AcquiredResource], RateLimitRegistry] | None" = None,
 ) -> str:
     """ONE claimed workflow row's execution through the workflow
     machinery (the intercept's engine room).
@@ -763,6 +847,12 @@ async def _dispatch_flow_job(
     as long as the body runs); the outcome is the execution tail's own
     label; the consumption metric records with the vanilla path's
     vocabulary.
+
+    *flow_slot* is THE QUEUE'S RATE-LIMIT SLOT the intercept acquired
+    (the one-mechanism law: the SAME queue-cap reservation the vanilla
+    path prepends). Released in the door's OWN finally — a HELD outcome
+    releases too (the wait is not occupancy), and a cancelled/laddered
+    attempt never leaks the slot.
     """
     flow_execute = flow_seam.execute_flow_job
     ctx: JobContext[BaseModel] = JobContext(
@@ -818,6 +908,13 @@ async def _dispatch_flow_job(
         return "cancelled"
     finally:
         await deps.active_jobs.deregister(job.id, entry)
+        # THE QUEUE'S RATE-LIMIT SLOT RELEASES (the same slot law as the
+        # holds): the flow attempt is over — succeeded, laddered, HELD
+        # (the wait is not occupancy), cancelled — the queue's capacity
+        # is back before this worker claims again.
+        if flow_slot is not None:
+            acquired_slot, slot_registry = flow_slot
+            await slot_registry.release_for_actor(acquired_slot)
     consumed = _FLOW_OUTCOME_TO_CONSUMED.get(execution.outcome)
     if consumed is not None:
         record_consumed_message(job.actor, job.queue, outcome=consumed)
@@ -1170,6 +1267,74 @@ async def di_consumer_loop(
         if job.metadata.get("flow_id") is not None:
             _flow_seam = _workflow_execution_seam()
             if _flow_seam is not None:
+                # THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the
+                # one-mechanism law): the SAME queue-cap reservation the
+                # vanilla path prepends for its jobs, acquired from the
+                # SAME registry through the SAME denial-retry helper. A
+                # denial HOLDS THE STEP'S CLAIM — the row snoozed back
+                # to the pending pool (the slot law the holds keep), the
+                # deny observable (the denials counter), the worker NOT
+                # parked (the loop moves on).
+                _raw_flow_rl = loop_scope.resolved_cache().get(RateLimitRegistry)
+                _flow_gate = await _flow_rate_limit_gate(
+                    _raw_flow_rl if isinstance(_raw_flow_rl, RateLimitRegistry) else None,
+                    clock,
+                    job,
+                    worker_id,
+                    deps,
+                    job_log=_consumer_log.bind(
+                        job_id=str(job.id), actor=job.actor, queue=job.queue
+                    ),
+                )
+                if _flow_gate.denied is not None or _flow_gate.dependency_failure is not None:
+                    if _flow_gate.dependency_failure is not None:
+                        # THE FAIL-CLOSED DEPENDENCY ARM (the vanilla
+                        # pre-flight's own shape): the limiter's store
+                        # could not answer — an outage is not a job
+                        # outcome; the snooze is budget-free, the
+                        # WARNING names the unavailability.
+                        _consumer_log.warning(
+                            "dispatch-flow-rate-limit-dependency-failure",
+                            job_id=str(job.id),
+                            queue=job.queue,
+                            error_class=type(_flow_gate.dependency_failure).__name__,
+                        )
+                        _flow_snooze = timedelta(seconds=10)
+                    else:
+                        assert _flow_gate.denied is not None
+                        _consumer_log.info(
+                            "dispatch-flow-rate-limit-denied",
+                            job_id=str(job.id),
+                            queue=job.queue,
+                            bucket=_flow_gate.denied.bucket_name,
+                            retry_after_s=_flow_gate.denied.retry_after.total_seconds(),
+                        )
+                        _flow_snooze = _flow_gate.denied.retry_after
+                    try:
+                        _flow_release = await backend.mark_snoozed(
+                            job.id,
+                            worker_id,
+                            _flow_snooze,
+                            metadata_update={"released_reason": "flow-rate-limit-denied"},
+                            attempt=job.attempt,
+                            claim_epoch=job.claim_epoch,
+                        )
+                    except Exception:
+                        _consumer_log.exception(
+                            "dispatch-flow-rate-limit-release-failed",
+                            job_id=str(job.id),
+                        )
+                        _disown_job(deps.disowned_jobs, job)
+                    else:
+                        if _flow_release == "noop":
+                            _consumer_log.debug(
+                                "dispatch-flow-rate-limit-release-noop",
+                                job_id=str(job.id),
+                            )
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    if slot_freed_event is not None:
+                        slot_freed_event.set()
+                    continue
                 try:
                     _flow_outcome = await _dispatch_flow_job(
                         deps=deps,
@@ -1177,6 +1342,16 @@ async def di_consumer_loop(
                         worker_id=worker_id,
                         enqueuer=enqueuer,
                         flow_seam=_flow_seam,
+                        # THE QUEUE'S RATE-LIMIT SLOT (the one-mechanism
+                        # law): the acquired queue-cap reservation rides
+                        # the door — released in the door's own finally
+                        # (the hold's slot law: a HELD outcome releases
+                        # too, the wait is not occupancy).
+                        flow_slot=(
+                            (_flow_gate.acquired, _flow_gate.registry)
+                            if _flow_gate.acquired and _flow_gate.registry is not None
+                            else None
+                        ),
                     )
                 except _flow_seam.WorkflowBodyUnresolvableError:
                     # THE UNRESOLVABLE ROW (a stamped workflow name no

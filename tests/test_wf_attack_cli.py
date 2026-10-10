@@ -88,7 +88,7 @@ from taskq._ids import new_uuid
 from taskq.cli import app
 from taskq.migrate import apply_pending
 from taskq.testing.assertions import plain_cli_output
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._cli import FlowNodeRow, format_holds, stuck_lines
 from taskq.workflows.api import GateDecl
 from taskq.workflows.api._hitl import HoldContext
@@ -166,17 +166,17 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("atkcli_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("atkcli_reason_flow")
-    def reason_flow() -> object:
+    def reason_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait_evil_reason, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("atkcli_fail_flow")
-    def fail_flow() -> object:
+    def fail_flow() -> Promise[object]:
         return build(step(_explode, Ingest(doc_id="d1"), key="doomed", max_attempts=1))
 
     module.app = app_obj  # type: ignore[attr-defined]  # Why: the module:attr contract's dynamic half.
@@ -193,7 +193,7 @@ def stale_app_module() -> Iterator[types.ModuleType]:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("atkcli_unrelated_flow")
-    def unrelated() -> object:
+    def unrelated() -> Promise[object]:
         return build(step(_wait, Ingest(doc_id="d1"), key="review"))
 
     module.app = app_obj  # type: ignore[attr-defined]

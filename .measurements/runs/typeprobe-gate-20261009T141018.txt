@@ -1,0 +1,5 @@
+# the type gate — the MUST_ERROR corpus on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85)
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'pyright'
+gate rc=0
+head: 8b95e4e6c06b12cae43a0ade5f859407a865c71b

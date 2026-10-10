@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, WorkflowApp, build, loop, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, loop, step
 
 
 class Ingest(BaseModel):
@@ -39,7 +39,7 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_sche
     app = WorkflowApp()
 
     @app.workflow("step_optout")
-    def step_optout() -> object:
+    def step_optout() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d1"), key="solo"))
 
     runner = FlowRunner(app.get("step_optout"), wf_pool, wf_schema)
@@ -74,7 +74,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
     app = WorkflowApp()
 
     @app.workflow("step_fail")
-    def step_fail() -> object:
+    def step_fail() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d1"), key="solo", max_attempts=2))
 
     runner = FlowRunner(app.get("step_fail"), wf_pool, wf_schema)
@@ -110,7 +110,7 @@ async def test_ctx_step_the_memoized_replay_returns_the_record(
     app = WorkflowApp()
 
     @app.workflow("step_memo")
-    def step_memo() -> object:
+    def step_memo() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d1"), key="solo", max_attempts=3))
 
     runner = FlowRunner(app.get("step_memo"), wf_pool, wf_schema)
@@ -135,7 +135,7 @@ async def test_capture_policies_none_and_errors_only(
             raise ValueError("the capture probe's boom")
 
         @app.workflow(f"cap_{policy}", capture=policy)
-        def cap_wf() -> object:
+        def cap_wf() -> Promise[object]:
             return build(step(fails, Ingest(doc_id="the input text"), key="solo"))
 
         runner = FlowRunner(app.get(f"cap_{policy}"), wf_pool, wf_schema)
@@ -305,7 +305,7 @@ async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
         return Done("x")
 
     @app.workflow("ctx_runtime_fields")
-    def ctx_runtime_fields() -> object:
+    def ctx_runtime_fields() -> Promise[object]:
         first = step(step_body, Ingest(doc_id="d1"), key="first", queue="q1")
         the_loop = loop("the_loop", loop_body, initial=0, budget_s=1800.0)
         return build(the_loop, first)
@@ -329,7 +329,7 @@ def test_cli_the_gate_models_the_empty_gates_path() -> None:
         return "ok"
 
     @app.workflow("gate_empty")
-    def gate_empty() -> object:
+    def gate_empty() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d"), key="solo"))
 
     assert gate_models_for(app, "gate_empty", "solo") == ()

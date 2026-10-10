@@ -26,13 +26,14 @@ from pydantic import BaseModel
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
+    Promise,
     StepContext,
     WorkflowApp,
     build,
     map_source,
     step,
 )
-from tests._wf_fixtures import MEASUREMENTS
+from tests._wf_fixtures import MEASUREMENTS, runtime_refusal_builder
 
 
 class Ingest(BaseModel):
@@ -104,7 +105,7 @@ async def test_create_flow_carries_input_and_drives(
     app = WorkflowApp()
 
     @app.workflow("input_flow")
-    def input_flow() -> object:
+    def input_flow() -> Promise[object]:
         a = step(_prepare, Ingest(doc_id="d1"), key="a")
         return build(a)
 
@@ -130,7 +131,7 @@ async def test_join_user_body_cascades_downstream(
     app = WorkflowApp()
 
     @app.workflow("cascade_flow")
-    def cascade_flow() -> object:
+    def cascade_flow() -> Promise[object]:
         a = step(_double, step(_prepare, Ingest(doc_id="d1"), key="p"), key="a")
         b = step(_double, step(_prepare, Ingest(doc_id="22"), key="q"), key="b")
         reducer = step(_total, a, b, key="reducer")
@@ -151,7 +152,7 @@ async def test_sequenced_maps_depth3_one_flow(
     app = WorkflowApp()
 
     @app.workflow("seq_flow")
-    def seq_flow() -> object:
+    def seq_flow() -> Promise[object]:
         source = step(_items_source, Ingest(doc_id="d1"), key="src")
         mapped = map_source(source, _per_item)  # THE MAP: per-item fresh jobs
         del mapped
@@ -186,7 +187,7 @@ async def test_skip_predicate_decided_at_dispatch(
         return {"n": 1}
 
     @app.workflow("guard_flow")
-    def guard_flow() -> object:
+    def guard_flow() -> Promise[object]:
         pick = step(chooser, Ingest(doc_id="d"), key="pick")
         return build(
             step(
@@ -225,7 +226,7 @@ async def test_retry_classifier_routes_by_kind(
         raise ValueError("boom")
 
     @app.workflow("retry_flow")
-    def retry_flow() -> object:
+    def retry_flow() -> Promise[object]:
         node = step(
             always_fails,
             Ingest(doc_id="d"),
@@ -265,7 +266,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
         raise ValueError("transient boom")
 
     @app.workflow("ladder_flow")
-    def ladder_flow() -> object:
+    def ladder_flow() -> Promise[object]:
         node = step(always_fails_transient, Ingest(doc_id="d"), key="lad", max_attempts=3)
         return build(node)
 
@@ -293,7 +294,7 @@ async def test_flow_result_read_decodes_once(
     app = WorkflowApp()
 
     @app.workflow("result_flow")
-    def result_flow() -> object:
+    def result_flow() -> Promise[object]:
         return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
 
     runner = FlowRunner(app.get("result_flow"), wf_pool, wf_schema)
@@ -304,10 +305,10 @@ async def test_flow_result_read_decodes_once(
 
     app2 = WorkflowApp()
 
-    @app2.workflow("no_terminal")
-    def no_terminal() -> object:
+    def no_terminal() -> None:
         step(_prepare, Ingest(doc_id="d"), key="only")
-        return None
+
+    app2.workflow("no_terminal")(runtime_refusal_builder(no_terminal))
 
     with pytest.raises(Exception, match="produced-never-consumed"):
         FlowRunner(app2.get("no_terminal"), wf_pool, wf_schema)
@@ -325,7 +326,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
     app = WorkflowApp()
 
     @app.workflow("d1_flow")
-    def d1_flow() -> object:
+    def d1_flow() -> Promise[object]:
         return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
 
     runner = FlowRunner(app.get("d1_flow"), wf_pool, wf_schema)
@@ -356,7 +357,7 @@ async def test_map_children_ledger_identity_and_max_attempts(
         return {"n": item.n}
 
     @app.workflow("map_children_flow")
-    def map_children_flow() -> object:
+    def map_children_flow() -> Promise[object]:
         source = step(_items_source, Ingest(doc_id="d"), key="src")
         mapped = map_source(source, flaky_child, max_attempts=3)
         return build(mapped)
@@ -389,7 +390,7 @@ async def test_mermaid_golden_byte_stable(
     app = WorkflowApp()
 
     @app.workflow("golden_flow")
-    def golden_flow() -> object:
+    def golden_flow() -> Promise[object]:
         a = step(_double, step(_prepare, Ingest(doc_id="d1"), key="p"), key="a")
         b = step(_double, step(_prepare, Ingest(doc_id="22"), key="q"), key="b")
         reducer = step(_total, a, b, key="reducer")
@@ -420,7 +421,7 @@ async def test_drive_until_held_bound(
     app = WorkflowApp()
 
     @app.workflow("bound_flow")
-    def bound_flow() -> object:
+    def bound_flow() -> Promise[object]:
         # A HELD row: the join-wait representation with a future
         # scheduled_at — the driver's "held" arm returns, the loop stops.
         a = step(_prepare, Ingest(doc_id="d1"), key="a")

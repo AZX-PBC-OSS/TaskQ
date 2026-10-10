@@ -67,8 +67,10 @@ from taskq.workflows._progress import (
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
 from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec, NodeSpec, _jsonb
+from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
+from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._graph import Exit
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
@@ -130,9 +132,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         schema: str,
         *,
         worker_id: JobId | None = None,
+        deps: object | None = None,
     ) -> None:
         from taskq.workflows.api._validate import validate_compiled
 
+        # THE DEPS SEAM'S DOOR (the DI capability): the runner binds ONE
+        # instance — the explicit *deps* overrides, the compiled's
+        # binding (the app's, bound once at WorkflowApp(deps=…)) is the
+        # default. The VALIDATION runs against the EFFECTIVE binding (a
+        # frozen-compile copy carries it — the E12 rule reads what the
+        # bodies will actually receive), so a binding the bodies'
+        # declarations do not satisfy is refused here too.
+        compiled_deps = compiled.deps if isinstance(compiled, CompiledWorkflow) else None
+        if deps is not None and isinstance(compiled, CompiledWorkflow):
+            compiled = replace(compiled, deps=deps)
+            compiled_deps = deps
+        self._deps: object | None = deps if deps is not None else compiled_deps
         validate_compiled(compiled)  # a graph with errors does not run
         self.compiled = compiled
         self.pool = pool
@@ -429,6 +444,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # row's epoch).
         await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
 
+    def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
+        """THE DEPS SEAM'S INJECTION (the DI capability's runtime face):
+        the bound instance rides as the LAST positional argument when the
+        body declares the deps shape (one positional param beyond ctx +
+        the wired sources — the SAME shape E12 convicts at build; the
+        runtime read is the signature's positional truth, so an
+        unresolvable-annotations body still gets the injection it
+        declared). The instance is the app's, bound once — never a copy,
+        never a re-mint; the runner never inspects it."""
+        if self._deps is None:
+            return ()
+        if not deps_param_declared(body, wired_count):
+            return ()
+        return (self._deps,)
+
     async def run_fleet_claimed_step(
         self,
         flow_id: JobId,
@@ -619,7 +649,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     ]
                 result: dict[str, object] | None = {"value": parents_values}
             else:
-                outcome_value = await body(ctx, *args)
+                deps_tail = self._deps_tail(body, len(args))
+                outcome_value = await body(ctx, *args, *deps_tail)
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
                     # THE CHAIN STEP (T20): the body's typed outcome IS

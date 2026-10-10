@@ -55,6 +55,7 @@ from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
+    Promise,
     StepContext,
     WorkflowApp,
     build,
@@ -93,7 +94,7 @@ def _create_seam_app() -> tuple[WorkflowApp, Any]:
     app = WorkflowApp()
 
     @app.workflow(_FLOW_NAME)
-    def create_seam_flow() -> object:
+    def create_seam_flow() -> Promise[object]:
         a = step(_prepare, Ingest(doc_id="d1"), key="a")
         return build(step(_tail, a, key="tail"))
 

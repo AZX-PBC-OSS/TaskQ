@@ -35,6 +35,7 @@ from taskq.backend._protocol import JobId
 from taskq.workflows import (
     Done,
     FlowRunner,
+    Promise,
     Refine,
     StepContext,
     WorkflowApp,
@@ -67,7 +68,7 @@ def _loop_app(
     app = WorkflowApp()
 
     @app.workflow("counter_flow")
-    def counter_flow() -> object:
+    def counter_flow() -> Promise[object]:
         return build(
             loop(
                 "counter",
@@ -611,7 +612,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     app2 = WorkflowApp()
 
     @app2.workflow("hold_loop_flow")
-    def hold_loop_flow() -> object:
+    def hold_loop_flow() -> Promise[object]:
         return build(loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0))
 
     runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)

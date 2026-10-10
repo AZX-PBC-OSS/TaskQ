@@ -1,0 +1,6 @@
+# the attack rounds — round 2 of 2 (the CI's lane filter), head 64a2cc435073a3b083f36167494eb2a288411556
+SKIPPED [1] tests/attack4-nothing-stuck-probes.py:281: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the attacker's own PG on :5711)
+======================= 133 passed, 1 skipped in 14.87s ========================
+# the exclusive lane: the corpus's load_sensitive pin, serial
+1 passed in 0.71s
+head: 64a2cc435073a3b083f36167494eb2a288411556

@@ -1,0 +1,6 @@
+# the attack rounds 1-4 (the corpus: attack*.py + test_wf_attack_*.py, -n 4)
+FAILED tests/attack4-cli-races.py::test_a_malformed_payload_is_the_named_refusal_and_the_hold_survives
+FAILED tests/test_wf_attack_demo.py::test_two_drivers_one_schema_one_run_stay_exactly_once
+======= 3 failed, 130 passed, 1 skipped, 1 xfailed in 166.50s (0:02:46) ========
+rc=0
+head: 8b95e4e6c06b12cae43a0ade5f859407a865c71b

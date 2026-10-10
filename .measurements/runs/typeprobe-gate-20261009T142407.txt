@@ -1,0 +1,4 @@
+# the type gate — the MUST_ERROR corpus on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85)
+FileNotFoundError: [Errno 2] No such file or directory: 'ty'
+gate rc=1
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

@@ -368,6 +368,20 @@ while the cap bucket is full, while its claims on every other queue flow untouch
 holding nothing in the cap bucket is never gated by it (the first-claim doctrine:
 post-claim acquire stays the admission authority).
 
+#### Workflow rows honor the same cap (the one-mechanism law)
+
+A workflow row — a step's dispatch, the map's child fan, the loop's advance — claims through
+the SAME fleet dispatch and executes through the workflow intercept. The intercept acquires
+the SAME queue-cap reservation from the SAME registry through the SAME denial-retry helper
+the vanilla pre-flight uses, so a rate-limited queue's flow fires at the limit's cadence,
+never a burst. The slot law is the holds' own: a denial snoozes the row back to the pending
+pool (budget-free — the worker is NOT parked, the consumer loop moves on), the deny bumps the
+same `taskq.ratelimit.denials` counter, and the slot RELEASES when the attempt is over — a
+held node (a human gate) is not occupancy: the queue's capacity is back while the run waits.
+The dispatch SQL's reservation-headroom damper reads a workflow row's held slot exactly as it
+reads a vanilla row's (the `reservation_slots.job_id → jobs.actor` derivation is row
+kind-blind), so one mechanism gates both populations.
+
 ### How it works
 
 The queue-level cap is a fleet-wide limit applied per-queue rather than opted into per

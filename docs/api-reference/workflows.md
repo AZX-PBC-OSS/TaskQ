@@ -10,7 +10,7 @@ extra carries no requirements of its own.
 
 ```python
 from pydantic import BaseModel
-from taskq.workflows import StepContext, WorkflowApp, build, gather, sink, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, gather, sink, step
 
 app = WorkflowApp()
 
@@ -34,7 +34,7 @@ async def summarize(ctx: StepContext, reports: list[Report]) -> dict[str, int]:
 
 
 @app.workflow("doc_ingest")  # the per-workflow declaration
-def doc_ingest() -> object:  # SYNC and PURE — the compile-time wiring
+def doc_ingest() -> Promise[object]:  # SYNC and PURE — the compile-time wiring
     fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
     both = gather([fetched])  # the ALL-upstream join
     return build(step(summarize, both))  # the completeness point
@@ -130,8 +130,8 @@ invisible actor population). The vanilla path stays byte-identical.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the FIFTEEN rules shipped (read
-from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E11, W1, the
+Runs in pytest, CI, and at worker boot; the SIXTEEN rules shipped (read
+from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E12, W1, the
 two W2 faces, and W3; an earlier revision claimed about six rules against
 a table that listed 7 — the reference now ships COMPLETE, from the code,
 not remembered), each classified —
@@ -151,6 +151,7 @@ compile's version of over-rejection.**
 | `E9-ctx-annotation` | error | a body whose `ctx` annotation is not `StepContext` (or a subclass) — the annotation is verification, not documentation; the fabricated stand-in is refused at compile |
 | `E10-arity` | error | a body's params (beyond `ctx`) not matching the wired sources' count — the wiring's own promise, refused at compile, never a mid-flow ladder discovery |
 | `E11-loop-promise-carry` | error | a promise handle wired as the loop's `initial=` — the initial carry is a VALUE, never a handle (the handle cannot ride the row; wire the parent's result through a first step's return, or read it in the body) |
+| `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds NO deps (`WorkflowApp(deps=…)` never ran), or whose declared deps type the bound instance does not satisfy — the message names the fix: bind ONE instance at the door, or drop the parameter (it is never a fourth data source) |
 | `W1-eternal-wait` | warning | a gate with no declared timeout — "a workflow that waits forever on a human is a support ticket" |
 | `W2-unknown-queue` | warning | a node projected onto a queue this app cannot see (the actor-not-found parking shape, named at validate) |
 | `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |

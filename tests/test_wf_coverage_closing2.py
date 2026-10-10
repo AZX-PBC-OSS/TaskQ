@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from taskq.workflows import Promise
+
 
 class Ingest(BaseModel):
     doc_id: str
@@ -176,7 +178,7 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
     app = WorkflowApp()
 
     @app.workflow("reducer_fallback_xf")
-    def reducer_fallback() -> object:
+    def reducer_fallback() -> Promise[object]:
         return build(step(join_body, Ingest(doc_id="d"), key="solo"))
 
     app.get("reducer_fallback_xf")  # the compile REGISTERS the bodies (D1)
