@@ -71,7 +71,7 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
-from taskq.workflows.api._graph import Exit
+from taskq.workflows.api._graph import Exit, route_child_key
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
     FlowEntryShim,
@@ -586,6 +586,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 await emitter.aclose()
             return "loop"
 
+        route_fork: ForkSpec | None = (
+            None  # the typed route's prebuilt fork (T27 — the body path builds it from the LIVE elements)
+        )
+
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
@@ -679,6 +683,41 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                         flow_id, row, attempt, node, exit_value, claim_epoch=claim_epoch
                     )
                     return "succeeded"
+                if node is not None and node.map_arms is not None:
+                    # THE TYPED ROUTE'S ARM DISPATCH (T27) — on the LIVE
+                    # elements (the runtime TYPE is the dispatch key; the
+                    # encoded envelope's dicts arrive too late). The
+                    # no-arm element is the LOUD death (the chain face's
+                    # shape): terminal-FAILED with
+                    # ``error_class='RouterNotTotal'``, NOTHING routes —
+                    # the skip-silent shape is dead (T27's R1).
+                    from taskq.workflows.chain import RouterNotTotal
+
+                    try:
+                        route_fork = self._route_fork(row, node, outcome_value)
+                    except RouterNotTotal as exc:
+                        await emitter.aclose()
+                        logger.warning(
+                            "node.router_not_total",
+                            run_id=str(flow_id),
+                            node=row["step_key"],
+                            outcome=repr(outcome_value)[:200],
+                        )
+                        await finalize_node(
+                            self.pool,
+                            self.wsql,
+                            flow_id=flow_id,
+                            job_id=JobId(row["id"]),
+                            step_key=row["step_key"],
+                            worker_id=self._worker_id,
+                            attempt=attempt,
+                            claim_epoch=claim_epoch,
+                            outcome="failed",
+                            error_class="RouterNotTotal",
+                            error_message=str(exc)[:500],
+                            map_index=row["map_index"],
+                        )
+                        return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
             # THE HOLD (T10): the node rests in the held representation
@@ -704,7 +743,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
         await emitter.aclose()
-        await self._finalize_success(flow_id, row, attempt, node, result, claim_epoch=claim_epoch)
+        await self._finalize_success(
+            flow_id,
+            row,
+            attempt,
+            node,
+            result,
+            claim_epoch=claim_epoch,
+            prebuilt_route_fork=route_fork,
+        )
         return "succeeded"
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
@@ -786,11 +833,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     def _progress_schema(self, node_key: str, node: Any) -> type[BaseModel] | None:
         """The node's DECLARED progress payload schema (T21 decision a):
         the node's own decl; a MAP CHILD (the fork-spawned ``<src>.item``
-        keys — no decl of their own) inherits its SOURCE's declaration."""
+        keys — no decl of their own) inherits its SOURCE's declaration;
+        a ROUTE child (the fork-spawned ``<src>.item:<type-tag>``, T27)
+        inherits the same way (the ``.item:`` segment is the derived
+        namespace's marker)."""
         if node is not None and getattr(node, "progress_schema", None) is not None:
             return node.progress_schema
         if node_key.endswith(".item"):
             source = self.compiled.nodes.get(node_key[: -len(".item")])
+            if source is not None and source.progress_schema is not None:
+                return source.progress_schema
+        if ".item:" in node_key:
+            source = self.compiled.nodes.get(node_key.split(".item:", 1)[0])
             if source is not None and source.progress_schema is not None:
                 return source.progress_schema
         return None
@@ -960,10 +1014,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        prebuilt_route_fork: ForkSpec | None = None,
     ) -> None:
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
             fork = self._map_fork(row, node, result)
+        elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
+            # THE TYPED ROUTE'S FORK (T27) — built at the body path from
+            # the LIVE elements (the arm dispatch reads the element's
+            # runtime TYPE; the encoded envelope's dicts cannot).
+            fork = prebuilt_route_fork
         final = await finalize_node(
             self.pool,
             self.wsql,
@@ -1079,6 +1139,86 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 queue=node.map_queue,
                 consumers=bindings,
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators.
+            ),
+            max_attempts=node.map_max_attempts,
+        )
+
+    def _route_fork(self, row: dict[str, Any], node: Any, outcome_value: object) -> ForkSpec | None:
+        """THE TYPED ROUTE'S FORK (T27 — the map fork's arm-dispatch
+        sibling): the source's body returned the elements' LIST; each
+        element's RUNTIME type tag picks its arm and the fork stamps the
+        child's own derived step key (``<source>.item:<type-tag>`` — the
+        row NAMES its arm), the arm's placement (R4: the per-arm
+        actor/queue), and the element's jsonb under the item key (the
+        arm body's declared param type is the decode's target — R3).
+
+        THE LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
+        whose type has NO arm raises :class:`RouterNotTotal` BEFORE any
+        row is written — the caller converts it to the source's
+        terminal-FAILED finalize with ``error_class='RouterNotTotal'``
+        (the chain face's exact shape; nothing routes, the run fails).
+
+        ``None`` when the body returned no list or an empty one — the
+        source succeeds with its own (empty) result; an empty fork is
+        refused by the engine's validators (a join over zero children is
+        the stranded invisible join), so no fork is carried at all."""
+        from taskq.workflows._types import ConsumerBinding
+        from taskq.workflows.chain import RouterNotTotal, type_tag
+
+        if not isinstance(outcome_value, list):
+            return None
+        items: list[object] = cast(
+            "list[object]", outcome_value
+        )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast IS the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
+        join_key = f"{row['step_key']}.join"
+        bindings = tuple(
+            ConsumerBinding(
+                step_key=downstream,
+                actor=self.compiled.nodes[downstream].actor,
+                queue=self.compiled.nodes[downstream].queue,
+                payload={},
+                # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
+                # cure): the fork writes the join→consumer EDGE with it —
+                # T06's propagation reads the policy off the ledger when
+                # the JOIN terminal-fails.
+                failure_policy=self.compiled.nodes[downstream].on_failure,
+            )
+            for downstream in sorted(self.compiled.nodes)
+            if join_key in self.compiled.nodes[downstream].parents
+        )
+        children: list[ChildSpec] = []
+        for i, element in enumerate(items):
+            tag = type_tag(type(element))
+            arm = node.map_arms.get(tag) if node.map_arms is not None else None
+            if arm is None:
+                raise RouterNotTotal(
+                    f"element #{i} of {row['step_key']!r} is "
+                    f"{type(element).__name__!r} — no route arm for it (the "
+                    "route is total over the source's declared union "
+                    "members): this is a defect, not a dead end — the body "
+                    "lied about its union, or the union drifted from the "
+                    "route. NOTHING routes: the run fails loudly (the "
+                    "skip-silent shape is dead — T27's R1)."
+                )
+            children.append(
+                ChildSpec(
+                    step_key=route_child_key(str(row["step_key"]), tag),
+                    actor=arm.actor or node.actor,
+                    queue=arm.queue or node.map_queue,
+                    payload={ITEM_KEY: encode_data_arg(element)},
+                    map_index=i,
+                )
+            )
+        if not children:
+            return None
+        return ForkSpec(
+            children=tuple(children),
+            join=JoinSpec(
+                step_key=join_key,
+                actor=node.actor,
+                queue=node.map_queue,
+                consumers=bindings,
+                failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators (the map fork's own declaration, the same seam).
             ),
             max_attempts=node.map_max_attempts,
         )

@@ -1,0 +1,14 @@
+{
+  "mutation": "the ROOT-MARKER leg dropped from the candidate fence \u2014 the capable worker claims the pending root row (the churn)",
+  "observed": {
+    "claimed": [
+      "01a126b8-485f-7ba0-9c47-12f0095b6a4b"
+    ],
+    "step_keys": [
+      "__flow__"
+    ]
+  },
+  "pin": "pin_dispatch_never_claims_the_flow_root",
+  "run": "20261010T094933-3096953-8cfc6bbc",
+  "ts": "2026-10-10T09:49:33"
+}

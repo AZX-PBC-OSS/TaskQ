@@ -17,9 +17,17 @@ import textwrap
 import tokenize
 import typing
 from collections.abc import Callable
-from typing import cast
+from typing import cast, overload
 
 __all__ = ["body_hints", "inner_fn", "own_source"]
+
+
+@overload
+def inner_fn(body: Callable[..., object]) -> Callable[..., object]: ...
+
+
+@overload
+def inner_fn(body: object) -> object: ...
 
 
 def inner_fn(body: object) -> object:

@@ -20,10 +20,10 @@ concurrently without seeing each other's wiring.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
@@ -44,11 +44,14 @@ __all__ = [
     "GateDecl",
     "NodeDecl",
     "Promise",
+    "RouteArm",
     "WorkflowBuildError",
     "active_graph",
     "build",
     "gather",
     "map_source",
+    "route",
+    "route_child_key",
     "sink",
     "step",
 ]
@@ -77,6 +80,19 @@ BodyFn = Callable[..., Awaitable[object]]
 #: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated AT
 #: DISPATCH against the flow's state (A-CRITICAL-4, cut #4), never at
 #: create time.
+#:
+#: DEPRECATED FOR DISPATCH (T27 — the conviction, named honestly): this
+#: face is STRINGLY — the state it reads is decoded JSON dicts, and a
+#: tag-keyed predicate ("skip unless mime == video") can drop an element
+#: from EVERY downstream arm and still let the run terminalize SUCCEEDED
+#: having routed NOTHING (the routing-proof round's live conviction —
+#: the exact silent drop the totality fence exists to refuse). For
+#: dispatch-by-type the taught face is the TYPED ROUTE
+#: (:func:`route` — the union's members key the arms, a non-total route
+#: is a build refusal (E15), and the no-match element dies LOUDLY in
+#: ``RouterNotTotal``). The predicate stays for the sibling-conditional
+#: shapes it is honest for (an "only if X succeeded" dispatch) — never
+#: for routing an element by what it is.
 SkipPredicate = Callable[[dict[str, object]], bool]
 
 
@@ -116,6 +132,25 @@ class Exit[T]:
 
     def __init__(self, payload: T) -> None:
         self.payload = payload
+
+
+@dataclass(frozen=True, slots=True)
+class RouteArm[R]:
+    """ONE typed route arm (T27): the arm's body + the PER-ARM placement
+    override (R4 — ``processA`` on the gpu queue, ``processB`` on the io
+    queue). The generic ``R`` is the arm body's declared return — the
+    route's join promise solves its ``Promise[list[R]]`` to the UNION of
+    the arms' returns (the typed sum). A bare ``Callable`` arm (no
+    placement) is accepted at the verb and normalized to
+    ``RouteArm(body=fn)`` — the placement defaults to the route's own
+    (``queue=``) and the source's actor."""
+
+    body: Callable[..., Awaitable[R]]
+    #: ``None`` = the source node's actor (the route carries no actor of
+    #: its own — the arms override DOWN from the source, never up).
+    actor: str | None = None
+    #: ``None`` = the route's declared queue (the verb's ``queue=``).
+    queue: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +230,18 @@ class NodeDecl:
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
+    # THE TYPED ROUTE ATTACHMENT (T27 — the type-tagged Route's machinery
+    # extended to the graph level): the arms dict keyed by the source's
+    # union members' TYPE TAGS (``module.qualname`` — the chain's
+    # ``type_tag``), each arm the body + its per-arm placement override.
+    # ``map_arms is not None`` IS the route-source marker (the runner's
+    # fork decision reads it; it and ``map_item`` are mutually exclusive —
+    # a node finalizes once, one fork). The route IS a map attachment: the
+    # same join/carrier fields below carry the fork spec. The arm's R is
+    # ERASED to ``object`` at the attachment (the arms' returns are the
+    # join's union — the SUM rides the promise's static type, never the
+    # decl's field).
+    map_arms: dict[str, RouteArm[object]] | None = None
     # THE MAP'S READ-SIDE AGGREGATE (T21 decision c): the declared pure
     # fn over the children's result rows — evaluated AT READ TIME, never
     # a blocking fan-in (DH8's fence).
@@ -430,9 +477,33 @@ def step[R](
     )  # Why: the promise's STATIC type is the generic R (the body's declared return — the checker's face); the runtime data_type stays the annotation's DECLARATION (string under future-annotations), read back by validate()'s compat rule. The constructor does not bind R — the cast is the seam.
 
 
+@overload
 def map_source[S, R](
     source: Promise[S],
     body: Callable[..., Awaitable[R]],
+    *,
+    queue: str = "default",
+    on_failure: EdgeFailurePolicy = "fail_closed",
+    max_attempts: int = 3,
+    aggregate: Callable[[list[Any]], object] | None = None,
+) -> Promise[list[R]]: ...
+
+
+@overload
+def map_source[S, R](
+    source: Promise[S],
+    body: Mapping[type, RouteArm[R] | Callable[..., Awaitable[R]]],
+    *,
+    queue: str = "default",
+    on_failure: EdgeFailurePolicy = "fail_closed",
+    max_attempts: int = 3,
+    aggregate: Callable[[list[Any]], object] | None = None,
+) -> Promise[list[R]]: ...
+
+
+def map_source[S, R](
+    source: Promise[S],
+    body: Callable[..., Awaitable[R]] | Mapping[type, RouteArm[R] | Callable[..., Awaitable[R]]],
     *,
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
@@ -447,6 +518,19 @@ def map_source[S, R](
     The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
+
+    THE DICT FORM IS THE TYPED ROUTE (T27 — the reviewer's (b), the
+    per-element case): ``map_source(src, {A: fn_a, B: fn_b})`` keys the
+    arms by the source's union members' TYPES — each element runs ITS
+    type's arm as a fresh job (the fork stamps the child's placement
+    from the arm's ``RouteArm``), the child rows feed the same derived
+    join (the join-back BY CONSTRUCTION), and the join packs the arms'
+    returns — the typed sum. This lowers through the SAME attachment the
+    :func:`route` verb spells; the two spellings are one machinery.
+    Totality is the fence at BOTH compile doors (the verb's refusal and
+    the validator's ``E15-route-totality``) plus the runtime loud door
+    (``RouterNotTotal``): the route's keys must cover the union's
+    members EXACTLY.
 
     THE JOIN KEY IS DERIVED (the map has NO ``key=`` param — the
     teardown round's removal, documented in the changelog): the engine's
@@ -466,6 +550,18 @@ def map_source[S, R](
     (:func:`taskq.workflows._progress_read.read_map_aggregate`) — NEVER a
     blocking fan-in (DH8's fence: the join node is for DATAFLOW; a
     progress question is answered at read, unblocked, mid-flight)."""
+    if isinstance(body, Mapping):
+        return cast(
+            "Promise[list[R]]",
+            _attach_route(
+                source,
+                cast("Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]]", body),
+                queue=queue,
+                on_failure=on_failure,
+                max_attempts=max_attempts,
+                aggregate=aggregate,
+            ),
+        )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved at the call site); the attachment erases to list[object] — the cast is the seam.
     graph = source.graph
     source_node = graph.nodes.get(source.key)
     if source_node is None:
@@ -500,6 +596,212 @@ def map_source[S, R](
         "Promise[list[R]]",
         Promise(join_key, list[item_type] if isinstance(item_type, type) else object, graph),
     )  # Why: the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's DECLARATION read back by validate(). The constructor does not bind R — the cast is the seam.
+
+
+def route_child_key(source_key: str, type_tag: str) -> str:
+    """The route child's DERIVED step key (T27 — one home; the register,
+    the runner and the validator derive the same address): the map's own
+    ``<source>.item`` namespace extended by the arm's TYPE TAG —
+    ``<source>.item:<module.qualname>``. The row's step_key NAMES its arm
+    (the ledger receipt is direct), the body resolves from the registry
+    under it (D1), and the idempotency key + the claim arbiter
+    discriminate normally (the element's ``map_index`` rides every
+    child)."""
+    return f"{source_key}.item:{type_tag}"
+
+
+def _attach_route[S](
+    source: Promise[S],
+    arms: Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]],
+    *,
+    queue: str,
+    on_failure: EdgeFailurePolicy,
+    max_attempts: int,
+    aggregate: Callable[[list[Any]], object] | None,
+) -> Promise[list[object]]:
+    """THE TYPED ROUTE'S LOWERING (T27 — the type-tagged Route's machinery
+    extended to the graph level): the arms are keyed by the source's
+    union MEMBERS' types; the source node carries the attachment
+    (``map_arms``, keyed by the members' type tags) and the derived
+    ``<source>.join`` node is created exactly as the map's — the join-back
+    is BY CONSTRUCTION (every routed child is a fork child with an edge
+    to the join).
+
+    THE VERB'S DOOR (the map_source precedent — the mechanically-
+    impossible refuses at the wiring site): an EMPTY arms dict, a
+    non-TYPE key, a source that already carries an attachment (a node
+    finalizes once — one fork), a source whose declared return does not
+    resolve to a list of pydantic models, and the TOTALITY breach —
+    the keys must be EXACTLY the union's members (a missing member would
+    route NOTHING — the silent drop the route exists to refuse; an
+    unknown member would never fire). The validator's
+    ``E15-route-totality`` re-proves the fence from the compiled graph
+    (checker-independently); the runtime ``RouterNotTotal`` names the
+    body that lied about its type."""
+    from taskq.workflows.chain import type_tag
+
+    if not arms:
+        raise WorkflowBuildError(
+            "route() over an EMPTY arms dict — a route with no arms can "
+            "route nothing (the stranded invisible dispatch); declare at "
+            "least one arm per union member"
+        )
+    normalized: dict[str, RouteArm[object]] = {}
+    for key, value in arms.items():
+        if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the keys are statically `type` — but the STRING KEY is the lie this door convicts (the corpus's probe rides it; E13's own pattern: the runtime check IS the subject).
+            raise WorkflowBuildError(
+                f"route() arm key {key!r} is not a TYPE — the route's keys "
+                "are the source's union MEMBERS (the type IS the tag; a "
+                "string key is the enum face's habit, refused here)"
+            )
+        # The R-erase at the attachment (the SUM rides the promise's
+        # static type, never the decl's field — the cast is the seam).
+        arm = cast(
+            "RouteArm[object]",
+            value if isinstance(value, RouteArm) else RouteArm(body=value),
+        )
+        normalized[type_tag(key)] = arm
+    graph = source.graph
+    source_node = graph.nodes.get(source.key)
+    if source_node is None:
+        raise WorkflowBuildError(
+            f"route's promise {source.key!r} is not a node of this "
+            "graph — routes attach to a wired source"
+        )
+    if source_node.map_item is not None or source_node.map_arms is not None:
+        raise WorkflowBuildError(
+            f"node {source.key!r} already carries a map or a route — a node "
+            "finalizes once (one fork); wire the second from a distinct source"
+        )
+    # THE UNION MEMBERS, RESOLVED (the same resolution E5 and the codec
+    # read — the resolved-hints seam; the actor handle unwrapped first).
+    from taskq.workflows.api._hints import body_hints, inner_fn
+
+    source_body = source_node.body
+    if source_body is not None:
+        hints = body_hints(inner_fn(source_body))
+        returned = hints.get("return")
+        members: set[type[BaseModel]] = set()
+        if get_origin(returned) is list:
+            (element_type,) = get_args(cast("type[object]", returned))
+            union_members = (
+                get_args(element_type) if get_origin(element_type) is not None else (element_type,)
+            )
+            for member in union_members:
+                if not (isinstance(member, type) and issubclass(member, BaseModel)):
+                    raise WorkflowBuildError(
+                        f"route's source {source.key!r} declares a return "
+                        f"element {member!r} that is not a pydantic model — "
+                        "the route dispatches by the element's TYPE TAG and "
+                        "decodes into the arm's declared model: a non-model "
+                        "member has no declared shape to decode"
+                    )
+                members.add(member)
+            declared = set(normalized)
+            wanted = {type_tag(m) for m in members}
+            if declared != wanted:
+                missing = sorted(wanted - declared)
+                unknown = sorted(declared - wanted)
+                raise WorkflowBuildError(
+                    f"route over {source.key!r} is not total — missing "
+                    f"{missing}, unknown {unknown}. A non-total route is "
+                    "refused at the wiring: the element it drops would route "
+                    "NOTHING (the silent drop the route exists to refuse; "
+                    "the validator's E15-route-totality re-proves this fence "
+                    "from the compiled graph, and the runtime's "
+                    "RouterNotTotal names the body that lied)."
+                )
+        else:
+            raise WorkflowBuildError(
+                f"route's source {source.key!r} does not declare a "
+                "list[...] return — the route is a MAP face: the source "
+                "produces the elements' list, the arms key its members"
+            )
+    else:
+        raise WorkflowBuildError(
+            f"route's source {source.key!r} declares no body — a route "
+            "attaches to a wired source node"
+        )
+    source_node.map_arms = normalized
+    source_node.map_queue = queue
+    source_node.map_max_attempts = max_attempts
+    source_node.map_on_failure = on_failure
+    source_node.map_aggregate = aggregate
+    join_key = f"{source.key}.join"
+    graph.add(
+        NodeDecl(
+            key=join_key,
+            actor=source_node.actor,
+            queue=queue,
+            body=None,  # the default identity packer (the join's result IS the arms' returns — the typed sum)
+            parents=(source.key,),
+            on_failure=on_failure,
+            kind="map_join",
+        )
+    )
+    return cast(
+        "Promise[list[object]]", Promise(join_key, list[object], graph)
+    )  # Why: the join promise's RUNTIME data_type stays the packing declaration (list[object]) read back by validate(); the STATIC face is the verb's overload (Promise[list[R]], R solved at the call site). The cast is the seam.
+
+
+def route[S, R](
+    source: Promise[S],
+    arms: Mapping[type, RouteArm[R] | Callable[..., Awaitable[R]]],
+    *,
+    queue: str = "default",
+    on_failure: EdgeFailurePolicy = "fail_closed",
+    max_attempts: int = 3,
+    aggregate: Callable[[list[Any]], object] | None = None,
+) -> Promise[list[R]]:
+    """Wire a TYPED ROUTE over *source*'s items (T27 — the graph-DSL's
+    face of the type-tagged Route): the source's body returns the
+    elements' list (``list[ImageItem | AudioItem]``), and *arms* keys the
+    union MEMBERS' types to the arm bodies — each element runs ITS type's
+    arm as a FRESH job (per-item ledger identity, the fork's child row
+    NAMING its arm: ``<source>.item:<module.qualname>``), the children
+    feed the derived ``<source>.join`` (the join-back BY CONSTRUCTION —
+    R2's), and the join packs the arms' returns (the TYPED SUM — the flat
+    ``Promise[list[R]]``, R solved to the union of the arms' returns).
+
+    THE PER-ARM PLACEMENT (R4): an arm spelled
+    ``RouteArm(body=process_image, queue="gpu")`` stamps ITS children's
+    actor/queue — ``processA`` on the gpu queue, ``processB`` on the io
+    queue, the ROWS the receipt. A bare ``Callable`` arm defaults to the
+    route's own ``queue=`` and the source's actor.
+
+    THE DECODED TYPED MODELS (R3): the arm body's declared param type IS
+    the decode's target — the jsonb element re-validates into the arm's
+    model (the typed boundary), a mis-declared arm dies LOUDLY in the
+    coercion, and a duck-typed arm (``dict``/unannotated/``Any``) is
+    refused at build (``E15-route-totality`` — the duck-shaped hole is
+    the exact face the route closes).
+
+    TOTALITY IS THE FENCE (R1), at THREE doors: the wiring verb refuses a
+    non-total route (missing/unknown members, NAMED) before any row
+    exists; the validator's ``E15-route-totality`` re-proves the fence
+    from the compiled graph (checker-independently — the compiled graph
+    is public, mutable data); and the RUNTIME door — an element whose
+    type has NO arm (the body that lied about its union) raises
+    :class:`taskq.workflows.RouterNotTotal`: the source terminal-FAILS
+    with ``error_class='RouterNotTotal'``, nothing routes, the run
+    FAILS. The skip-silent shape is DEAD: the stringly ``skip=``
+    predicate face (a decoded-dict predicate that can drop an element
+    from every arm and terminalize succeeded-having-routed-nothing) is
+    deprecated for dispatch — teach the typed route.
+
+    ``map_source(src, {A: fn_a, B: fn_b})`` is this verb's dict form —
+    the SAME lowering (the per-element case at the map face)."""
+    return cast(
+        "Promise[list[R]]",
+        _attach_route(
+            source,
+            cast("Mapping[type, RouteArm[object] | Callable[..., Awaitable[object]]]", arms),
+            queue=queue,
+            on_failure=on_failure,
+            max_attempts=max_attempts,
+            aggregate=aggregate,
+        ),
+    )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved from the arms' bodies' returns — the union of the arms); the attachment erases to list[object] — the cast is the seam.
 
 
 def gather[R](

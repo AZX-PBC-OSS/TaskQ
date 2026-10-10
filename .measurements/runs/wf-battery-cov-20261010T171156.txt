@@ -1,0 +1,9 @@
+# the wf battery + THE SCOPED COVERAGE GATE — leg 1 at the source-final head 2d993a83c7eb0af31aeefe8067091cd2bbd68b27 (the T27 lane; carried fresh by the measurement commits via the off-by-one rule: diff R..HEAD = pure .measurements)
+TASKQ_TEST_PG_DSN=postgresql://postgres:taskq@localhost:5774/taskq (the lane's contract-true PG)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+FAILED tests/test_wf_attack_loop_docs.py::test_docs_the_api_reference_covers_every_shipped_validate_rule
+============= 2 failed, 535 passed, 1 warning in 86.83s (0:01:26) ==============
+the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at the source head; its cure is the measurement commit landing this estate)
+[gate] wf-scoped branch coverage 93.80% vs floor 90.0% — green (runs/wf-scoped-coverage-20261010T095421.json, head-stamped 2d993a83c7eb0af31aeefe8067091cd2bbd68b27)
+coverage-gate rc=0
+head: 2d993a83c7eb0af31aeefe8067091cd2bbd68b27

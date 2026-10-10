@@ -89,6 +89,12 @@ _CORPUS: tuple[str, ...] = (
     # string key (neither an enum member nor a payload type) reds; the
     # type-keyed green face stays clean.
     "wf_type_tagged_route_negative_types.py",
+    # THE GRAPH-DSL TYPED ROUTE'S PROBES (T27's cure): the route verb's
+    # arms are keyed by the union's member TYPES — a raw string key reds
+    # at the call site (the Route literal's discipline, at the wiring
+    # verbs); the type-keyed green face (and the flat Promise[list[R]]
+    # it returns) stays clean.
+    "wf_graph_route_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

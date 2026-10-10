@@ -1,10 +1,6 @@
 {
   "leg": "2 \u2014 the kill-and-resume",
-<<<<<<< HEAD
-  "run_id": "01a126a1-bc53-7683-85bb-152f563d6965",
-=======
-  "run_id": "01a126ba-f9e1-7360-9276-916b40a8f82c",
->>>>>>> 76c00d45
+  "run_id": "01a126c1-ffcc-7370-a0ec-de94375a0c3a",
   "root_status": "succeeded",
   "ledger_statuses": [
     "succeeded",

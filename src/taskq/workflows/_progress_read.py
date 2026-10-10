@@ -234,17 +234,26 @@ async def read_map_aggregate(
         rows = await conn.fetch(wsql.progress_child_results, parent_id)
         if fn is None:
             fn = await _resolve_declared_aggregate(conn, wsql, flow_id, parent_id)
+
     # THE MAP'S ITEMS ARE THE INPUT, never the map's own auto-join: the
     # join row rides the same parent and its result IS the collected list
     # (the items again — doubly counted). The items' step key is the
-    # parent's own ``<parent>.item``; the fork's join is the parent's
+    # parent's own ``<parent>.item`` (or the typed route's per-arm
+    # ``<parent>.item:<type-tag>``, T27); the fork's join is the parent's
     # ``<parent>.join`` — excluded BY NAME (the runner's fork names them).
-    item_keys = {r["step_key"] for r in rows if r["step_key"].endswith(".item")}
-    parents = {k[: -len(".item")] for k in item_keys}
+    def _is_item_key(key: str) -> bool:
+        return key.endswith(".item") or ".item:" in key
+
+    def _item_parent(key: str) -> str:
+        return key[: -len(".item")] if key.endswith(".item") else key.split(".item:", 1)[0]
+
+    item_keys = {r["step_key"] for r in rows if _is_item_key(str(r["step_key"]))}
+    parents = {_item_parent(str(k)) for k in item_keys}
     rows = [
         r
         for r in rows
-        if r["step_key"].endswith(".item") or r["step_key"] not in {p + ".join" for p in parents}
+        if _is_item_key(str(r["step_key"]))
+        or str(r["step_key"]) not in {p + ".join" for p in parents}
     ]
     read_ms = time.perf_counter() * 1000
     results: list[Any] = []

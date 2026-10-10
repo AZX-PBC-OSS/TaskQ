@@ -59,6 +59,19 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   surfaces cannot see). The conditional-interior wait is NOT statically
   provable — that face is the documented C9/W-rule (the loop-kind
   mis-index, W5).
+* E15 route-totality (T27 — THE TOTALITY FENCE AT THE GRAPH LEVEL) — a
+  typed route (``route(promise, arms)`` / ``map_source``'s dict form)
+  is walked against its source's declared union, BOTH provable
+  directions: the arms' keys must cover the union's members EXACTLY
+  (the missing member would route NOTHING — the silent drop the route
+  exists to refuse; the unknown member would never fire), and every
+  arm body satisfies the typed-param contract (a duck-typed arm —
+  ``dict``/unannotated/``Any`` — consumes the element UNVALIDATED; an
+  unrelated model is the wiring promising data the arm cannot accept).
+  The wiring verbs refuse the same breaches at the wiring site; this
+  rule re-proves the fence from the compiled graph itself (public,
+  mutable data — E3's precedent). The runtime door for the body that
+  LIED about its union is :class:`taskq.workflows.RouterNotTotal`.
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
@@ -94,8 +107,8 @@ from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
-from taskq.workflows.api._graph import GateDecl
-from taskq.workflows.api._hints import body_hints, own_source
+from taskq.workflows.api._graph import GateDecl, route_child_key
+from taskq.workflows.api._hints import body_hints, inner_fn, own_source
 from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
 if TYPE_CHECKING:
@@ -139,6 +152,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_ctx_annotation(compiled)
     diagnostics += _rule_arity(compiled)
     diagnostics += _rule_deps_contract(compiled)
+    diagnostics += _rule_route_totality(compiled)
     diagnostics += _rule_gate_door(compiled)
     diagnostics += _rule_gate_wiring(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
@@ -581,6 +595,104 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     "fix the body's annotation",
                 )
             )
+    return diagnostics
+
+
+def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E15 (T27 — THE TOTALITY FENCE AT THE GRAPH LEVEL): the typed
+    route's arms walked against the source's declared union — the
+    checker-independent re-proof of the fence the wiring verbs raise
+    (the compiled graph is public, mutable data; the rule owns the shape
+    injected into it — E3's precedent). BOTH provable directions:
+
+    * the arms' keys must be EXACTLY the union's member types — a
+      MISSING member would route NOTHING (the silent drop the route
+      exists to refuse: the reviewer's live conviction — a "video" tag
+      that skipped both arms and terminalized succeeded-having-routed-
+      nothing), an UNKNOWN member would never fire;
+    * every arm body declares its arm's MODEL on the item param — the
+      decode's target (R3): a DUCK-typed arm (``dict``/unannotated/
+      ``Any``) consumes the element UNVALIDATED (E5's own conviction
+      shape at the consumer face), an UNRELATED model is the wiring
+      promising data the arm cannot accept.
+
+    An unresolvable source or arm annotation SKIPS (the zero-false-
+    positive doctrine — a guess is never convicted). The runtime door
+    for the body that LIED about its union is ``RouterNotTotal``."""
+    from taskq.workflows.chain import type_tag
+
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.map_arms is None:
+            continue
+        # THE SOURCE'S DECLARED UNION (the resolved-hints seam — the
+        # actor handle unwrapped first, the same resolution E5 reads).
+        source_hints = body_hints(inner_fn(node.body)) if node.body is not None else {}
+        returned = source_hints.get("return")
+        member_types: dict[str, type[BaseModel]] = {}  # the type-tag → the member type
+        if get_origin(returned) is list:
+            (element_type,) = get_args(cast("type[object]", returned))
+            union_members = (
+                get_args(element_type) if get_origin(element_type) is not None else (element_type,)
+            )
+            for m in union_members:
+                if isinstance(m, type) and issubclass(m, BaseModel):
+                    member_types[type_tag(m)] = m
+        if not member_types:
+            continue  # the unresolvable/non-model return — the zero-false-positive skip
+        declared = set(node.map_arms)
+        if declared != set(member_types):
+            missing = sorted(member_types[t].__name__ for t in set(member_types) - declared)
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E15-route-totality",
+                    "error",
+                    f"the route over {node.key!r} is not total — missing "
+                    f"{missing}, declared {sorted(declared)}. A non-total "
+                    "route is refused: the element it drops would route "
+                    "NOTHING (the silent drop the route exists to refuse — "
+                    "the skipped-both-arms run that terminalized SUCCEEDED). "
+                    "Declare one arm per union member.",
+                )
+            )
+            continue
+        # THE ARMS' TYPED-PARAM CONTRACT (R3's compile face).
+        for tag, arm in node.map_arms.items():
+            hints = body_hints(inner_fn(arm.body))
+            if not hints:
+                continue  # the unresolvable arm — a guess is never convicted
+            params = [k for k in hints if k not in ("return", "ctx")]
+            if not params:
+                continue  # E10/E12's faces own the arity; the item contract needs a param to read
+            item_param = hints[params[0]]
+            member_type = member_types[tag]
+            member_name = member_type.__name__
+            if item_param is Any or item_param is object:
+                duck, related = True, False
+            elif isinstance(item_param, type) and issubclass(item_param, BaseModel):
+                duck = False
+                related = (
+                    member_type is item_param
+                    or issubclass(member_type, item_param)
+                    or issubclass(item_param, member_type)
+                )
+            else:
+                duck, related = True, False
+            if duck or not related:
+                shape = "duck-typed (dict/unannotated/Any)" if duck else "an unrelated model"
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E15-route-totality",
+                        "error",
+                        f"the route arm {route_child_key(node.key, tag)!r} "
+                        f"({getattr(arm.body, '__name__', '<anon>')!r}) "
+                        f"declares its item as {item_param!r} — {shape}: "
+                        "the arm's param IS the decode's target (the typed "
+                        f"boundary) and this shape consumes the {member_name} "
+                        "element UNVALIDATED. Annotate the arm's param as "
+                        f"{member_name} (or a related model).",
+                    )
+                )
     return diagnostics
 
 

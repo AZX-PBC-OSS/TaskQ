@@ -68,6 +68,15 @@ SELECT p.step_key, p.result
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
+  -- THE ABSORBED PARENT'S SLOT (T27's barrier cure — the envelope must
+  -- not lie in the sum): on an ABSORBING edge (collect | maybe) a
+  -- terminal-FAILED parent contributes NO result item to the packed
+  -- join — its absence is ON THE RECORD (the join's metadata.failures
+  -- array carries the typed FailureInfo + the policy that ran), never a
+  -- junk {} slot the consumer's decode cannot honor. A fail_closed
+  -- edge's consumer never runs over a failed parent (the cascade), so
+  -- this filter changes no other face.
+  AND NOT (p.status = 'failed' AND e.failure_policy IN ('collect', 'maybe'))
 ORDER BY p.id
 """
 
