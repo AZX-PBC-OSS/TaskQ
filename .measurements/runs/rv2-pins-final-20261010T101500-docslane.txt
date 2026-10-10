@@ -1,9 +1,9 @@
-head: ab44ad0c
-................F                                                        [100%]
+head: 890bd5ed1966f08b068b29e043ee8de476df3a0b
+...............F.                                                        [100%]
 =================================== FAILURES ===================================
 _________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
 
-tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-21892/test_rv2_13_the_head_stamp_law0')
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-22007/test_rv2_13_the_head_stamp_law0')
 
     def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
         """The verifier against the tree's COMMITTED state (``git ls-files``
@@ -61,14 +61,15 @@ tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-21892/test_rv2_13_the_head_stam
             + proc.stderr
         )
 E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
-E         THE HEAD-STAMP LAW REDS (head ab44ad0c1121):
-E           fasttier-final-55c5e6b3: the LIVE CLAIM fasttier-final-55c5e6b3-20261010T112955.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E         THE HEAD-STAMP LAW REDS (head 890bd5ed1966):
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261011T033000.txt is stale — recorded on dbd5d031cda4, the head is 890bd5ed1966. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fasttier-final: the LIVE CLAIM fasttier-final-20261011T050000-a988f60c.txt is stale — recorded on a988f60c786b, the head is 890bd5ed1966. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           rv2-pins-final: the LIVE CLAIM rv2-pins-final-20261011T033000-b.txt is stale — recorded on ab44ad0c, the head is 890bd5ed1966. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
 E         
 E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-land/.venv/bin/python', '/tmp/opencode/wt-land/scripts/verify_evidence_heads....corded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.\n', stderr='').returncode
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-docs/.venv/bin/python', '/tmp/opencode/wt-docs/scripts/verify_evidence_heads....ed1966. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.\n', stderr='').returncode
 
 tests/test_wf_attack_rv2.py:1053: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 16 passed in 4.19s
-SUPERSEDED-BY: runs/docs-lane-rv2-13-cure-captures-20261010T103000.txt
+1 failed, 16 passed in 4.44s

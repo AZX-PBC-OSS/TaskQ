@@ -2,3 +2,4 @@ head: dbd5d031cda4ef861b51995072f1aa7dc68c6379
 THE HEAD-STAMP LAW REDS (head dbd5d031cda4):
   evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261011T033000.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
   fasttier-final-55c5e6b3: the LIVE CLAIM fasttier-final-55c5e6b3-20261010T112955.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+SUPERSEDED-BY: runs/docs-lane-rv2-13-cure-captures-20261010T103000.txt
