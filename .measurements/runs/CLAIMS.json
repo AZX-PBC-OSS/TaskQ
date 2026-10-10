@@ -6358,6 +6358,60 @@
       "file": "pin4-enqueue-band-20261010T154752-a73a.json",
       "head_sha": "81a24da453da878a180b8d8039872e68156efe05",
       "captured_at": "2026-10-10T15:47:52"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T154922.json",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:49:22"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T155039-548e.json",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:50:39"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T155040-efbb.json",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:50:40"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T155050-2a23.json",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:50:50"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-cons-20261010T154500.txt",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:53:14"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-battery-cons-20261010T154500.txt",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:53:14"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "wf-battery-cons-20261010T154500.txt",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:53:14"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-cons-20261010T155000.txt",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:53:14"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-cons-20261010T155500.txt",
+      "head_sha": "1ea7881df81a4796ae776572a728309413f4e1ed",
+      "captured_at": "2026-10-10T15:53:14"
     }
   ]
 }
