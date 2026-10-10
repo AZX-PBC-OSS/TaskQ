@@ -261,14 +261,17 @@ async def _holds_generator(
 ) -> AsyncGenerator[str, None]:
     """Stream the HITL broadcast (T26) as SSE ``hold`` frames — the
     TYPED listener's events (``HoldCreated`` / ``HoldResolved`` /
-    ``HoldExpired``) straight to the browser, the open holds BACKFILLED
-    at subscribe (a page render sees the pending approvals without a
-    poll). The resolve/deliver door is UNCHANGED — this is the read
-    face only. The #316 session re-check gates every frame exactly as
-    the state_change feed's does; the bounded shielded close is the
-    same shape (a client disconnect closes THIS generator; the
-    listener's pump and its dedicated LISTEN connection must release
-    deterministically)."""
+    ``HoldExpired`` / ``Backfilled``) straight to the browser, the open
+    holds BACKFILLED at subscribe (a page render sees the pending
+    approvals without a poll). The ``Backfilled`` reconcile snapshot
+    rides every (re)backfill: a hold resolved or expired during an
+    outage never announces its own death — the browser board drops any
+    card the snapshot disowns. The resolve/deliver door is UNCHANGED —
+    this is the read face only. The #316 session re-check gates every
+    frame exactly as the state_change feed's does; the bounded shielded
+    close is the same shape (a client disconnect closes THIS generator;
+    the listener's pump and its dedicated LISTEN connection must
+    release deterministically)."""
     from taskq.workflows.api._hitl_listen import (
         HitlListener,  # the import law (§16.1): lazy, never at module scope
     )

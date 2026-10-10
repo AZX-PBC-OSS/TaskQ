@@ -77,9 +77,22 @@ HOLD_CHANNEL = "taskq_wf_holds"
 #: would buy nothing; the listener filters by the payload's schema).
 #: These are the TYPED legs (the listener's events decode them); the
 #: legacy :data:`HOLD_CHANNEL` knob above keeps its pinned pointer shape.
-HOLD_CREATED_CHANNEL = "taskq_wf_hold"
+#: The create leg's name is ``taskq_wf_hold_created`` (the hostile
+#: review's C3 rename: the first cut's ``taskq_wf_hold`` sat ONE LETTER
+#: from the legacy ``taskq_wf_holds`` knob — an ops typo's recipe; the
+#: rename is additive, the lane unreleased).
+HOLD_CREATED_CHANNEL = "taskq_wf_hold_created"
 HOLD_RESOLVED_CHANNEL = "taskq_wf_hold_resolved"
 HOLD_EXPIRED_CHANNEL = "taskq_wf_hold_expired"
+
+#: THE NOTIFY PAYLOAD'S SIZE CAP (the pointer-law creep protector —
+#: P9): PostgreSQL refuses a ``pg_notify`` payload at 8000 bytes, and a
+#: knock refused MID-TX rolls the caller's whole transaction back with
+#: it (the create leg dies inside register_hold's tx). The pointer
+#: payloads are SMALL by law; this cap is the named seam where the
+#: creep dies LOUDLY — before the wire, with the law in the message —
+#: instead of PG's opaque server error after it.
+NOTIFY_PAYLOAD_MAX_BYTES = 8000
 
 #: The hold row's status vocabulary (the statemachine's totality for the
 #: signal rows).
@@ -370,11 +383,24 @@ async def _broadcast(conn: ConnLike, channel: str, payload: dict[str, object]) -
     CALLER'S connection, INSIDE the caller's transaction — the leg is
     transactional by construction: PG delivers a NOTIFY only when its
     transaction COMMITS, so a rolled-back hold-create (or a losing
-    resolve CAS) is SILENT (pin T26-P1). The payload carries the schema
-    (the channels are global — the listener filters by it) and the
-    POINTER only, never the sole copy of anything (the row is the
-    truth)."""
-    await conn.execute("SELECT pg_notify($1, $2)", channel, dumps_jsonb_str(payload))
+    resolve CAS) is SILENT (pin T26-P1; a rolled-back RESOLVE the same
+    — pin T26-P10). The payload carries the schema (the channels are
+    global — the listener filters by it) and the POINTER only, never
+    the sole copy of anything (the row is the truth). THE SIZE CAP
+    (P9): a payload at/over :data:`NOTIFY_PAYLOAD_MAX_BYTES` is refused
+    HERE — loudly, before the wire: PG's own refusal would land
+    mid-tx and roll the caller's transaction back with an opaque
+    server error; the pointer law's creep dies at this seam instead."""
+    text = dumps_jsonb_str(payload)
+    if len(text.encode()) >= NOTIFY_PAYLOAD_MAX_BYTES:
+        raise ValueError(
+            f"the {channel} payload is {len(text.encode())} bytes — at or over the "
+            f"{NOTIFY_PAYLOAD_MAX_BYTES}-byte pg_notify cap: the broadcast carries THE "
+            "POINTER only (the row is the truth), and a knock refused by PG mid-tx "
+            "would roll the caller's transaction back with it. The pointer law's "
+            "creep dies here — shrink the payload, never grow the broadcast"
+        )
+    await conn.execute("SELECT pg_notify($1, $2)", channel, text)
 
 
 def _as_hold_id(hold_id: JobId | str) -> JobId:
@@ -713,10 +739,16 @@ async def deliver_payload(
 async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: int = 100) -> int:
     """The SIGNAL SWEEP's expiry arm (the only live timer on a held row):
     the deadline is DB-CLOCK compared; the expired hold → the DEFINED
-    ``abandoned`` state (never a silent orphan) and the node's resume is
-    refused-with-type (the body's ``SignalTimeoutError`` — the
-    ``on_timeout="fail"`` default's shape; the ``resume_with_default`` /
-    ``escalate`` policies' records land with their bodies' reads)."""
+    ``abandoned`` state (never a silent orphan) and the node's resume
+    re-runs the body, whose wait site RETURNS the union's ``Expired``
+    member (the fail-close arm the checker forces — the machinery never
+    raises; the body that wants the FAILURE raises
+    ``SignalTimeoutError`` ITSELF off the member). The deadline is
+    AT-LEAST precision: it fires at the first sweep pass at-or-after
+    ``expires_at``, never at a precise wall time (the listener's
+    landmine doc, landmine 4). The arm's deadline comes from the WAIT
+    SITE's ``timeout_s`` (C8's precedence law — the gate declaration is
+    the compile-visible face, never a second runtime clock)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(_render(_EXPIRY_SWEEP_SQL, schema), batch_size)
         for row in rows:
@@ -960,6 +992,17 @@ class HitlClient:
             payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the row's jsonb — the isinstance guard above is the runtime shape check.
             chained = redact_hold_context(payload_doc)
             payload = chained if self._redact is None else self._redact(chained)
+        # THE HELD ROW'S CONTEXT IS THE REASON'S HOME: pre-delivery the
+        # payload IS the redacted context doc (reason/tool/args —
+        # register_hold wrote it); the contract's reason field reads it
+        # instead of lying None (the web demo's ROW read — C10 —
+        # renders this). Post-delivery the payload is the decision; the
+        # reason is gone with the held state it belonged to.
+        reason: str | None = None
+        if row["status"] == "held" and isinstance(payload, dict):
+            raw_reason = payload.get("reason")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: the row's jsonb walk — the isinstance guard below is the runtime shape check (the Any-contract walk's boundary).
+            if isinstance(raw_reason, str):
+                reason = raw_reason
         return HoldContext(
             hold_id=str(row["id"]),
             run_id=str(row["workflow_id"]),
@@ -969,7 +1012,7 @@ class HitlClient:
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,
-            reason=None,
+            reason=reason,
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             status=row["status"],

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["CtxWaitOps", "SignalUnavailableError"]
+__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError"]
 
 import structlog
 
@@ -54,6 +54,30 @@ class SignalUnavailableError(RuntimeError):
     """``ctx.signal(name)`` read a signal that has no delivered payload
     (the read-before-delivery mistake — the typed refusal, never a
     silent None)."""
+
+
+class LoopWaitShapeError(RuntimeError):
+    """THE E13 RULE (T26's cure lane — the hostile review's C9): a
+    LOOP-kind body's wait site found the iteration cursor PAST the
+    answer queue — the state a CONDITIONAL wait mints (some iterations
+    wait, others don't). The loop's answer-queue cursor IS the
+    iteration counter (the ADVANCE statement's own write), so the
+    mis-aligned state means: an earlier iteration's answer is stranded
+    (it can never be consumed again — the cursor indexes answers BY
+    ITERATION), and a retry of a waited iteration would replay the
+    WRONG slot (the retry-replay law, silently broken). Pre-cure the
+    mis-index was SILENT (the wait minted a fresh hold; the operator
+    was asked again; the stranded answer rotted on the rows) — the rule
+    gives the loop-shape law ("ONE wait per iteration") TEETH: the
+    named typed failure at the wait site, the loop's failure-class
+    rules route it exactly as they route the body's own exceptions.
+    The boundary, stated honestly: a body that waits TWICE in one
+    iteration is indistinguishable at the wait site from a retry (both
+    are cursor < len) — the second wait re-reads the iteration's own
+    answer; the shape law's doc sentence is that shape's only guard.
+    A plain (non-loop) step never sees this rule: its per-attempt
+    cursor is consumption-ordered, so conditional waits are legal
+    there."""
 
 
 class Expired(BaseModel):
@@ -164,7 +188,15 @@ class CtxWaitOps(_WaitHost):
         payload fits MORE than one declared model, the gate's explicit
         picker resolves the union — its pick must be one of the fitting
         candidates. Without one, an ambiguous payload is the typed
-        refusal at the deliver boundary."""
+        refusal at the deliver boundary.
+
+        THE DOUBLE-TIMEOUT PRECEDENCE (C8's law — BOTH faces declare a
+        timeout): THIS parameter arms the expiry sweep — the hold row's
+        ``expires_at`` is written from THIS ``timeout_s`` (the DB clock
+        plus it). The gate's ``GateDecl(timeout_s=…)`` is the
+        COMPILE-VISIBLE declaration (the Mermaid face, the W1 warning)
+        — never a second runtime clock. Keep them equal on purpose; when
+        they disagree, THE WAIT'S VALUE WINS, on the rows."""
         models: tuple[type[BaseModel], ...] = cast(
             tuple[type[BaseModel], ...],
             signals if isinstance(signals, tuple) else (signals,),
@@ -266,6 +298,27 @@ class CtxWaitOps(_WaitHost):
                 self.node_key,
                 [*names, "|".join(names)],
             )
+            if is_loop_kind and cursor > len(queue):
+                # THE E13 RULE (the loop's uniform-wait law — C9's cure):
+                # the iteration cursor may never run PAST the answer
+                # queue. The aligned states are: cursor == len (the
+                # continuation's wait — a fresh hold next) and cursor <
+                # len (a retry's replay). cursor > len means earlier
+                # iterations did not wait — the conditional-wait shape:
+                # answers stranded (unconsumable — the cursor indexes
+                # BY ITERATION) and retries replaying the wrong slot.
+                # Named, loud, at the wait site: never a silent
+                # mis-index.
+                raise LoopWaitShapeError(
+                    f"E13-uniform-loop-wait: this loop body's wait is CONDITIONAL "
+                    f"(the iteration cursor {cursor} runs past the {len(queue)}-answer "
+                    f"queue on {signal_name}) — a loop body must declare ONE wait per "
+                    "iteration: the answer-queue cursor IS the iteration counter, so a "
+                    "wait on only some iterations strands earlier answers (never "
+                    "consumable again) and replays the wrong slot on retry. Wait "
+                    "unconditionally each iteration (branch on the RESULT), or move "
+                    "the wait out of the loop"
+                )
             if cursor < len(queue):
                 # THE REPLAY/CONSUME: this wait takes the queue's next
                 # answer (the per-attempt cursor advances — the same
@@ -308,10 +361,13 @@ class CtxWaitOps(_WaitHost):
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
-            # THE TIMEOUT FACE (attack-3 B1's cure): the sweep marked
-            # THIS wait site's hold 'abandoned' and no held row stands —
-            # the wait site RAISES the glossary exception; the body's
-            # ladder/except owns it from there. NO automatic new epoch:
+            # THE TIMEOUT FACE (attack-3 B1's cure, the union
+            # amendment): the sweep marked THIS wait site's hold
+            # 'abandoned' and no held row stands — the wait site RETURNS
+            # the union's ``Expired`` MEMBER (the fail-close arm the
+            # checker forces; the body that wants the FAILURE raises the
+            # glossary exception ITSELF off the member). NO automatic
+            # new epoch:
             # a re-execution after abandonment never re-holds (the
             # hold→expire→re-hold→∞ dragon's kill site). The DELIBERATE
             # re-wait — the body caught the face and waits again within

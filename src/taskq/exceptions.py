@@ -1424,6 +1424,13 @@ class SignalTimeoutError(TaskQError):
     one-prefix rule). The named state's ledger record: the hold row's
     ``abandoned`` + the node's typed failure — never a silent orphan.
 
+    THE MACHINERY NEVER RAISES THIS (T26's amendment — the expiry is a
+    VALUE): the wait site RETURNS the closed union's ``Expired`` member
+    and the body MATCHES the fail-close arm; a body that WANTS the
+    failure raises THIS exception ITSELF off the member (the escalation
+    ladder's own use — the raised error is a body exception exactly
+    like any other).
+
     See also :class:`SignalAbandonedError` (the operator-abandon shape —
     the same defined state, a different door)."""
 

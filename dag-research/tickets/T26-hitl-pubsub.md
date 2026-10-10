@@ -99,7 +99,7 @@ operator), and ceremony hides the one-liner. The amended design:
    DATABASE) and cost a computed channel name. DECISION: three global
    channels; every payload carries `"schema"`; the listener filters by
    payload — never by channel arithmetic.
-   - `taskq_wf_hold` — create leg:
+   - `taskq_wf_hold_created` — create leg (renamed from the first cut's `taskq_wf_hold`: one letter from the legacy `taskq_wf_holds` knob — an ops typo's recipe; additive, unreleased):
      `{schema, flow_id, run_id, hold_id, signal, node_key, created_at}`
      (`flow_id == run_id` in this engine — the run's root row IS the
      flow — both keys ship so the design's consumers and the codebase's
@@ -159,13 +159,18 @@ operator), and ceremony hides the one-liner. The amended design:
    research the fake corpus and refine; past three the body waits on
    `ContinueApproval` with the REAL 120.0 s default
    (`APPROVAL_TIMEOUT_S`, module-level — the tests scale it by
-   monkeypatch, condition-not-clock); the typed expiry
-   (`SignalTimeoutError`) is caught by the body and returns the
-   fail-close `Done(ResearchState.finished_with_what_you_have())` —
-   the user not watching is a RESULT, typed and named. The body's
-   research append is deterministic (the re-execution doctrine: the
-   resume re-runs the body from the top, the corpus digest replays
-   cheap).
+   monkeypatch, condition-not-clock). THE EXPIRY IS A VALUE (the
+   amendment — rewritten from the pre-amendment "the exception is
+   caught" shape, which the machinery never produced anymore): the
+   wait's outcome is the CLOSED UNION `ContinueApproval | Expired`,
+   the body MATCHES `case Expired():` and returns the fail-close
+   `Done(carry.finish_with_what_you_have())` — the user not watching
+   is a RESULT, typed, named, and CHECKER-FORCED (a body that ignores
+   the arm reds; a body that wants the FAILURE raises
+   `SignalTimeoutError` ITSELF off the member — the escalation
+   ladder's own use). The body's research append is deterministic (the
+   re-execution doctrine: the resume re-runs the body from the top,
+   the corpus digest replays cheap).
 
 ## The pins (red-first where they convict)
 
@@ -180,7 +185,7 @@ operator), and ceremony hides the one-liner. The amended design:
   notification. The red: the notify sent OUTSIDE the tx (autocommit)
   fires while the row rolls back — captured as the mutation drill; the
   green: the nested-savepoint rollback (outer tx, `register_hold`
-  inside, raise out) leaves NO `wf_signals` row AND no `taskq_wf_hold`
+  inside, raise out) leaves NO `wf_signals` row AND no `taskq_wf_hold_created`
   notify.
 - **P2 (the zero-window backfill):** a hold created BEFORE the
   listener's start is still delivered — the listener's first event is

@@ -1,0 +1,9 @@
+{
+  "mutation": "the resolve knock sent OUTSIDE the CAS tx (autocommit): the knock outlives the rolled-back resolve \u2014 the broadcast LIES about a decision the rows disown (P1's dragon, on the resolve leg)",
+  "observed": {
+    "lying_knocks": 1
+  },
+  "pin": "T26-P10-resolve-knock-outside-the-tx",
+  "run": "20261009T231900-760657-e084ceb7",
+  "ts": "2026-10-09T23:19:00"
+}

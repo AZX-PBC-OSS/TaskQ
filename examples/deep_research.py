@@ -5,7 +5,7 @@ The scenario: an agent researches a topic pass by pass. THE FIRST THREE
 PASSES ARE FREE — nobody is asked. Past three, the loop needs a
 human's approval to keep going: ``ctx.wait_signal((ContinueApproval,),
 timeout_s=APPROVAL_TIMEOUT_S)``. The approval request is a ROW and a
-BROADCAST: ``pg_notify`` on the ``taskq_wf_hold`` channel (the typed
+BROADCAST: ``pg_notify`` on the ``taskq_wf_hold_created`` channel (the typed
 listener — ``taskq.workflows.HitlListener`` — backfills the open holds
 at start, then tails the NOTIFYs; a browser watches the same stream
 over the admin's ``/sse/holds`` topic). A human answers through

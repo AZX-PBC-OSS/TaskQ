@@ -92,7 +92,8 @@ test-wf-cov: env
 		tests/test_wf_ctx_annotation_pins.py tests/test_wf_engine_units.py \
 		tests/test_wf_ergonomics_contract.py tests/test_wf_fanin_bound_pins.py \
 		tests/test_wf_finalize_pins.py tests/test_wf_fork_pins.py \
-		tests/test_wf_hitl_pins.py tests/test_wf_loop_pins.py \
+		tests/test_wf_hitl_pins.py tests/test_wf_hitl_pubsub_pins.py \
+		tests/test_wf_hitl_web_demo.py tests/test_wf_loop_pins.py \
 		tests/test_wf_phase3_cure_pins.py tests/test_wf_pre_workflow_tolerance_pins.py \
 		tests/test_wf_progress_emission.py tests/test_wf_progress_faces.py \
 		tests/test_wf_progress_persistence.py tests/test_wf_propagation_pins.py \
