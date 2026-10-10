@@ -263,11 +263,14 @@ async def test_listener_backfills_open_holds_and_dedups(
     assert hold_row is not None
     hold_id = str(hold_row["id"])
 
-    listener = HitlListener(wf_pool, schema=wf_schema)
+    listener = HitlListener(wf_pool, wf_schema)
     async with listener:
         # THE ZERO WINDOW: the hold existed BEFORE the listener — the
-        # FIRST event is its backfilled HoldCreated.
-        first = await asyncio.wait_for(listener.events().__anext__(), timeout=5.0)
+        # FIRST event on THIS RUN'S filtered stream is its backfilled
+        # HoldCreated (the backfill announces every open hold in the
+        # schema — earlier tests' leftovers included; holds(run=…)
+        # scopes the stream to this run's).
+        first = await asyncio.wait_for(_first_of(listener.holds(run=flow_id)), timeout=5.0)
         assert first is not None
         assert isinstance(first, HoldCreated), first
         assert first.event == "hold_created"
@@ -333,6 +336,13 @@ async def test_resolve_wake_reaches_the_listener(
         assert "approve" not in json.dumps(event.model_dump()), (
             "THE RESOLVED BROADCAST CARRIED THE VERDICT'S CONTENT — the pointer-only law"
         )
+
+
+async def _first_of(events: Any) -> Any:
+    """The filtered stream's first event (the holds(run=…) read)."""
+    async for event in events:
+        return event
+    return None
 
 
 async def _next_of(listener: HitlListener, kind: str) -> Any:

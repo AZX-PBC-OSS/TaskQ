@@ -13,10 +13,14 @@ over the admin's ``/sse/holds`` topic). A human answers through
 approved, the loop continues to the full report.
 
 **THE FAIL-CLOSE (the named result)**: nobody watching is not a hang
-and not a crash — the typed expiry (``SignalTimeoutError``) is CAUGHT
-by the body and returns ``Done(ResearchState.finished_with_what_you_have(...))``:
-the run SUCCEEDS carrying the finish-with-what-you-have state. The user
-not watching is a RESULT, typed and named.
+and not a crash — the wait's outcome is the CLOSED UNION
+``ContinueApproval | Expired`` (T26's amendment: the expiry is a VALUE,
+never an exception), and the body MATCHES the ``Expired`` member and
+returns ``Done(carry.finish_with_what_you_have())``: the run SUCCEEDS
+carrying the finish-with-what-you-have state. The user not watching is
+a RESULT, typed, named, and CHECKER-FORCED (a body that ignores the arm
+reds; a body that wants the FAILURE raises ``SignalTimeoutError``
+itself off the member — the escalation ladder's own use).
 
 THE LOOP'S SHAPE LAW, honored on purpose: a loop body declares ONE wait
 per iteration (the answer-queue's cursor IS the iteration counter — a

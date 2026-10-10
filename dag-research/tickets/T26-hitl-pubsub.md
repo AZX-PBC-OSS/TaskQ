@@ -34,39 +34,45 @@ operator), and ceremony hides the one-liner. The amended design:
    context-manager form for the scoped use.
 3. **THE DX TEST THE DESIGN MUST PASS**: the body author and the
    backend author each write their full flow with ZERO doc lookups —
-   the example's snippets ARE the API tour:
+   the example's snippets ARE the API tour. VERBATIM from the BUILT
+   tree:
 
-   THE BODY AUTHOR'S FLOW (verbatim from `examples/deep_research.py`):
+   THE BODY AUTHOR'S FLOW (verbatim, `examples/deep_research.py`
+   `research_iteration`):
 
    ```python
    outcome = await ctx.wait_signal(
        (ContinueApproval,),
        timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
        reason="the research loop wants to continue past the free passes",
+       tool="continue_approval",
+       args={"topic": carry.topic, "passes_done": len(carry.notes)},
    )
    match outcome:
        case ContinueApproval() as approval:
            if not approval.approved:
-               return Done(ResearchState.finished_with_what_you_have(carry))
+               return Done(carry.finish_with_what_you_have(note=approval.note))
            carry = carry.model_copy(update={"approved": True})
        case Expired():
-           # THE FAIL-CLOSE: nobody watching — finish with what you have.
-           return Done(ResearchState.finished_with_what_you_have(carry))
+           # THE FAIL-CLOSE: nobody watching — the loop finishes
+           # with what it has (the typed expiry is a RESULT, never
+           # a hang and never a crash).
+           return Done(carry.finish_with_what_you_have())
    ```
 
-   THE BACKEND AUTHOR'S FLOW (verbatim from the example's driver):
+   THE BACKEND AUTHOR'S FLOW (verbatim, the pin test's
+   `test_deep_research_approve_path` — the built surface):
 
    ```python
-   listener = HitlListener(wf_pool, schema)
+   listener = HitlListener(wf_pool, wf_schema)
    async with listener:
        async for event in listener.holds(run=flow_id):
            match event:
                case HoldCreated():
-                   print(f"approval owed: hold {event.hold_id}")
-               case HoldResolved():
-                   print(f"hold answered ({event.verdict_kind})")
-               case Expired() as e:
-                   print(f"hold expired: {e.hold_id}")
+                   created = event
+                   break
+               case HoldResolved() | HoldExpired():
+                   continue
    ```
 
 ## The read (what the tree actually says)
