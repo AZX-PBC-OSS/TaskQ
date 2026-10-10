@@ -1,0 +1,85 @@
+...............F.                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-21947/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verifier's live-claim pick per stem is mtime-ordered; a git
+        checkout's mtimes are extraction-order, not the captures' order —
+        so the pin restores each file's mtime from its own run-scoped
+        filename timestamp (the semantic order the stamp law names), making
+        the verdict the TREE'S, never the checkout's."""
+        import os
+        import subprocess
+        import sys
+        from datetime import datetime
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        ts_re = re.compile(r"-(\d{8})T(\d{6})")
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            match = ts_re.search(dest.name)
+            if match:
+                stamp = datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").timestamp()
+                os.utime(dest, (stamp, stamp))
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 82c9027334dd):
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T053930-d3d1.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261011T033000.txt is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T053931-c7f0.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fasttier-final: the LIVE CLAIM fasttier-final-20261011T050000-a988f60c.txt is stale — recorded on a988f60c786b, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T053931-d66e.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T054425-8f4b.json is stale — recorded on a988f60c786b, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T054425-85a7.json is stale — recorded on a988f60c786b, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T054433-5318.json is stale — recorded on a988f60c786b, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T053931-1bd1.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T054100-8ad9.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           rv2-pins-final: the LIVE CLAIM rv2-pins-final-20261011T033000-b.txt is stale — recorded on ab44ad0c, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T053721-1511.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T053908.json is stale — recorded on dbd5d031cda4, the head is 82c9027334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-pg17/.venv/bin/python', '/tmp/opencode/wt-pg17/scripts/verify_evidence_heads....7334dd. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 16 passed in 4.70s
+head: 82c9027334ddd54de7963315fa25b8acc2a2aa6d
