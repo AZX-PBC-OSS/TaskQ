@@ -710,23 +710,35 @@ def _attach_route[S](
 
     source_body = source_node.body
     if source_body is not None:
-        hints = body_hints(inner_fn(source_body))
+        inner = inner_fn(source_body)
+        hints = body_hints(inner)
         returned = hints.get("return")
         members: set[type[BaseModel]] = set()
         if returned is None:
-            # THE MESSAGE'S TRUTH (the rv4 cure — the "does not declare"
-            # lie fixed): an UNRESOLVABLE return annotation (a
-            # function-scope model, a string the compile cannot chase —
-            # body_hints resolved {}) is not a body that "does not
-            # declare" — it declared and the compile CANNOT RESOLVE it.
-            # The refusal names the resolution failure (the fix: name
-            # the model at module scope so the annotation resolves).
+            # THE TWO FACES, DISTINGUISHED (the rv4 cure's own boundary —
+            # the green guard pins it): the RAW annotation's presence is
+            # the discriminator — a body with NO return annotation at all
+            # "does not declare" (the hard refusal, named); a body that
+            # DECLARED a return the compile cannot chase (a function-
+            # scope model, a string that died resolving — body_hints
+            # resolved {}) "CANNOT RESOLVE" (the refusal names the
+            # resolution failure + the fix). Collapsing them was the
+            # message lie the cure's own green guard convicts.
+            raw_return = getattr(inner, "__annotations__", {}).get("return")
+            if raw_return is not None:
+                raise WorkflowBuildError(
+                    f"route's source {source.key!r} has a return annotation "
+                    "the compile CANNOT RESOLVE — the route keys its arms by "
+                    "the union MEMBERS (the resolved hints are the only "
+                    "resolution): move the element models to module scope so "
+                    "the list[...] return resolves"
+                )
             raise WorkflowBuildError(
-                f"route's source {source.key!r} has a return annotation "
-                "the compile CANNOT RESOLVE — the route keys its arms by "
-                "the union MEMBERS (the resolved hints are the only "
-                "resolution): move the element models to module scope so "
-                "the list[...] return resolves"
+                f"route's source {source.key!r} does not declare a "
+                "list[...] return — the route keys its arms by the union "
+                "MEMBERS (the resolved hints are the only resolution): "
+                "annotate the body's return as list[TextDoc | ImageDoc | "
+                "...]"
             )
         if get_origin(returned) is list:
             (element_type,) = get_args(cast("type[object]", returned))

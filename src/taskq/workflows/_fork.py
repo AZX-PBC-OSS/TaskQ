@@ -174,4 +174,15 @@ async def insert_fork(
                 [c.step_key for c in fork.join.consumers],
                 [c.failure_policy for c in fork.join.consumers],
             )
+        if not children:
+            # THE BORN-ZERO JOIN'S FIRE RECEIPT (rv4 F1's exactly-once
+            # law): a join born deps_pending=0 never runs the decrement
+            # path (there are no children to decrement it), so its fire
+            # went UNLEDGERED — the empty route's consumer dispatched and
+            # the exactly-once receipt never existed. The SAME guarded
+            # INSERT the decrement path fires (the PK's ON CONFLICT:
+            # idempotent; the guards: deps_pending=0, the row pending,
+            # the flow alive) mints the receipt at the birth; the
+            # consumer's dispatch stays the spawn's own path.
+            await conn.execute(wsql.fire, join_id, flow_id, new_uuid(), "born-zero")
     return child_ids, join_id

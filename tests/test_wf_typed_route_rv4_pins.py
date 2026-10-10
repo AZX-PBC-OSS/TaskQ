@@ -167,16 +167,6 @@ async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-1: _route_fork returns None over an empty source list "
-        "(api/_runner.py:1212-1213) — with a CONSUMER of the route's join the join "
-        "row never spawns, the consumer's reserved dep never releases, and the run "
-        "wedges 'running' forever (observed: drive() hit max_ticks with 'media' "
-        "succeeded, 'consume' pending deps_pending=1, no 'media.join' row)"
-    ),
-)
 async def test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list(
     wf_conn: object,
     wf_schema: str,
@@ -238,15 +228,6 @@ async def test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-1: _route_fork returns None over an empty source list "
-        "(api/_runner.py:1212-1213) — with the join as the TERMINAL the run "
-        "terminalizes SUCCEEDED with result() == None (observed live): the "
-        "succeeded-having-routed-nothing shape through the empty-corpus door"
-    ),
-)
 async def test_rv4_1b_the_empty_route_terminal_join_returns_the_empty_sum(
     wf_conn: object,
     wf_schema: str,
@@ -306,17 +287,6 @@ async def oversized_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-2: _route_fork carries no MAX_FAN_IN_PER_JOIN check — "
-        "validate_fork raises INSIDE the finalize tx, OUTSIDE the ladder's try "
-        "(api/_runner.py:746): a raw ValueError escapes drive() (observed live), "
-        "the source row wedges 'running', and the fleet's reclaim re-crashes it "
-        "forever — the error's own remedy (JoinSpec(child_driven=True)) is "
-        "unreachable from the route API"
-    ),
-)
 async def test_rv4_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
     wf_conn: object,
     wf_schema: str,
@@ -337,7 +307,9 @@ async def test_rv4_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
 
     @app.workflow("rv4_2_fan_in_refusal")
     def rv4_2_fan_in_refusal() -> Promise[object]:
-        src = step(oversized_source, key="media", max_attempts=1)  # one attempt: the named refusal terminal-fails without burning retries
+        src = step(
+            oversized_source, key="media", max_attempts=1
+        )  # one attempt: the named refusal terminal-fails without burning retries
         routed = route(
             src,
             {
@@ -404,23 +376,18 @@ def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationE
     arms' whole shape; PINMAP flags the choice): an E-rule fires, the
     diagnostic NAMES the arm."""
     message = str(exc_info.value)
-    assert any(rule in message for rule in ("E10-arity", "E12-deps-contract", "E15-route-totality")), (
-        f"F-RV4-3: the refusal must be an E-rule owning the arm's arity — got: {message}"
-    )
-    assert "arm_zero" in message or "arm_two" in message, (
-        f"F-RV4-3: the refusal must NAME the arm — got: {message}"
+    assert any(
+        rule in message for rule in ("E10-arity", "E12-deps-contract", "E15-route-totality")
+    ), f"F-RV4-3: the refusal must be an E-rule owning the arm's arity — got: {message}"
+    # THE LANDED NAMING (the merge's reconciliation): the refusal names
+    # the arm's CHILD KEY ('<source>.item:<TypeTag>') — the runtime's own
+    # address for the arm (a local variable name does not exist past the
+    # declaration); the child key IS the arm's identity on the rows.
+    assert "item:" in message and "ImageItem" in message, (
+        f"F-RV4-3: the refusal must NAME the arm by its child key + tag — got: {message}"
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-3: E15's comment claims 'E10/E12's faces own the arity' "
-        "but neither walks map_arms (_validate.py:664-666) — a zero-param arm "
-        "BUILDS CLEAN (observed) and dies TypeError at the child "
-        "('arm_zero() takes 1 positional argument but 2 were given')"
-    ),
-)
 def test_rv4_3_a_zero_param_arm_is_a_build_refusal() -> None:
     """The arm's declared params are the invocation's contract (the
     runner calls ``body(ctx, item)`` — exactly one item): a zero-param
@@ -441,15 +408,6 @@ def test_rv4_3_a_zero_param_arm_is_a_build_refusal() -> None:
     _assert_arm_arity_refusal(exc_info)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-3: E15's comment claims 'E10/E12's faces own the arity' "
-        "but neither walks map_arms (_validate.py:664-666) — a two-param arm "
-        "BUILDS CLEAN (observed) and meets the same runtime TypeError "
-        "(the runner invokes arms as body(ctx, item))"
-    ),
-)
 def test_rv4_3_a_two_param_arm_is_a_build_refusal() -> None:
     """The hole's other face: one param BEYOND the item (the deps shape's
     count with no deps contract walked for arms) — the same build
@@ -460,9 +418,7 @@ def test_rv4_3_a_two_param_arm_is_a_build_refusal() -> None:
     def rv4_3_two_arity_arm() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
-            route(
-                src, {ImageItem: RouteArm(body=arm_two), AudioItem: RouteArm(body=process_audio)}
-            )
+            route(src, {ImageItem: RouteArm(body=arm_two), AudioItem: RouteArm(body=process_audio)})
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
@@ -508,16 +464,6 @@ async def image_arm(ctx: object, item: ImageDoc) -> dict[str, object]:
     return {"doc_id": item.doc_id, "width": item.width}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-4: E15's related-check admits SUPERCLASS item params "
-        "(_validate.py:672-678 — issubclass(member, param) passes) — item: "
-        "DocBase over the member TextDoc builds clean (observed) and the runtime "
-        "SILENTLY TRUNCATES the subclass's fields (pydantic extra='ignore': the "
-        "arm receives DocBase(doc_id=...), the text field GONE)"
-    ),
-)
 def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     """The arm param IS the decode's target: anything WIDER than the
     union member decodes the element with the member's fields DROPPED —
@@ -537,20 +483,11 @@ def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     message = str(exc_info.value)
     assert "E15-route-totality" in message, message
     assert "base_arm" in message, message
-    assert "truncat" in message.lower(), (
+    assert "extra='ignore'" in message or "drops every field" in message, (
         f"F-RV4-4: the refusal must NAME the truncation hazard — got: {message}"
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-4: E15's related-check admits item: BaseModel "
-        "(_validate.py:672-678 — issubclass(member, BaseModel) is trivially true) "
-        "— the arm builds clean (observed) and dies raw PydanticUserError at the "
-        "child (observed: error_class='PydanticUserError')"
-    ),
-)
 def test_rv4_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
     """The extreme truncation: ``item: BaseModel`` decodes every element
     into the field-less shell (and crashes pydantic outright) — the same
@@ -600,16 +537,6 @@ twin_arm_a.__annotations__["item"] = TwinA
 twin_arm_b.__annotations__["item"] = TwinB
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-5: type_tag = module.qualname is not injective — two "
-        "create_model('Rv4Twin') types share one tag; the second arm SILENTLY "
-        "OVERWRITES the first in the normalized dict (_graph.py:663; observed: "
-        "map_arms carries ONE entry, twin_arm_a gone) and the tag-set totality "
-        "compare passes both"
-    ),
-)
 def test_rv4_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     """Two union members that share a type tag are UNREPRESENTABLE as
     route arms (one key, two bodies): the verb refuses LOUDLY, naming
@@ -630,7 +557,8 @@ def test_rv4_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     message = str(exc_info.value)
     assert "Rv4Twin" in message, message
     assert any(
-        word in message.lower() for word in ("duplicat", "collid", "overwrit", "same type tag", "twice")
+        word in message.lower()
+        for word in ("duplicat", "collid", "overwrit", "same type tag", "twice")
     ), f"F-RV4-5: the refusal must NAME the tag collision — got: {message}"
 
 
@@ -666,16 +594,6 @@ async def consume_sums(ctx: object, items: list[Rv4SumA | Rv4SumB]) -> dict[str,
     return {"n": len(items)}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-6: the route join's consumer decodes list[A | B] "
-        "through pydantic's smart union (_runner_codec.py:219) — field-identical "
-        "members decode AS THE FIRST MEMBER silently (observed live: the "
-        "arm_b/Rv4SumB element arrived at the consumer as Rv4SumA); the fork's "
-        "exact-type dispatch is lost at the consumer's boundary"
-    ),
-)
 def test_rv4_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     """A routed sum whose members are field-identical (no discriminator)
     cannot round-trip the consumer's decode honestly — the dispatch is
@@ -727,15 +645,6 @@ async def waiting_image_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     return ImageResult(doc_id=item.doc_id, ocr=f"answered:{type(approval).__name__}")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-7: E14's _node_bodies walks body/loop_body/map_item but "
-        "NOT map_arms (_validate.py:815-826) — an arm-held wait_signal raises NO "
-        "E14 signal (observed: zero diagnostics): no warning, no Mermaid hold, "
-        "gates undeclarable per-arm"
-    ),
-)
 def test_rv4_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     """The E14 walk covers the arms: an arm body calling
     ``ctx.wait_signal`` with NO gate declared on the route's source is
@@ -765,16 +674,6 @@ def test_rv4_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-7: E14's _node_bodies walks body/loop_body/map_item but "
-        "NOT map_arms (_validate.py:815-826) — a gate declared on the route's "
-        "SOURCE whose waits live in the ARMS convicts 'declared-never-waited' "
-        "(observed: E14 ERROR 'declares gate(s) ... but its body NEVER waits') — "
-        "a false conviction against the zero-false-positive doctrine"
-    ),
-)
 def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
     """The contract's other face: the route's arms are the source node's
     OWN bodies for the gate walk — a gate declared on the source COVERS
@@ -812,15 +711,6 @@ def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
 # ── F-RV4-8: the route→map double-attach message ─────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-8: map_source's double-attach check reads map_item "
-        "only (_graph.py:572) — map-after-route refuses via the ACCIDENTAL "
-        "\"node 'media.join' is declared twice\" (observed) instead of the "
-        "designed \"already carries a map or a route\""
-    ),
-)
 def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> None:
     """One fork per node — ALL FOUR double-attach directions refuse with
     the DESIGNED message ("already carries a map …"), never the
@@ -872,9 +762,20 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         with pytest.raises(WorkflowBuildError) as exc_info:
             app.get(f"rv4_8_{label.replace('-', '_')}")
         message = str(exc_info.value)
-        assert "already carries a map" in message, (
+        # THE LANDED MESSAGE (the merge's reconciliation): the
+        # double-attach refusal names the FACE the node carries ("already
+        # carries a typed route" / "a map") + the one-fork law + the
+        # remedy ("wire the second ... from a distinct source") — the
+        # accidental join-key collision named nothing.
+        assert (
+            "already carries" in message
+            and ("typed route" in message or "a map" in message)
+        ), (
             f"F-RV4-8 ({label}): the ACCIDENTAL refusal fired instead of the "
             f"designed double-attach message — got: {message}"
+        )
+        assert "finalizes once" in message, (
+            f"F-RV4-8 ({label}): the message lost the one-fork law — got: {message}"
         )
         assert "declared twice" not in message, (
             f"F-RV4-8 ({label}): the join-key collision is the wrong door — got: {message}"
@@ -902,16 +803,6 @@ async def hidden_arm(ctx: object, item: BaseModel) -> dict[str, str]:
     return {"doc_id": "x"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-9: the verb hard-refuses \"does not declare a "
-        "list[...] return\" when the source DID declare one the compile could "
-        "not resolve (_graph.py:714-719; observed live with a factory-built "
-        "model — body_hints {} → the message claims UNDECLARED) — the refusal "
-        "lies about the cause and points at the wrong fix"
-    ),
-)
 def test_rv4_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
     """The source DECLARED ``list[Rv4HiddenDoc]`` — the compile cannot
     RESOLVE it. The refusal must say so (the unresolvable face names the
@@ -963,14 +854,6 @@ def test_rv4_9_an_undeclared_return_refuses_named() -> None:
 # ── F-RV4-10: W2 blind to arm queues ─────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv4-10: W2 reads node.queue only (_validate.py:1097-1120) "
-        "— a typo'd RouteArm(queue='gpuu-typo') yields ZERO diagnostics "
-        "(observed) though the route's children dispatch onto it"
-    ),
-)
 def test_rv4_10_the_queue_vocabulary_warning_covers_arm_queues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
