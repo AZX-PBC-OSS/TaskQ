@@ -90,6 +90,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+import tokenize
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
@@ -669,7 +670,13 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
         return None
     try:
         tree = ast.parse(textwrap.dedent(source))
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, tokenize.TokenError):
+        # THE UNRE-SLICEABLE SOURCE (the docs-fence's exec'd bodies: a
+        # body defined by ``exec(code, FENCE_PATH)`` carries the .md's
+        # filename, and the re-sliced def's text is not a standalone
+        # Python string — the tokenizer reds mid-slice). The walk SKIPS
+        # — the same seam discipline body_hints keeps (an unreadable
+        # source is never convicted on a guess).
         return None
 
     sites: list[_WaitSite] = []
