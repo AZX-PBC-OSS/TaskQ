@@ -5903,6 +5903,66 @@
       "file": "deslop-pin-packs-20261010T134042.txt",
       "head_sha": "cd593a06929d9acfe570d329f3435d319d3e09eb",
       "captured_at": "2026-10-10T13:40:42"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T134924-c885.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:24"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T134924-224f.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:24"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T134928-2ec4.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:28"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T134936-ab94.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:36"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T134937-2eab.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:37"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T134945-37b0.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:49:45"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T135118-f5cd.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:51:18"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T135119-3aac.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:51:19"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T135127-b378.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:51:27"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T135135.json",
+      "head_sha": "47197f5ff4897275fb2bca53fb3660a63597e7a0",
+      "captured_at": "2026-10-10T13:51:35"
     }
   ]
 }

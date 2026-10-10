@@ -1,0 +1,13 @@
+{
+  "mutation": "the write-per-emission counterfactual (the PoC's measured red: 2,000 emissions \u2192 2,000 rows + the body degraded to 49-197/s)",
+  "observed": {
+    "emissions": 10000,
+    "ring_rows": 3,
+    "state_rows": 2,
+    "state_writes": "coalesced at the cadence (see the occurrence counter)",
+    "verdict": "the coalesce holds; the convicted variant stays red"
+  },
+  "pin": "chatty_body_coalesce_cadence",
+  "run": "20261010T134921-1643341-1b9b2fbe",
+  "ts": "2026-10-10T13:49:21"
+}
