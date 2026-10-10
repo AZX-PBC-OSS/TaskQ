@@ -1000,15 +1000,6 @@ def test_rv2_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
 # ── F-RV2-13: the head-stamp law greens on the committed tree ───────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-13: scripts/verify_evidence_heads.py --runs-dir "
-        "<HEAD's committed .measurements/runs> exits rc=1 at d24f17b9 "
-        "(unstamped live claims + stems stale against their recorded heads) — "
-        "the evidence-integrity gate reds on its own estate"
-    ),
-)
 def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
     """The verifier against the tree's COMMITTED state (``git ls-files``
     + ``git show HEAD:`` — the working tree's residue never enters).
