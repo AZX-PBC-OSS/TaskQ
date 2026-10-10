@@ -26,7 +26,9 @@ their homes WITHOUT the tax:
   its concern modules (``_sql_runner``/``_runner_codec``/
   ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
   ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
-  own create/drive/result; ``api._loop`` owns the loop verbs.
+  own create/drive/result; ``api._loop`` owns the loop verbs;
+  ``_childflow`` owns the child flows (T28 — the spawn face + the join
+  handle).
 * ``chain`` owns the chain surface; ``context`` owns ``ctx.step``;
   ``definitions`` owns the registered-definition registry;
   ``ledger`` the step-ledger claim + the run-key arbiter; ``engine`` the
