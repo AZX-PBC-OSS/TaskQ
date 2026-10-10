@@ -25,6 +25,7 @@ from taskq.obs import get_logger
 from taskq.workflows._progress import ProgressEmitter
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
+from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import is_infra_fault
@@ -46,6 +47,11 @@ class _LoopHost(Protocol):
     wsql: WorkflowSql
     schema: str
     compiled: Any
+    #: THE DEPS SEAM'S BOUND INSTANCE (the DI capability): the app's ONE
+    #: instance (the runner's door binds it) — the loop driver's bodies
+    #: that declare the deps shape receive it, the SAME instance every
+    #: other body invocation sees.
+    _deps: object | None
     #: THE DRIVER'S IDENTITY (the claim identity's fence): the id the
     # node claim stamped on the row — the loop's advance/exhaust bind it
     # (a zombie driver's write is refused by its own legs).
@@ -336,7 +342,18 @@ class LoopOps(_LoopHost):
                 # loud error, never a body failure to absorb.)
                 carry = rehydrate_carry(spec.carry_type, carry)
                 try:
-                    outcome = await node.loop_body(loop_ctx, carry)
+                    # THE DEPS SEAM'S INJECTION (the DI capability): a
+                    # loop body declaring ONE param beyond (ctx, carry)
+                    # receives the runner's bound instance — the SAME
+                    # instance every other body invocation sees (the
+                    # shape's validator face is E12's; this read is the
+                    # signature's positional truth).
+                    deps_tail = (
+                        (self._deps,)
+                        if self._deps is not None and deps_param_declared(node.loop_body, 1)
+                        else ()
+                    )
+                    outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
                 except NodeHeldError:
                     # THE HOLD INSIDE THE ITERATION (T10 x T19's
                     # composition): the loop node rests in the held

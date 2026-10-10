@@ -104,13 +104,13 @@ async def ingest_body(ctx: Any, params: IngestBatch | None = None) -> list[str]:
     return sorted(IngestBatch.model_validate(raw).doc_ids) if raw is not None else []
 
 
-async def enrich_item(ctx: Any, doc_id: str) -> Summary | Unreadable:
+async def enrich_item(ctx: Any, doc_id: str, deps: EnrichClient) -> Summary | Unreadable:
     # THE FAILING CHILD (property 1): armed on the FIRST attempt only —
     # the ladder re-runs it ALONE (the siblings and the succeeded items
     # never re-run).
     if doc_id == "doc-doomed" and ctx.attempt < 2:
         raise RuntimeError("the demo's armed transient failure (doc-doomed)")
-    text = _DOC_SOURCE.get(doc_id)
+    text = deps.fetch(doc_id)
     if text is None:
         return Unreadable(doc_id=doc_id, reason="missing from the corpus")
     return Summary(doc_id=doc_id, text=text)
@@ -187,7 +187,24 @@ async def _screen_source_body(ctx: Any) -> None:
         await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})
 
 
-wf_app = WorkflowApp()
+class EnrichClient:
+    """THE DEMO'S ONE REAL DEP (the DI capability's demo face): the
+    enrich queue's client — the dependency the enrichment bodies need,
+    declared as a type and bound ONE instance at the app's door. The
+    bodies never import it, never reach through ``ctx`` or a module
+    global: the body's signature DECLARES it (``(ctx, doc_id, deps)``)
+    and the runner hands the app's bound instance in."""
+
+    def __init__(self, corpus: dict[str, str]) -> None:
+        self._corpus = corpus
+
+    def fetch(self, doc_id: str) -> str | None:
+        """The enrich leg's lookup (the corpus read the module global
+        used to own — now behind the client, injectable, mockable)."""
+        return self._corpus.get(doc_id)
+
+
+wf_app = WorkflowApp(deps=EnrichClient(_DOC_SOURCE))
 
 # ── DEMO LEG 4 — THE CONDITIONAL ROUTER (T20's chain, live) ─────────────
 #

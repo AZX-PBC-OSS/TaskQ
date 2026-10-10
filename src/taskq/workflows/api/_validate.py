@@ -39,7 +39,13 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   verification, not documentation).
 * E10 arity (F3-2) — the body's params (beyond ctx) must match the
   wired sources' count: the mismatch is a build refusal, never a
-  mid-flow ladder discovery.
+  mid-flow ladder discovery. ONE param beyond the wiring is the DEPS
+  shape — E12's contract, not an arity mismatch.
+* E12 deps-contract — the DI capability's rule: a body declaring the
+  deps shape (one param beyond ctx + the wired sources) receives the
+  app's bound deps instance; the app binding NONE (or an instance that
+  does not SATISFY the body's declared deps type) is the build refusal,
+  the message naming the fix.
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
@@ -57,7 +63,8 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -104,6 +111,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_consumer_compat(compiled)
     diagnostics += _rule_ctx_annotation(compiled)
     diagnostics += _rule_arity(compiled)
+    diagnostics += _rule_deps_contract(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
     diagnostics += _rule_eternal_wait(compiled)
     diagnostics += _rule_cross_graph(compiled)
@@ -425,6 +433,12 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
             # never convicted; E4's own pin spells the doctrine).
             continue
         params = [k for k in hints if k not in ("return", "ctx")]
+        if len(params) == len(node.args) + 1:
+            # THE DEPS SHAPE: one param beyond the wiring is the deps
+            # contract's opt-in — E12 owns the extra parameter's contract
+            # (the bound instance, the declared type); E10's count is
+            # satisfied by the shape itself.
+            continue
         if len(params) != len(node.args):
             diagnostics.append(
                 WorkflowValidationError(
@@ -436,6 +450,85 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
                     "wiring's own promise: a body param with no wired "
                     "source is a TypeError mid-flow (the ladder's "
                     "discovery of a wiring-time lie)",
+                )
+            )
+    return diagnostics
+
+
+def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E12 (THE DEPS SEAM'S CONTRACT — the DI capability's build-time
+    conviction): a body that declares ONE parameter beyond ``ctx`` + its
+    wired sources is the DEPS opt-in — the extra parameter receives the
+    app's bound deps instance at every invocation. The contract, checked
+    at build against the binding the compile carries:
+
+    * a body declaring the deps shape where the app binds NO deps
+      (``compiled.deps is None``) is refused — the message names the fix
+      (bind ONE instance at the door, or drop the parameter);
+    * a body whose deps annotation the bound instance does not SATISFY
+      is refused — both type names in the message.
+
+    The walk covers EVERY body invocation the runner can inject into:
+    the step bodies, the map's item children, and the loop driver's
+    bodies (the escalation body rides the same shape — wired 1). An
+    unresolvable-annotations body (``body_hints`` → ``{}``) is SKIPPED —
+    the zero-false-positive doctrine (a guess is never convicted); the
+    runner's positional read is the shape's runtime face, and E10's own
+    arithmetic owns the true mismatches."""
+    from taskq.workflows.api._deps import deps_satisfied
+
+    diagnostics: list[WorkflowValidationError] = []
+    deps = compiled.deps
+    checks: list[tuple[str, Callable[..., object], int]] = []
+    for node in compiled.nodes.values():
+        if node.body is not None:
+            checks.append((node.key, node.body, len(node.args)))
+        if node.map_item is not None:
+            checks.append((f"{node.key}.item", node.map_item, 1))
+        if node.loop_body is not None:
+            checks.append((node.key, node.loop_body, 1))
+        if node.loop_spec is not None and node.loop_spec.escalation_body is not None:
+            escalation: Callable[..., object] = cast(
+                "Callable[..., object]", node.loop_spec.escalation_body
+            )  # Why: the escalation body's declared shape is the StepBody contract (the same cast the registration walk keeps).
+            checks.append((f"{node.key}.escalation", escalation, 1))
+    for owner, body, wired in checks:
+        hints = body_hints(body)
+        if not hints:
+            continue  # THE UNRESOLVABLE ANNOTATIONS: a guess is never convicted
+        params = [k for k in hints if k not in ("return", "ctx")]
+        if len(params) != wired + 1:
+            continue  # not the deps shape — E10 owns the arity
+        deps_param = params[-1]
+        declared = hints[deps_param]
+        if deps is None:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E12-deps-contract",
+                    "error",
+                    f"{owner!r}'s body declares a deps parameter "
+                    f"({deps_param!r}) but this workflow's app binds no "
+                    "deps — bind ONE instance at the door "
+                    "(WorkflowApp(deps=…), or FlowRunner(…, deps=…) / "
+                    "run(…, deps=…) for the direct doors), or drop the "
+                    "parameter: one param beyond ctx + the wired sources "
+                    "IS the deps contract, never a fourth data source",
+                )
+            )
+            continue
+        verdict = deps_satisfied(deps, declared)
+        if verdict is False:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E12-deps-contract",
+                    "error",
+                    f"{owner!r}'s body declares its deps as "
+                    f"{getattr(declared, '__name__', declared)!r} but the "
+                    "app's bound instance is "
+                    f"{type(deps).__name__!r} — the bound instance must "
+                    "SATISFY the body's declared deps type: bind the "
+                    "declared type (or a subtype) on the app's deps=, or "
+                    "fix the body's annotation",
                 )
             )
     return diagnostics

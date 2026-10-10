@@ -143,6 +143,15 @@ class CompiledWorkflow:
     sunk: tuple[str, ...]
     terminal: str | None
     channel: SignalChannel
+    #: THE DEPS SEAM'S BOUND INSTANCE (the DI capability): the app's ONE
+    #: instance, bound at the door (``WorkflowApp(deps=…)``) and carried
+    #: by the compile — validate's E12-deps-contract rule reads it (the
+    #: bodies' declared deps parameters are checked against THE BINDING),
+    #: and every runner door (the direct door, the packaged ``run``, the
+    #: worker-hosted ``_runner_for``) hands the SAME instance to the body
+    #: invocations. ``None`` = the app binds no deps — a body declaring
+    #: the deps shape is E12's refusal.
+    deps: object | None = None
     input_type: object = None
     #: The workflow's declared chains (T20) — the chain SOURCE node owns
     #: its Chain; the runner resolves chain-step routes from here.
@@ -195,10 +204,24 @@ class CompiledWorkflow:
 
 class WorkflowApp:
     """The authoring surface: one app, many workflows; the definitions'
-    registry is shared with the engine (D1 — no second registry)."""
+    registry is shared with the engine (D1 — no second registry).
 
-    def __init__(self, *, actor: str = "wf") -> None:
+    THE DEPS SEAM'S DOOR (the DI capability — SAI migration blocker #1):
+    ``WorkflowApp(deps=…)`` binds ONE deps instance at the door — the
+    app's bodies that declare the deps parameter (``(ctx, params,
+    deps)``) receive THE instance; the compile carries it (E12 checks
+    the bodies' declarations against the binding at build), and every
+    runner door hands the SAME instance to every body invocation — the
+    step bodies, the map's item children, the loop driver's bodies, the
+    hold-wake's re-execution. The instance is held as ``object`` through
+    the runner — the runner never inspects it; the TYPING is proven at
+    the body's own declaration (the checker verifies the body's
+    ``deps.*`` reads against the declared type) and at build (E12's
+    runtime check of the binding against the declared type)."""
+
+    def __init__(self, *, actor: str = "wf", deps: object | None = None) -> None:
         self._actor = actor
+        self._deps: object | None = deps
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
@@ -339,6 +362,13 @@ class WorkflowApp:
         """The per-workflow signal channel (the declared gates' registry)."""
         return SignalChannel(self._actor)
 
+    @property
+    def deps(self) -> object | None:
+        """The app's bound deps instance (``None`` = none bound — a body
+        declaring the deps shape is E12's refusal). THE instance: every
+        body invocation receives this object, never a copy."""
+        return self._deps
+
     def has(self, name: str) -> bool:
         return name in self._workflows
 
@@ -408,6 +438,7 @@ class WorkflowApp:
             sunk=graph.sunk,
             terminal=graph.terminal,
             channel=channel,
+            deps=self._deps,
             smuggled=graph.smuggles,
             known_queues=self._known_queues(),
             chains=tuple(graph.chains),

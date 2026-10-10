@@ -27,6 +27,7 @@ seam on a live deployment; these pins hold it on every battery run:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -55,6 +56,13 @@ def _claimed_row(record: asyncpg.Record) -> JobRow:
 
 class Ingest(BaseModel):
     doc_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichDeps:
+    """The deps seam's demo shape (the app's declared Deps)."""
+
+    marker: str = "bound-once"
 
 
 class Report(BaseModel):
@@ -111,6 +119,33 @@ def test_the_compiled_cache_round_trips_and_misses_loud() -> None:
 
 
 # ── the boot projection (F3's call site) ─────────────────────────────────
+
+
+def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
+    """THE DEPS SEAM'S WORKER DOOR (the DI capability): the compile
+    carries the app's bound instance (``WorkflowApp(deps=…)``) and
+    ``_runner_for`` — the worker-hosted execution door's runner factory —
+    hands THE instance to its runner, the SAME binding the vanilla door
+    and the packaged run read. No re-mint, no registry probe, no
+    getattr-string: the instance rides the compiled object."""
+    seam.reset_app_registry_for_tests()
+    try:
+        deps = EnrichDeps(marker="worker-door")
+        app = WorkflowApp(deps=deps)
+
+        @app.workflow("seam_deps_flow")
+        def seam_deps_flow() -> Promise[object]:
+            node = step(
+                _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
+            )
+            return build(node)
+
+        app.get("seam_deps_flow")  # the door's compile + registration
+        worker_id = JobId(new_uuid())
+        runner = seam._runner_for("seam_deps_flow", wf_pool, "deps_probe_schema", worker_id)
+        assert runner._deps is deps
+    finally:
+        seam.reset_app_registry_for_tests()
 
 
 def test_the_projection_projects_the_declared_cohorts() -> None:

@@ -55,7 +55,9 @@ def probe_object_decl_refused() -> None:
     decorator line, the line BOTH checkers name)."""
     app = WorkflowApp()
 
-    @app.workflow("probe_object_decl")  # MUST_ERROR(reportArgumentType, invalid-argument-type): the -> object decl refused at the decoration
+    @app.workflow(
+        "probe_object_decl"
+    )  # MUST_ERROR(reportArgumentType, invalid-argument-type): the -> object decl refused at the decoration
     def probe_object_decl() -> object:
         wired = step(_body, Ingest(doc_id="d"), key="fetch")
         return build(wired)
@@ -73,7 +75,9 @@ def probe_object_decl_direct_refused() -> None:
         wired = step(_body, Ingest(doc_id="d"), key="fetch")
         return build(wired)
 
-    app.workflow("probe_direct_decl")(bad_builder)  # MUST_ERROR(reportArgumentType, invalid-argument-type): the -> object decl refused at the argument
+    app.workflow("probe_direct_decl")(
+        bad_builder
+    )  # MUST_ERROR(reportArgumentType, invalid-argument-type): the -> object decl refused at the argument
     _ = app
 
 
@@ -83,7 +87,9 @@ def probe_async_decl_refused() -> None:
     (the old annotation accepted it in silence)."""
     app = WorkflowApp()
 
-    @app.workflow("probe_async_decl")  # MUST_ERROR(reportArgumentType, invalid-argument-type): the async decl's coroutine is not a promise
+    @app.workflow(
+        "probe_async_decl"
+    )  # MUST_ERROR(reportArgumentType, invalid-argument-type): the async decl's coroutine is not a promise
     async def probe_async_decl() -> object:
         wired = step(_body, Ingest(doc_id="d"), key="fetch")
         return build(wired)

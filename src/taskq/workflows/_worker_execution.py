@@ -53,13 +53,12 @@ from uuid import UUID
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
 from taskq.obs import get_logger
+from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
     import asyncpg
-
-    from taskq.workflows.api._app import CompiledWorkflow
 
     class WorkflowAppFace:
         """The projection's contract with a registered app (the two
@@ -350,7 +349,19 @@ def _runner_for(name: str, pool: asyncpg.Pool, schema: str, worker_id: JobId) ->
     if cached is not None and cached[0] is pool:
         return cached[1]
     compiled = get_compiled_workflow(name)
-    runner = FlowRunner(compiled, pool, schema, worker_id=worker_id)
+    # THE DEPS SEAM'S DOOR (the DI capability): the compiled carries the
+    # app's bound instance (bound once at WorkflowApp(deps=…)) — the
+    # worker-hosted runner hands the SAME instance to every body
+    # invocation the vanilla door does (the E12 contract checked the
+    # bodies' declarations against THIS binding at the projection's
+    # compile).
+    runner = FlowRunner(
+        compiled,
+        pool,
+        schema,
+        worker_id=worker_id,
+        deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
+    )
     _runners[key] = (pool, runner)
     return runner
 

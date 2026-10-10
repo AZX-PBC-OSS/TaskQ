@@ -55,7 +55,6 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
-
 def source_changes_since(head_sha_value: str) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
