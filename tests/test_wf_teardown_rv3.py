@@ -446,10 +446,6 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
 # ── F-RV3-10: the gate timeout's one precedence + the cross-check ───────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-10: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
     """The timeout's cross-checkable drift is NAMED at validate: a
     ``GateDecl.timeout_s`` and the body's statically-readable literal
@@ -486,10 +482,6 @@ def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-10b: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
     """The declaration's own documentation states the UNION face: what
     ``GateDecl.timeout_s`` feeds (the compile surfaces) AND what arms
@@ -516,10 +508,6 @@ def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 # ── F-RV3-12: the loop's shape law — named, never prose ────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-12: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
@@ -598,10 +586,6 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
 # ── F-RV3-1: map_source's can-only-error param is GONE ─────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-1: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_1_map_source_takes_no_key_param() -> None:
     """The removal: ``map_source``'s ``key=`` existed only to raise (the
     map's join key is DERIVED — the engine addresses it by the source's

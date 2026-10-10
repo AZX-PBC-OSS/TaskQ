@@ -113,6 +113,14 @@ class CtxWaitOps(_WaitHost):
         validate warning ("a workflow that waits forever on a human is
         a support ticket").
 
+        THE TIMEOUT'S ARM (the union face's runtime half — the
+        declaration's docstring carries the split): THIS ``timeout_s=``
+        arms the RUNTIME deadline (the hold's expiry — the DB-clock
+        wall the sweep fires); a matching ``GateDecl.timeout_s`` on the
+        node feeds the COMPILE surfaces only (the Mermaid face, W1)
+        and never arms the runtime. Where both are statically readable
+        and they disagree, validate() names the drift (W4).
+
         THE TIMEOUT FACE (attack-3 B1's cure): an ABANDONED hold (the
         expiry sweep fired on this wait site, no held row stands) RAISES
         :class:`taskq.exceptions.SignalTimeoutError` — the glossary

@@ -130,9 +130,10 @@ invisible actor population). The vanilla path stays byte-identical.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the EIGHTEEN rules shipped (read
+Runs in pytest, CI, and at worker boot; the TWENTY rules shipped (read
 from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E14, W1, the
-two W2 faces, and W3; an earlier revision claimed about six rules against
+two W2 faces, W3, W4, and W5; an earlier revision claimed about six
+rules against
 a table that listed 7 — the reference now ships COMPLETE, from the code,
 not remembered), each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the
@@ -158,6 +159,8 @@ compile's version of over-rejection.**
 | `W2-unknown-queue` | warning | a node projected onto a queue this app cannot see (the actor-not-found parking shape, named at validate) |
 | `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |
 | `W3-eternal-loop` | warning | a loop with no `until=` and neither wall set (`max_iterations`/`budget_s`) — a loop that can never stop on its own; declare the bound explicitly |
+| `W4-gate-timeout-split` | warning | the double-sourced gate timeout cross-checked where it is cross-checkable: the `GateDecl.timeout_s` and the body's statically-readable literal wait `timeout_s=` DISAGREE — both values named in the message. The precedence: the WAIT SITE's value arms the runtime (the hold's expiry), the DECLARATION feeds the compile surfaces (the Mermaid face, W1) and never arms the runtime |
+| `W5-loop-wait-shape` | warning | the loop's shape law, NAMED (never prose): a LOOP body whose `wait_signal` sits in a conditional interior mis-indexes the answer cursor (the row's iteration counter IS the cursor — an iteration that does not wait drifts the sequence; the T26 review's C9). The unconditional wait is the shape kept — a plain STEP's conditional wait is the per-attempt cursor's honest replay |
 
 The report is ONE-PASS (tsc-style): every rule's verdict, not the first
 failure alone. The mutation matrix (each mutation flips exactly one

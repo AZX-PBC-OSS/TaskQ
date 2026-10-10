@@ -732,7 +732,11 @@ parents (`MAX_FAN_IN_PER_JOIN`) — past it, partition the map.
 For a RUNTIME-determined N: `map_source(source, item_body)` — the
 source's body returns the list, the fork spawns one fresh job per item
 (map_index = the item's ledger identity), and the join packs the
-decoded item results for the downstream body.
+decoded item results for the downstream body. The map takes NO `key=`:
+the join's key is DERIVED (`<source-key>.join` — the engine's fork
+addresses it), so naming the node means naming the SOURCE. (An earlier
+revision shipped a `key=` param whose every value was refused — the
+trap is gone; see the changelog.)
 
 ## §9 — Loops & back-edges (T19)
 

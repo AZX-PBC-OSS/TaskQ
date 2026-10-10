@@ -126,17 +126,30 @@ class GateDecl:
     validate warning ("a workflow that waits forever on a human") read —
     the gate is COMPILE-VISIBLE, not discovered at runtime.
 
-    THE TIMER-POLICY DISPOSITION (recorded — the alignment audit's
-    finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm and
-    its face is the RUNTIME raise — the wait site raises
-    :class:`taskq.exceptions.SignalTimeoutError` on an abandoned hold
-    and the body's ladder/except owns it. The other arms
+    THE TIMEOUT'S UNION FACE (the teardown round's rewrite — the stale
+    raise-face text documented neither the split's precedence nor the
+    cross-check): the timeout is DECLARED in TWO places, each with its
+    own face —
+
+    * ``GateDecl.timeout_s`` feeds the COMPILE SURFACES ONLY: the
+      Mermaid render's hold-node deadline, W1's eternal-wait warning.
+      It NEVER arms the runtime.
+    * the WAIT SITE's ``ctx.wait_signal(..., timeout_s=…)`` arms the
+      RUNTIME deadline (the hold's expiry — the DB-clock wall the
+      sweep fires).
+
+    Where both are statically readable and they DISAGREE, validate()
+    names the drift (``W4-gate-timeout-split`` — the two sources must
+    agree or the operator reads which side is which). The runtime's
+    raise face is unchanged: an abandoned hold raises
+    :class:`taskq.exceptions.SignalTimeoutError` AT the wait site; the
+    body's ladder/except owns it. The other timer arms
     (``resume_with_default`` / the timer's own ``escalate``) are recorded
     LATER (the docs' timer section names the deferral + the sanctioned
     body-level composition: catch the raise, return the default or
-    enqueue the escalation yourself) — this field records the AUTHOR'S
-    DECLARATION for the compile-time surfaces (the Mermaid face, the
-    docs), it does not introduce a second runtime vocabulary."""
+    enqueue the escalation yourself) — the ``on_timeout`` field records
+    the AUTHOR'S DECLARATION for the compile-time surfaces (the Mermaid
+    face, the docs), it does not introduce a second runtime vocabulary."""
 
     name: str
     payload_models: tuple[type[BaseModel], ...]
@@ -419,7 +432,6 @@ def map_source[S, R](
     source: Promise[S],
     body: Callable[..., Awaitable[R]],
     *,
-    key: str | None = None,
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
@@ -433,6 +445,18 @@ def map_source[S, R](
     The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
+
+    THE JOIN KEY IS DERIVED (the map has NO ``key=`` param — the
+    teardown round's removal, documented in the changelog): the engine's
+    fork + the runner address the map join by the SOURCE's own key +
+    ``'.join'`` (the addressing is load-bearing across the fork's
+    atomic write set and the consumption door) — a custom join key
+    cannot be honored without a second addressing scheme. An earlier
+    revision shipped the ``key=`` param as the accept-and-REFUSE seat
+    (every value raised the build error — a param whose only possible
+    outcome is the author's own refusal is a trap, not API); the param
+    is GONE. To name the node, name the SOURCE (``step(source_body,
+    key=…)``) — the join's key follows.
 
     ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (T21
     decision c): a PURE fn over the children's decoded result rows,
@@ -451,21 +475,6 @@ def map_source[S, R](
         raise WorkflowBuildError(
             f"node {source.key!r} already carries a map — a node finalizes "
             "once (one fork); wire the second map from a distinct source"
-        )
-    if key is not None:
-        # THE ACCEPT-AND-IGNORE CLASS'S CURE (the key param consumed or
-        # refused, never ignored): the map's join key is DERIVED — the
-        # engine's fork + the runner address the map join by the SOURCE's
-        # own key + '.join' (the addressing is load-bearing across the
-        # fork's atomic write set and the consumption door), so a custom
-        # key cannot be honored without a second addressing scheme. The
-        # param's presence names the author's intent to control the key —
-        # a silent ignore would let them believe they had.
-        raise WorkflowBuildError(
-            f"map_source(key={key!r}) — the map's join key is DERIVED from "
-            f"the source ({source.key!r}.join): the engine's fork addresses "
-            "the map join by the source's own key; a custom join key is "
-            "refused, never silently ignored"
         )
     source_node.map_item = body
     source_node.map_queue = queue
