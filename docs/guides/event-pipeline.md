@@ -144,9 +144,7 @@ async def source_body(ctx: StepContext) -> None:
     from taskq.workflows.chain import chain_start
 
     for record in _CORPUS:
-        child = chain_start(
-            CHAIN, record, map_index=abs(hash(record)) % 32000, trace_id=record
-        )
+        child = chain_start(CHAIN, record, map_index=abs(hash(record)) % 32000, trace_id=record)
         # THE CURSOR IS THE BODY'S OWN BOOKKEEPING: the emit's tx
         # checkpoints it (the resume continues from the last COMMITTED
         # page — the crash re-emits exactly the lost page).
@@ -177,7 +175,7 @@ async def main() -> None:
     # empty one dead-lettered, NOTHING dropped (the route is TOTAL — an
     # outcome with no arm is the loud RouterNotTotal at compile).
     rows = await pool.fetch(
-        f"SELECT trace_id, step_key, status FROM \"{schema}\".jobs "
+        f'SELECT trace_id, step_key, status FROM "{schema}".jobs '
         "WHERE trace_id IN ('a', 'b', 'c') AND (metadata->>'flow_id')::uuid = $1 "
         "ORDER BY id",
         flow_id,

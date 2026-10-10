@@ -81,17 +81,13 @@ async def main() -> None:
 
     compiled = app.get("doc_pipeline")
     # ONE call: create + drive + the decoded result.
-    outcome = await run(
-        compiled, pool, schema, input=Batch(doc_ids=["doc-1", "doc-2", "doc-3"])
-    )
+    outcome = await run(compiled, pool, schema, input=Batch(doc_ids=["doc-1", "doc-2", "doc-3"]))
     print(f"claim={outcome.claim.kind} outcome={outcome.outcome} result={outcome.result}")
 
     # THE RUN KEY: the same slot twice is ONE run (the arbiter, never a
     # second silent run). A terminal run's key replay is the
     # refused-to-reuse verdict, stated loudly.
-    again = await run(
-        compiled, pool, schema, input=Batch(doc_ids=["doc-1"]), key="doc-slot-1"
-    )
+    again = await run(compiled, pool, schema, input=Batch(doc_ids=["doc-1"]), key="doc-slot-1")
     print(f"first key use: claim={again.claim.kind}")
     rerun = await run(compiled, pool, schema, input=Batch(doc_ids=["doc-1"]), key="doc-slot-1")
     print(f"terminal replay: claim={rerun.claim.kind} status={rerun.claim.status}")

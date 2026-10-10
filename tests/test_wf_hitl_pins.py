@@ -459,9 +459,7 @@ async def test_hold_context_reason_is_none_after_delivery(
     # reason is the payload's business, never the context's.
     after = await client.get(holds[0].hold_id)
     assert after is not None and after.status == "delivered", after
-    assert after.reason is None, (
-        f"the delivered hold's context leaked a reason: {after.reason!r}"
-    )
+    assert after.reason is None, f"the delivered hold's context leaked a reason: {after.reason!r}"
 
 
 async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
