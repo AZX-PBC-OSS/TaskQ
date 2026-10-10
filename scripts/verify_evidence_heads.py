@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -64,6 +65,27 @@ def _git(*args: str, check: bool = True) -> str:
 
 
 def _head() -> str:
+    """The head the claims are verified against.
+
+    Under GitHub Actions, a PR's checkout is the MERGE REF (the PR's
+    head merged into main) — a commit that exists nowhere in the
+    branch's own history: every locally-recorded claim's ``head_sha``
+    is then "stale" BY CONSTRUCTION (the merge ref's diff carries
+    main's side), and the law can never green in CI. The claims verify
+    THE BRANCH's estate, so under Actions the law verifies against the
+    PR's OWN head sha (the event payload's ``pull_request.head.sha``);
+    the local runs (the dev loop, the lanes) keep ``git rev-parse
+    HEAD``.
+    """
+    event = os.environ.get("GITHUB_EVENT_PATH")
+    if event and Path(event).is_file():
+        try:
+            payload = json.loads(Path(event).read_text())
+            pr_head = payload.get("pull_request", {}).get("head", {}).get("sha")
+            if pr_head:
+                return str(pr_head)
+        except (json.JSONDecodeError, OSError):
+            pass  # not a PR event (a push/schedule run) — the checkout IS the head
     return _git("rev-parse", "HEAD")
 
 

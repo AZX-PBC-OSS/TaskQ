@@ -23,10 +23,19 @@ from typing import Any
 
 import asyncpg
 import httpx
-from examples.deep_research_web import build_app, stream_run_cards
-from pydantic import BaseModel
+import pytest
 
-from taskq.workflows import (
+# The web half's demo needs the fastapi stack (the app, the SSE streaming
+# response, the TestClient's transport): the extras' legs that don't carry
+# fastapi (vault, aws) collect this module and would die on the import —
+# the house's skip discipline (never an error, the reason named). The
+# imports sit below the importorskip BY NECESSITY (E402's sanctioned
+# shape: the guard gates the import).
+fastapi = pytest.importorskip("fastapi")
+from examples.deep_research_web import build_app, stream_run_cards  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from taskq.workflows import (  # noqa: E402
     FlowRunner,
     Promise,
     StepContext,
@@ -34,8 +43,8 @@ from taskq.workflows import (
     build,
     step,
 )
-from taskq.workflows.api._hitl import HitlClient
-from taskq.workflows.api._hitl_listen import HitlListener
+from taskq.workflows.api._hitl import HitlClient  # noqa: E402
+from taskq.workflows.api._hitl_listen import HitlListener  # noqa: E402
 
 
 class Approval(BaseModel):
