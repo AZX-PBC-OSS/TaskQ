@@ -1,0 +1,39 @@
+# T26 CURE LANE — THE NEW PINS' RED-FIRST CAPTURE (P6, P7, P8, P9, C9/E13)
+# run at the pre-cure head (the reds ARE the holes: the reconnect reconcile, the
+# partitioned stream, the missing reconcile member, the unnamed payload cap, the
+# silent conditional-wait mis-index). P8's red is the missing Backfilled member
+# (the isolation filter ships; the reconcile it reports does not). P10 and the C8
+# precedence pin passed pre-cure — their convicted variants live as PERMANENT drills
+# recorded through hitl_redlog (the receipt chain in .measurements/t10-pin-reds.json).
+# head: 1a32451f08676cc1ede25fd755e1738ff193be08
+
+        module_pg_schema: Any,
+        hitl_redlog: RedLog,
+    ) -> None:
+        """Pin P9 (the pointer-law creep protector): PG's ``pg_notify``
+        refuses a payload at 8000 bytes — and a knock refused MID-TX rolls
+        the hold's OWN transaction back with it (the create leg dies inside
+        register_hold's tx). The pointer payloads are SMALL by law; the cap
+        must be NAMED and GUARDED so the pointer law's creep (a payload
+        field grown to carry content) dies at the code seam, loudly, before
+        PG's opaque error.
+    
+        THE DRILL (permanent): an over-cap knock handed to pg_notify raises
+        — recorded. THE GREEN: the named cap constant + the guard in
+        ``_broadcast`` (the typed refusal BEFORE the wire) + every shipped
+        leg measured under the cap (a pathologically long — but valid —
+        signal name included)."""
+    
+>       from taskq.workflows.api._hitl import NOTIFY_PAYLOAD_MAX_BYTES, _broadcast
+E       ImportError: cannot import name 'NOTIFY_PAYLOAD_MAX_BYTES' from 'taskq.workflows.api._hitl' (/tmp/opencode/wt-t26cure/src/taskq/workflows/api/_hitl.py)
+
+tests/test_wf_hitl_pubsub_pins.py:1002: ImportError
+=========================== short test summary info ============================
+ERROR tests/test_wf_hitl_pubsub_pins.py::test_two_consumers_fan_out_and_each_gets_its_own_sentinel
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_reconnect_reconcile_clears_holds_resolved_during_the_outage
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_two_schemas_one_database_the_payload_filter_is_the_isolation
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_loop_conditional_wait_is_the_named_shape_error
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_loop_wait_shape_error_is_the_typed_seam
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_two_consumers_fan_out_and_each_gets_its_own_sentinel
+FAILED tests/test_wf_hitl_pubsub_pins.py::test_notify_payloads_stay_under_the_named_cap
+6 failed, 8 passed, 1 error in 17.76s

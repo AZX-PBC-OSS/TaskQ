@@ -52,6 +52,9 @@ from taskq.workflows._capture import redact_hold_context
 
 __all__ = [
     "HOLD_CHANNEL",
+    "HOLD_CREATED_CHANNEL",
+    "HOLD_EXPIRED_CHANNEL",
+    "HOLD_RESOLVED_CHANNEL",
     "DeliveryResult",
     "HitlClient",
     "delivery_refused",
@@ -67,6 +70,29 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: The notify channel (the knock — the estate's pg_notify discipline;
 #: the row is the truth, a missed message converges by polling).
 HOLD_CHANNEL = "taskq_wf_holds"
+
+#: THE BROADCAST CHANNELS (T26 — global names, the SCHEMA RIDES THE
+#: PAYLOAD: pg_notify is per-database and the schema-per-module estate
+#: shares one database across many schemas, so per-schema channel names
+#: would buy nothing; the listener filters by the payload's schema).
+#: These are the TYPED legs (the listener's events decode them); the
+#: legacy :data:`HOLD_CHANNEL` knob above keeps its pinned pointer shape.
+#: The create leg's name is ``taskq_wf_hold_created`` (the hostile
+#: review's C3 rename: the first cut's ``taskq_wf_hold`` sat ONE LETTER
+#: from the legacy ``taskq_wf_holds`` knob — an ops typo's recipe; the
+#: rename is additive, the lane unreleased).
+HOLD_CREATED_CHANNEL = "taskq_wf_hold_created"
+HOLD_RESOLVED_CHANNEL = "taskq_wf_hold_resolved"
+HOLD_EXPIRED_CHANNEL = "taskq_wf_hold_expired"
+
+#: THE NOTIFY PAYLOAD'S SIZE CAP (the pointer-law creep protector —
+#: P9): PostgreSQL refuses a ``pg_notify`` payload at 8000 bytes, and a
+#: knock refused MID-TX rolls the caller's whole transaction back with
+#: it (the create leg dies inside register_hold's tx). The pointer
+#: payloads are SMALL by law; this cap is the named seam where the
+#: creep dies LOUDLY — before the wire, with the law in the message —
+#: instead of PG's opaque server error after it.
+NOTIFY_PAYLOAD_MAX_BYTES = 8000
 
 #: The hold row's status vocabulary (the statemachine's totality for the
 #: signal rows).
@@ -258,6 +284,7 @@ INSERT INTO {schema}.wf_signals
     (id, workflow_id, node_key, signal_name, hold_epoch, call_id,
      payload, payload_schema, status, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'held', $9)
+RETURNING created_at
 """
 
 _HOLD_HOLD_NODE_SQL = """\
@@ -351,6 +378,31 @@ def _render(template: str, schema: str) -> str:
     return template.replace("{schema}", schema)
 
 
+async def _broadcast(conn: ConnLike, channel: str, payload: dict[str, object]) -> None:
+    """THE BROADCAST LEG (T26): ONE ``pg_notify`` executed on the
+    CALLER'S connection, INSIDE the caller's transaction — the leg is
+    transactional by construction: PG delivers a NOTIFY only when its
+    transaction COMMITS, so a rolled-back hold-create (or a losing
+    resolve CAS) is SILENT (pin T26-P1; a rolled-back RESOLVE the same
+    — pin T26-P10). The payload carries the schema (the channels are
+    global — the listener filters by it) and the POINTER only, never
+    the sole copy of anything (the row is the truth). THE SIZE CAP
+    (P9): a payload at/over :data:`NOTIFY_PAYLOAD_MAX_BYTES` is refused
+    HERE — loudly, before the wire: PG's own refusal would land
+    mid-tx and roll the caller's transaction back with an opaque
+    server error; the pointer law's creep dies at this seam instead."""
+    text = dumps_jsonb_str(payload)
+    if len(text.encode()) >= NOTIFY_PAYLOAD_MAX_BYTES:
+        raise ValueError(
+            f"the {channel} payload is {len(text.encode())} bytes — at or over the "
+            f"{NOTIFY_PAYLOAD_MAX_BYTES}-byte pg_notify cap: the broadcast carries THE "
+            "POINTER only (the row is the truth), and a knock refused by PG mid-tx "
+            "would roll the caller's transaction back with it. The pointer law's "
+            "creep dies here — shrink the payload, never grow the broadcast"
+        )
+    await conn.execute("SELECT pg_notify($1, $2)", channel, text)
+
+
 def _as_hold_id(hold_id: JobId | str) -> JobId:
     """The id's canonical form (the uuid column → JobId; a str handle
     round-trips through the UUID parse)."""
@@ -440,7 +492,7 @@ async def register_hold(
             else {"context": dumps_jsonb_str(masked)}
         )
     async with conn.transaction():
-        await conn.execute(
+        created_at = await conn.fetchval(
             _render(_HOLD_INSERT_SQL, schema),
             hold_id,
             workflow_id,
@@ -461,6 +513,22 @@ async def register_hold(
             node_id,
             dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
             deadline,
+        )
+        # THE BROADCAST, CREATE LEG (T26 — TRANSACTIONAL: the NOTIFY
+        # rides THIS tx, so a rolled-back hold-create is silent; the
+        # payload carries the schema + the pointer, never the payload).
+        await _broadcast(
+            conn,
+            HOLD_CREATED_CHANNEL,
+            {
+                "schema": schema,
+                "flow_id": str(workflow_id),
+                "run_id": str(workflow_id),
+                "hold_id": str(hold_id),
+                "signal": signal_name,
+                "node_key": node_key,
+                "created_at": created_at.isoformat(),
+            },
         )
     return hold_id
 
@@ -498,18 +566,21 @@ SELECT metadata->>'workflow' FROM {schema}.jobs WHERE id = $1
 """
 
 
-async def _boundary_refusal(
+async def _boundary_verdict(
     pool: asyncpg.Pool,
     *,
     schema: str,
     hold_id: JobId,
     payload: object,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """THE RUNTIME PAYLOAD BOUNDARY (attack-3 B2/H2's cure): the hold's
     DECLARED models validate the payload — BY SHAPE, never by
     declaration order — BEFORE anything consumes the hold. Returns the
-    refusal's REASON (a typed-face string naming WHY) when the payload
-    must be refused, ``None`` when it may pass. The models resolve from
+    pair (the refusal's REASON — a typed-face string naming WHY — when
+    the payload must be refused, ``None`` when it may pass; and the
+    FITTED MODEL'S NAME — the verdict's declared kind, the broadcast
+    leg's ``verdict_kind``, ``None`` on a refusal or when nothing
+    resolved). The models resolve from
     the signal-model catalog (this process ran the wait site — D1's
     discipline); a cold process falls back to the row's own
     ``payload_schema`` (the durable JSON schemas). A hold that is not
@@ -520,16 +591,16 @@ async def _boundary_refusal(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(_render(_HOLD_FOR_BOUNDARY_SQL, schema), hold_id)
         if row is None or row["status"] != "held":
-            return None  # the CAS owns the stale/cancelled arm's refusal
+            return None, None  # the CAS owns the stale/cancelled arm's refusal
         workflow_name = await conn.fetchval(_render(_WORKFLOW_NAME_SQL, schema), row["workflow_id"])
     resolved = resolve_signal_models(workflow_name, row["node_key"], row["signal_name"])
     if resolved is not None:
         models, discriminator = resolved
         try:
-            resolve_payload_fit(models, payload, discriminator)
+            fitted = resolve_payload_fit(models, payload, discriminator)
         except (SignalPayloadError, SignalPayloadAmbiguousError) as exc:
-            return str(exc)
-        return None
+            return str(exc), None
+        return None, fitted.__name__
     # THE COLD-PROCESS FALLBACK: the durable payload_schema's structural
     # fit (per declared model, by shape; exactly one must fit).
     schema_ref = row["payload_schema"]
@@ -550,7 +621,8 @@ async def _boundary_refusal(
             "legacy/pre-declaration hold). The delivery is REFUSED: nothing "
             "delivers to an undeclared hold. Remedy: cancel the run and "
             "re-run the workflow on the current code, whose wait site "
-            "declares the payload contract at hold time"
+            "declares the payload contract at hold time",
+            None,
         )
     schema_map = cast("dict[str, object]", schema_doc)  # pyright: ignore[reportUnknownVariableType]  # Why: the jsonb walk's boundary — the isinstance guard above is the runtime shape check.
     fitting = [
@@ -559,16 +631,18 @@ async def _boundary_refusal(
         if _fits_by_schema(payload, js)
     ]
     if len(fitting) == 1:
-        return None
+        return None, fitting[0]
     if not fitting:
         return (
             f"the delivered payload validates against NONE of the hold's "
             f"declared models ({sorted(schema_map)}) — the delivery is "
-            "refused, the hold SURVIVES (the typed door's runtime boundary)"
+            "refused, the hold SURVIVES (the typed door's runtime boundary)",
+            None,
         )
     return (
         f"the delivered payload fits {len(fitting)} of the hold's declared "
-        f"models ({sorted(schema_map)}) — ambiguous; the delivery is refused"
+        f"models ({sorted(schema_map)}) — ambiguous; the delivery is refused",
+        None,
     )
 
 
@@ -589,7 +663,9 @@ async def deliver_payload(
     two concurrent delivers → ONE ``delivered``, one resume. A deliver
     that cannot resume = the TYPED ``refused`` (the hold SURVIVES on the
     stale arm) — never a silent drop."""
-    refusal = await _boundary_refusal(pool, schema=schema, hold_id=hold_id, payload=payload)
+    refusal, verdict_kind = await _boundary_verdict(
+        pool, schema=schema, hold_id=hold_id, payload=payload
+    )
     if refusal is not None:
         return delivery_refused(refusal)
     async with pool.acquire() as conn, conn.transaction():
@@ -615,6 +691,19 @@ async def deliver_payload(
             dumps_jsonb_str(
                 {"hold_id": str(hold_id), "run_id": str(workflow_id), "event": "delivered"}
             ),
+        )
+        # THE BROADCAST, RESOLVED LEG (T26 — the same tx, transactional;
+        # verdict_kind is the payload model the typed door validated
+        # against — the verdict's declared kind, never the payload).
+        await _broadcast(
+            conn,
+            HOLD_RESOLVED_CHANNEL,
+            {
+                "schema": schema,
+                "hold_id": str(hold_id),
+                "flow_id": str(workflow_id),
+                "verdict_kind": verdict_kind,
+            },
         )
         resumed = None
         if cas["node_key"]:
@@ -650,10 +739,16 @@ async def deliver_payload(
 async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: int = 100) -> int:
     """The SIGNAL SWEEP's expiry arm (the only live timer on a held row):
     the deadline is DB-CLOCK compared; the expired hold → the DEFINED
-    ``abandoned`` state (never a silent orphan) and the node's resume is
-    refused-with-type (the body's ``SignalTimeoutError`` — the
-    ``on_timeout="fail"`` default's shape; the ``resume_with_default`` /
-    ``escalate`` policies' records land with their bodies' reads)."""
+    ``abandoned`` state (never a silent orphan) and the node's resume
+    re-runs the body, whose wait site RETURNS the union's ``Expired``
+    member (the fail-close arm the checker forces — the machinery never
+    raises; the body that wants the FAILURE raises
+    ``SignalTimeoutError`` ITSELF off the member). The deadline is
+    AT-LEAST precision: it fires at the first sweep pass at-or-after
+    ``expires_at``, never at a precise wall time (the listener's
+    landmine doc, landmine 4). The arm's deadline comes from the WAIT
+    SITE's ``timeout_s`` (C8's precedence law — the gate declaration is
+    the compile-visible face, never a second runtime clock)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(_render(_EXPIRY_SWEEP_SQL, schema), batch_size)
         for row in rows:
@@ -672,6 +767,24 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
+            # THE BROADCAST, EXPIRED LEG (T26): the sweep's CAS UPDATE
+            # committed the moment the autocommit statement returned —
+            # the notify rides AFTER it, never before (a notify for a
+            # row that did not land is the convicted order). The leg is
+            # BLIND TO NOTHING: a LOOP-kind hold (budget-paused) expires
+            # through this same arm and its event delivers (pin
+            # T26-P5's leg).
+            await _broadcast(
+                conn,
+                HOLD_EXPIRED_CHANNEL,
+                {
+                    "schema": schema,
+                    "hold_id": str(row["id"]),
+                    "flow_id": str(row["workflow_id"]),
+                    "signal": row["signal_name"],
+                    "node_key": row["node_key"],
+                },
+            )
     return len(rows)
 
 
@@ -758,10 +871,10 @@ class HitlClient:
         from taskq.audit import record_admin_action
 
         # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
-        boundary = await _boundary_refusal(
+        refusal, verdict_kind = await _boundary_verdict(
             self._pool, schema=self._schema, hold_id=_as_hold_id(hold_id), payload=decision
         )
-        if boundary is not None:
+        if refusal is not None:
             async with self._pool.acquire() as conn, conn.transaction():
                 await record_admin_action(
                     conn,
@@ -771,9 +884,9 @@ class HitlClient:
                     target_type="hold",
                     target_id=str(hold_id),
                     reason=reason,
-                    detail={"refused": boundary},
+                    detail={"refused": refusal},
                 )
-            return delivery_refused(boundary)
+            return delivery_refused(refusal)
         # THE RESOLVE TX: the CAS is the transition's only grant; the
         # audit + the knock ride the WINNING tx (exactly-once).
         async with self._pool.acquire() as conn, conn.transaction():
@@ -814,6 +927,18 @@ class HitlClient:
                         "event": "resolved",
                     }
                 ),
+            )
+            # THE BROADCAST, RESOLVED LEG (T26 — the CAS-WINNING tx;
+            # the loser matched no rows and knocks NOTHING).
+            await _broadcast(
+                conn,
+                HOLD_RESOLVED_CHANNEL,
+                {
+                    "schema": self._schema,
+                    "hold_id": str(hold_id),
+                    "flow_id": str(cas["workflow_id"]),
+                    "verdict_kind": verdict_kind,
+                },
             )
             resumed = None
             if cas["node_key"]:
@@ -867,6 +992,17 @@ class HitlClient:
             payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the row's jsonb — the isinstance guard above is the runtime shape check.
             chained = redact_hold_context(payload_doc)
             payload = chained if self._redact is None else self._redact(chained)
+        # THE HELD ROW'S CONTEXT IS THE REASON'S HOME: pre-delivery the
+        # payload IS the redacted context doc (reason/tool/args —
+        # register_hold wrote it); the contract's reason field reads it
+        # instead of lying None (the web demo's ROW read — C10 —
+        # renders this). Post-delivery the payload is the decision; the
+        # reason is gone with the held state it belonged to.
+        reason: str | None = None
+        if row["status"] == "held" and isinstance(payload, dict):
+            raw_reason = payload.get("reason")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: the row's jsonb walk — the isinstance guard below is the runtime shape check (the Any-contract walk's boundary).
+            if isinstance(raw_reason, str):
+                reason = raw_reason
         return HoldContext(
             hold_id=str(row["id"]),
             run_id=str(row["workflow_id"]),
@@ -876,7 +1012,7 @@ class HitlClient:
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,
-            reason=None,
+            reason=reason,
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             status=row["status"],

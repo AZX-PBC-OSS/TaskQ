@@ -41,11 +41,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from taskq import JobContext, actor
-from taskq.exceptions import SignalTimeoutError
 from taskq.workflows import (
     Done,
+    Expired,
     Promise,
     Refine,
+    StepContext,
     WorkflowApp,
     build,
     chain_source,
@@ -181,7 +182,7 @@ async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
     return {"fetched": ok, "failed": failed}
 
 
-async def review_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
+async def review_iteration(ctx: StepContext, carry: int) -> Done[str] | Refine[int]:
     # THE TYPED HOLD INSIDE THE LOOP: every iteration mints a NEW hold
     # epoch (the multi-HITL: N iterations = N distinct holds, each
     # addressed by id). An approve ENDS the loop; a refine advances the
@@ -191,37 +192,45 @@ async def review_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
         timeout_s=120.0,
         reason="the march's editorial review",
     )
-    if decision.verdict == "approve":
-        return Done(decision.note)
-    return Refine(carry + 1)
+    match decision:
+        case ReviewDecision() as review:
+            if review.verdict == "approve":
+                return Done(review.note)
+            return Refine(carry + 1)
+        case Expired():
+            return Done("the review expired — the march ships what it has")
 
 
 async def escalation_body(ctx: Any, carry: int) -> str:
     return f"escalated-at-iteration-{carry}"
 
 
-async def publish_body(ctx: Any, triage: dict[str, object], review_note: str) -> ResearchReport:
-    # THE TIMEOUT FACE: the typed wait is BOUNDED; the expiry sweep's
-    # abandonment RAISES SignalTimeoutError here — the body CATCHES it
-    # and pivots (the degraded report), never wedges, never re-holds in
-    # a loop (the re-wait dragon's fence).
+async def publish_body(
+    ctx: StepContext, triage: dict[str, object], review_note: str
+) -> ResearchReport:
+    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the typed wait is
+    # BOUNDED; the expiry sweep's abandonment RETURNS the Expired
+    # member here — the body MATCHES it and pivots (the degraded
+    # report), never wedges, never re-holds in a loop (the re-wait
+    # dragon's fence).
     approved = True
     note = review_note
     degraded = False
-    try:
-        approval = await ctx.wait_signal(
-            (PublishApproval,),
-            timeout_s=5.0,
-            reason="the march's publish approval (a SHORT wall)",
-        )
-        approved = bool(approval.approve)
-    except SignalTimeoutError:
-        degraded = True
-        note = (
-            f"{note} (degraded: the publish approval timed out)"
-            if note
-            else ("degraded: the publish approval timed out")
-        )
+    outcome = await ctx.wait_signal(
+        (PublishApproval,),
+        timeout_s=5.0,
+        reason="the march's publish approval (a SHORT wall)",
+    )
+    match outcome:
+        case PublishApproval() as approval:
+            approved = bool(approval.approve)
+        case Expired():
+            degraded = True
+            note = (
+                f"{note} (degraded: the publish approval timed out)"
+                if note
+                else ("degraded: the publish approval timed out")
+            )
     # An explicit DISAPPROVAL is also the degraded pivot (the operator
     # said no — the report says so, named).
     degraded = degraded or not approved
@@ -473,11 +482,15 @@ def drain_loop() -> Promise[object]:
     return build(after)
 
 
-async def drain_hold_body(ctx: Any, params: Kickoff) -> str:
+async def drain_hold_body(ctx: StepContext, params: Kickoff) -> str:
     decision = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=60.0, reason="the drain cell's hold"
     )
-    return decision.verdict
+    match decision:
+        case ReviewDecision() as review:
+            return review.verdict
+        case Expired():
+            return "the drain cell's hold expired"
 
 
 @matrix_app.workflow("drain_hold")

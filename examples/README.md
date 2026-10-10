@@ -121,6 +121,23 @@ When `batch_finalizer` runs while child jobs are still in-flight, `wait_for_batc
 graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
 behind HTTP, with the admin's run explorer attached.
 
+The HITL broadcast's worked example lives beside it:
+`examples/deep_research.py` — the **deep-research loop** (T26): three free
+research passes, then the typed `ContinueApproval` gate broadcast over PG
+LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
+expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
+carrying the `finished_with_what_you_have` result.
+
+The **embedding demo's web half** lives beside that:
+`examples/deep_research_web.py` (C10) — the hosting app's OWN approval
+board: the FastAPI app-lifespan listener (ONE backend `HitlListener`),
+the per-user SSE endpoint authz-scoped by the run, the `HoldCreated`
+handler reading the ROW for the reason/deadline display, the resolve
+POST through the same typed door, and the broadcast (plus the
+`Backfilled` reconcile) clearing the card. Run it with
+`TASKQ_HITL_DEMO=1 uv run uvicorn examples.deep_research_web:app`; the
+admin's `/sse/holds` topic stays the OPS surface — this is the user face.
+
 ### Run it
 
 ```bash

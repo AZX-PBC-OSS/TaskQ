@@ -127,16 +127,26 @@ class GateDecl:
     the gate is COMPILE-VISIBLE, not discovered at runtime.
 
     THE TIMER-POLICY DISPOSITION (recorded — the alignment audit's
-    finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm and
-    its face is the RUNTIME raise — the wait site raises
-    :class:`taskq.exceptions.SignalTimeoutError` on an abandoned hold
-    and the body's ladder/except owns it. The other arms
-    (``resume_with_default`` / the timer's own ``escalate``) are recorded
-    LATER (the docs' timer section names the deferral + the sanctioned
-    body-level composition: catch the raise, return the default or
-    enqueue the escalation yourself) — this field records the AUTHOR'S
-    DECLARATION for the compile-time surfaces (the Mermaid face, the
-    docs), it does not introduce a second runtime vocabulary."""
+    finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm
+    and its face is the CLOSED UNION's ``Expired`` MEMBER (T26's
+    amendment — the expiry is a VALUE, not an exception): the wait site
+    RETURNS ``Expired`` and the body MATCHES the fail-close arm (the
+    checker forces it); a body that WANTS the failure raises
+    :class:`taskq.exceptions.SignalTimeoutError` ITSELF off the member.
+    The other arms (``resume_with_default`` / the timer's own
+    ``escalate``) are recorded LATER (the docs' timer section names the
+    deferral + the sanctioned body-level composition: match the member,
+    return the default or enqueue the escalation yourself) — this field
+    records the AUTHOR'S DECLARATION for the compile-time surfaces (the
+    Mermaid face, the docs), it does not introduce a second runtime
+    vocabulary.
+
+    THE DOUBLE-TIMEOUT PRECEDENCE (C8's law): ``timeout_s`` HERE is the
+    compile-visible declaration ONLY — the RUNTIME expiry sweep is
+    armed by the wait site's ``ctx.wait_signal(timeout_s=…)``, whose
+    value writes the hold row's ``expires_at``. When the two disagree,
+    THE WAIT'S VALUE WINS on the rows (pinned); keep them equal on
+    purpose."""
 
     name: str
     payload_models: tuple[type[BaseModel], ...]

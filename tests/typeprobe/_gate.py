@@ -79,6 +79,11 @@ _CORPUS: tuple[str, ...] = (
     # a -> object decl is a static error at the decoration site, both
     # checkers; these hold that line in the corpus.
     "wf_workflow_decl_negative_types.py",
+    # T26'S AMENDMENT — the expiry-as-value probes: the wait's timeout
+    # face is the TYPED UNION (the decision models | Expired) and the
+    # CHECKER forces the fail-close arm (the bare unwrap + the
+    # fall-through match red; the green door — both arms — stays clean).
+    "wf_wait_expired_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

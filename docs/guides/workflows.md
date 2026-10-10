@@ -1074,27 +1074,125 @@ notify discipline); the notification carries THE POINTER (hold id + run
 id + event) — a lost knock costs latency, never correctness: the
 consumer converges by polling `HitlClient.list(run=…)`.
 
+**THE BROADCAST, TYPED (T26)**: the knob's legs are now three
+TRANSACTIONAL broadcast channels — `taskq_wf_hold_created` (the hold
+CREATED, inside the insert's own tx), `taskq_wf_hold_resolved` (inside
+the CAS-winning resolve/deliver tx, carrying `verdict_kind`: the
+payload model the typed door validated against), and
+`taskq_wf_hold_expired` (the sweep abandoned it). The channels are
+GLOBAL and the payload carries the SCHEMA (`pg_notify` is
+per-database; the schema-per-module estate shares one database across
+many schemas — the listener filters by payload, never by channel
+arithmetic; that filter IS the isolation between the estate's
+schemas). A rolled-back hold-create is SILENT by construction: PG
+delivers a NOTIFY only when its transaction commits — and a
+rolled-back RESOLVE is the same silence (the CAS + the audit + the
+broadcast ride one tx). The typed consumer is
+`taskq.workflows.HitlListener` — DIRECTLY ASYNC-ITERABLE, the events a
+CLOSED union — and it BACKFILLS FROM THE ROWS at start (LISTEN first,
+then the open-hold snapshot): a hold created before the listener
+existed is still delivered, and its own late NOTIFY is deduped by
+`hold_id` — the missed-event window is ZERO by construction. EVERY
+(re)backfill ends with the `Backfilled(open_hold_ids=…)` reconcile
+snapshot (the union's fourth member): a hold resolved or expired while
+the listener was DOWN never announces its own death, so the consumer
+drops any open card the snapshot disowns — and any stale event replayed
+from before the outage dies the same death. Every subscriber gets its
+own queue and its own end sentinel (the fan-out: N watching users, each
+seeing every event — never a partition). The admin's `/sse/{topic}`
+surface gained the `holds` topic: the same typed events (backfilled at
+subscribe) streamed to the browser over the same session re-check
+every other topic keeps. The resolve door is unchanged.
+
+**THE LISTENER'S OPERATIONAL LANDMINES** (each one real; the listener's
+docstring carries the same four):
+
+1. **PgBouncer**: transaction-pooling (the default `pool_mode =
+   transaction`) SILENTLY breaks LISTEN — a LISTEN is session-scoped
+   and a transaction pooler hands the session away after every tx, so
+   notifications stop arriving with no error anywhere. The listener
+   OWNS its dedicated connection for the stream's life precisely for
+   this: it must be a DIRECT connection (bypass the pooler, or run a
+   session-pooling port). This is the #1 real-world NOTIFY failure.
+2. **The capacity tax**: that dedicated connection is ONE POOL SLOT
+   FOR THE STREAM'S LIFE. Size the pool for the listeners you run; an
+   SSE face holding a listener per browser tab spends one slot per tab.
+3. **Fork safety**: the dedicated connection is an asyncio transport
+   bound to the loop and process that opened it (asyncpg is documented
+   fork-unsafe — `_forkguard`). An app that forks after the listener
+   starts (uvicorn/gunicorn multi-worker, `--preload`) must start the
+   listener IN EACH WORKER after the fork — never inherit a parent's
+   live listener.
+4. **Expiry precision is AT-LEAST**: the deadline fires on the DB clock
+   at the first leader-sweep pass at-or-after it — worst case
+   `timeout_s` + the sweep interval + a leader failover's gap. Never
+   promise a precise 120 s: the expiry is a floor; the fail-close is
+   the guarantee.
+
+**THE EXPIRY IS A VALUE, NOT AN EXCEPTION (T26's amendment)**: the
+wait's outcome is the CLOSED UNION of the declared models joined with
+`Expired` — the CHECKER FORCES the fail-close arm. From the REAL
+example (`examples/deep_research.py`):
+
+```python no-exec — not executed: fragment, the body's spine — the
+REAL file is examples/deep_research.py (the demo's fake corpus + the
+loop wiring live there)
+outcome = await ctx.wait_signal(
+    (ContinueApproval,),
+    timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
+    reason="the research loop wants to continue past the free passes",
+)
+match outcome:
+    case ContinueApproval() as approval:
+        if not approval.approved:
+            return Done(carry.finish_with_what_you_have(note=approval.note))
+        carry = carry.model_copy(update={"approved": True})
+    case Expired():
+        # THE FAIL-CLOSE: nobody watching — finish with what you have.
+        return Done(carry.finish_with_what_you_have())
+```
+
+The typed expiry is a RESULT the body matches: the run SUCCEEDS
+carrying the finish-with-what-you-have state — the user not watching
+is a RESULT, typed and named, never a hang and never a failure. A body
+that ignores the arm reds the checker (the fall-through against the
+body's declared return; the bare unwrap against the missing attribute —
+the type-probe corpus holds both markers). `SignalTimeoutError` stays
+in the vocabulary for the body that WANTS the failure — the escalation
+ladder's own use: raise it yourself off the `Expired` member. (The
+example honors the loop's shape law — ONE wait per iteration; the
+scenario's "three loops" are three research passes inside the first
+iteration, because the answer queue's cursor IS the iteration counter.
+The law has TEETH now — the E13 rule: a loop-kind body whose wait is
+CONDITIONAL (some iterations wait, others don't) leaves the iteration
+cursor past the answer queue — stranded answers, retries replaying the
+wrong slot — and the wait site REFUSES the mis-aligned state with the
+named `LoopWaitShapeError`. A plain step's cursor is
+consumption-ordered; conditional waits are legal there.)
+
 **THE TIMERS**: the deadline is DB-CLOCK compared (the signal sweep's
 expiry arm is the ONLY live timer on a held row); the expired hold →
-the DEFINED `abandoned` state (the typed `SignalTimeoutError` /
-`SignalAbandonedError` — the glossary shape, never a silent orphan);
+the DEFINED `abandoned` state (the resume's wait site returns the
+union's `Expired` member — the typed face, never a silent orphan);
 `timeout=None` must be EXPLICIT (the W1 validate warning).
 
-**THE TIMEOUT FACE IS THE RAISE** (the attack-3 B1 cure): after the
-sweep marks the hold `abandoned`, the resume's wait site RAISES
-`SignalTimeoutError` — the glossary exception — and NEVER mints an
-automatic new epoch (hold → expire → re-hold → ∞ is the convicted
-dragon, kept red by the attack probe). The body's own ladder/except
-owns the raise from there: a step ladders and terminal-fails (the
-`fail` policy's shape); a loop's failure-class rules route it as the
-BODY failure it is. A DELIBERATE re-wait — the body CAUGHT the timeout
-and waits again within the same attempt — is a NEW body decision: it
+**THE TIMEOUT FACE IS THE UNION'S SECOND ARM** (the attack-3 B1 cure,
+T26's amendment): after the sweep marks the hold `abandoned`, the
+resume's wait site RETURNS the `Expired` member — the fail-close arm
+the CHECKER forces — and NEVER mints an automatic new epoch (hold →
+expire → re-hold → ∞ is the convicted dragon, kept red by the attack
+probe). A body that WANTS the failure raises `SignalTimeoutError`
+ITSELF off the member (the escalation ladder's own use — the machinery
+never raises): a step ladders and terminal-fails (the `fail` policy's
+shape); a loop's failure-class rules route it as the BODY failure it
+is. A DELIBERATE re-wait — the body MATCHED the expiry member and
+waits again within the same attempt — is a NEW body decision: it
 registers a NEW hold with a NEW epoch. The other timer policies
 (`resume_with_default` / the escalation arm on the TIMER) are recorded
-LATER for v1 (the don't-pay law): the body-level escape — catch
-`SignalTimeoutError`, return the default / enqueue the escalation
+LATER for v1 (the don't-pay law): the body-level escape — match the
+`Expired` member, return the default / enqueue the escalation
 yourself — is the sanctioned composition until then, and it is exactly
-what the raise-based face enables.
+what the value-based face enables.
 
 **THE DELIVER BOUNDARY IS REAL** (the attack-3 B2/H2 cure): a resolve
 validates the payload against the hold's DECLARED models — BY SHAPE,

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["CtxWaitOps", "SignalUnavailableError"]
+__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError"]
 
 import structlog
 
@@ -54,6 +54,52 @@ class SignalUnavailableError(RuntimeError):
     """``ctx.signal(name)`` read a signal that has no delivered payload
     (the read-before-delivery mistake — the typed refusal, never a
     silent None)."""
+
+
+class LoopWaitShapeError(RuntimeError):
+    """THE E13 RULE (T26's cure lane — the hostile review's C9): a
+    LOOP-kind body's wait site found the iteration cursor PAST the
+    answer queue — the state a CONDITIONAL wait mints (some iterations
+    wait, others don't). The loop's answer-queue cursor IS the
+    iteration counter (the ADVANCE statement's own write), so the
+    mis-aligned state means: an earlier iteration's answer is stranded
+    (it can never be consumed again — the cursor indexes answers BY
+    ITERATION), and a retry of a waited iteration would replay the
+    WRONG slot (the retry-replay law, silently broken). Pre-cure the
+    mis-index was SILENT (the wait minted a fresh hold; the operator
+    was asked again; the stranded answer rotted on the rows) — the rule
+    gives the loop-shape law ("ONE wait per iteration") TEETH: the
+    named typed failure at the wait site, the loop's failure-class
+    rules route it exactly as they route the body's own exceptions.
+    The boundary, stated honestly: a body that waits TWICE in one
+    iteration is indistinguishable at the wait site from a retry (both
+    are cursor < len) — the second wait re-reads the iteration's own
+    answer; the shape law's doc sentence is that shape's only guard.
+    A plain (non-loop) step never sees this rule: its per-attempt
+    cursor is consumption-ordered, so conditional waits are legal
+    there."""
+
+
+class Expired(BaseModel):
+    """THE TYPED EXPIRY MEMBER (T26's amendment — the timeout face is a
+    VALUE, not an exception): the hold's deadline passed the DB clock
+    (the sweep abandoned it) and the wait site RETURNS this member
+    instead of raising — the wait's outcome is the CLOSED union
+    ``Decision | Expired``, so the CHECKER forces the fail-close arm: a
+    body that matches only the decision arm falls through and reds
+    against its own declared return; a body that bare-unwraps reds the
+    attribute (``Expired`` carries no decision fields — only the
+    pointers).
+
+    THE ESCALATION LADDER'S OWN USE: :class:`taskq.exceptions.SignalTimeoutError`
+    stays in the vocabulary for the body that WANTS the failure — it
+    raises the glossary exception ITSELF off the ``Expired`` member
+    (the machinery never raises it anymore; the exception face cannot
+    be forced, the union face can)."""
+
+    signal: str
+    node_key: str
+    hold_id: str
 
 
 class _WaitHost(Protocol):
@@ -86,24 +132,38 @@ class CtxWaitOps(_WaitHost):
     # field lives on StepContext; the mixin's wait path records into it).
     _runtime: dict[str, int]
 
-    async def wait_signal(
+    async def wait_signal[M: BaseModel](
         self,
-        signals: Any,
+        signals: type[M] | tuple[type[M], ...],
         *,
         timeout_s: float | None = None,
         reason: str | None = None,
         tool: str | None = None,
         args: dict[str, object] | None = None,
         discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
-    ) -> Any:
-        """THE TYPED WAIT (T10): the TUPLE FORM is the typed wait —
-        ``await ctx.wait_signal((Approval, Escalate))`` (PEP 604 unions
-        in value position are ``UnionType`` and carry no static payload
-        information — Package B, finding 2); the single-payload form is
-        the one-member overload. THE RESUME CONTRACT (documented ON the
-        method — cut #18's disposition): **the body re-executes FROM
-        THE TOP on resume** — make it idempotent; pre-wait side effects
-        are ``ctx.step``-ledgered and replay cheap.
+    ) -> M | Expired:
+        """THE TYPED WAIT (T10), THE EXPIRY IS A VALUE (T26's amendment):
+        the TUPLE FORM is the typed wait — ``await ctx.wait_signal((Approval,
+        Escalate))``; the single-payload form is the one-member overload.
+        The return is the CLOSED UNION of the declared models joined with
+        :class:`Expired` — ``Decision | Expired`` — and the CHECKER
+        forces the fail-close arm:
+
+        >>> outcome = await ctx.wait_signal((ContinueApproval,), timeout_s=120.0)
+        >>> match outcome:
+        ...     case ContinueApproval() as approval: ...
+        ...     case Expired(): ...  # the fail-close: finish with what you have
+
+        A body that matches only the decision arm falls through (implicit
+        ``None`` against the body's declared ``Done | Refine`` return — the
+        checker reds it); a body that bare-unwraps reds the attribute
+        (``Expired`` carries no decision fields). The type-probe corpus
+        holds both markers (``tests/typeprobe/wf_wait_expired_negative_types.py``).
+
+        THE ESCALATION LADDER'S OWN USE: a body that WANTS the timeout as
+        a FAILURE raises :class:`taskq.exceptions.SignalTimeoutError`
+        ITSELF off the ``Expired`` member — the machinery never raises it
+        (the exception face cannot be forced; the union face can).
 
         No unresolved signal row → the node HOLDS (the held
         representation: pending + the deadline + the signal row as
@@ -113,23 +173,30 @@ class CtxWaitOps(_WaitHost):
         validate warning ("a workflow that waits forever on a human is
         a support ticket").
 
-        THE TIMEOUT FACE (attack-3 B1's cure): an ABANDONED hold (the
-        expiry sweep fired on this wait site, no held row stands) RAISES
-        :class:`taskq.exceptions.SignalTimeoutError` — the glossary
-        exception, raised at the wait site; the body's ladder/except
-        owns it from there (a step ladders + terminal-fails; a loop's
-        failure-class rules route it as the BODY failure it is). The
-        re-execution NEVER automatically mints a new epoch — hold →
-        expire → re-hold → ∞ is the convicted dragon. A DELIBERATE
-        re-wait (the body CAUGHT the timeout face and waits again within
-        the same attempt) is a NEW body decision: it registers a NEW
-        hold with a NEW epoch.
+        THE TIMEOUT FACE (attack-3 B1's cure, the union amendment): an
+        ABANDONED hold (the expiry sweep fired on this wait site, no
+        held row stands) RETURNS the :class:`Expired` member — the
+        fail-close arm the checker forces. The re-execution NEVER
+        automatically mints a new epoch — hold → expire → re-hold → ∞
+        is the convicted dragon: the face fires ONCE per abandoned row
+        per attempt (the face marker below); a DELIBERATE re-wait (the
+        body MATCHED the expiry member and waits again within the same
+        attempt) is a NEW body decision: it registers a NEW hold with a
+        NEW epoch.
 
         ``discriminator=`` (attack-3 B2's small honest API): when the
         payload fits MORE than one declared model, the gate's explicit
         picker resolves the union — its pick must be one of the fitting
         candidates. Without one, an ambiguous payload is the typed
-        refusal at the deliver boundary."""
+        refusal at the deliver boundary.
+
+        THE DOUBLE-TIMEOUT PRECEDENCE (C8's law — BOTH faces declare a
+        timeout): THIS parameter arms the expiry sweep — the hold row's
+        ``expires_at`` is written from THIS ``timeout_s`` (the DB clock
+        plus it). The gate's ``GateDecl(timeout_s=…)`` is the
+        COMPILE-VISIBLE declaration (the Mermaid face, the W1 warning)
+        — never a second runtime clock. Keep them equal on purpose; when
+        they disagree, THE WAIT'S VALUE WINS, on the rows."""
         models: tuple[type[BaseModel], ...] = cast(
             tuple[type[BaseModel], ...],
             signals if isinstance(signals, tuple) else (signals,),
@@ -141,7 +208,9 @@ class CtxWaitOps(_WaitHost):
             # ANY payload delivers to it from a fresh process (the row's
             # payload_schema is the cold process's only witness). The
             # declaration is one tuple at the wait site; the hold never
-            # ships contract-less.
+            # ships contract-less. (Static face: the new signature refuses
+            # an empty tuple at the checker — the guard keeps the runtime
+            # seam's teeth: a cast-seam caller passes an empty tuple.)
             raise TypeError(
                 "ctx.wait_signal requires at least one declared payload "
                 "model — a hold without a declared contract is the audit "
@@ -149,7 +218,6 @@ class CtxWaitOps(_WaitHost):
             )
         names = tuple(m.__name__ for m in models)
         signal_name = names[0] if len(names) == 1 else "|".join(names)
-        from taskq.exceptions import SignalTimeoutError
         from taskq.workflows.api._hitl import (
             mark_awaited,
             register_hold,
@@ -230,6 +298,27 @@ class CtxWaitOps(_WaitHost):
                 self.node_key,
                 [*names, "|".join(names)],
             )
+            if is_loop_kind and cursor > len(queue):
+                # THE E13 RULE (the loop's uniform-wait law — C9's cure):
+                # the iteration cursor may never run PAST the answer
+                # queue. The aligned states are: cursor == len (the
+                # continuation's wait — a fresh hold next) and cursor <
+                # len (a retry's replay). cursor > len means earlier
+                # iterations did not wait — the conditional-wait shape:
+                # answers stranded (unconsumable — the cursor indexes
+                # BY ITERATION) and retries replaying the wrong slot.
+                # Named, loud, at the wait site: never a silent
+                # mis-index.
+                raise LoopWaitShapeError(
+                    f"E13-uniform-loop-wait: this loop body's wait is CONDITIONAL "
+                    f"(the iteration cursor {cursor} runs past the {len(queue)}-answer "
+                    f"queue on {signal_name}) — a loop body must declare ONE wait per "
+                    "iteration: the answer-queue cursor IS the iteration counter, so a "
+                    "wait on only some iterations strands earlier answers (never "
+                    "consumable again) and replays the wrong slot on retry. Wait "
+                    "unconditionally each iteration (branch on the RESULT), or move "
+                    "the wait out of the loop"
+                )
             if cursor < len(queue):
                 # THE REPLAY/CONSUME: this wait takes the queue's next
                 # answer (the per-attempt cursor advances — the same
@@ -255,7 +344,7 @@ class CtxWaitOps(_WaitHost):
                 # identity — the epoch of the hold THIS wait consumed
                 # (the body asserting on ctx sees which answer it got).
                 self._runtime["hold_epoch"] = int(answer["hold_epoch"])
-                return self._coerce_signal(models, payload, discriminator=discriminator)
+                return cast("M", self._coerce_signal(models, payload, discriminator=discriminator))
             # PAST THE QUEUE: the node's PENDING hold (if any) is THIS
             # wait's wait — the held row stands (idempotent re-hold,
             # never a second registration of one wait).
@@ -272,10 +361,13 @@ class CtxWaitOps(_WaitHost):
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
-            # THE TIMEOUT FACE (attack-3 B1's cure): the sweep marked
-            # THIS wait site's hold 'abandoned' and no held row stands —
-            # the wait site RAISES the glossary exception; the body's
-            # ladder/except owns it from there. NO automatic new epoch:
+            # THE TIMEOUT FACE (attack-3 B1's cure, the union
+            # amendment): the sweep marked THIS wait site's hold
+            # 'abandoned' and no held row stands — the wait site RETURNS
+            # the union's ``Expired`` MEMBER (the fail-close arm the
+            # checker forces; the body that wants the FAILURE raises the
+            # glossary exception ITSELF off the member). NO automatic
+            # new epoch:
             # a re-execution after abandonment never re-holds (the
             # hold→expire→re-hold→∞ dragon's kill site). The DELIBERATE
             # re-wait — the body caught the face and waits again within
@@ -313,12 +405,16 @@ class CtxWaitOps(_WaitHost):
                         self.job_id,
                         dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
                     )
-                    raise SignalTimeoutError(
-                        f"the hold on signal {signal_name!r} (node "
-                        f"{self.node_key!r}, epoch {abandoned_row['hold_epoch']}) "
-                        "timed out — the expiry sweep abandoned it and the wait "
-                        "site does not re-hold: the body's ladder/except owns "
-                        "the typed face from here"
+                    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the
+                    # EXPIRY MEMBER returns — the closed union's second
+                    # arm, the fail-close the checker forces. The body
+                    # that wants the FAILURE raises SignalTimeoutError
+                    # ITSELF off this member (the escalation ladder's own
+                    # use); the body that matches it is the fail-close.
+                    return Expired(
+                        signal=signal_name,
+                        node_key=self.node_key,
+                        hold_id=str(abandoned_row["id"]),
                     )
             # A NEW HOLD: a NEW epoch (the count of this name's holds —
             # the identity's mint).

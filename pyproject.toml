@@ -347,6 +347,10 @@ ignore = [
 # The attack probes' dash-named modules (attack3-*) are the red team's
 # run-directly probes (pytest node ids, not import surfaces).
 "tests/test_wf_hitl_pins.py" = ["S608"]
+# The T26 broadcast pins: the same shape — the f-strings' ONLY
+# interpolation is the module fixture's schema identifier (wf_schema),
+# every caller-controlled value $N-bound.
+"tests/test_wf_hitl_pubsub_pins.py" = ["S608"]
 # The D2 soak's cure pins (the hold-stamp wedge): the same shape — the
 # f-strings' ONLY interpolation is the module fixture's schema identifier
 # (wf_schema), every caller-controlled value $N-bound.

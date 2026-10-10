@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from taskq.workflows import (
     DONE,
     Chain,
+    Expired,
     GateDecl,
     HitlClient,
     Promise,
@@ -76,12 +77,18 @@ async def screen_body(ctx: StepContext, doc_id: str) -> ScreenOutcome:
 
 async def enrich_body(ctx: StepContext, doc_id: str) -> EnrichOutcome:
     """THE HOLD (the smallest leg's point): the typed review — the
-    workflow pauses here until the operator resolves."""
-    decision = await ctx.wait_signal(
+    workflow pauses here until the operator resolves. THE EXPIRY IS A
+    VALUE (T26): the expiry member is the typed stop."""
+    outcome = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=600.0, reason="the fleet demo's review hold"
     )
-    print(f"  [enrich] {doc_id} resumed: {decision.verdict} ({decision.note})")
-    return EnrichOutcome.OK
+    match outcome:
+        case ReviewDecision() as decision:
+            print(f"  [enrich] {doc_id} resumed: {decision.verdict} ({decision.note})")
+            return EnrichOutcome.OK
+        case Expired():
+            print(f"  [enrich] {doc_id} expired: finishing with what we have")
+            return EnrichOutcome.OK
 
 
 SCREEN_CHAIN = Chain(

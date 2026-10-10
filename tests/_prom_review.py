@@ -809,7 +809,7 @@ def _migrate_schema(pg_dsn: str, schema: str) -> None:
     assert result.returncode == 0, f"migration failed: {result.stderr}"
 
 
-def _once_per_invocation(  # pyright: ignore[reportUnusedFunction]  # Why: the probes' cross-module helper — tests/test_prometheus_metrics_review.py imports and calls it from ITS fixtures; pyright's unused check is per-file and cannot see the import.
+def once_per_invocation(
     name: str,
     state_dir: Path,
     producer: Callable[[], dict[str, str]],

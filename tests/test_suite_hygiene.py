@@ -127,13 +127,23 @@ _TESTING_PKG_WORKER_ALLOWLIST = frozenset({"fixtures.py"})
 # tests/http_mock.py documents the retired bridge verbatim and is the one
 # module allowed to drive respx directly, so it is excluded alongside _SELF.
 _HTTP_MOCK = _TESTS_DIR / "http_mock.py"
+# tests/_prom_review.py's PORT PARTITION (the prom-harness's per-worker
+# band, 75b78c5f) is the worker-qualified-hash pattern's port twin: the
+# worker id is ONE input to a bounded per-worker port range (gw<N> ->
+# base + N * stride, modded within the stride), never a schema or an
+# identifier — the conftest hash's sanction, at the port seam.
+_PROM_REVIEW = _TESTS_DIR / "_prom_review.py"
 
 _PYTEST_XDIST_WORKER_RE = re.compile(r"PYTEST_XDIST_WORKER")
 _MODULE_SCHEMA_CONST_RE = re.compile(r"^_?SCHEMA\s*=", re.MULTILINE)
 
 
 def _test_files() -> list[Path]:
-    return [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF and p.name != "conftest.py"]
+    return [
+        p
+        for p in _TESTS_DIR.rglob("*.py")
+        if p != _SELF and p.name != "conftest.py" and p != _PROM_REVIEW
+    ]
 
 
 def _testing_pkg_files() -> list[Path]:

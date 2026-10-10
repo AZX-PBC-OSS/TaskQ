@@ -85,8 +85,18 @@ async def _held_flow(
 async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
+    from taskq.exceptions import SignalTimeoutError
+    from taskq.workflows import Expired
+
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
-        return await ctx.wait_signal(Approval, timeout_s=0.3)
+        # T26'S AMENDMENT: the face is a VALUE (the Expired member); the
+        # body converts it into the raised failure (the ladder's own use).
+        outcome = await ctx.wait_signal(Approval, timeout_s=0.3)
+        match outcome:
+            case Approval() as approval:
+                return approval
+            case Expired():
+                raise SignalTimeoutError("the converted expiry face")
 
     flow_id, runner, _node = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="a3_timeout_flow"

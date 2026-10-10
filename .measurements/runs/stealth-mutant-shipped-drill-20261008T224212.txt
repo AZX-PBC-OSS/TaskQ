@@ -10,6 +10,6 @@
 # The mutation REVERTED — the pin green again (10 passed). RED-verified: the
 # behavioral pin catches the stealth mutation the moment it ships, where the
 # shape-comparing comparators stayed green (71+ tests).
-SUPERSEDED-BY: runs/wf-battery-cov-20261010T224500.txt
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T062906.txt
 # the mark's reason: (the one-off drill's receipt died with its ephemeral lane; the substance is owned by the LIVE pins — pin 2/23/25's behavioral teeth + the wf battery — green at the head)
 head: 64a2cc435073a3b083f36167494eb2a288411556

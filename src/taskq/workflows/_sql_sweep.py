@@ -464,9 +464,10 @@ SELECT count(*) FROM reaped
 #   released with it), the row re-claims (``scheduled_at = now()``). The
 #   body's re-execution owns the next NAMED state from there: a delivered
 #   hold's answer replays from the queue (the resume contract), an
-#   abandoned one raises the typed timeout face (the body's ladder owns
-#   it), an absent one re-asks. NOTHING wedges: every path lands in a
-#   named state.
+#   abandoned one RETURNS the union's Expired member at the wait site
+#   (the fail-close arm the checker forces — the body that wants the
+#   failure raises SignalTimeoutError itself off the member), an absent
+#   one re-asks. NOTHING wedges: every path lands in a named state.
 #
 # Lock-first (FOR UPDATE SKIP LOCKED the stamped candidates) so a
 # concurrent deliver's resume — the same clear, one tx — serializes
