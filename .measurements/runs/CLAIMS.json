@@ -7006,6 +7006,12 @@
       "file": "evidence-heads-verify-20261010T221530Z.txt",
       "head_sha": "d2ee16f36096e518809141dc8ed5be77bdf1e611",
       "captured_at": "2026-10-10T16:14:45"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261010T231459Z.txt",
+      "head_sha": "406546d4fb29510c900e374ab2386e0cce90dbd7",
+      "captured_at": "2026-10-10T16:15:00"
     }
   ]
 }
