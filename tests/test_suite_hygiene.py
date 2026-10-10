@@ -152,17 +152,32 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     within a worker (see module docstring). Use ``module_pg_schema`` /
     ``clean_pg_conn`` / ``clean_jobs_app`` or a unique per-test name
     instead.
+
+    The allowlist covers NON-name uses only: ``_prom_review.py`` reads
+    the worker id to PARTITION EPHEMERAL PORTS (each xdist worker's
+    probes draw from their own 100-port band - the bind-close
+    allocation raced at -n 8 and the loser's exporter died EADDRINUSE).
+    A port is not a name: nothing persisted, nothing shared across
+    files, no isolation claim - the worker id only de-conflicts
+    simultaneous bind attempts within the one invocation. Any future
+    use that touches a schema, a table, an identifier, or anything a
+    database row remembers belongs NOWHERE in this list.
     """
+    allowlist = {
+        "_prom_review.py",  # port-band partition ONLY (see above)
+    }
     offenders = [
         str(p.relative_to(_TESTS_DIR))
         for p in _test_files()
-        if _PYTEST_XDIST_WORKER_RE.search(p.read_text())
+        if p.name not in allowlist
+        and _PYTEST_XDIST_WORKER_RE.search(p.read_text())
     ]
     assert not offenders, (
         "Found PYTEST_XDIST_WORKER-derived schema/name patterns in:\n"
         + "\n".join(f"  - {f}" for f in offenders)
-        + "\n\nUse the module_pg_schema / clean_pg_conn / clean_jobs_app fixtures, "
-        "or a unique per-test name (e.g. f'prefix_{new_base62()}'), instead."
+        + f"\n\nUse the module_pg_schema / clean_pg_conn / clean_jobs_app fixtures, "
+        "or a unique per-test name (e.g. f'prefix_{new_base62()}'), instead. "
+        f"Non-name uses (ports) may join the allowlist WITH the justification: {sorted(allowlist)}."
     )
 
 
