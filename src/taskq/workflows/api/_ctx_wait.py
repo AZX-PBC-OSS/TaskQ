@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError"]
+__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError", "WaitHost"]
 
 import structlog
 
@@ -102,9 +102,11 @@ class Expired(BaseModel):
     hold_id: str
 
 
-class _WaitHost(Protocol):
+class WaitHost(Protocol):
     """The context surface the wait machinery reads (the split's typed
-    seam — the fields live on the context, the machinery here)."""
+    seam — the fields live on the context, the machinery here; the
+    timer's mixin, ``_ctx_timer.CtxTimerOps``, composes on the SAME
+    protocol — the two waits share one host shape)."""
 
     flow_id: JobId
     job_id: JobId
@@ -122,7 +124,7 @@ class _WaitHost(Protocol):
     _redact: Callable[[str], str] | None
 
 
-class CtxWaitOps(_WaitHost):
+class CtxWaitOps(WaitHost):
     """The context's wait/deliver mixin (the machinery's home; the
     context composes it)."""
 

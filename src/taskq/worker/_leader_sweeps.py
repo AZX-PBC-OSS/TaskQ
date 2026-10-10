@@ -588,16 +588,24 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_signal_sweep_call() -> int:
-        # THE SIGNAL SWEEP'S EXPIRY ARM (T10): the ONLY live timer on a
-        # held row — the deadline is DB-CLOCK compared; the expired hold
-        # → the DEFINED 'abandoned' state (never a silent orphan). The
-        # lazy import keeps the §16.1 import law.
-        from taskq.workflows.api._hitl import sweep_expired_signals
+        # THE SIGNAL SWEEP'S TWO ARMS (T10 + T28): the expiry arm — the
+        # deadline is DB-CLOCK compared; the expired HUMAN hold → the
+        # DEFINED 'abandoned' state (never a silent orphan) — and the
+        # TIMER arm (T28, the hold whose resolver is the clock): the
+        # due timer hold → RESOLVED 'delivered' with the clock's own
+        # wake receipt (the inverted face: the wake, never the
+        # fail-close). The lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_due_timers, sweep_expired_signals
 
-        return await sweep_expired_signals(
+        expired = await sweep_expired_signals(
             ctx.deps.dispatcher_pool,
             schema=ctx.deps.settings.schema_name,
         )
+        fired = await sweep_due_timers(
+            ctx.deps.dispatcher_pool,
+            schema=ctx.deps.settings.schema_name,
+        )
+        return expired + fired
 
     async def wf_hold_stamp_reconcile_call() -> int:
         # THE HOLD-STAMP RECONCILE ARM (the D2 soak's P1: the

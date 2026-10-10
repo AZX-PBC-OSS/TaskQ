@@ -82,3 +82,45 @@ async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
             # guard is the belt that keeps THIS door clean on both
             # checkers (unreachable when the union is closed).
             raise AssertionError(f"unreachable: the union is closed, got {other!r}")
+
+
+# ── T28's TIMER PROBES — the durable timer's typed wake ─────────────────
+# ``ctx.wait_until`` returns the TYPED ``TimerWake`` (never a union, never
+# Any): the wake's fields (key/scheduled/fired_at) narrow, a wrong
+# ``when`` argument reds, and a body reading a foreign attribute off the
+# wake reds — the clock's receipt is a typed value the checker sees.
+
+
+async def probe_timer_green_door(ctx: StepContext, params: Params) -> str:
+    """THE TIMER'S GREEN DOOR (the shape the docs' §4b teaches): the
+    wake is consumed as the typed value it is. This function must stay
+    CLEAN (the gate reds on any error outside the markers)."""
+    _ = params
+    wake = await ctx.wait_until(30.0, key="probe")
+    return f"{wake.key}:{wake.lateness_s >= 0.0}"
+
+
+async def probe_timer_when_must_be_temporal(
+    ctx: StepContext, params: Params
+) -> str:  # MUST_ERROR(reportArgumentType, invalid-argument-type): the deadline is a datetime | float — a bare str is the authoring error the typed door refuses
+    """THE WRONG `when`: a string deadline is not a clock reading — the
+    signature refuses it at the checker (both checkers red the
+    argument)."""
+    _ = params
+    wake = await ctx.wait_until(
+        "tomorrow"
+    )  # MUST_ERROR(reportArgumentType, invalid-argument-type): str is not datetime | float
+    return wake.key
+
+
+async def probe_timer_wake_bare_unwrap(
+    ctx: StepContext, params: Params
+) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries NO decision fields — a body reading a human gate's verdict off the clock's receipt reds
+    """THE WAKE IS NOT A DECISION: a body that treats the timer's
+    receipt as a human gate's answer (reading a `verdict` off it) reds
+    — the timer's face has no fail-close to borrow fields from."""
+    _ = params
+    wake = await ctx.wait_until(30.0, key="probe")
+    return (
+        wake.verdict
+    )  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): TimerWake carries no verdict

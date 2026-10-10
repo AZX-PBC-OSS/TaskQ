@@ -363,6 +363,24 @@ def wedge_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
+@pytest.fixture
+def timer_redlog() -> Iterator[RedLog]:
+    """The red sink for the T28 durable-timer pins (the pre-implementation
+    reds + the convicted variants)."""
+    log = RedLog("t28-timer-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
+def versioning_redlog() -> Iterator[RedLog]:
+    """The red sink for the T29 versioning-contract pins (the redeploy
+    face's reds)."""
+    log = RedLog("t29-versioning-pin-reds.json")
+    yield log
+    log.flush()
+
+
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in

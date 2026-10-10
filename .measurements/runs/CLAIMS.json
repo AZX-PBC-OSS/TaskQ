@@ -4913,7 +4913,7 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
+      "kind": "THE DOCS LANE'S RV2-13 CURE — the superseded-capture index",
       "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
@@ -7102,6 +7102,60 @@
       "file": "fast-tier-n8-20261010T221700Z.txt",
       "head_sha": "cdb3f11fc783b86fd961302cbd734f7ab167d91e",
       "captured_at": "2026-10-10T16:15:31"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T165315-0a1e.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:15"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T165315-0403.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:15"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T165321-d03d.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:21"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T165321-5ad3.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:21"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T165321-0c8b.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:21"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T165321-8a1b.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:21"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T165333-ca80.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:33"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T165335-a18e.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:35"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T165337-d470.json",
+      "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
+      "captured_at": "2026-10-10T16:53:37"
     }
   ]
 }
