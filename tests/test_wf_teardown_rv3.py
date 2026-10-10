@@ -208,10 +208,6 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-7: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
