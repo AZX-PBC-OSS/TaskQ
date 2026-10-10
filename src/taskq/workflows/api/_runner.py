@@ -860,13 +860,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         IDEMPOTENT (cancel twice = one cancel — a terminal root updates
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
         log line."""
+        # THE REASON'S SHAPE PIN AT THE WRITE (finding 10's cure): the
+        # root flip binds the reason into `jobs.error_message` — a raw
+        # NUL byte refused THAT bind and rolled back the WHOLE cancel.
+        # One law, both binds: `taskq.audit.bound_reason`.
+        from taskq.audit import bound_reason
         from taskq.workflows.api._hitl import cancel_run_signals
+
+        bounded_reason = bound_reason(reason or "cancel_workflow", 500)
 
         async with self.pool.acquire() as conn, conn.transaction():
             flipped = await conn.fetchval(
                 render_sql(CANCEL_ROOT_SQL_TEMPLATE, self.schema),
                 flow_id,
-                (reason or "cancel_workflow")[:500],
+                bounded_reason,
             )
             if flipped is None:
                 return 0  # already terminal — idempotent

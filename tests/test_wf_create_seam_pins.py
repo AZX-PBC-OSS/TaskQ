@@ -442,6 +442,50 @@ async def test_pin_nodeless_root_reap_belt(
 
 
 @pytest.mark.integration
+async def test_pin_nodeless_root_reap_count_is_the_true_count(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """FINDING 14's PIN (RED-FIRST): the reaper's RETURN was
+    ``RETURNING f.id`` read through ``fetchval`` — the FIRST reaped row's
+    128-BIT UUID — and ``int(uuid)`` converted the identity into a garbage
+    "count" (measured on this tree: ``265174781926550178777984214673248076994``)
+    that rode ``taskq.sweep.rows``'s sample; a multi-row reap's magnitude
+    was lost with it (one orphan reaped, two reported as one
+    128-bit-hash-fragment). THE CURE: the statement answers ``count(*)``
+    (a bigint), the caller's cast is the pin's contract (the metric never
+    samples a non-int), and the pin asserts the EXACT count — one orphan
+    seeded, exactly 1 returned, never more, never a hash fragment."""
+    from taskq.workflows._sweep import NODELESS_ROOT_REAP_GRACE_S, reap_nodeless_roots
+
+    wsql = render_workflow_sql(wf_schema)
+
+    # ONE orphan: the true count is EXACTLY 1 — the garbage RETURN would
+    # answer a 39-digit fragment here.
+    orphan = await insert_flow_run(
+        wf_conn, wsql, entry=FlowStandIn(_FLOW_NAME), run_key="seam:orphan-count"
+    )
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'running', "
+        "created_at = now() - make_interval(secs => $2) WHERE id = $1",
+        orphan.flow_id,
+        NODELESS_ROOT_REAP_GRACE_S * 2,
+    )
+
+    reaped = await reap_nodeless_roots(wf_pool, wsql)
+    assert isinstance(reaped, int), (
+        f"the reap count rode a non-int ({type(reaped).__name__}) — the "
+        "128-bit hash fragment is back in the metric"
+    )
+    assert reaped == 1, (
+        f"the reap count is not the TRUE count: got {reaped}, the run "
+        "seeded exactly one past-grace orphan — a count(*) answer was "
+        "expected, the fragment face is back"
+    )
+
+
+@pytest.mark.integration
 async def test_pin_packaged_run_one_call_end_to_end(
     wf_conn: asyncpg.Connection,
     wf_schema: str,

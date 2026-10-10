@@ -368,9 +368,17 @@ async def reap_nodeless_roots(
     answers the squatted key's replay ``existing-terminal`` LOUDLY (the
     caller's re-run is a new key — never a silent no-op).
 
-    Returns the reaped count."""
+    Returns the reaped count.
+
+    THE COUNT'S HONEST CAST (finding 14's cure): the statement answers
+    ``count(*)`` (a bigint — the caller's ``fetchval`` reads the NUMBER),
+    never ``RETURNING f.id`` — a 128-bit uuid read through ``int()`` was
+    a hash fragment riding the sweep-rows metric (and a multi-row reap's
+    magnitude was lost with it). The ``int(...)`` cast stays: count(*)
+    arrives an int already, and the cast is the pin's contract — the
+    metric never samples a non-int."""
     async with pool.acquire() as conn:
-        reaped: str | None = await conn.fetchval(
+        reaped: int | None = await conn.fetchval(
             wsql.nodeless_root_reap, timedelta(seconds=grace_s), batch_size
         )
     return int(reaped or 0)

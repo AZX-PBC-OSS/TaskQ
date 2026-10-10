@@ -955,11 +955,14 @@ their no-lineage semantics — the migration is opt-in per workload, not
 a fleet conversion.
 
 The bands (measured on the built code, the spike's §7 protocol): the
-emit tx stays single-digit-to-low-teens ms per page (a 40-record page:
-children + edges + cursor in ONE tx), and the chain-shaped dispatch
-backlog costs the same ms-class as plain jobs at 200 chains — the
-streaming source adds ONE bounded tx per page, not per record. See
-`perf-evidence-workflows-streaming.md`.
+emit tx's p50 stays single-digit ms per page (3.2–8.1 ms across the
+five captured runs; the max TAIL reaches 20.6 ms on the loaded-box
+capture — the artifacts' own range, the figures' truth), and the
+chain-shaped dispatch backlog costs the same ms-class as plain jobs at
+200 chains — the streaming source adds ONE bounded tx per page, not per
+record. See `perf-evidence-workflows-streaming.md` and the captures it
+cites (`.measurements/t20-streaming-bands-*.json` — the range is every
+captured run, never the friendliest).
 
 ## §4 — HITL: humans are rows (T10)
 

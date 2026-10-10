@@ -425,18 +425,26 @@ WITH orphans AS (
            jsonb_build_object('from_state', 'pending', 'to_state', 'failed',
                               'error_class', 'NodelessRunReaped')
     FROM orphans o
+), reaped AS (
+    UPDATE {schema}.jobs f
+    SET status = 'failed',
+        error_class = 'NodelessRunReaped',
+        error_message = 'the run root has no node rows past the reap grace — '
+                         'the create did not commit atomically (the orphan '
+                         'root: undevelopable by the derivation, the run key '
+                         'squatted); re-run with a NEW run key',
+        finished_at = clock_timestamp()
+    FROM orphans o
+    WHERE f.id = o.id
+    RETURNING f.id
 )
-UPDATE {schema}.jobs f
-SET status = 'failed',
-    error_class = 'NodelessRunReaped',
-    error_message = 'the run root has no node rows past the reap grace — '
-                     'the create did not commit atomically (the orphan '
-                     'root: undevelopable by the derivation, the run key '
-                     'squatted); re-run with a NEW run key',
-    finished_at = clock_timestamp()
-FROM orphans o
-WHERE f.id = o.id
-RETURNING f.id
+-- THE COUNT IS THE COUNT (finding 14's cure): the caller reads ONE scalar
+-- through ``fetchval`` — a RETURNING f.id here handed the caller the FIRST
+-- reaped row's UUID, and ``int(uuid)`` converts the 128-BIT IDENTITY into
+-- a garbage row-count (a hash fragment) straight into
+-- ``taskq.sweep.rows``'s sample. The statement answers count(*) — the
+-- number the metric's name promises.
+SELECT count(*) FROM reaped
 """
 
 # THE HOLD-STAMP WEDGE'S CURE (the D2 soak's P1): a non-terminal node row

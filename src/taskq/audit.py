@@ -95,11 +95,13 @@ __all__ = [
     "ACTION_SCHEDULE_RUN",
     "ACTION_SCHEDULE_SKIP",
     "ANONYMOUS_SUBJECT",
+    "REASON_MAX_LENGTH",
     "SUBJECT_MAX_LENGTH",
     "TARGET_TYPE_ACTOR",
     "TARGET_TYPE_JOB",
     "TARGET_TYPE_RATE_LIMIT_BUCKET",
     "TARGET_TYPE_SCHEDULE",
+    "bound_reason",
     "fold_principal_into_cancel_event",
     "principal_subject",
     "record_admin_action",
@@ -164,6 +166,46 @@ def _bound_subject(subject: str) -> str:
     broken auth dependency take down every admin mutation."""
     escaped = subject.translate(_SUBJECT_CONTROL_ESCAPES)
     return escaped[:SUBJECT_MAX_LENGTH]
+
+
+#: The reason column's shape bound — the OTHER free-text field this module
+#: writes (the cancel form's own ``maxlength`` on its reason input; the
+#: module docstring names the pair). THE AUDIT SEAM'S BOUNDS (finding 10's
+#: cure): ``admin_audit`` is the NEVER-PRUNED table — an unbounded reason
+#: was unbounded retention per row — and the reason rode the text bind RAW:
+#: a NUL byte in an operator-supplied reason made asyncpg refuse the INSERT,
+#: and the audit leg's failure rolled back the WHOLE cancel (the same-tx
+#: guarantee turned a poisoned free-text field into a failed mutation). The
+#: reason rides the SAME law the subject rides: the control escapes (NUL
+#: included — it renders as the ``\\x00`` ESCAPE, the bind survives) and
+#: the length cap applied at the LEAF, so every writer path (the engine's
+#: cancel, the admin shim, the backend-mediated safe path) inherits it.
+REASON_MAX_LENGTH: int = 512
+
+
+def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | None:
+    """Pin the audit reason to the column's shape: no control characters
+    (the NUL byte dies as its ``\\x00`` escape — the poison is inert at
+    the write), bounded length (the never-pruned table's per-row bound).
+    Truncation is the honest bound, per :func:`_bound_subject`.
+
+    PUBLIC — the reason's OTHER write seats call THIS (never a second
+    implementation): the cancel's root flip binds the reason into
+    ``jobs.error_message`` BEFORE the audit row exists, and a raw NUL
+    there refused the bind and rolled back the whole cancel (finding
+    10's conviction — the poisoned free-text field was a failed
+    mutation). The audit leaf's own ``_bound_reason`` delegates here, so
+    every writer path — the engine's cancel (both binds), the admin
+    shim, the backend-mediated safe path — inherits the one law."""
+    if reason is None:
+        return None
+    escaped = reason.translate(_SUBJECT_CONTROL_ESCAPES)
+    return escaped[:limit]
+
+
+def _bound_reason(reason: str | None) -> str | None:
+    """The leaf's delegate (:func:`bound_reason`)."""
+    return bound_reason(reason)
 
 
 def _bound_untyped_subject(raw: str) -> str:
@@ -357,14 +399,18 @@ async def _record_admin_action(
 ) -> None:
     """THE LEAF: the audit row's INSERT itself (the body
     :func:`record_admin_action` routes to — never the module attr, which
-    a rebinding can flip mid-chain)."""
+    a rebinding can flip mid-chain). The reason is shape-pinned HERE (the
+    leaf — every writer path inherits the bound): the never-pruned
+    table's per-row cap, and the NUL byte escaped before the text bind
+    (an unbound reason was the poison that rolled back a whole cancel —
+    finding 10's conviction)."""
     await conn.execute(
         _INSERT_SQL.format(schema=schema),
         principal_subject(principal),
         action,
         target_type,
         target_id,
-        reason,
+        _bound_reason(reason),
         dumps_jsonb_str(detail if detail is not None else {}),
     )
 

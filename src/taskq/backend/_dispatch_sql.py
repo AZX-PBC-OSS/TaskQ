@@ -2041,7 +2041,9 @@ WHERE EXISTS (
           -- stale queue label as routable here.
           AND NOT j.assignment_routed
           AND j.status = 'pending'
+          AND j.deps_pending = 0
           AND j.id >= $2::uuid
+__WF_FENCE_J__
         LIMIT 1
     ) hit
 )
@@ -2057,16 +2059,18 @@ OR (
           -- whose partial predicate is the marker itself.
           AND j.assignment_routed
           AND j.status = 'pending'
+          AND j.deps_pending = 0
           -- The re-pended arm stays CURSOR-UNBOUND even here, matching
           -- the claim statement's own exemption (re-pended ids predate
           -- the cursor): an unbound arm is the probe's honest answer to
           -- "is anything routable", the exact question the expansion
           -- arbiter asks.
+__WF_FENCE_J__
           LIMIT 1
     )
 )
 LIMIT 1
-"""
+""".replace("__WF_FENCE_J__", _wf_probe_fence("j"))
 
 
 async def dispatch_batch(

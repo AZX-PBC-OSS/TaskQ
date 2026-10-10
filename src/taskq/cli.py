@@ -3418,7 +3418,19 @@ async def _job_show(
     typer.echo(f"started_at: {row['started_at']}")
     typer.echo(f"finished_at: {row['finished_at']}")
     if row["error_class"] is not None:
-        typer.echo(f"error_class: {row['error_class']}")
+        # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
+        # job-show seat's own face): error_class is written by the
+        # ladder/reaper paths as a class name, but the COLUMN is text —
+        # a hand-crafted or legacy row's value flows to the tty here
+        # RAW (multi-line, ANSI-carrying, unbounded). The same
+        # `_bounded_line` law the wf CLI's error-class seat carries
+        # (collapse + the 60-class bound — one home, never a second
+        # implementation).
+        from taskq.workflows._cli import (
+            _bounded_line,  # pyright: ignore[reportPrivateUsage]  # Why: the bound's ONE home is the wf CLI's own private — the discipline is imported, never duplicated.
+        )
+
+        typer.echo(f"error_class: {_bounded_line(row['error_class'], 60)}")
         # THE DB-SOURCED TEXT'S DISCIPLINE (the class seat: the job-show's
         # own face) — the collapse + the bound, never a raw multi-line or
         # escape-carrying blob in a line-oriented shell surface.

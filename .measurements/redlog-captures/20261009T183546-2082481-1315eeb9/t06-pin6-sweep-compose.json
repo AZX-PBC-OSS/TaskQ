@@ -1,0 +1,10 @@
+{
+  "mutation": "the sweep's failed_required arm dropped \u2014 the fail_closed join fires over the failed parent after the heal",
+  "observed": {
+    "blocked_required": 1,
+    "fired": 1
+  },
+  "pin": "t06-pin6-sweep-compose",
+  "run": "20261009T183546-2082481-1315eeb9",
+  "ts": "2026-10-09T18:35:46"
+}

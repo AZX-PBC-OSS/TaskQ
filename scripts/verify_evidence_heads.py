@@ -177,13 +177,6 @@ def verify(runs_dir: Path, head: str) -> list[str]:
         paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         live = paths[0]
         recorded = _recorded_head(live)
-        if recorded == head:
-            continue  # the live claim is FRESH — verified on its own head
-        if recorded is not None and not _source_changes_since(recorded):
-            # The off-by-one rule: nothing outside the measurements
-            # estate changed since the claimed head — the source tree
-            # the claim verifies is content-identical. Fresh.
-            continue
         marked = _superseded_by(live)
         if marked:
             target = (
@@ -194,6 +187,13 @@ def verify(runs_dir: Path, head: str) -> list[str]:
                     f"{stem}: {live.name} is marked SUPERSEDED-BY {marked} but the "
                     "target does not exist — the link is dead"
                 )
+            continue
+        if recorded == head:
+            continue  # the live claim is FRESH — verified on its own head
+        if recorded is not None and not _source_changes_since(recorded):
+            # The off-by-one rule: nothing outside the measurements
+            # estate changed since the claimed head — the source tree
+            # the claim verifies is content-identical. Fresh.
             continue
         if _cited_import(live):
             # THE CITED-IMPORT DECLARATION (the docs-numbers round's own

@@ -243,3 +243,111 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
     assert state["root"] == "cancelled" and state["signal"] == "cancelled", (
         f"the cancel tore: {state}"
     )
+
+
+# ── THE AUDIT SEAM'S BOUNDS (finding 10 — the reason + the NUL) ──────────
+
+
+async def test_the_nul_reason_does_not_roll_back_the_cancel(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE AUDIT SEAM'S NUL POISON (finding 10, face A — RED-FIRST): the
+    reason rode the text bind RAW, and asyncpg refuses a NUL byte in a
+    text bind — the audit leg raised inside the cancel's own transaction,
+    and the WHOLE cancel rolled back (the same-tx guarantee turned a
+    poisoned free-text field into a failed mutation). THE CURE: the NUL
+    is sanitized AT THE WRITE (the leaf's shape pin — it rides as the
+    ``\\x00`` ESCAPE), the poison is inert, and the cancel lands with its
+    audit row."""
+    flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_nul_reason")
+
+    stopped = await runner.cancel_workflow(
+        flow_id, reason="ops\x00payload — the poisoned reason", principal="attacker"
+    )
+    assert stopped >= 1, "the poisoned cancel refused — the NUL rode raw"
+    state = await _cancel_state(wf_conn, wf_schema, flow_id)
+    assert state == {"root": "cancelled", "signal": "cancelled", "audit_rows": 1}, (
+        f"the NUL-carrying reason rolled back the whole cancel: {state}"
+    )
+    row = await wf_conn.fetchrow(
+        f'SELECT reason FROM "{wf_schema}".admin_audit WHERE target_id = $1',  # noqa: S608  # Why: the schema identifier is the fixture's validated name; the value is $n-bound.
+        str(flow_id),
+    )
+    assert row is not None and "\x00" not in (row["reason"] or ""), (
+        "a RAW NUL byte reached the audit row — the sanitize is not at the leaf"
+    )
+    assert "\\x00" in (row["reason"] or ""), (
+        "the NUL must ride as its ESCAPE (the row records what arrived, made inert)"
+    )
+
+
+async def test_the_audit_reason_is_bounded_at_the_leaf(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE AUDIT SEAM'S LENGTH BOUND (finding 10, face B — RED-FIRST):
+    ``admin_audit`` is the NEVER-PRUNED table, and an unbounded reason
+    was unbounded retention per row (a 100k-char reason landed verbatim).
+    THE CURE: the truncate-to-bounds law at the leaf — the row records
+    what arrived, CAPPED (the cancel form's own maxlength the module
+    docstring already names)."""
+    flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_long_reason")
+
+    huge = "x" * 100_000
+    stopped = await runner.cancel_workflow(flow_id, reason=huge, principal="attacker")
+    assert stopped >= 1
+    row = await wf_conn.fetchval(
+        f'SELECT reason FROM "{wf_schema}".admin_audit WHERE target_id = $1',  # noqa: S608  # Why: the schema identifier is the fixture's validated name; the value is $n-bound.
+        str(flow_id),
+    )
+    assert row is not None
+    assert len(row) <= 512, f"the reason landed UNBOUNDED ({len(row)} chars) — the cap reds"
+    assert row.startswith("x" * 8), "the bound truncates, never rewrites"
+
+
+async def test_the_run_feed_survives_a_direct_db_poisoned_row(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE AUDIT SEAM'S POISON INERT (finding 10, face C): a row poisoned
+    DIRECTLY in the DB (outside the sanitized writer — another driver can
+    put control characters in the text and ``\\u0000`` inside the detail
+    jsonb) must not take the run's live feed down: the SSE frame path and
+    the run page's audit read survive it. The write-side sanitize makes
+    NEW poison impossible; this pin convicts the READ's survival."""
+    import json as json_mod
+
+    from taskq.web.admin._wf_actions import _frame
+    from taskq.web.admin._wf_rows import fetch_run_view
+
+    flow_id, _runner = await _held_flow(wf_pool, wf_schema, "attack_audit_poison_row")
+    # THE DIRECT-DB POISON: no taskq writer ran here — another driver's
+    # row. (asyncpg itself refuses a raw NUL in ANY text or jsonb bind —
+    # the poison a foreign driver CAN land: the ANSI escape + the C0
+    # controls in the reason text, the \u0001 escape inside the detail
+    # jsonb.)
+    poisoned_reason = "bad\x1b[31mreason\x02with controls"
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".admin_audit '  # noqa: S608  # Why: the schema identifier is the fixture's validated name; every value is $n-bound.
+        "(principal_subject, action, target_type, target_id, reason, detail) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        "direct-db",
+        "workflow.cancel",
+        "workflow_run",
+        str(flow_id),
+        poisoned_reason,
+        json_mod.dumps({"note": "esc\u0001inside jsonb", "run_id": str(flow_id)}),
+    )
+    # THE RUN PAGE'S AUDIT READ survives the poisoned row.
+    from taskq.web.admin.workflows import _RUN_EVENTS_SQL
+
+    rows = await wf_conn.fetch(
+        _RUN_EVENTS_SQL.format(schema=wf_schema), str(flow_id), f"{flow_id}:%"
+    )
+    assert any(r["reason"] == poisoned_reason for r in rows), "the poisoned row did not read back"
+    # THE RUN VIEW (the SSE frame's body) survives — derive + frame it.
+    view = await fetch_run_view(wf_conn, wf_schema, flow_id)
+    assert view is not None
+    frame = _frame(1, {"run_id": str(flow_id), "status": str(view.derive())})
+    assert "state_change" in frame or "data:" in frame, "the frame generator broke"
+    # ...and the JSON encoder the frames ride renders a poisoned detail
+    # without dying (a control escape is legal JSON).
+    assert json_mod.dumps({"d": "esc\u0001inside jsonb"}) is not None

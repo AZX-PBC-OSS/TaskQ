@@ -152,9 +152,15 @@ def test_projection_the_split_placement_cohorts() -> None:
         queue="gpu",
     )
 
+    async def _split_source(ctx: Any) -> None:
+        """The chain source's paged generator: the corpus rides the
+        CLOSURE, not a params arg — a source body taking a param with no
+        wired source is the E10-arity refusal (the wiring's own promise),
+        so the split fixture's source takes ONLY the context."""
+
     @app.workflow("wf-exec-split")
     def _workflow() -> object:
-        src = chain_source(chain, _exec_body, key="doc_source")
+        src = chain_source(chain, _split_source, key="doc_source")
         return build(src)
 
     configs = _project_with([app])
