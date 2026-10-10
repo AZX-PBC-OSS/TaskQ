@@ -1,0 +1,15 @@
+{
+  "mutation": "ONE shared queue + ONE stop sentinel: two concurrent consumers partition the stream \u2014 consumer A steals every event, consumer B starves against a sentinel that is never its own",
+  "observed": {
+    "b_stranded": true,
+    "consumer_a_haul": [
+      0,
+      1,
+      2
+    ],
+    "consumer_b_haul": []
+  },
+  "pin": "T26-P7-shared-queue-partition",
+  "run": "20261010T003922-2008598-a8c608ca",
+  "ts": "2026-10-10T00:39:22"
+}

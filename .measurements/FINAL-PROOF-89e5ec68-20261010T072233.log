@@ -1,0 +1,26 @@
+=== THE FINAL PROOF at 89e5ec6829a18e74a0c19befa95345efb2bf6ed3 — 2026-10-10T07:22:33Z
+=== the consolidation: the pin-carry + the pubsub/T26 line + the rv3 line + fail-fast off
+
+[1/9] ruff check:
+Found 17 errors.
+[2/9] format:
+1675 files already formatted
+[3/9] pyright FULL (the CI's own command):
+    Attribute "verdict" is unknown (reportAttributeAccessIssue)
+13 errors, 0 warnings, 0 informations
+[4/9] the type gate:
+the type gate holds: every MUST_ERROR marker (36) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+[5/9] the pin families (rv2+rv3+pubsub+deps+ratelimit):
+E   SyntaxError: invalid decimal literal
+[6/9] the wf battery x2:
+E   SyntaxError: invalid decimal literal
+E   SyntaxError: invalid decimal literal
+[7/9] the example e2e x2:
+E   SyntaxError: invalid decimal literal
+E   SyntaxError: invalid decimal literal
+[8/9] mkdocs strict:
+INFO    -  Documentation built in 16.71 seconds
+[9/9] the head-stamp verifier:
+  wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261009T234435-2bdc.json is stale — recorded on 6fa3f60e86a7, the head is 89e5ec6829a1. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+  wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261009T235847.json is stale — recorded on 4879c13a995e, the head is 89e5ec6829a1. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+VERIFIER-RC=0
