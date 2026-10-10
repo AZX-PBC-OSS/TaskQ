@@ -6,3 +6,4 @@ ruff rc=0
 1666 files already formatted
 format rc=0
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/lint-format-20261010T085747.txt

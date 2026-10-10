@@ -5,3 +5,4 @@ the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at
 [gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261009T233728.json
 coverage-gate rc=0
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt

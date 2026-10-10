@@ -81,7 +81,6 @@ from pydantic import BaseModel
 
 from taskq.exceptions import SchemaNotMigratedError
 from taskq.migrate import apply_pending
-from taskq.workflows.api._validate import validate_compiled
 from taskq.workflows import (
     Done,
     Expired,

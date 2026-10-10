@@ -1,0 +1,4 @@
+# THE RV2 PIN BATTERY AT THE MEASUREMENT HEAD — the flips' terminal capture (the routing-proof lane)
+# head d6fcdfa9d10cb4a10e724ef3bc9f0b8512cbf238 (the measurement commit d6fcdfa9's line — the capture stamped at the measurement head, carried by the next measurement commit via the off-by-one rule: the source tree the claim verifies is content-identical): the pin file 17 tests = 2 green guards + 15 flipped pins, ALL GREEN — the verifier over the COMMITTED estate rc=0
+17 passed in 4.0s
+head: d6fcdfa9d10cb4a10e724ef3bc9f0b8512cbf238

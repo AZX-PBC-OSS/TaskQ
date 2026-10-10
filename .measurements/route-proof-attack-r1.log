@@ -1,0 +1,120 @@
+........................................................................ [ 11%]
+.....................................................s.................. [ 22%]
+........................................................................ [ 33%]
+..................................................s..................... [ 44%]
+........................................................................ [ 55%]
+........................................................................ [ 67%]
+........................................................................ [ 78%]
+.....................F.................................................. [ 89%]
+...................................................................      [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-21812/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verifier's live-claim pick per stem is mtime-ordered; a git
+        checkout's mtimes are extraction-order, not the captures' order —
+        so the pin restores each file's mtime from its own run-scoped
+        filename timestamp (the semantic order the stamp law names), making
+        the verdict the TREE'S, never the checkout's."""
+        import os
+        import subprocess
+        import sys
+        from datetime import datetime
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        ts_re = re.compile(r"-(\d{8})T(\d{6})")
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            match = ts_re.search(dest.name)
+            if match:
+                stamp = datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").timestamp()
+                os.utime(dest, (stamp, stamp))
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 0ec0ca46eb7f):
+E           attack-rounds: the LIVE CLAIM attack-rounds-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T001215-1cac.json is stale — recorded on 96d5ff1b1e23, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           estate-slice: the LIVE CLAIM estate-slice-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T235100.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T001200-72ad.json is stale — recorded on 96d5ff1b1e23, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fast-tier-n8: the LIVE CLAIM fast-tier-n8-20261010T235000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T001200-a4de.json is stale — recorded on 96d5ff1b1e23, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           lint-format: the LIVE CLAIM lint-format-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T001201-775b.json is stale — recorded on 96d5ff1b1e23, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T001212-0667.json is stale — recorded on 96d5ff1b1e23, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pyright-full: the LIVE CLAIM pyright-full-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           rv2-pins-final: the LIVE CLAIM rv2-pins-final-20261011T000000.txt is stale — recorded on 1030dcaa88c2, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-battery-cov: the LIVE CLAIM wf-battery-cov-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-battery-leg2: the LIVE CLAIM wf-battery-leg2-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-perf-bands: the LIVE CLAIM wf-perf-bands-20261010T234000.txt is stale — recorded on 512f7a91f722, the head is 0ec0ca46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-route/.venv/bin/python', '/tmp/opencode/wt-route/scripts/verify_evidence_head...46eb7f. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+tests/test_attack_fork_inherit_pg.py::test_forked_child_is_refused_on_the_live_copy_wire
+  /tmp/opencode/wt-route/tests/test_attack_fork_inherit_pg.py:241: DeprecationWarning: This process (pid=3229123) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_inherits_the_pools_sockets_and_is_refused
+  /tmp/opencode/wt-route/tests/test_attack_fork_inherit_pg.py:166: DeprecationWarning: This process (pid=3229123) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_fork_in_a_job_body_refuses_reports_and_keeps_consuming
+  /tmp/opencode/wt-route/tests/test_attack_fork_inherit_pg.py:101: DeprecationWarning: This process (pid=3229123) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_parent_stamp_is_set_by_the_fork_and_consumed_once
+  /tmp/opencode/wt-route/tests/test_attack_fork_inherit.py:216: DeprecationWarning: This process (pid=3229123) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py: 17 warnings
+  /tmp/opencode/wt-route/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=3229123) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/attack4-nothing-stuck-probes.py:281: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the attacker's own PG on :5711)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 640 passed, 2 skipped, 23 deselected, 21 warnings in 257.67s (0:04:17)

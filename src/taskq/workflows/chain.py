@@ -44,8 +44,11 @@ derivation) — never a join.
 from __future__ import annotations
 
 import enum
+import types
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
+
+from pydantic import BaseModel
 
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
 
@@ -54,6 +57,14 @@ __all__ = ["DONE", "Chain", "Route", "RouterNotTotal", "Step", "chain_fork", "ch
 #: The chain's terminal route: a body outcome that ends the record's
 #: chain (the step's finalize carries NO fork — the chain ends here).
 DONE = "__done__"
+
+
+def _type_tag(cls: type) -> str:
+    """The TYPE-TAGGED route's dispatch key for one payload class: the
+    canonical ``module.qualname`` — the tag the router matches a body's
+    returned ELEMENT against (``type(element)``), and the tag the
+    declaration's totality check compares the route's keys to."""
+    return f"{cls.__module__}.{cls.__qualname__}"
 
 
 class RouterNotTotal(Exception):
@@ -70,32 +81,68 @@ class Route:
     """The conditional edge map for ONE chain step: outcome → next step
     (a step key of the chain, or :data:`DONE`).
 
-    The keys are the members of the step body's outcome enum (declared
-    total — validated by :class:`Chain` at declaration); the runtime door
-    (:meth:`next_step`) raises the loud refusal for an outcome with no
-    arm, never a silent ``None``."""
+    TWO dispatch vocabularies (the type-tagged route — the routing
+    proof's cure — beside the original enum face):
 
-    __slots__ = ("_routes",)
+    * THE ENUM FACE: the keys are the members of the step body's outcome
+      enum — the LITERAL TAG (the member's ``.value`` string) is the
+      dispatch key; the record rides the row's payload VERBATIM.
+    * THE TYPE-TAGGED FACE: the keys are the member TYPES of the step
+      body's payload UNION (``Step.outcomes=Summary | Unreadable``) —
+      the body returns the union ELEMENT itself and the router
+      dispatches on the element's runtime TYPE; on a type-tagged arm the
+      ELEMENT IS THE RECORD (the arm's body declares its arm's type —
+      the narrowed arms in the editor — and the typed boundary
+      re-validates the round-trip, so a mis-routed element dies LOUDLY
+      in the coercion).
 
-    def __init__(self, routes: dict[enum.Enum, str | None]) -> None:
-        # The keys normalize through their enum value (a NON-enum key —
-        # a raw string — is the declaration-time refusal's other face:
-        # bind() names it 'unknown' below).
-        normalized: dict[str, str | None] = {
-            str(getattr(k, "value", k)): v for k, v in routes.items()
-        }
+    Both faces are declared total — validated by :class:`Chain` at
+    declaration (over the enum's members, or the union's member types);
+    the runtime door (:meth:`next_step`) raises the loud refusal for an
+    outcome with no arm, never a silent ``None``."""
+
+    __slots__ = ("_routes", "_type_tags")
+
+    def __init__(self, routes: dict[enum.Enum | type, str | None]) -> None:
+        # The keys normalize: an enum member through its enum value (the
+        # literal tag); a payload CLASS through its type-tag. A NON-enum,
+        # non-type key — a raw string — is the declaration-time refusal's
+        # other face: bind() names it 'unknown' below.
+        normalized: dict[str, str | None] = {}
+        type_tags: set[str] = set()
+        for k, v in routes.items():
+            if isinstance(k, type):
+                tag = _type_tag(k)
+                type_tags.add(tag)
+            else:
+                tag = str(getattr(k, "value", k))
+            normalized[tag] = v
         self._routes = normalized
+        self._type_tags = type_tags
 
-    def bind(self, outcome_enum: type[enum.Enum], step_key: str) -> None:
+    def bind(
+        self, outcomes: type[enum.Enum] | types.UnionType | type[object], step_key: str
+    ) -> None:
         """The declaration-time totality check (the Chain's door): the
-        route's keys must be EXACTLY the enum's members — a route that
-        drops an outcome would silently strand the record's chain."""
-        members = {m.value for m in outcome_enum}  # type: ignore[attr-defined]
+        route's keys must be EXACTLY the outcome vocabulary's members —
+        the enum's members on the enum face, the union's member TYPES on
+        the type-tagged face. A route that drops an outcome would
+        silently strand the record's chain."""
+        if isinstance(outcomes, types.UnionType):
+            arms = get_args(outcomes)
+            members = {_type_tag(m) for m in arms}
+            vocab = " | ".join(m.__name__ for m in arms)
+        elif issubclass(outcomes, enum.Enum):  # pyright: ignore[reportArgumentType]  # Why: the union arm above narrowed the UnionType away; what remains is a class object, enum or not.
+            members = {str(m.value) for m in outcomes}
+            vocab = outcomes.__name__
+        else:
+            members = {_type_tag(outcomes)}
+            vocab = outcomes.__name__
         declared = set(self._routes)
         if declared != members:
             raise ValueError(
                 f"chain step {step_key!r}: route is not total over "
-                f"{outcome_enum.__name__} — missing "
+                f"{vocab} — missing "
                 f"{sorted(members - declared)}, unknown {sorted(declared - members)}. "
                 "A non-total route is refused at declaration: the outcome it "
                 "drops would silently strand a record's chain."
@@ -115,7 +162,8 @@ class Route:
         except KeyError:
             raise RouterNotTotal(
                 f"outcome {outcome!r} has no route — the chain's route is "
-                "total over the step's outcome enum; this is a defect, not a "
+                "total over the step's outcome vocabulary (the enum's members, "
+                "or the payload union's member types); this is a defect, not a "
                 "dead end"
             ) from None
 
@@ -126,10 +174,16 @@ class Step:
     route over it. The body signature: ``body(ctx, item) -> Outcome`` —
     the item is the record riding the row (the chain's steps share the
     record's identity through it); the route is ``None`` for a step the
-    author declared terminal."""
+    author declared terminal.
+
+    The outcome vocabulary (``outcomes``) is EITHER the body's outcome
+    ENUM (the literal-tag face: the body returns the enum member, the
+    record rides verbatim) OR the body's payload UNION — the member
+    TYPES key the type-tagged route (the body returns the union ELEMENT
+    itself; on a type-tagged arm the element IS the record)."""
 
     body: Any
-    outcomes: type[enum.Enum]
+    outcomes: type[enum.Enum] | types.UnionType | type[object]
     route: Route | None = None  # None = the chain's terminal step
 
 
@@ -172,6 +226,12 @@ class Chain:
         spec (or ``None`` = the chain ends here). Raises
         :class:`RouterNotTotal` loudly when the outcome has no arm.
 
+        THE TYPE-TAGGED FACE: a non-enum, non-str outcome is a union
+        ELEMENT — its runtime type is the dispatch key, and on its arm
+        the ELEMENT IS THE RECORD (the child's ``wf_item`` is the
+        element, jsonb-encoded; the arm's body declares its arm's type
+        and the typed boundary re-validates).
+
         THE PER-RECORD IDENTITY RIDES map_index (the refuted-claim
         discipline): the certified fork's idempotency key and the
         step-ledger's arbiter both discriminate siblings by it — the
@@ -188,16 +248,28 @@ class Chain:
         step = self.steps[step_key]
         if step.route is None:
             return None
-        outcome_str = outcome.value if isinstance(outcome, enum.Enum) else outcome
-        if not isinstance(outcome_str, str):
-            raise RouterNotTotal(
-                f"step {step_key!r}'s body returned {type(outcome).__name__}"
-                f"{outcome!r} — not the step's declared outcome enum; the "
-                "router refuses loudly (the record's chain dies visibly)"
-            )
+        if isinstance(outcome, enum.Enum):
+            outcome_str = str(outcome.value)
+        elif isinstance(outcome, str):
+            outcome_str = outcome
+        else:
+            # THE TYPE-TAGGED FACE: the body returned the union ELEMENT
+            # itself — the element's runtime TYPE is the dispatch key.
+            outcome_str = _type_tag(type(outcome))
         nxt = step.route.next_step(outcome_str)
         if nxt is DONE or nxt is None:
             return None
+        if not isinstance(outcome, (enum.Enum, str)):
+            # THE ELEMENT IS THE RECORD (the type-tagged arm's law): the
+            # body's returned union element rides the fork as the
+            # child's wf_item — the arm's body declares its arm's type
+            # and the typed boundary re-validates the round-trip (a
+            # mis-routed element dies LOUDLY in the coercion). The
+            # enum face's verbatim-payload law is untouched.
+            element: object = (
+                outcome.model_dump(mode="json") if isinstance(outcome, BaseModel) else outcome
+            )
+            payload = {"wf_item": element}
         return ChildSpec(
             step_key=nxt,
             actor=self.actor,

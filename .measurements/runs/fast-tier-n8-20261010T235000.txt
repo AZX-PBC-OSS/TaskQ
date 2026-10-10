@@ -6,3 +6,4 @@ SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connect
 FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
 1 failed, 13205 passed, 8 skipped, 150 warnings in 654.79s (0:10:54)
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/fast-tier-n8-20261010T085747.txt

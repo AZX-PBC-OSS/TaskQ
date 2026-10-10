@@ -2,3 +2,4 @@
 # head 1030dcaa88c238f0e01814a9f6b4d940c8793861 (the measurement commit e2d53203's amended form 1030dcaa88c2): the pin file 17 tests = 2 green guards + 15 flipped pins, ALL GREEN — the verifier over the COMMITTED estate rc=0
 17 passed in 3.61s
 head: 1030dcaa88c238f0e01814a9f6b4d940c8793861
+SUPERSEDED-BY: runs/rv2-pins-final-20261011T005900.txt
