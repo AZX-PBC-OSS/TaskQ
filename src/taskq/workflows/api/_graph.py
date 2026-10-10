@@ -741,15 +741,8 @@ def _attach_route[S](
                 )
             raise WorkflowBuildError(
                 f"route's source {source.key!r} does not declare a "
-<<<<<<< HEAD
-                "list[...] return — the route keys its arms by the union "
-                "MEMBERS (the resolved hints are the only resolution): "
-                "annotate the body's return as list[TextDoc | ImageDoc | "
-                "...]"
-=======
                 "list[...] return — the route is a MAP face: the source "
                 "produces the elements' list, the arms key its members"
->>>>>>> 6e563fdd
             )
         if get_origin(returned) is list:
             (element_type,) = get_args(cast("type[object]", returned))

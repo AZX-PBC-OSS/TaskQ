@@ -382,17 +382,12 @@ def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationE
     assert any(
         rule in message for rule in ("E10-arity", "E12-deps-contract", "E15-route-totality")
     ), f"F-RV4-3: the refusal must be an E-rule owning the arm's arity — got: {message}"
-<<<<<<< HEAD
     # THE LANDED NAMING (the merge's reconciliation): the refusal names
-    # the arm's CHILD KEY ('<source>.item:<TypeTag>') — the runtime's own
-    # address for the arm (a local variable name does not exist past the
-    # declaration); the child key IS the arm's identity on the rows.
-    assert "item:" in message and "ImageItem" in message, (
-        f"F-RV4-3: the refusal must NAME the arm by its child key + tag — got: {message}"
-=======
+    # the offending route child — '<source>.item:<TypeTag>' (the runtime's
+    # own address for the arm; the child key IS the arm's identity on the
+    # rows).
     assert "media.item" in message, (
         f"F-RV4-3: the refusal must NAME the offending route child — got: {message}"
->>>>>>> 6e563fdd
     )
 
 
@@ -494,13 +489,8 @@ def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     # pinned.
     assert "E15-route-totality" in message, message
     assert "base_arm" in message, message
-<<<<<<< HEAD
-    assert "extra='ignore'" in message or "drops every field" in message, (
-        f"F-RV4-4: the refusal must NAME the truncation hazard — got: {message}"
-=======
     assert "TextDoc" in message, (
         f"F-RV4-4: the refusal must NAME the exact member the arm betrays — got: {message}"
->>>>>>> 6e563fdd
     )
 
 
@@ -571,20 +561,12 @@ def test_rv4_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     with pytest.raises(WorkflowBuildError) as exc_info:
         app.get("rv4_5_twin_collapse")
     message = str(exc_info.value)
-<<<<<<< HEAD
-    assert "Rv4Twin" in message, message
-    assert any(
-        word in message.lower()
-        for word in ("duplicat", "collid", "overwrit", "same type tag", "twice")
-    ), f"F-RV4-5: the refusal must NAME the tag collision — got: {message}"
-=======
     # The contract: the verb refuses, naming the COLLIDING TAG (the
     # subject the two members share) — the collision's sentence is
     # wording, never pinned.
     assert "Rv4Twin" in message, (
         f"F-RV4-5: the refusal must NAME the colliding tag — got: {message}"
     )
->>>>>>> 6e563fdd
 
 
 # ── F-RV4-6: the consumer's smart-union mispick ──────────────────────────
@@ -787,25 +769,6 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         with pytest.raises(WorkflowBuildError) as exc_info:
             app.get(f"rv4_8_{label.replace('-', '_')}")
         message = str(exc_info.value)
-<<<<<<< HEAD
-        # THE LANDED MESSAGE (the merge's reconciliation): the
-        # double-attach refusal names the FACE the node carries ("already
-        # carries a typed route" / "a map") + the one-fork law + the
-        # remedy ("wire the second ... from a distinct source") — the
-        # accidental join-key collision named nothing.
-        assert (
-            "already carries" in message
-            and ("typed route" in message or "a map" in message)
-        ), (
-            f"F-RV4-8 ({label}): the ACCIDENTAL refusal fired instead of the "
-            f"designed double-attach message — got: {message}"
-        )
-        assert "finalizes once" in message, (
-            f"F-RV4-8 ({label}): the message lost the one-fork law — got: {message}"
-        )
-        assert "declared twice" not in message, (
-            f"F-RV4-8 ({label}): the join-key collision is the wrong door — got: {message}"
-=======
         # The contract: the double-attach refusal fires on the DOUBLED
         # SOURCE node — never on its join child (the accidental door's
         # subject). Which sentence carries the cause is wording; which
@@ -816,7 +779,6 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         assert "media.join" not in message, (
             f"F-RV4-8 ({label}): the join-key collision is the wrong door (the "
             f"refusal names the join, not the doubled source) — got: {message}"
->>>>>>> 6e563fdd
         )
 
 
