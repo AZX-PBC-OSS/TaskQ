@@ -233,7 +233,10 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
 #: number): the node panel's error fields are row-sourced and a row can
 #: carry megabytes of failure text — the panel serves the bounded form
 #: with the remaining-count marker, truncation distinguishable from an
-#: actually-small value.
+#: actually-small value. ``error_class`` rides the SAME law (the rv2
+#: finding's cure): the class field is row-sourced free text too — a
+#: hostile DB write's 200KB class served whole through the view and the
+#: SSE snapshot while the sibling fields were bounded.
 _TRACEBACK_DISPLAY_LIMIT: int = 2000
 
 
@@ -305,7 +308,7 @@ def _run_view_from_rows(
                 deps_pending=r["deps_pending"],
                 blocking_reason=r["blocking_reason"],
                 absorbed=r["absorbed"],
-                error_class=r["error_class"],
+                error_class=_truncate_error_text(r["error_class"]),
                 error_message=_truncate_error_text(r["error_message"]),
                 map_children=0 if is_map_child else total,
                 map_done=0 if is_map_child else done,
@@ -321,7 +324,7 @@ def _run_view_from_rows(
         created_at=_iso(root["created_at"]),
         finished_at=_iso(root["finished_at"]),
         cancel_requested_at=_iso(root["cancel_requested_at"]),
-        error_class=root["error_class"],
+        error_class=_truncate_error_text(root["error_class"]),
         error_message=_truncate_error_text(root["error_message"]),
         nodes=nodes,
         holds=holds,

@@ -187,7 +187,11 @@ def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | No
     """Pin the audit reason to the column's shape: no control characters
     (the NUL byte dies as its ``\\x00`` escape — the poison is inert at
     the write), bounded length (the never-pruned table's per-row bound).
-    Truncation is the honest bound, per :func:`_bound_subject`.
+    Truncation is the honest bound, per :func:`_bound_subject` — and it
+    is NAMED (the rv2 finding's cure): an over-cap reason carries the
+    house's "... (N more characters)" marker, the same honesty the
+    display caps keep, so a bounded row never masquerades as a whole
+    one.
 
     PUBLIC — the reason's OTHER write seats call THIS (never a second
     implementation): the cancel's root flip binds the reason into
@@ -200,12 +204,53 @@ def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | No
     if reason is None:
         return None
     escaped = reason.translate(_SUBJECT_CONTROL_ESCAPES)
-    return escaped[:limit]
+    if len(escaped) <= limit:
+        return escaped
+    remaining = len(escaped) - limit
+    suffix = f"... ({remaining} more characters)"
+    return escaped[: limit - len(suffix)] + suffix
 
 
 def _bound_reason(reason: str | None) -> str | None:
     """The leaf's delegate (:func:`bound_reason`)."""
     return bound_reason(reason)
+
+
+#: The detail column's shape bound — the jsonb free-text field's law
+#: (the rv2 finding's cure): ``admin_audit`` is the NEVER-PRUNED table
+#: and the detail rode the jsonb bind VERBATIM — a 5MB ``detail`` dict
+#: landed whole (unbounded retention per row). The serialized record
+#: above the bound is replaced by the house's named-truncation record:
+#: the ``__truncated__`` marker (the capture marker's own shape), the
+#: dropped-character count, and a bounded preview of the serialized
+#: original. The row never lies about being whole.
+DETAIL_MAX_LENGTH: int = 10_000
+
+
+def _bound_detail(detail: dict[str, Any] | None) -> str:
+    """Pin the audit detail to the column's shape (:func:`bound_reason`'s
+    law for the jsonb field): bounded, with the truncation NAMED on the
+    row. The preview's escaping can expand under the serializer's
+    control-escape pass, so the kept width halves until the marked
+    record itself is under the bound — the bound is the promise, the
+    preview is the courtesy."""
+    text = dumps_jsonb_str(detail if detail is not None else {})
+    if len(text) <= DETAIL_MAX_LENGTH:
+        return text
+    kept = DETAIL_MAX_LENGTH - 256
+    while True:
+        rendered = dumps_jsonb_str(
+            {
+                "__truncated__": True,
+                "dropped": (
+                    f"... ({len(text) - kept} more characters stay out of the never-pruned row)"
+                ),
+                "preview": text[:kept],
+            }
+        )
+        if len(rendered) <= DETAIL_MAX_LENGTH or kept <= 64:
+            return rendered
+        kept //= 2
 
 
 def _bound_untyped_subject(raw: str) -> str:
@@ -399,11 +444,13 @@ async def _record_admin_action(
 ) -> None:
     """THE LEAF: the audit row's INSERT itself (the body
     :func:`record_admin_action` routes to — never the module attr, which
-    a rebinding can flip mid-chain). The reason is shape-pinned HERE (the
-    leaf — every writer path inherits the bound): the never-pruned
-    table's per-row cap, and the NUL byte escaped before the text bind
-    (an unbound reason was the poison that rolled back a whole cancel —
-    finding 10's conviction)."""
+    a rebinding can flip mid-chain). The reason AND the detail are
+    shape-pinned HERE (the leaf — every writer path inherits the bound):
+    the never-pruned table's per-row cap, the NUL byte escaped before
+    the text bind, and the truncation NAMED on the row (the rv2
+    finding's cure — an unbounded reason/detail was unbounded retention,
+    and a poisoned reason rolled back a whole cancel — finding 10's
+    conviction)."""
     await conn.execute(
         _INSERT_SQL.format(schema=schema),
         principal_subject(principal),
@@ -411,7 +458,7 @@ async def _record_admin_action(
         target_type,
         target_id,
         _bound_reason(reason),
-        dumps_jsonb_str(detail if detail is not None else {}),
+        _bound_detail(detail),
     )
 
 

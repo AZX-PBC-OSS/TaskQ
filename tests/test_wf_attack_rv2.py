@@ -174,15 +174,6 @@ async def _seed_failed_run_with_a_hostile_error_class(
 
 @pytest.mark.integration
 @pytest.mark.fastapi
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-1: _wf_rows.py's _run_view_from_rows serves error_class "
-        "RAW (the root's and every node's) — a 200KB error_class round-trips whole "
-        "to the run page/SSE while error_message is bounded (the Q5 partial cure's "
-        "residue)"
-    ),
-)
 async def test_rv2_1_the_run_view_bounds_error_class(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -213,14 +204,6 @@ async def test_rv2_1_the_run_view_bounds_error_class(
 
 @pytest.mark.integration
 @pytest.mark.fastapi
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-1: _wf_actions.py's node-panel route binds "
-        "error_message/error_traceback/captured_error via _bound_for_panel but "
-        "serves error_class raw — the detail AND the children census"
-    ),
-)
 async def test_rv2_1_the_node_panel_route_bounds_error_class(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -254,12 +237,10 @@ async def test_rv2_1_the_node_panel_route_bounds_error_class(
     for label, error_class in served:
         assert isinstance(error_class, str)
         assert len(error_class) <= _BOUND_CEILING_CHARS, (
-            f"F-RV2-1 (panel {label}): error_class served UNBOUNDED "
-            f"({len(error_class)} chars)"
+            f"F-RV2-1 (panel {label}): error_class served UNBOUNDED ({len(error_class)} chars)"
         )
         assert _TRUNCATION_MARKER.search(error_class), (
-            f"F-RV2-1 (panel {label}): the bounded error_class does not NAME "
-            "the truncation"
+            f"F-RV2-1 (panel {label}): the bounded error_class does not NAME the truncation"
         )
 
 
@@ -267,14 +248,6 @@ async def test_rv2_1_the_node_panel_route_bounds_error_class(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-2: reap_nodeless_roots returns "
-        "int(fetchval(RETURNING f.id)) — the first reaped row's UUID read as a "
-        "128-bit int — as the reaped-count metric (_sweep.py:373-376)"
-    ),
-)
 async def test_rv2_2_the_nodeless_reap_returns_the_reaped_count(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -287,13 +260,12 @@ async def test_rv2_2_the_nodeless_reap_returns_the_reaped_count(
 
     orphan = await seed_flow(wf_conn, wf_schema, status="running")
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET created_at = now() - interval \'1 hour\' '
-        "WHERE id = $1",
+        f"UPDATE \"{wf_schema}\".jobs SET created_at = now() - interval '1 hour' WHERE id = $1",
         orphan,
     )
     reaped = await reap_nodeless_roots(wf_pool, wf_sql, grace_s=0.0)
     actually_reaped = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".jobs WHERE error_class = \'NodelessRunReaped\''
+        f"SELECT count(*) FROM \"{wf_schema}\".jobs WHERE error_class = 'NodelessRunReaped'"
     )
     assert actually_reaped == 1, "the arm must reap the orphan (its own contract)"
     assert reaped == actually_reaped, (
@@ -310,15 +282,6 @@ async def _hold_body(ctx: StepContext, params: _Ingest) -> Any:
     return await ctx.wait_signal(_Approval, timeout_s=120.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-3: step(gates=(<TypedGate>,)) — the natural "
-        "channel.gate(...) door-confusion — crashes validate_compiled with a raw "
-        "AttributeError ('TypedGate' object has no attribute 'timeout_s') instead "
-        "of the named E-rule refusal"
-    ),
-)
 def test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
     """The author's mistake — ``gates=(app.channel().gate(Model),)``,
     the BOUND-DOOR object where the declaration (``GateDecl``) belongs —
@@ -340,15 +303,6 @@ def test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-4a: record_admin_action binds reason/detail VERBATIM "
-        "into the never-pruned admin_audit — a 5MB reason lands whole (the "
-        "principal_subject column carries the 512-char bound + control-escape "
-        "discipline; the free-text fields carry none)"
-    ),
-)
 async def test_rv2_4a_the_audit_reason_and_detail_are_bounded(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -393,15 +347,6 @@ async def test_rv2_4a_the_audit_reason_and_detail_are_bounded(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-4b: a NUL byte in the cancel reason rolls the WHOLE "
-        "workflow cancel back with an opaque CharacterNotInRepertoireError — "
-        "the jobs-cancel route carries the parse_text_filter NUL guard; "
-        "api/_runner_exit.py's cancel_workflow_run carries none"
-    ),
-)
 async def test_rv2_4b_a_nul_reason_never_aborts_the_wf_cancel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -423,9 +368,7 @@ async def test_rv2_4b_a_nul_reason_never_aborts_the_wf_cancel(
         principal="attacker",
     )
     assert cancelled >= 1, "the cancel must LAND — the NUL reason sanitized, never the abort"
-    root = await wf_conn.fetchval(
-        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
-    )
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "cancelled", f"the cancel tore or never landed: root={root!r}"
     audit_reason = await wf_conn.fetchval(
         f'SELECT reason FROM "{wf_schema}".admin_audit WHERE target_id = $1',
@@ -445,29 +388,15 @@ async def test_rv2_4b_a_nul_reason_never_aborts_the_wf_cancel(
 #: workflow fence) and the cursor probe must exclude identically.
 
 
-async def _probe_pair(
-    conn: asyncpg.Connection, sql: Any
-) -> tuple[int, int]:
+async def _probe_pair(conn: asyncpg.Connection, sql: Any) -> tuple[int, int]:
     """(plain probe row count, cursor probe row count) over the seeded
     world, the cursor bound at the nil UUID (every row is at/above it)."""
     plain = await conn.fetch(sql.dispatch_claimable_probe, ["default"])
-    cursor = await conn.fetch(
-        sql.dispatch_claimable_probe_cursor, ["default"], uuid.UUID(int=0)
-    )
+    cursor = await conn.fetch(sql.dispatch_claimable_probe_cursor, ["default"], uuid.UUID(int=0))
     return len(plain), len(cursor)
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-5: DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL "
-        "(_dispatch_sql.py:2026-2068) drops the deps_pending=0 filter AND the "
-        "workflow fence (__flow__ exclusion + terminal-flow exclusion) the plain "
-        "probe carries — the module's own 'the two fences may not disagree' "
-        "invariant broken (seeded trio: plain 0 rows, cursor 1 row)"
-    ),
-)
 async def test_rv2_5_the_cursor_probe_fences_identically_to_the_plain_probe(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -576,16 +505,6 @@ class _StrictFifoModeCache:
         pass
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-6: _dispatch.py:322-343 — the expansion loop flips "
-        "sql_stmt to the cursor render while round_bound is live but never "
-        "flips it back; a cursor entry the jitter reset expires BETWEEN "
-        "iterations calls the $6 statement with 5 args (asyncpg InterfaceError) "
-        "while the comment claims the plain shape runs"
-    ),
-)
 def test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
     """The round's own comment's claim ("the next attempt must then run
     the plain shape, not a stale bound") made TRUE — or the degradation
@@ -689,17 +608,6 @@ def test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None
 # ── F-RV2-7: the claim-health snapshot never races the recorder ─────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-7: obs/_claim_health.claim_health_snapshot iterates "
-        "the module-global _window deque while record_claim_latency mutates it "
-        "(append/popleft, unlocked) — concurrent record+scrape raises "
-        "RuntimeError: deque mutated during iteration (hundreds per 3s at "
-        "thread-level concurrency; the Prometheus/OTel observable-gauge "
-        "callbacks read at scrape time on their own threads)"
-    ),
-)
 def test_rv2_7_concurrent_record_and_snapshot_never_raise() -> None:
     """The gauges' read path is a SCRAPE-TIME pull (the module's own
     docstring) — the claim path records on the worker's threads while
@@ -721,6 +629,7 @@ def test_rv2_7_concurrent_record_and_snapshot_never_raise() -> None:
     errors: list[BaseException] = []
     stop = time.monotonic() + 1.5
     try:
+
         def writer(i: int) -> None:
             while time.monotonic() < stop:
                 record_claim_latency(f"q{i % 4}", 0.001)
@@ -759,16 +668,6 @@ async def _loop_body(ctx: Any, carry: Any) -> Done[Any] | Refine[Any]:
     return Done(carry)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-8: loop(initial={'seed': <Promise>}) — a promise "
-        "handle NESTED in a dict/list initial carry — passes validate clean "
-        "(E11's isinstance reads only the top level) and dies at the first "
-        "claim with UnencodableValue (the jsonb bind refusing the handle), "
-        "classified infra-fault: a claim→crash→reclaim loop"
-    ),
-)
 def test_rv2_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> None:
     """E11's law is the CARRY'S VALUEHOOD, not the top level's: a
     ``Promise`` anywhere in the ``initial=`` tree is a handle riding a
@@ -798,17 +697,6 @@ def test_rv2_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -
 # ── F-RV2-9: E10 counts the ACTUAL params ───────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-9: _validate.py:419-441 — E10 counts ANNOTATED params "
-        "(typing.get_type_hints), not ACTUAL params: an unannotated-but-runnable "
-        "body wired correctly is refused 'takes 0 param(s)' — the message lies "
-        "about the real arity against the validator's zero-false-positive "
-        "doctrine (E5's own text names the unannotated consumer a tolerated "
-        "duck-shaped hole)"
-    ),
-)
 def test_rv2_9_e10_counts_the_actual_params() -> None:
     """Two legs, one law — the arity the rule speaks of is the body's
     REAL signature (``inspect.signature``), the annotation surface is
@@ -820,10 +708,20 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     * a REAL mismatch refuses AND the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
+    THE WIRING NOTE (the rv2-cure lane's reconciliation): leg 2's body
+    wired ONE arg was a real mismatch when this pin was cut, but the
+    consolidated head's E10/E12 partition (5402a4b8) reclassified the
+    exactly-one-param-beyond-the-wiring shape as the DEPS class — E12's
+    contract, not E10's arity. E10 owns TWO-OR-MORE beyond the wiring,
+    so leg 2 wires ZERO args: still a real mismatch, still the
+    signature's numbers in the message.
+
     TODAY both legs convict: the runnable shape is refused, and the
     refusal's message reports 0 params for a 2-param body."""
 
-    async def duck_body(ctx, params) -> _Report:  # Why: the pin's SUBJECT is the unannotated-but-runnable shape (E5's tolerated duck hole) — annotating it annotates the finding away.
+    async def duck_body(
+        ctx, params
+    ) -> _Report:  # Why: the pin's SUBJECT is the unannotated-but-runnable shape (E5's tolerated duck hole) — annotating it annotates the finding away.
         return _Report(ref=params["doc_id"])
 
     app = WorkflowApp()
@@ -834,14 +732,18 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
 
     app.get("rv2_e10_duck_ok")  # the doctrine: NO refusal
 
-    async def two_param_body(ctx, first, second) -> _Report:  # Why: as above — the message must name the REAL arity of THIS shape.
+    async def two_param_body(
+        ctx, first, second
+    ) -> _Report:  # Why: as above — the message must name the REAL arity of THIS shape.
         return _Report(ref="x")
 
     app2 = WorkflowApp()
 
     @app2.workflow("rv2_e10_real_mismatch")
     def _wf2() -> object:
-        return build(step(two_param_body, {"doc_id": "d"}, key="only"))
+        return build(
+            step(two_param_body, key="only")
+        )  # ZERO wired args: 2 params beyond the wiring — E10's class (the 1-beyond shape is E12's)
 
     with pytest.raises(WorkflowValidationError) as excinfo:
         app2.get("rv2_e10_real_mismatch")
@@ -858,16 +760,6 @@ _REPO = Path(__file__).resolve().parents[1]
 _MATRIX = _REPO / "tests" / "system_e2e" / "test_wf_deploy_matrix.py"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-10: the deploy-matrix header lists 9 cells but cells "
-        "4 (OUTAGE), 6 (REDISPATCH OWNERSHIP) and 9 (RETENTION MID-FLIGHT) have "
-        "no test function anywhere; it cites test_wf_matrix_red_drills.py "
-        "(nonexistent) and a docs/guides/deployment.md 'operator table' "
-        "(nonexistent)"
-    ),
-)
 def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     """The header's claims are the pin's subjects — walked, not
     restated, so an edited header edits its own pin:
@@ -877,6 +769,14 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     * every file the header cites EXISTS;
     * the header's "operator table" citation names the cells in the
       cited doc (the table the cells claim to be rows of).
+
+    THE FLOOR (the rv2 cure's reconciliation): the pack pinned the
+    header's NINE claimed cells; three (OUTAGE, REDISPATCH OWNERSHIP,
+    RETENTION MID-FLIGHT) named no test function anywhere — header
+    fiction. The cure regenerated the header to the SIX cells this
+    file actually tests, so the floor is the tested count at the cure
+    (6): a further shrink — a cell dropped or de-tested — re-checks
+    this pin by name, never silently.
     """
     import ast
 
@@ -891,13 +791,11 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
         and node.name.startswith("test_")
     }
     cells = re.findall(r"^\s*(\d+)\.\s+([^\n—]+?)\s*—", header, flags=re.M)
-    assert len(cells) >= 9, f"the header's cell list shrank ({len(cells)}) — recheck the pin"
+    assert len(cells) >= 6, f"the header's cell list shrank ({len(cells)}) — recheck the pin"
 
     failures: list[str] = []
     for number, name in cells:
-        tokens = [
-            t for t in re.findall(r"[a-z]+", name.lower()) if len(t) >= 4 and t != "workflow"
-        ]
+        tokens = [t for t in re.findall(r"[a-z]+", name.lower()) if len(t) >= 4 and t != "workflow"]
         assert tokens, f"cell {number} ({name.strip()}) yields no defining token"
         defining = tokens[0]
         if not any(defining in test_name for test_name in test_names):
@@ -910,7 +808,11 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
         target = (
             _MATRIX.parent / cited
             if "/" not in cited
-            else (_REPO / cited if cited.startswith(("docs/", "tests/", "src/")) else _MATRIX.parent / cited)
+            else (
+                _REPO / cited
+                if cited.startswith(("docs/", "tests/", "src/"))
+                else _MATRIX.parent / cited
+            )
         )
         if not target.is_file():
             failures.append(f"the header cites {cited} — no such file")
@@ -918,7 +820,9 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     if "operator table" in header:
         doc = (_REPO / "docs" / "guides" / "deployment.md").read_text().lower()
         for number, name in cells:
-            tokens = [t for t in re.findall(r"[a-z]+", name.lower()) if len(t) >= 4 and t != "workflow"]
+            tokens = [
+                t for t in re.findall(r"[a-z]+", name.lower()) if len(t) >= 4 and t != "workflow"
+            ]
             if tokens and tokens[0] not in doc:
                 failures.append(
                     f"cell {number} ({name.strip()}): the cited operator table "
@@ -987,9 +891,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
         src = chain_source(chain, _source_ctx_only, key="doc_source")
         return build(src)
 
-    with patch(
-        "taskq.workflows._worker_execution.iter_imported_apps", return_value=[app]
-    ):
+    with patch("taskq.workflows._worker_execution.iter_imported_apps", return_value=[app]):
         configs = project_workflow_actor_configs()
     pairs = {(c.actor, c.queue) for c in configs}
     assert ("wf", "default") in pairs and ("wf-exec-gpu", "gpu") in pairs, pairs
@@ -998,9 +900,17 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
 def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     """The other half of the resolution: the battery test's OWN shape
     (a params-taking chain-source body wired with zero args) stays a
-    NAMED refusal — the projection skips the workflow LOUDLY with E10
-    in the record, and no cohort for it projects. A cure that instead
-    SILENCED the arity rule would flip this red."""
+    NAMED refusal — the projection skips the workflow LOUDLY with the
+    rule id in the record, and no cohort for it projects. A cure that
+    instead SILENCED the arity rules would flip this red.
+
+    THE RULE ID (the rv2-cure lane's reconciliation): at the pack's cut
+    the record named ``E10-arity``; the consolidated head's E10/E12
+    partition (5402a4b8) reclassified the exactly-one-param-beyond-the-
+    wiring shape as the DEPS class — the refusal now names
+    ``E12-deps-contract`` (the same loudness, the rule that OWNS the
+    shape, the message still naming the fix). The guard follows the
+    owner."""
     import enum
     from unittest.mock import patch
 
@@ -1040,33 +950,23 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
 
     with (
         structlog.testing.capture_logs() as logs,
-        patch(
-            "taskq.workflows._worker_execution.iter_imported_apps", return_value=[bad]
-        ),
+        patch("taskq.workflows._worker_execution.iter_imported_apps", return_value=[bad]),
     ):
         configs = project_workflow_actor_configs()
     assert {(c.actor, c.queue) for c in configs} == set(), (
         "the bad declaration's cohorts must NOT project"
     )
     skips = [log for log in logs if log.get("event") == "workflow-projection-skipped"]
-    assert skips and "E10-arity" in str(skips[0].get("error")), (
-        f"the skip must name the E10 refusal loudly — logs: {logs!r}"
+    rule_named = str(skips[0].get("error")) if skips else ""
+    assert skips and ("E10-arity" in rule_named or "E12-deps-contract" in rule_named), (
+        f"the skip must name the arity refusal's rule loudly (the E10/E12 "
+        f"partition's owner for this shape) — logs: {logs!r}"
     )
 
 
 # ── F-RV2-12: no zombie typeprobe corpus ────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-12: tests/typeprobe/wf_gather_negative_types.py is a "
-        "zombie probe — on disk with live MUST_ERROR markers (pyright "
-        "reportArgumentType :96, ty invalid-argument-type :96:23 both fire "
-        "today), wired NOWHERE (not in _gate.py's _CORPUS, so not in the CI "
-        "gate) — the gate's own docstring's law is wire-or-delete"
-    ),
-)
 def test_rv2_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
     """The gate's own law ("wire-or-delete, no zombie corpus"): every
     NON-underscore ``*.py`` probe in the directory (the corpus's shape —
@@ -1148,7 +1048,12 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
             stamp = datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").timestamp()
             os.utime(dest, (stamp, stamp))
     proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
-        [sys.executable, str(_REPO / "scripts" / "verify_evidence_heads.py"), "--runs-dir", str(runs_dir)],
+        [
+            sys.executable,
+            str(_REPO / "scripts" / "verify_evidence_heads.py"),
+            "--runs-dir",
+            str(runs_dir),
+        ],
         cwd=_REPO,
         capture_output=True,
         text=True,
@@ -1180,16 +1085,6 @@ _STREAMING_SECTION_FAMILIES = {
 _STREAMING_DOC = _REPO / "perf-evidence-workflows-streaming.md"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv2-14: perf-evidence-workflows-streaming.md's emit "
-        "paragraph claims 'max 10.4\u201314.5 ms across the five captured runs' "
-        "but capture t20-streaming-bands-20261008-052519.json carries "
-        "max 20.569 — the cited range does not cover the evidence (the doc's "
-        "own header law: THE TABLES CITE THE RANGE — EVERY captured run)"
-    ),
-)
 def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
     """The doc's own law walked: every ranged ms figure in a measured
     section of ``perf-evidence-workflows-streaming.md`` must COVER the
@@ -1224,7 +1119,11 @@ def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
             if "band" in context or "≤" in context:
                 continue  # the DECLARED bound, not a measurement
             family = next(
-                (fam for heading, fam in _STREAMING_SECTION_FAMILIES.items() if (section or "").startswith(heading)),
+                (
+                    fam
+                    for heading, fam in _STREAMING_SECTION_FAMILIES.items()
+                    if (section or "").startswith(heading)
+                ),
                 None,
             )
             if family is None:
@@ -1247,9 +1146,7 @@ def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
                 )
                 continue
             outside = [
-                round(v, 3)
-                for v in observed
-                if not (low - tolerance <= v <= high + tolerance)
+                round(v, 3) for v in observed if not (low - tolerance <= v <= high + tolerance)
             ]
             if outside:
                 failures.append(

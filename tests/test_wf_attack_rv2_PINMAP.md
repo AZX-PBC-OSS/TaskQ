@@ -72,3 +72,30 @@ the ctx-only source shape — so the pins are GREEN GUARDS, not xfails:
 
 NONE — all 14 findings reproduced live at d24f17b9 before pinning
 (the pre-pin repro shapes are in RECEIPTS.md).
+
+## THE OUTCOME AT THE MERGE + CURE LANE (the flips)
+
+The pack merged at `5a7c528d`; the consolidated line had already
+carried `67e9fb67` ("THE 681 REVIEW'S CURES", post-pin-head). Each
+row: the finding → the flip's disposition. The receipt rows (finding →
+the cure's SHA → the flip's capture) live in
+`test_wf_attack_rv2_RECEIPTS.md` § THE FLIPS — the marker removal and
+its receipt row land in the same commit, per the doctrine.
+
+| Finding | Disposition at the merge head | The flip |
+|---|---|---|
+| F-RV2-1 (both pins) | residue LIVE (67e9fb67 bounded the job-show seat only; the view + the panel route served `error_class` raw) | XPASS-strict at the merge; cured THIS lane (`_wf_rows.py` + `_wf_actions.py`); marker off WITH the receipt |
+| F-RV2-2 | cured at 67e9fb67 (item 14: the count is `count(*)`) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-3 | LIVE (the raw AttributeError out of W1's walk) | XFAIL at the merge; cured THIS lane (the E13-gate-door rule + the hardened walk); marker off WITH the receipt |
+| F-RV2-4a | residue LIVE (the reason bounded but UNMARKED; the detail verbatim) | XPASS-strict at the merge; cured THIS lane (`bound_reason` names the truncation + `_bound_detail`); marker off WITH the receipt |
+| F-RV2-4b | cured at 67e9fb67 (item 10: `bound_reason` at both cancel writers + the leaf) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-5 | cured at 67e9fb67 (item 9: the cursor probe's two legs restored) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-6 | LIVE (the loop never flipped the render back) | XFAIL at the merge; cured THIS lane (the flip-back `else`); marker off WITH the receipt |
+| F-RV2-7 | cured at 67e9fb67 (item 11: the gauge's atomic read) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-8 | cured at 67e9fb67 (item 12: E11 walks the carry's structure) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-9 | cured at 67e9fb67 (item 13: E10's numbers are the signature's) — but the pin's leg-2 shape (1 arg wired) is E12's class under the E10/E12 partition (5402a4b8) | XPASS-strict at the merge; marker off + the pin's leg rewired to the shape E10 owns (the reconciliation is the receipt, same commit) |
+| F-RV2-10 | LIVE (3 fiction cells + 2 dead citations) | XFAIL at the merge; cured THIS lane (the header regenerated to the 6 tested cells; the pin's floor reconciled to the tested count); marker off WITH the receipt |
+| F-RV2-11 (guards) | the resolution landed (67e9fb67 item 1) but the partition reclassified the bad shape: the refusal now names `E12-deps-contract` | the loudness guard RED for real at the merge; reconciled THIS lane (the guard follows the rule that owns the shape); both guards green, no markers |
+| F-RV2-12 | cured at 67e9fb67 (item 7: the zombie probe wired) | XPASS-strict at the merge; marker off WITH the receipt |
+| F-RV2-13 | LIVE at the merge (the estate's committed live claims stale against the moving head + the dead SUPERSEDED-BY links) | XFAIL; flips at the MEASUREMENT COMMIT (the claims re-recorded at the source-final head + the dead links repaired) — the estate's own cure |
+| F-RV2-14 | cured at 67e9fb67 (the doc's figures cite the artifacts) | XPASS-strict at the merge; marker off WITH the receipt |

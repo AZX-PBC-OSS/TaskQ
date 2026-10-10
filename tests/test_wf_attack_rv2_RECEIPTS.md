@@ -304,3 +304,40 @@ XFAIL tests/test_wf_attack_rv2.py::test_rv2_14_every_ranged_figure_covers_its_ca
 No XPASS (strict would have failed the run). Repeat lanes: default
 plugin set (`2 passed, 15 xfailed`) and `-n 2` xdist (`2 passed, 15
 xfailed`) — identical verdicts.
+
+## RUN 3 — THE MERGE (the pack meets the consolidated head) — the flips
+
+The pack merged into feat/taskqflow at merge commit
+`5a7c528d` (the pack @ 4095a254 onto the consolidated head's line,
+which had already carried `67e9fb67` "THE 681 REVIEW'S CURES
+(findings 1-2, 3, 7-14)" — POST-pin-head: `d24f17b9` is an ancestor of
+it). The first marked run at the merge head (PG
+`postgresql://postgres:taskq@localhost:5756/taskq`, the repo venv):
+
+```text
+14 failed, 1 passed, 1 xfailed   → resolved as:
+  13 XPASS(strict) — the SAFE behavior already holds (the cures landed)
+   1 real red — test_rv2_11_the_bad_source_declaration_still_refuses_loudly
+     (a GREEN guard red for real: the skip record's rule id moved — see
+     the reconciliation below)
+   1 XFAIL — rv2-13 (cured by the measurement commit; see its row)
+```
+
+The XPASS(strict) list at the merge head: rv2-1 ×2, rv2-2, rv2-3,
+rv2-4a, rv2-4b, rv2-5, rv2-6, rv2-7, rv2-8, rv2-9, rv2-12, rv2-14.
+Per the doctrine the flips ARE the cures' confirmation receipts — the
+rows below record each flip (finding → the cure → the capture) as the
+markers come off.
+
+## THE FLIPS (each row: finding → the cure's SHA → the flip's capture)
+
+### Flipped by THIS lane's cures (the cure and the marker removal in the same commit)
+
+| Finding | The cure | The flip's capture |
+|---|---|---|
+| F-RV2-1 (the run view) | THIS COMMIT — `_wf_rows.py`: `error_class` rides `_truncate_error_text` at BOTH seats (the root's and every node's), the same 2000-char display bound + "... (N more characters)" marker the sibling fields keep (the comment names the law's extension) | pre: `XFAIL test_rv2_1_the_run_view_bounds_error_class` at the merge head; post: `test_rv2_1_the_run_view_bounds_error_class` PASSED (marker off, `--runxfail` leg run: `4 passed` for the rv2-1 ×2 + rv2-4a + rv2-4b quartet) |
+| F-RV2-1 (the node panel route) | THIS COMMIT — `_wf_actions.py`: the route's `error_class` (the detail AND the children census) rides `_bound_for_panel`; `error_truncated` includes the class field | as above (the same quartet run) |
+| F-RV2-3 (the TypedGate crash) | THIS COMMIT — `_validate.py`: the new rule **E13-gate-door** (error class) refuses any non-`GateDecl` in `gates=` by NAME (`[error] E13-gate-door: node 'review' holds a TypedGate in its gates= — that is the channel.gate(...) BOUND-DOOR object ... Declare the hold with GateDecl(...)`), and W1's walk (`_rule_eternal_wait`) reads only `GateDecl` — the rule walk never crashes on a declaration lie; the module docstring's rule list gains E13 | pre: `XFAIL test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal`; post: PASSED (rv2-3 + rv2-6 run: `2 passed`) |
+| F-RV2-4a (the audit bounds) | THIS COMMIT — `audit.py`: `bound_reason` NAMES the truncation (`... (N more characters)`, the cap stays 512, the NUL escape stays); the NEW `DETAIL_MAX_LENGTH = 10_000` + `_bound_detail` replaces an over-bound serialized detail with the named-truncation record (`__truncated__` + the dropped count + the bounded preview); the leaf binds `_bound_detail(detail)` | pre: `XFAIL test_rv2_4a_the_audit_reason_and_detail_are_bounded`; post: PASSED (the quartet run above); rv2-4b stayed green (the `≤512` shape pin at test_wf_attack_cancel.py:303 unaffected) |
+| F-RV2-6 (the render arity) | THIS COMMIT — `_dispatch.py`: the expansion loop derives `sql_stmt` from the CURRENT attempt's bound (the flip-back `else` leg) — the loop-head comment's claim ("the next attempt must then run the plain shape, not a stale bound") made TRUE; the dead pre-loop `sql_stmt` assignment removed | pre: `XFAIL test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation` (the pairings `[(True, 6), (True, 5)]` → InterfaceError); post: PASSED (the driver's pairings now `(True, 6), (False, 5)`) |
+

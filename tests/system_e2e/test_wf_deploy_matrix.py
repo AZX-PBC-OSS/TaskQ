@@ -8,7 +8,13 @@ MEASURED value printed next to the bound; the shared invariants close
 every scenario (``_invariants.assert_balanced``) plus the workflow
 invariants (the join fires exactly once, the ledger reconciles).
 
-The cells (the operator table's rows, docs/guides/deployment.md):
+The cells — each maps to the test function that runs it, and the
+header lists NOTHING ELSE (the rv2 finding's cure: three cells here
+named no test function anywhere, and the header cited a defect-drill
+file and a deployment-guide table that do not exist; the header now
+carries only the cells this file actually tests — the missing
+scenarios are NEW WORK to land with their tests, never header
+fiction):
 
 1. WORKER DEPLOY — a node mid-flight on a SIGKILLed worker: the
    lease/reclaim machinery re-pends it (``lock_expired``); the join
@@ -25,28 +31,15 @@ The cells (the operator table's rows, docs/guides/deployment.md):
    hands it a workflow row (no crash loop, no claim, the pod serves
    vanilla work); the additive-only ledger makes the vanilla rollback
    always safe — the row shapes the old code meets are its OWN.
-4. OUTAGE — the broker dies mid-map: the run stalls, recovers, the join
-   fires exactly once (the finalize transactions are PG-local).
-5. CONFIG DRIFT — a downstream node re-routed to a queue nothing
+4. CONFIG DRIFT — a downstream node re-routed to a queue nothing
    serves: the run stays LIVE (blocked is a live state), the row stays
    claimable, no crash, no silent orphan; the alert the fleet ships
    (``TaskQQueueUnserved``) is the operator's next step, named.
-6. REDISPATCH OWNERSHIP — the four rows (crashed worker → the reclaim;
-   failed node → the ladder; held node → the signal/timeout) each fire
-   for its failure and none of the others double-fires.
-7. CRON x WORKFLOW — the cron slot firing twice (clock edge, operator
+5. CRON x WORKFLOW — the cron slot firing twice (clock edge, operator
    re-trigger) yields ONE run (the run-key arbiter's composition, G3).
-8. SIGTERM CLEAN-DRAIN — a worker receiving SIGTERM mid-map-child /
+6. SIGTERM CLEAN-DRAIN — a worker receiving SIGTERM mid-map-child /
    mid-loop-iteration finishes-or-requeues per the termination grace;
    the loop's carry advances exactly once across the requeue (F7).
-9. RETENTION MID-FLIGHT — a retention pass running mid-march does not
-   prune a live run's parents or expire a joined map's children's
-   results before the join fires (ticket 18's liveness guard at fleet
-   scale).
-
-The RED-FIRST defect drills (the ticket's seven) live in
-``test_wf_matrix_red_drills.py`` — each mutated variant reds the
-corresponding pin; these scenarios are their GREEN faces.
 """
 
 # ruff: noqa: S608  # Why: every query's schema identifier comes from the settings boundary the fixtures validated; every value is $-bound.

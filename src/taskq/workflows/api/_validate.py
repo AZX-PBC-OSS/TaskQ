@@ -46,6 +46,11 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   app's bound deps instance; the app binding NONE (or an instance that
   does not SATISFY the body's declared deps type) is the build refusal,
   the message naming the fix.
+* E13 gate-door — a node's ``gates=`` must carry ``GateDecl``
+  declarations: the channel.gate(...) bound-door object wired into the
+  declaration seat is the build refusal (it used to crash the
+  validator's own gate walk — a raw AttributeError — the rv2 round's
+  conviction).
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
@@ -69,6 +74,7 @@ from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
+from taskq.workflows.api._graph import GateDecl
 from taskq.workflows.api._hints import body_hints
 from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
@@ -113,6 +119,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_ctx_annotation(compiled)
     diagnostics += _rule_arity(compiled)
     diagnostics += _rule_deps_contract(compiled)
+    diagnostics += _rule_gate_door(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
     diagnostics += _rule_eternal_wait(compiled)
     diagnostics += _rule_cross_graph(compiled)
@@ -554,6 +561,36 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     return diagnostics
 
 
+def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E13 (THE GATE DOOR — the rv2 finding's cure): a node's ``gates=``
+    must carry DECLARATIONS (``GateDecl`` — the compile-visible shape the
+    Mermaid render, the W1 timeout warning and T10's machinery read), not
+    the channel's BOUND-DOOR object. ``app.channel().gate(Model)`` returns
+    a ``TypedGate`` — the runtime delivery handle — and wiring it into
+    ``step(gates=(…,))`` used to crash the validator's own gate walk (a
+    raw ``AttributeError`` out of W1's ``gate.timeout_s`` read): the
+    mistake now refuses by NAME, the message naming both doors and the
+    fix."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        for gate in node.gates:
+            if isinstance(gate, GateDecl):
+                continue
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E13-gate-door",
+                    "error",
+                    f"node {node.key!r} holds a {type(gate).__name__} in its "
+                    "gates= — that is the channel.gate(...) BOUND-DOOR object "
+                    "(the runtime delivery handle), not a gate declaration. "
+                    "Declare the hold with GateDecl(name=…, payload_models=(…), "
+                    "timeout_s=…) — the declaration is what the compile's hold "
+                    "nodes, the timeout warning and the delivery runtime read.",
+                )
+            )
+    return diagnostics
+
+
 def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E6: the T07 fan-in bound (the error names the child-driven escape
     — the same vocabulary the engine's validators use)."""
@@ -574,10 +611,17 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
 def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """W1: a gate with no declared timeout — probably wrong, never a
-    refusal (the warning class; the timer-policy matrix is T10's)."""
+    refusal (the warning class; the timer-policy matrix is T10's). The
+    walk reads only ``GateDecl`` declarations: a foreign object in
+    ``gates=`` (the door-confusion E13 convicts) is SKIPPED here — the
+    rule walk never crashes on a declaration lie (the raw
+    ``AttributeError`` out of this walk was the finding's own
+    conviction)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
+            if not isinstance(gate, GateDecl):
+                continue
             if gate.timeout_s is None:
                 diagnostics.append(
                     WorkflowValidationError(

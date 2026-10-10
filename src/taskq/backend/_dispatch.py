@@ -312,11 +312,6 @@ async def _dispatch_batch(
                     modes=sorted(queue_modes),
                     selected_sql="round_robin",
                 )
-            sql_stmt = (
-                sql.dispatch_round_robin
-                if "round_robin" in queue_modes
-                else sql.dispatch_strict_fifo
-            )
             oversample = dispatch_oversample
             expansions = 0
             while True:
@@ -331,6 +326,19 @@ async def _dispatch_batch(
                     round_bound = min(bounds) if bounds else None
                 if round_bound is not None:
                     sql_stmt = sql.dispatch_strict_fifo_cursor
+                else:
+                    # THE FLIP-BACK (the rv2 finding's cure): the statement
+                    # is derived from THIS attempt's bound, never carried —
+                    # a cursor render pinned by an earlier iteration must
+                    # not survive its own bound's expiry (the expired entry
+                    # dropped the $6 bind and the wire refused the arity:
+                    # the raw InterfaceError that crossed the round). The
+                    # round-robin exemption rides the same re-derivation.
+                    sql_stmt = (
+                        sql.dispatch_round_robin
+                        if "round_robin" in queue_modes
+                        else sql.dispatch_strict_fifo
+                    )
                 records = await dispatch_batch_helper(
                     conn,
                     sql=sql_stmt,

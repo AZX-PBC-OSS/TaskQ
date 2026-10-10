@@ -479,7 +479,10 @@ def register_actions(router: APIRouter) -> None:
                 "status": r["status"],
                 "attempt": r["attempt"],
                 "max_attempts": r["max_attempts"],
-                "error_class": r["error_class"],
+                # THE CLASS FIELD RIDES THE SAME BOUND (the rv2 finding's
+                # cure): a hostile row's 200KB error_class served whole
+                # through the census while the sibling fields were bound.
+                "error_class": _bound_for_panel(r["error_class"]),
             }
             for r in siblings
         ]
@@ -491,7 +494,7 @@ def register_actions(router: APIRouter) -> None:
             "max_attempts": node["max_attempts"],
             "retry_kind": node["retry_kind"],
             "trace_id": str(node["trace_id"]) if node["trace_id"] else None,
-            "error_class": node["error_class"],
+            "error_class": _bound_for_panel(node["error_class"]),
             # THE READ-SIDE BOUND (Q5's cure): the display-capped
             # delivery — a foreign/hostile row's 5MB error fields render
             # bounded with the dropped-count named; the full detail
@@ -501,7 +504,12 @@ def register_actions(router: APIRouter) -> None:
             "error_traceback": _bound_for_panel(node["error_traceback"]),
             "captured_error": _bound_for_panel(node["captured_error"]),
             "error_truncated": _panel_truncated(
-                [node["error_message"], node["error_traceback"], node["captured_error"]]
+                [
+                    node["error_class"],
+                    node["error_message"],
+                    node["error_traceback"],
+                    node["captured_error"],
+                ]
             ),
             "parent": dict(parent) | {"id": str(parent["id"])} if parent else None,
             "timeline": [dict(r) | {"created_at": _iso(r["created_at"])} for r in ledger],
