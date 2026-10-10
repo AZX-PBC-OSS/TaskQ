@@ -146,8 +146,12 @@ def test_gate_declaration_rides_the_compile() -> None:
     read them from here)."""
     from taskq.workflows import gather
 
-    async def gated(ctx: StepContext, params: Ingest) -> Report:
-        return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
+    async def gated(ctx: StepContext, params: Ingest) -> object:
+        # E14's law: the declared gate's body WAITS on it (a declared
+        # seat with no waiter is the build refusal).
+        return await ctx.wait_signal(
+            (Approval, Escalate), timeout_s=30.0
+        )  # pragma: no cover - the runner drives real bodies
 
     app = WorkflowApp()
 
@@ -181,6 +185,10 @@ def test_mermaid_shape_vocabulary() -> None:
     async def map_item(ctx: StepContext, report: Report) -> dict[str, int]:
         return {"n": 1}  # pragma: no cover - the runner drives real bodies
 
+    async def hold_body(ctx: StepContext, params: Ingest) -> object:
+        # E14's law: the declared gate's body WAITS on it.
+        return await ctx.wait_signal((Approval,), timeout_s=None)  # pragma: no cover
+
     app = WorkflowApp()
 
     @app.workflow("shapes")
@@ -194,7 +202,7 @@ def test_mermaid_shape_vocabulary() -> None:
         sink(mapped)
         return build(
             step(
-                _body,
+                hold_body,
                 Ingest(doc_id="d"),
                 key="hold",
                 gates=(gate,),

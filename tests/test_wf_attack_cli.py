@@ -194,7 +194,8 @@ def stale_app_module() -> Iterator[types.ModuleType]:
 
     @app_obj.workflow("atkcli_unrelated_flow")
     def unrelated() -> Promise[object]:
-        return build(step(_wait, Ingest(doc_id="d1"), key="review"))
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+        return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     module.app = app_obj  # type: ignore[attr-defined]
     sys.modules[STALE_MODULE_NAME] = module

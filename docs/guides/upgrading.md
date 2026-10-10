@@ -311,6 +311,17 @@ never diverge.
 
 ## Breaking API changes
 
+### `map_source` no longer takes `key=`
+
+> **Unreleased.** Breaking for anyone passing `key=` to
+> `map_source(source, body, key=…)`: on previous releases every value
+> raised `WorkflowBuildError` at the wiring site (the map's join key is
+> DERIVED — the engine's fork addresses the join by the source's own
+> key + `.join`, so a custom join key could never be honored). The
+> parameter is GONE: delete the argument (it was refused anyway; nothing
+> else changes). To name the map's node, name the SOURCE
+> (`step(source_body, key=…)`) — the join's key follows.
+
 ### Queue and actor names are bounded at 255 characters
 
 > **Unreleased.** Breaking for anyone enqueueing to a queue name longer

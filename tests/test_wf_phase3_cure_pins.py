@@ -33,6 +33,7 @@ from taskq.workflows import (
     Done,
     Exit,
     FlowRunner,
+    GateDecl,
     Promise,
     Refine,
     StepContext,
@@ -113,7 +114,14 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
 
     @app2.workflow("a3cure_discriminated_flow")
     def discriminated() -> Promise[object]:
-        return build(step(discriminated_body, Ingest(doc_id="d1"), key="review"))
+        return build(
+            step(
+                discriminated_body,
+                Ingest(doc_id="d1"),
+                key="review",
+                gates=(GateDecl(name="Alpha", payload_models=(Alpha, Beta), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app2.get("a3cure_discriminated_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
@@ -151,7 +159,14 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
 
     @app.workflow("a3cure_ambiguous_flow")
     def ambiguous() -> Promise[object]:
-        return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
+        return build(
+            step(
+                hold_body,
+                Ingest(doc_id="d1"),
+                key="review",
+                gates=(GateDecl(name="Alpha", payload_models=(Alpha, Beta), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get("a3cure_ambiguous_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id

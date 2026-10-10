@@ -1,0 +1,6 @@
+# the typeprobe gate (tests/typeprobe/_gate.py) — the rv3 lane's consolidated proof
+  File "/home/rich/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/lib/python3.14/subprocess.py", line 1990, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'pyright'
+rc=1
+head: 9d5c728177991e295d6ab5a59eae3c6ed438f66c

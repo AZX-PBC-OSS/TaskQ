@@ -207,8 +207,10 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     valid graphs is the compile's over-rejection)."""
     from taskq.workflows.api._graph import GateDecl
 
-    async def gated_body(ctx: StepContext, params: Ingest) -> Report:
-        return Report(ref=params.doc_id)
+    async def gated_body(ctx: StepContext, params: Ingest) -> object:
+        # E14's law: the declared gate's body WAITS on it (a declared
+        # seat with no waiter is the E14 build refusal, not W1's subject).
+        return await ctx.wait_signal((Report,), timeout_s=None)
 
     app = WorkflowApp()
 

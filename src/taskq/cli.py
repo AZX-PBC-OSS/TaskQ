@@ -2673,10 +2673,6 @@ def workgroup_validate(
         )
 
 
-if __name__ == "__main__":
-    main()
-
-
 # ── queues ─────────────────────────────────────────────────────────────
 
 
@@ -4635,3 +4631,7 @@ def flows_retry(
             raise typer.Exit(code=1)
 
     asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

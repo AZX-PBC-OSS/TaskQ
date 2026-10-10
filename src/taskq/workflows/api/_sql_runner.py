@@ -202,6 +202,19 @@ SELECT result FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 
+#: THE FAILURE FACE (the teardown round's cure): the run's newest
+#: terminal-FAILED NODE row (the root's own row carries the propagation
+#: verdict — UnabsorbedNodeFailure — but the NODE row carries the body's
+#: error class + message: the failed run's first question's ANSWER).
+FLOW_FAILURE_SQL_TEMPLATE = """
+SELECT step_key, error_class, error_message FROM {schema}.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND status = 'failed'
+  AND step_key <> '__flow__'
+ORDER BY finished_at DESC NULLS LAST
+LIMIT 1
+"""
+
 #: THE EXIT'S DOWNSTREAM MARK (§17.1): the compiled descendants the exit
 #: resolved — skipped WITH the record (the envelope never lies about the
 #: nodes that didn't get to run), zero ledger rows. Terminal rows and

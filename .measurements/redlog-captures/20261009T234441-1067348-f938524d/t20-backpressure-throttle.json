@@ -1,0 +1,10 @@
+{
+  "mutation": "the throttle NOT admitting whole pages (a per-record check): the emit would land a page OVER the bound (outstanding + width > bound) \u2014 the bound is checked against the ADMISSION (the outstanding + the page's width), never the row alone",
+  "observed": {
+    "bound": 6,
+    "max_outstanding_seen": 6
+  },
+  "pin": "t20-backpressure-throttle",
+  "run": "20261009T234441-1067348-f938524d",
+  "ts": "2026-10-09T23:44:53"
+}

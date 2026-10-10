@@ -826,10 +826,17 @@ class HitlClient:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        *,
         schema: str,
+        *,
         redact: Any = None,
     ) -> None:
+        """The read face's constructor — ONE schema convention (the
+        teardown round's cure): POSITIONAL, the majority the siblings
+        carry (``FlowRunner(compiled, pool, schema)``,
+        ``run(flow, pool, schema)``). The class is unreleased — the
+        convention is fixed before it ships; keyword call sites
+        (``HitlClient(pool, schema=…)``) keep working, the
+        positional-tolerant seat accepts both."""
         self._pool = pool
         self._schema = schema
         self._redact = redact
@@ -1012,7 +1019,11 @@ class HitlClient:
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,
+<<<<<<< HEAD
             reason=reason,
+=======
+            reason=reason_value,
+>>>>>>> 63c60660
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             status=row["status"],

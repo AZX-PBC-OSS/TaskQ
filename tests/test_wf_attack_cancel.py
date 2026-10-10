@@ -32,7 +32,15 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
+from taskq.workflows import (
+    FlowRunner,
+    GateDecl,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
 
@@ -57,7 +65,14 @@ async def _held_flow(pool: asyncpg.Pool, schema: str, name: str) -> tuple[JobId,
 
     @app.workflow(name)
     def _wf() -> Promise[object]:
-        return build(step(_hold_body, _Ingest(doc_id="d1"), key="review"))
+        return build(
+            step(
+                _hold_body,
+                _Ingest(doc_id="d1"),
+                key="review",
+                gates=(GateDecl(name="_Approval", payload_models=(_Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get(name), pool, schema)
     flow_id = (await runner.create_flow()).flow_id

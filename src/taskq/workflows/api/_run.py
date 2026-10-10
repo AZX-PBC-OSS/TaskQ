@@ -29,6 +29,7 @@ from typing import Literal, cast
 import asyncpg
 
 from taskq.backend._protocol import JobId
+from taskq.exceptions import SchemaNotMigratedError
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner import FlowRunner
 from taskq.workflows.ledger import RunClaim
@@ -89,7 +90,16 @@ async def run(
     view — the E12 contract reads the effective binding).
     """
     runner = FlowRunner(flow, pool, schema, deps=deps if deps is not None else flow.deps)
-    claim = await runner.create_flow(input=input, run_key=key)
+    try:
+        claim = await runner.create_flow(input=input, run_key=key)
+    except asyncpg.exceptions.UndefinedTableError as exc:
+        # THE FIRST CONTACT'S TRANSLATION (the teardown round's cure):
+        # the packaged run on an unmigrated schema was the RAW driver
+        # traceback; the client arm's typed SchemaNotMigratedError names
+        # the remedy (the setup defect is actionable, not a raw
+        # asyncpg face) — the packaged door now uses it too, the
+        # original chained via __cause__.
+        raise SchemaNotMigratedError(schema) from exc
     outcome_raw = await runner.drive(
         claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
     )

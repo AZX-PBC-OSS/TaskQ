@@ -141,12 +141,17 @@ class GateDecl:
     Mermaid face, the docs), it does not introduce a second runtime
     vocabulary.
 
-    THE DOUBLE-TIMEOUT PRECEDENCE (C8's law): ``timeout_s`` HERE is the
-    compile-visible declaration ONLY — the RUNTIME expiry sweep is
-    armed by the wait site's ``ctx.wait_signal(timeout_s=…)``, whose
-    value writes the hold row's ``expires_at``. When the two disagree,
-    THE WAIT'S VALUE WINS on the rows (pinned); keep them equal on
-    purpose."""
+    THE DOUBLE-TIMEOUT PRECEDENCE (C8's law, the timeout is DECLARED in
+    TWO places, each with its own face — the split the teardown round
+    documented and W4 enforces where statically readable):
+
+    * ``GateDecl.timeout_s`` feeds the COMPILE SURFACES ONLY: the
+      Mermaid render's hold-node deadline, W1's eternal-wait warning.
+      It NEVER arms the runtime.
+    * the WAIT SITE's ``ctx.wait_signal(..., timeout_s=…)`` arms the
+      RUNTIME expiry (the hold row's ``expires_at``). When the two
+      disagree, THE WAIT'S VALUE WINS on the rows (pinned); keep them
+      equal on purpose."""
 
     name: str
     payload_models: tuple[type[BaseModel], ...]
@@ -429,7 +434,6 @@ def map_source[S, R](
     source: Promise[S],
     body: Callable[..., Awaitable[R]],
     *,
-    key: str | None = None,
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
@@ -443,6 +447,18 @@ def map_source[S, R](
     The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
+
+    THE JOIN KEY IS DERIVED (the map has NO ``key=`` param — the
+    teardown round's removal, documented in the changelog): the engine's
+    fork + the runner address the map join by the SOURCE's own key +
+    ``'.join'`` (the addressing is load-bearing across the fork's
+    atomic write set and the consumption door) — a custom join key
+    cannot be honored without a second addressing scheme. An earlier
+    revision shipped the ``key=`` param as the accept-and-REFUSE seat
+    (every value raised the build error — a param whose only possible
+    outcome is the author's own refusal is a trap, not API); the param
+    is GONE. To name the node, name the SOURCE (``step(source_body,
+    key=…)``) — the join's key follows.
 
     ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (T21
     decision c): a PURE fn over the children's decoded result rows,
@@ -461,21 +477,6 @@ def map_source[S, R](
         raise WorkflowBuildError(
             f"node {source.key!r} already carries a map — a node finalizes "
             "once (one fork); wire the second map from a distinct source"
-        )
-    if key is not None:
-        # THE ACCEPT-AND-IGNORE CLASS'S CURE (the key param consumed or
-        # refused, never ignored): the map's join key is DERIVED — the
-        # engine's fork + the runner address the map join by the SOURCE's
-        # own key + '.join' (the addressing is load-bearing across the
-        # fork's atomic write set and the consumption door), so a custom
-        # key cannot be honored without a second addressing scheme. The
-        # param's presence names the author's intent to control the key —
-        # a silent ignore would let them believe they had.
-        raise WorkflowBuildError(
-            f"map_source(key={key!r}) — the map's join key is DERIVED from "
-            f"the source ({source.key!r}.join): the engine's fork addresses "
-            "the map join by the source's own key; a custom join key is "
-            "refused, never silently ignored"
         )
     source_node.map_item = body
     source_node.map_queue = queue

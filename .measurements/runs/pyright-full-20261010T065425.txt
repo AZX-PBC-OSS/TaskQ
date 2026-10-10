@@ -1,0 +1,6 @@
+# pyright FULL (src/taskq tests) — the rv3 lane's consolidated proof
+      Type parameter "T_co@Promise" is covariant, but "object" is not a subtype of "_Decision"
+        "object" is not assignable to "_Decision" (reportReturnType)
+2 errors, 0 warnings, 0 informations
+rc=1
+head: 9d5c728177991e295d6ab5a59eae3c6ed438f66c

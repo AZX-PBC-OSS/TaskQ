@@ -2,3 +2,4 @@
 FAILED tests/test_wf_attack_demo.py::test_two_drivers_one_schema_one_run_stay_exactly_once
 ============= 1 failed, 133 passed, 1 skipped in 129.00s (0:02:08) =============
 head: b4534d29edc132aca4e6501a8c5a0146576679cb
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T071222.txt

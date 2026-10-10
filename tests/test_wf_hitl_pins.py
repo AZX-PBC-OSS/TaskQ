@@ -24,7 +24,15 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
+from taskq.workflows import (
+    FlowRunner,
+    GateDecl,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
     HitlClient,
@@ -53,15 +61,21 @@ async def _held_flow(
     *,
     wait_body: Any,
     name: str = "hold_flow",
+    gates: tuple[GateDecl, ...] | None = None,
 ) -> tuple[JobId, FlowRunner, JobId]:
     """A flow whose single node HOLDS: created, driven to the hold.
     ``name`` is UNIQUE PER TEST — the registry is exact (D1): a second
-    registration with a DIFFERING body map is the refused shadow."""
+    registration with a DIFFERING body map is the refused shadow.
+    ``gates`` is the node's DECLARED gate seat (E14's law — the wait the
+    body makes is the declaration's subject; the default declares the
+    Approval hold the default bodies wait on)."""
+    if gates is None:
+        gates = (GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),)
     app = WorkflowApp()
 
     @app.workflow(name)
     def hold_flow() -> Promise[object]:
-        return build(step(wait_body, Ingest(doc_id="d1"), key="review"))
+        return build(step(wait_body, Ingest(doc_id="d1"), key="review", gates=gates))
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
@@ -189,7 +203,15 @@ async def test_resume_does_not_burn_the_retry_ladder(
 
     @app.workflow("resume_flow")
     def resume_flow() -> Promise[object]:
-        return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+        return build(
+            step(
+                hold_twice_then_fail,
+                Ingest(doc_id="d1"),
+                key="review",
+                max_attempts=3,
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
@@ -263,7 +285,14 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
 
     @app.workflow("multihold_flow")
     def multihold_flow() -> Promise[object]:
-        return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+        return build(
+            step(
+                hold_twice,
+                Ingest(doc_id="d1"),
+                key="review",
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
@@ -326,7 +355,12 @@ async def test_hold_id_reply_handle_and_context_contract(
         )
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        wf_conn,
+        wf_schema,
+        wf_pool,
+        wait_body=hold_body,
+        name="reply_handle_flow",
+        gates=(GateDecl(name="Approval", payload_models=(Approval, Escalate), timeout_s=120.0),),
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)

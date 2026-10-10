@@ -89,6 +89,7 @@ from taskq.workflows.api._sql_runner import (
     CANCEL_ROOT_SQL_TEMPLATE,
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
+    FLOW_FAILURE_SQL_TEMPLATE,
     FLOW_NODE_CENSUS_SQL_TEMPLATE,
     FLOW_PAYLOAD_SQL_TEMPLATE,
     FLOW_STATUS_SQL_TEMPLATE,
@@ -711,10 +712,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         the claim's own stamp — the body's canonical content hash onto
         the row. Best-effort (a record, never a gate): a body the hash
         cannot read (a builtin, a partial) records as NULL, the loss
-        logged; the row's claim never fails on its own audit."""
-        import inspect
+        logged; the row's claim never fails on its own audit.
+
+        THE WRAPPER'S UNWRAP (the teardown round's cure): the
+        ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
+        into the node — the stamp read the WRAPPER's identity and
+        ``getsource`` refused the instance outright (every canonical
+        node recorded ``node.code-version-unstamped``, §22.1's
+        deploy-drift feature dead where the docs teach the path). The
+        stamp reads the INNER function through
+        :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
+        seam the validator's own walk shares."""
 
         from taskq.workflows._version import compute_code_version
+        from taskq.workflows.api._hints import inner_fn, own_source
 
         target = (
             body
@@ -723,11 +734,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         )
         if target is None:
             return  # the join/gather kinds: the identity packer is the engine's own code
+        target = inner_fn(target)
+        # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
+        # slice-identity guard): the fence's exec'd bodies re-slice to
+        # PROSE — a prose stamp is a hash nobody can reproduce, the
+        # same unreadable-source skip the validator's walk keeps.
+        source = own_source(target)
+        if source is None:
+            logger.warning(
+                "node.code-version-unstamped",
+                node=node_key,
+                error="the body's own source is not verifiable (unreadable, or not its own slice)",
+            )
+            return
         try:
             version = compute_code_version(
                 getattr(target, "__module__", "") or "",
                 getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
-                inspect.getsource(target),
+                source,
             )
         except (
             Exception
@@ -1100,7 +1124,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def result(self, flow_id: JobId) -> object:
         """The flow's answer (cut #19): the terminal node's result,
         DECODED — never a raw jsonb string. ``None`` before the terminal
-        node finalizes."""
+        node finalizes.
+
+        THE FAILURE FACE (the teardown round's cure): a FAILED run's
+        read raises the typed :class:`WorkflowRunError` carrying the
+        failing node row's error class + message — the failed run's
+        first question (WHAT failed, and why) answered AT the read face,
+        never the empty read that made failed and running
+        indistinguishable."""
+        status = await self._flow_status(flow_id)
+        if status == "failed":
+            raise await self._failure_verdict(flow_id)
         terminal = self.compiled.terminal
         if terminal is None:
             raise WorkflowRunError(
@@ -1112,6 +1146,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
             )
         return decode_result(raw)
+
+    async def _failure_verdict(self, flow_id: JobId) -> WorkflowRunError:
+        """The failed run's typed verdict (the error the read raises):
+        the newest terminal-FAILED node row's class + message — the
+        rows are the truth, the propagation verdict on the root
+        (``UnabsorbedNodeFailure``) is the CASCADE's face, never the
+        body's own failure."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(render_sql(FLOW_FAILURE_SQL_TEMPLATE, self.schema), flow_id)
+        if row is None:
+            return WorkflowRunError(
+                f"workflow run {flow_id} FAILED — no failing node row "
+                "found (the root carries the verdict; inspect the run's "
+                "rows: taskq flows status "
+                f"{flow_id})"
+            )
+        return WorkflowRunError(
+            f"workflow run {flow_id} FAILED — node {row['step_key']!r} "
+            f"terminal-failed: [{row['error_class']}] "
+            f"{row['error_message'] or '(no message)'} — the result face "
+            "is the failure's face: inspect the run's rows (taskq flows "
+            f"status {flow_id})"
+        )
 
     async def _flow_status(self, flow_id: JobId) -> str:
         async with self.pool.acquire() as conn:

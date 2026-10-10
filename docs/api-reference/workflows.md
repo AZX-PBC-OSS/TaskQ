@@ -130,9 +130,10 @@ invisible actor population). The vanilla path stays byte-identical.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the SEVENTEEN rules shipped (read
-from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E13, W1, the
-two W2 faces, and W3; an earlier revision claimed about six rules against
+Runs in pytest, CI, and at worker boot; the TWENTY rules shipped (read
+from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E14, W1, the
+two W2 faces, W3, W4, and W5; an earlier revision claimed about six
+rules against
 a table that listed 7 — the reference now ships COMPLETE, from the code,
 not remembered), each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the
@@ -153,10 +154,13 @@ compile's version of over-rejection.**
 | `E11-loop-promise-carry` | error | a promise handle wired as the loop's `initial=` — the initial carry is a VALUE, never a handle (the handle cannot ride the row; wire the parent's result through a first step's return, or read it in the body) |
 | `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds NO deps (`WorkflowApp(deps=…)` never ran), or whose declared deps type the bound instance does not satisfy — the message names the fix: bind ONE instance at the door, or drop the parameter (it is never a fourth data source) |
 | `E13-gate-door` | error | a node's `gates=` carrying the channel's BOUND-DOOR object (`app.channel().gate(Model)`'s `TypedGate` — the runtime delivery handle) where the DECLARATION (`GateDecl(name=…, payload_models=…, timeout_s=…)`) belongs — the declaration is what the compile's hold nodes, the timeout warning and the delivery runtime read |
+| `E14-gate-wiring` | error | the gate seat and the bodies' waits, walked against each other (E2's analog for the hold wiring), BOTH provable directions: a DECLARED gate whose body carries no `wait_signal` reference at all (the hold seat with no waiter), and a body's `wait_signal` with NO declared gate (the hold the compile's surfaces cannot see — the Mermaid hold nodes, W1's read, the admin's resolve/deliver doors). The conditional-interior wait is not statically provable — the loop-kind mis-index face is W5's |
 | `W1-eternal-wait` | warning | a gate with no declared timeout — "a workflow that waits forever on a human is a support ticket" |
 | `W2-unknown-queue` | warning | a node projected onto a queue this app cannot see (the actor-not-found parking shape, named at validate) |
 | `W2-join-for-progress` | warning | a join SUNK for display only — the DAG still blocks on it; declare the map's `aggregate=` fn instead |
 | `W3-eternal-loop` | warning | a loop with no `until=` and neither wall set (`max_iterations`/`budget_s`) — a loop that can never stop on its own; declare the bound explicitly |
+| `W4-gate-timeout-split` | warning | the double-sourced gate timeout cross-checked where it is cross-checkable: the `GateDecl.timeout_s` and the body's statically-readable literal wait `timeout_s=` DISAGREE — both values named in the message. The precedence: the WAIT SITE's value arms the runtime (the hold's expiry), the DECLARATION feeds the compile surfaces (the Mermaid face, W1) and never arms the runtime |
+| `W5-loop-wait-shape` | warning | the loop's shape law, NAMED (never prose): a LOOP body whose `wait_signal` sits in a conditional interior mis-indexes the answer cursor (the row's iteration counter IS the cursor — an iteration that does not wait drifts the sequence; the T26 review's C9). The unconditional wait is the shape kept — a plain STEP's conditional wait is the per-attempt cursor's honest replay |
 
 The report is ONE-PASS (tsc-style): every rule's verdict, not the first
 failure alone. The mutation matrix (each mutation flips exactly one
