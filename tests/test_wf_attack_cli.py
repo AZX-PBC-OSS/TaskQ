@@ -738,3 +738,43 @@ async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
     assert _named_refusal(res), (
         f"a negative --limit leaked a traceback, not a named refusal: {res.exception!r}"
     )
+
+
+async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
+    cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+) -> None:
+    """FINDING 14's PIN (RED-FIRST), the error_class face: `taskq job
+    show` printed the row's `error_class` RAW — a hand-crafted or legacy
+    row's text column carried an ANSI-carrying, multi-line, unbounded
+    value straight into the line-oriented shell surface (the job-show
+    seat's own `error_message` was already collapsed + bounded; the
+    class sibling rode bare). THE CURE: the seat's `error_class` line
+    rides the SAME `_bounded_line` law (the collapse + the 60-class
+    bound) — the render is one bounded line, whatever the row carries."""
+    compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]
+    flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await flow_runner.create_flow()).flow_id
+    await flow_runner.drive(flow_id)
+    # THE DIRECT-DB POISON: the writer paths stamp a class NAME; the
+    # COLUMN is text — another driver's row carries the forgery.
+    poison = f"Runtime\x1b[31mError{'x' * 400}\nfake remedy: rm -rf /"
+    await wf_pool.execute(
+        f'UPDATE "{wf_schema}".jobs SET error_class = $2 WHERE id = $1',
+        flow_id,
+        poison,
+    )
+
+    res = await to_thread(runner.invoke, app, ["job", "show", str(flow_id)])
+    assert res.exit_code == 0, res.output
+    class_lines = [ln for ln in res.output.splitlines() if ln.startswith("error_class:")]
+    assert class_lines, f"the error_class line is missing: {res.output}"
+    rendered = class_lines[0]
+    # ONE bounded line: the ESC dies in the collapse, the newline never
+    # forges its own line, the length is capped at the 60-class bound
+    # plus the label.
+    assert "\x1b" not in rendered, "the ANSI escape reached the tty raw"
+    assert len(rendered) <= len("error_class: ") + 60, (
+        f"the error_class rendered UNBOUNDED ({len(rendered)} chars): {rendered[:120]}"
+    )
+    forged = [ln for ln in res.output.splitlines() if "fake remedy" in ln]
+    assert not forged, f"the class value forged its own line(s): {forged}"

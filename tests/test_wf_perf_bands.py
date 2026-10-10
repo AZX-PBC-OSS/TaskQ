@@ -24,8 +24,10 @@ from taskq.backend._protocol import JobId
 from taskq.workflows._types import ChildSpec, ConsumerBinding, ForkSpec, JoinSpec
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import (
+    band_assertion_allowed,
     claim_view,
     fire_count,
+    load_bar,
     node_state,
     seed_edge,
     seed_flow,
@@ -220,6 +222,16 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     red_best = min(rounds, key=sum)
     red_p50 = _percentile(red_best, 50)
 
+    # THE LOADED BAR (finding 3's cure — condition-not-clock): the
+    # ABSOLUTE band asserts only on a quiet box; a loaded box waives it
+    # honestly (the artifact names the reading and the waiver — a
+    # wall-clock p50 under load measures the neighbors, not the enqueue),
+    # and the RELATIVE red drill asserts UNCONDITIONALLY (load-
+    # invariant: the hook's extra round-trip must cost more than the
+    # same round's bare enqueue, whatever the box is doing).
+    bar = load_bar()
+    allowed = band_assertion_allowed()
+
     _write_measurement(
         "pin4-enqueue-band.json",
         {
@@ -228,6 +240,8 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
             "p99_us": p99,
             "best_round_ms": best,
             "budget_us": _PIN4_P50_BUDGET_US,
+            "loaded_bar": {"ambient_load_per_core": round(bar, 3), "quiet_bar": 0.5},
+            "absolute_band_asserted": allowed,
             "red_drill": {
                 "hook": "extra round-trip read of the five workflow columns per enqueue",
                 "p50_us": red_p50,
@@ -236,7 +250,8 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
             },
         },
     )
-    assert p50 <= _PIN4_P50_BUDGET_US, f"enqueue p50 {p50 / 1000:.2f} ms exceeds the band"
+    if allowed:
+        assert p50 <= _PIN4_P50_BUDGET_US, f"enqueue p50 {p50 / 1000:.2f} ms exceeds the band"
     assert red_p50 > p50, (
         "the red drill did not fire: the hot-path column touch did not move "
         "the band — the pin cannot fail, it is a decoration"
@@ -345,6 +360,13 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
     )
     red_p50 = _percentile(red_samples, 50)
 
+    # THE LOADED BAR (the pin_4 band's discipline — condition-not-clock):
+    # the absolute band asserts only on a quiet box; the loaded waiver is
+    # NAMED in the artifact, and the relative red drill stays
+    # unconditional.
+    bar = load_bar()
+    allowed = band_assertion_allowed()
+
     _write_measurement(
         "pin5-dispatch-band.json",
         {
@@ -354,12 +376,15 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
             "p99_us": p99,
             "budget_us": 50_000,
             "samples": len(samples),
+            "loaded_bar": {"ambient_load_per_core": round(bar, 3), "quiet_bar": 0.5},
+            "absolute_band_asserted": allowed,
             "red_drill": {"plan": "seq-scan-forced", "p50_us": red_p50},
         },
     )
-    assert p50 <= 50_000, (
-        f"dispatch claim p50 {p50 / 1000:.2f} ms exceeds the band (the clause must stay free)"
-    )
+    if allowed:
+        assert p50 <= 50_000, (
+            f"dispatch claim p50 {p50 / 1000:.2f} ms exceeds the band (the clause must stay free)"
+        )
     assert red_p50 > p50, (
         "the red drill did not fire: the forced plan regression did not blow "
         "the band — the pin cannot fail, it is a decoration"

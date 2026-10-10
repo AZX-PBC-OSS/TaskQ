@@ -57,7 +57,8 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+import inspect
+from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -411,7 +412,20 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     wired compiled + validated clean and the mismatch rode the RETRY
     LADDER MID-FLOW (the TypeError at the body's invocation — the
     run-time discovery of a wiring-time lie). The mismatch is a BUILD
-    refusal; the ladder never sees it."""
+    refusal; the ladder never sees it.
+
+    THE MESSAGE'S NUMBERS ARE THE SIGNATURE'S (finding 13's cure): the
+    declared count reads the body's ACTUAL signature
+    (``inspect.signature``), never the resolved-hints dict — hints list
+    only the ANNOTATED params, so a partially-annotated body's message
+    under-counted (``def body(ctx, params: Ingest, page)`` reported
+    ``takes 1 param(s)`` while the signature declares 2) and, worse, an
+    UNANNOTATED extra param slipped the rule entirely (hints omit it)
+    and rode the ladder as the very TypeError this rule exists to refuse.
+    Arity is STRUCTURAL — the mismatch needs names, not annotations; the
+    resolvable-hints guard stays only as the zero-false-positive skip
+    (a function-scope model the compile cannot resolve is never
+    convicted on a guess)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if node.body is None:
@@ -424,7 +438,13 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
             # GUESS on an unresolvable signature — skip (a guess is
             # never convicted; E4's own pin spells the doctrine).
             continue
-        params = [k for k in hints if k not in ("return", "ctx")]
+        sig = inspect.signature(node.body)
+        params = [
+            name
+            for name, p in sig.parameters.items()
+            if name not in ("ctx", "return")
+            and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
         if len(params) != len(node.args):
             diagnostics.append(
                 WorkflowValidationError(
@@ -647,7 +667,82 @@ def _rule_loop_promise_carry(compiled: CompiledWorkflow) -> list[WorkflowValidat
                     "parent's result inside the body (ctx.substep).",
                 )
             )
+            continue
+        # THE STRUCTURE WALK (finding 12's cure — the claim→crash→reclaim
+        # loop's second face): a promise handle NESTED inside the carry —
+        # a dict's value, a list element, a model's field — dies the SAME
+        # death the bare handle does (the rehydration's own walk —
+        # ``encode_data_arg`` — walks dicts, lists, and models, and the
+        # nested handle passes through it unchanged into the jsonb write,
+        # where the FIRST CLAIM of the resume loop dies untyped). The
+        # validator walks the SAME structure the rehydration walks, so
+        # the construction door refuses every shape the runtime cannot
+        # encode.
+        nested = _nested_promise(spec.initial_carry)
+        if nested is not None:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E11-loop-promise-carry",
+                    "error",
+                    f"loop {node.key!r}'s initial= carries a promise "
+                    f"handle NESTED in its structure (wired from "
+                    f"{nested!r}) — the loop's initial carry is a "
+                    "VALUE, never a handle, at ANY depth: the nested "
+                    "handle cannot ride the row (the first claim after "
+                    "the crash died UnencodableValue mid-reclaim), and "
+                    "the loop takes no promise args. Wire the parent's "
+                    "result through a first step whose body returns the "
+                    "carry VALUE and start the loop from that step's "
+                    "promise, or read the parent's result inside the "
+                    "body (ctx.substep).",
+                )
+            )
     return diagnostics
+
+
+_NESTED_WALK_DEPTH = 8
+
+
+def _nested_promise(value: object, depth: int = 0) -> object | None:
+    """The carry's STRUCTURE walk: the promise handle at any depth the
+    rehydration's codec can reach — dict values (and keys' faces aside,
+    only the values ride the walk the codec does), list/tuple elements,
+    and pydantic model FIELDS (``model_dump`` walks them the same way).
+    Depth-bounded (the carry is a value, not a graph); a cycle is the
+    author's own recursion and the bound ends the walk honestly. Returns
+    the FOUND HANDLE's KEY (the message names it) or None."""
+    from taskq.workflows.api._graph import Promise
+
+    if depth > _NESTED_WALK_DEPTH:
+        return None
+    if isinstance(value, Promise):
+        return str(value.key)
+    if isinstance(value, dict):
+        # The narrowing lands `dict[Unknown, Unknown]` (the carry is a
+        # value of declared `object`); the cast pins the walk's element
+        # type — the walk reads VALUES only.
+        mapping = cast("dict[object, object]", value)
+        for v in mapping.values():
+            found = _nested_promise(v, depth + 1)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple, set, frozenset)):
+        members = cast(
+            "tuple[object, ...]", value if isinstance(value, tuple) else tuple(cast("Any", value))
+        )
+        for v in members:
+            found = _nested_promise(v, depth + 1)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, BaseModel):
+        fields: dict[str, object] = dict(value.__dict__)
+        for v in fields.values():
+            found = _nested_promise(v, depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 def _rule_join_for_progress(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:

@@ -65,6 +65,15 @@ _CORPUS: tuple[str, ...] = (
     "attack2_wf_phase2_types.py",
     "attack3_wf_negative_types.py",
     "attack4_new_surfaces_negative_types.py",
+    # THE ZOMBIE PROBE'S WIRE (finding 7's cure — wire-or-delete, the
+    # gate's own law): ``wf_gather_negative_types.py`` carried a LIVE
+    # ``MUST_ERROR`` marker but was registered NOWHERE — the gate never
+    # ran it, the marker was decoration, the vacuous class exactly the
+    # wiring round convicted ("three of seven corpus files unwired").
+    # WIRED and re-derived against the current signatures (the F1-2
+    # residual slot's door still reds on both checkers with the
+    # declared rules).
+    "wf_gather_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

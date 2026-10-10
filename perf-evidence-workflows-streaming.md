@@ -22,11 +22,16 @@ for its absolute values).
 row under the FULL claim fence — ONE transaction, while the source stays
 `running`:
 
-- **measured: p50 3.2–8.1 ms, max 10.4–14.5 ms across the five
-  captured runs** (the quiet-box runs sit at the low end; the loaded-box
-  re-run at the high end) → band **7–14 ms/page** held at the upper
-  class. The streaming source adds ONE bounded tx per page, not per
-  record; the emit's cost is page-width, never record-count-scale.
+- **measured: p50 3.2–8.1 ms, max 10.4–20.6 ms across the five
+  captured runs** (the quiet-box runs sit at the low end; the max TAIL's
+  high end is the 05:25:19 capture's 20.6 ms — a p95-class page under
+  concurrent sessions, named rather than averaged away; the loaded-box
+  re-run at the next run's high end) → band **p50 3.2–8.1 ms/page, the
+  max tail bounded at 20.6 ms**. The streaming source adds ONE bounded
+  tx per page, not per record; the emit's cost is page-width, never
+  record-count-scale. (An earlier revision of THIS file claimed "max
+  10.4–14.5 ms" — the 05:25:19 capture's 20.569 max contradicts it; the
+  figures state the artifacts' range.)
 
 ## The dispatch band @ the chain backlog
 

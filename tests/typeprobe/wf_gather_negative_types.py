@@ -82,9 +82,12 @@ async def probe_heterogeneous_gather_explicit_upcast() -> None:
 
 async def probe_residual_takes_real_promise() -> None:
     """The residual slot's door: a REAL promise in the residual slot is
-    the checker's MUST_ERROR (the residual wants produces-nothing —
+    the checker's error (the residual wants produces-nothing —
     ``Exit[DoneT] <= Never`` is false). The honest accounting is
-    ``sink(p)``."""
+    ``sink(p)``. The trailing marker BELOW asserts the red — this prose
+    names the convention without carrying the marker's literal (a
+    docstring line is never a marker; the gate asserts trailing-code
+    comments only)."""
     app = WorkflowApp()
 
     @app.workflow("probe_residual")

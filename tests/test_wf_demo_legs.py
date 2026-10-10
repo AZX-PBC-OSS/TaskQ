@@ -1,4 +1,4 @@
-# ruff: noqa: S608, S108  # Why: the schema is a fixture-derived test identifier; the drill's dotdir is the opencode-scoped pre-created path (not a system tmp), and the worker's env is the fixture's own.
+# ruff: noqa: S608, S108  # Why: the schema is a fixture-derived test identifier; the drill's worker logs ride the opencode-scoped pre-created path (not a system tmp), and the worker's env is the fixture's own.
 """THE FOUR DEMONSTRATIONS (the evidence-matrix's phase-4 demo work
 order): the capabilities the evidence matrix named UN-DEMOED, each with
 a RUNNABLE path + the captured output:
@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests._wf_fixtures import loaded_scale
 
 pytestmark = pytest.mark.integration
 
@@ -141,8 +143,24 @@ def demo_module_dsn(module_pg_schema: Any) -> str:
     return module_pg_schema.pg_dsn
 
 
+@pytest.fixture(scope="module")
+def demo_dotenv_dir(tmp_path_factory: Any) -> Path:
+    """THE WORKER'S DOTENV GUARD, derived honestly: an EMPTY directory
+    the FIXTURE creates (``tmp_path_factory``), not a hardcoded path
+    assumed to pre-exist — dotenvmodel's ``load_env_files`` raises
+    ``FileNotFoundError`` for a missing ``DOTENV_DIR``, so the worker
+    subprocess died at settings load on any machine where the hardcoded
+    path had never been made (the green-solo flake's root). Same shape
+    the conftest's hermetic-session fixture uses."""
+    return tmp_path_factory.mktemp("demo-no-dotfiles")
+
+
 async def test_leg2_the_kill_and_resume_drill(
-    module_pg_pool: Any, module_pg_schema: Any, wf_schema: str, wf_conn: Any
+    module_pg_pool: Any,
+    module_pg_schema: Any,
+    wf_schema: str,
+    wf_conn: Any,
+    demo_dotenv_dir: Path,
 ) -> None:
     """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
     fresh worker re-claims it (the lease expiry + the reclaim) and the
@@ -172,7 +190,7 @@ async def test_leg2_the_kill_and_resume_drill(
         # them; the worker must SUBSCRIBE to consume — the demo's
         # chain's queue).
         "TASKQ_QUEUES": "demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default",
-        "DOTENV_DIR": "/tmp/opencode/empty-dotenv",
+        "DOTENV_DIR": str(demo_dotenv_dir),
     }
     worker_argv = [
         sys.executable,
@@ -192,11 +210,17 @@ async def test_leg2_the_kill_and_resume_drill(
             stderr=subprocess.STDOUT,
         )
 
-    # WORKER 1: runs the flow's nodes.
+    # WORKER 1: runs the flow's nodes. THE LOADED BAR's discipline
+    # (finding 3's cure): the poll waits on STATE (each tick re-reads the
+    # row, never a fixed sleep pretending to know when the claim lands)
+    # and its deadline scales with the box's measured load
+    # (condition-not-clock — the census's own record: this drill's
+    # residuals were "green solo x2" on a loaded box).
+    poll_scale = loaded_scale()
     killed = spawn("killed")
-    killed_deadline = time.time() + 90
+    killed_deadline = time.monotonic() + 90 * poll_scale
     saw_running = False
-    while time.time() < killed_deadline:
+    while time.monotonic() < killed_deadline:
         state = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
             "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
@@ -214,12 +238,13 @@ async def test_leg2_the_kill_and_resume_drill(
     await asyncio.to_thread(killed.wait)
 
     # WORKER 2: the fresh worker re-claims (the lease expiry + the
-    # reclaim) and the run completes.
+    # reclaim) and the run completes — the same loaded-scaled,
+    # state-not-sleep poll.
     fresh = spawn("fresh")
     try:
-        done_deadline = time.time() + 240
+        done_deadline = time.monotonic() + 240 * poll_scale
         root_status = None
-        while time.time() < done_deadline:
+        while time.monotonic() < done_deadline:
             root_status = await wf_conn.fetchval(
                 f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id_uuid
             )

@@ -171,3 +171,148 @@ def test_e5_the_genuine_mismatch_still_refuses() -> None:
 
     with pytest.raises(WorkflowValidationError, match="E5-incompatible-consumer"):
         app.get("e5_mismatch").validate()
+
+
+# ── finding 13: E10's message states the SIGNATURE's counts ─────────────
+
+
+def test_e10_the_message_states_the_signature_actually_declared() -> None:
+    """FINDING 13's PIN: the arity message's numbers are the numbers the
+    SIGNATURE it just read declares — never the resolved-hints count.
+    The pre-cure message counted ANNOTATED params only: a
+    partially-annotated body (``def body(ctx, params: Ingest, page)``)
+    reported ``takes 1 param(s)`` while the signature declares TWO, and
+    the unannotated extra param slipped the rule entirely (the runtime
+    TypeError this rule exists to refuse). The pin asserts the message's
+    numbers against the body's real signature."""
+    import inspect
+
+    app = WorkflowApp()
+
+    async def partial(ctx: Any, params: Ingest, page: object) -> Ingest:
+        # `page` is UNANNOTATED-in-kind on purpose: the pin's subject is
+        # the SIGNATURE COUNT (2 params beyond ctx), and the pre-cure
+        # rule counted only the ANNOTATED ones. `object` keeps pyright
+        # quiet without adding the annotation the old message counted.
+        return params
+
+    @app.workflow("e10_partial_arity_message")
+    def e10_partial_arity_message() -> object:
+        return build(step(partial, key="solo"))
+
+    compiled = app._compile("e10_partial_arity_message")
+    declared = [
+        name
+        for name, p in inspect.signature(partial).parameters.items()
+        if name not in ("ctx", "return")
+        and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    ]
+    assert len(declared) == 2, "the fixture's body declares 2 params beyond ctx"
+    with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
+        compiled.validate()
+    message = str(exc_info.value)
+    # THE MESSAGE'S NUMBERS: the ACTUAL declared count (2 — not the
+    # hints-derived 1), the param NAMES the signature declares (both),
+    # and the ACTUAL wired count (0).
+    assert "takes 2 param(s)" in message, f"the message under-counts: {message}"
+    assert "params, page" in message, f"the message omits the signature's own names: {message}"
+    assert "wired 0 argument(s)" in message, f"the message miscounts the wiring: {message}"
+
+
+def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
+    """The provided-count face: a body of 3 declared params wired 2
+    sources reports ``wired 2 argument(s)`` — the message's second
+    number is the wiring's OWN count, and the pin asserts it."""
+    app = WorkflowApp()
+
+    async def three(ctx: Any, a: Ingest, b: Ingest, c: Ingest) -> Ingest:
+        return a
+
+    @app.workflow("e10_provided_count")
+    def e10_provided_count() -> object:
+        return build(step(three, Ingest(doc_id="1"), Ingest(doc_id="2"), key="solo"))
+
+    with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
+        app._compile("e10_provided_count").validate()
+    message = str(exc_info.value)
+    assert "takes 3 param(s)" in message, f"the message under-counts the signature: {message}"
+    assert "wired 2 argument(s)" in message, f"the message miscounts the wiring: {message}"
+
+
+# ── finding 12: E11 walks the carry's STRUCTURE ──────────────────────────
+
+
+def test_e11_the_nested_promise_carry_is_refused() -> None:
+    """FINDING 12's PIN (RED-FIRST): a promise handle NESTED inside the
+    initial carry — a dict's value — died the same mid-flow death the
+    bare handle does (the rehydration's walk passes the handle through
+    unchanged into the jsonb write; the claim→crash→reclaim loop died
+    UnencodableValue AFTER the rows existed, untyped by any compile
+    rule). THE CURE: the validator walks the carry's STRUCTURE — the
+    same walk the rehydration does — and refuses the nested handle at
+    the construction door, E11 at any depth."""
+    from taskq.workflows import loop
+
+    class Carry(BaseModel):
+        n: int
+
+    async def loop_body(ctx: Any, carry: Carry) -> Carry:
+        return carry
+
+    app = WorkflowApp()
+
+    @app.workflow("e11_nested_carry")
+    def e11_nested_carry() -> object:
+        parent = step(lambda ctx: None, key="parent")
+        return build(loop("l1", loop_body, initial={"parent": parent}))
+
+    with pytest.raises(WorkflowValidationError, match="E11-loop-promise-carry") as exc_info:
+        app._compile("e11_nested_carry").validate()
+    assert "NESTED" in str(exc_info.value), (
+        "the message must name the nested face (the bare-handle message "
+        "says nothing about a structure walk)"
+    )
+
+
+def test_e11_the_nested_promise_deep_in_generics_is_refused() -> None:
+    """The structure walk's depth face: a handle inside a list inside a
+    dict is refused — the walk reaches every shape the rehydration's
+    codec can reach."""
+    from taskq.workflows import loop
+
+    class Carry(BaseModel):
+        n: int
+
+    async def loop_body(ctx: Any, carry: Carry) -> Carry:
+        return carry
+
+    app = WorkflowApp()
+
+    @app.workflow("e11_deep_carry")
+    def e11_deep_carry() -> object:
+        parent = step(lambda ctx: None, key="parent")
+        return build(loop("l1", loop_body, initial=[Carry(n=0), {"deep": parent}]))
+
+    with pytest.raises(WorkflowValidationError, match="E11-loop-promise-carry"):
+        app._compile("e11_deep_carry").validate()
+
+
+def test_e11_the_honest_value_carry_still_greens() -> None:
+    """The walk refuses HANDLES, never values: an honest dict/list/model
+    carry validates clean (the zero-false-positive doctrine's own
+    balance)."""
+    from taskq.workflows import loop
+
+    class Carry(BaseModel):
+        n: int
+
+    async def loop_body(ctx: Any, carry: Carry) -> Carry:
+        return carry
+
+    app = WorkflowApp()
+
+    @app.workflow("e11_honest_carry")
+    def e11_honest_carry() -> object:
+        return build(loop("l1", loop_body, initial=[Carry(n=0), {"deep": "value"}]))
+
+    app._compile("e11_honest_carry").validate()

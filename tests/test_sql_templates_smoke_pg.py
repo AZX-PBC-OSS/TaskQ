@@ -323,13 +323,20 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "doesn't see the fence is a window with no bars)",
     ),
     "taskq.backend._dispatch_sql:_WF_PROBE_FENCE_TEMPLATE": (
-        ("taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",),
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL",
+        ),
         "-- THE DISPATCH FENCE, P3 leg only",
         "the claimable probe's P3-only fence (the probe statement carries "
         "no worker identity, so the execution leg has nothing to read), a "
         "token template substituted by _wf_probe_fence per alias, never a "
-        "standalone statement; its rendered text rides the probe's two "
-        "EXISTS arms",
+        "standalone statement; its rendered text rides BOTH probes' "
+        "EXISTS arms — the plain render AND the cursor-bounded arbiter "
+        "(the window-expansion loop's probe): the two fences may not "
+        "disagree, a cursor probe that misses the fence would answer "
+        "'routable row remains' for rows the claim fence refuses — the "
+        "bounded-stranding inflation the arbiter exists to bound",
     ),
     "taskq.backend._sweeps:_SWEEP_1_BODY": (
         ("taskq.backend._sweeps:_SWEEP_1_SQL",),

@@ -23,7 +23,7 @@ import time
 from collections.abc import AsyncIterator, Iterator
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import (
     uuid4,  # noqa: TID251  # Why: the redlog RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
 )
@@ -123,6 +123,52 @@ def latest_band_artifact(stem: str) -> Path | None:
         return None
     matches = sorted(runs.glob(f"{stem}-*.json"))
     return matches[-1] if matches else None
+
+
+# ── THE LOADED BAR (the load-flake band's discipline — finding 3's cure) ─
+
+#: The bar: ambient load (1-min run-queue average) per core at or below
+#: which the box counts QUIET and a wall-clock band may assert honestly.
+#: Above it, an absolute wall-clock bound measures the NEIGHBORS, not the
+#: code under test — the pin that greened solo and flaked loaded (the
+#: census's own record: "green solo x2" while the box sat at 61/72).
+LOADED_BAR_PER_CORE: Final[float] = 0.5
+
+#: The loaded round's honesty scale: a deadline polled under load stretches
+#: by at most this factor (the box at 2x saturation gets 2x the bound —
+#: condition-not-clock: the CONDITION scales the clock, never a fixed
+#: number pretending the machine is quiet).
+LOADED_SCALE_MAX: Final[float] = 4.0
+
+
+def load_bar() -> float:
+    """The box's ambient load, normalized per core (the loaded bar's
+    reading). Condition-not-clock: an absolute wall-clock band asserts
+    only when THIS reading is quiet."""
+    import os
+
+    return os.getloadavg()[0] / (os.cpu_count() or 1)
+
+
+def loaded_scale() -> float:
+    """The polling scale the current load earns: 1.0 on a quiet box,
+    growing linearly to :data:`LOADED_SCALE_MAX` at 4x saturation. A
+    poll's deadline multiplies by this — the poll waits on STATE
+    (condition-not-clock), and the wait's BOUND acknowledges the box it
+    runs on (state-not-sleep: the poll reacts to the observed state each
+    tick, never a fixed sleep pretending to know when the state lands)."""
+    bar = load_bar()
+    if bar <= LOADED_BAR_PER_CORE:
+        return 1.0
+    return min(1.0 + (bar - LOADED_BAR_PER_CORE), LOADED_SCALE_MAX)
+
+
+def band_assertion_allowed() -> bool:
+    """Whether an ABSOLUTE wall-clock band may assert on this box, now:
+    the loaded-bar gate. A loaded box waives the absolute bound honestly
+    (the artifact records the waiver and the reading) — the RELATIVE
+    drills (red vs. green) assert unconditionally, load-invariantly."""
+    return load_bar() <= LOADED_BAR_PER_CORE
 
 
 #: The terminal-status SQL set — the statement-side literal the engine's
