@@ -24,7 +24,8 @@ shape**: CAS'd on delivery, idempotent, slot-releasing, deadline-bearing.
 
 A declared gate (`GateDecl`) makes the hold compile-visible: it renders
 as a graph node, the admin's Resolve form knows the payload's shape, and
-an eternal wait is a build error (W1), not a production surprise.
+an eternal wait is the W1 validate WARNING at build (declare the
+deadline explicitly), not a production surprise.
 
 ## The rest of the parity table
 
