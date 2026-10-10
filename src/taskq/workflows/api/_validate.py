@@ -574,7 +574,7 @@ def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
-            if isinstance(gate, GateDecl):
+            if isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a LIE this rule convicts (a TypedGate rides the tuple at runtime) — the isinstance IS the check; statically the tuple claims GateDecl.
                 continue
             diagnostics.append(
                 WorkflowValidationError(
@@ -620,7 +620,7 @@ def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
-            if not isinstance(gate, GateDecl):
+            if not isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a lie E13 convicts (see _rule_gate_door) — the walk's defense is the runtime check.
                 continue
             if gate.timeout_s is None:
                 diagnostics.append(

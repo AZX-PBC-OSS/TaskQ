@@ -719,9 +719,9 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     TODAY both legs convict: the runnable shape is refused, and the
     refusal's message reports 0 params for a 2-param body."""
 
-    async def duck_body(
-        ctx, params
-    ) -> _Report:  # Why: the pin's SUBJECT is the unannotated-but-runnable shape (E5's tolerated duck hole) — annotating it annotates the finding away.
+    # The pin's SUBJECT is the unannotated-but-runnable shape (E5's
+    # tolerated duck hole) — annotating it annotates the finding away.
+    async def duck_body(ctx, params) -> _Report:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         return _Report(ref=params["doc_id"])
 
     app = WorkflowApp()
@@ -732,9 +732,9 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
 
     app.get("rv2_e10_duck_ok")  # the doctrine: NO refusal
 
-    async def two_param_body(
-        ctx, first, second
-    ) -> _Report:  # Why: as above — the message must name the REAL arity of THIS shape.
+    # The annotation surface is the old bug's counting basis, never the
+    # pin's — the message must name the REAL arity of THIS shape.
+    async def two_param_body(ctx, first, second) -> _Report:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         return _Report(ref="x")
 
     app2 = WorkflowApp()
