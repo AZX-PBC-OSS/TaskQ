@@ -23,13 +23,16 @@ conventions remain for the humans browsing the estate."""
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, cast
+
+import orjson
+
+from taskq._json import loads
 
 REPO = Path(__file__).resolve().parent.parent.parent.parent
 RUNS = REPO / ".measurements" / "runs"
@@ -59,8 +62,8 @@ def _read() -> dict[str, object]:
     if not MANIFEST.is_file():
         return {"version": VERSION, "claims": []}
     try:
-        data: object = json.loads(MANIFEST.read_text())
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        data: object = loads(MANIFEST.read_bytes())
+    except (ValueError, OSError):
         return {"version": VERSION, "claims": []}
     if not isinstance(data, dict):
         return {"version": VERSION, "claims": []}
@@ -69,7 +72,9 @@ def _read() -> dict[str, object]:
 
 def _write(data: dict[str, object]) -> None:
     tmp = MANIFEST.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
+    # OPT_INDENT_2: the registry is machine-read but human-audited — the
+    # diff of an append is one block, reviewable in place.
+    tmp.write_bytes(orjson.dumps(data, option=orjson.OPT_INDENT_2) + b"\n")
     os.replace(tmp, MANIFEST)
 
 
@@ -86,7 +91,7 @@ def record_claim(stem: str, file: str, head_sha: str, captured_at: str | None = 
     with _locked():
         data = _read()
         claims = data.get("claims")
-        if not isinstance(claims, list):  # pragma: no cover - a corrupt registry is re-below
+        if not isinstance(claims, list):  # pragma: no cover - a corrupt registry is rebuilt below
             claims = []
         claims.append(entry)
         _write({"version": VERSION, "claims": claims})
@@ -98,8 +103,8 @@ def load_claims(runs_dir: Path | None = None) -> list[dict[str, str]]:
     (the verifier) treats empty as the estate having no claims."""
     manifest = (runs_dir / "CLAIMS.json") if runs_dir is not None else MANIFEST
     try:
-        data: object = json.loads(manifest.read_text())
-    except (OSError, ValueError):
+        data: object = loads(manifest.read_bytes())
+    except (ValueError, OSError):
         return []
     if not isinstance(data, dict):
         return []
