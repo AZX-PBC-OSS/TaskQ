@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -163,18 +164,33 @@ def _cited_import(path: Path) -> bool:
     return field == "CITED-IMPORT"
 
 
+def _run_order(p: Path) -> tuple[str, float]:
+    """The run-scoped sort key: the NAME's embedded run timestamp (the
+    convention's own order — git-immune), the mtime only the tie-break
+    for the pre-convention names."""
+    m = re.search(r"(\d{8}T\d{6})", p.name)
+    return (m.group(1) if m else "", p.stat().st_mtime)
+
+
 def verify(runs_dir: Path, head: str) -> list[str]:
     """The stale live claims, named (empty = the estate holds)."""
     if not runs_dir.is_dir():
         return [f"{runs_dir}: no runs directory — the estate has no captures at all"]
-    # Group by stem; within a stem, newest mtime first.
+    # Group by stem; within a stem, newest RUN first — the run-scoped
+    # name's own timestamp, NOT the filesystem mtime: git's add/checkout
+    # refresh mtimes (the 2026-10-11 conviction: a STALE capture sorted
+    # newest after a merge's add -f swept it, the live-claim pointer
+    # chased the ghost, and the estate red'd on a file whose name said
+    # it was older than the real live claim). The name's timestamp IS
+    # the run's time — deterministic, git-immune, the convention's own
+    # order.
     stems: dict[str, list[Path]] = {}
     for path in sorted(runs_dir.rglob("*")):
         if path.is_file() and path.suffix in (".json", ".txt", ".md"):
             stems.setdefault(_stem(path.name), []).append(path)
     failures: list[str] = []
     for stem, paths in sorted(stems.items()):
-        paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        paths.sort(key=_run_order, reverse=True)
         live = paths[0]
         recorded = _recorded_head(live)
         marked = _superseded_by(live)

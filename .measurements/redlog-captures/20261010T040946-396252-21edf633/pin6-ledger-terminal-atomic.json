@@ -1,0 +1,10 @@
+{
+  "mutation": "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
+  "observed": {
+    "ledger": "running",
+    "node": "succeeded"
+  },
+  "pin": "pin6-ledger-terminal-atomic",
+  "run": "20261010T040946-396252-21edf633",
+  "ts": "2026-10-10T04:09:46"
+}
