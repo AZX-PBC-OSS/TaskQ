@@ -169,8 +169,7 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     offenders = [
         str(p.relative_to(_TESTS_DIR))
         for p in _test_files()
-        if p.name not in allowlist
-        and _PYTEST_XDIST_WORKER_RE.search(p.read_text())
+        if p.name not in allowlist and _PYTEST_XDIST_WORKER_RE.search(p.read_text())
     ]
     assert not offenders, (
         "Found PYTEST_XDIST_WORKER-derived schema/name patterns in:\n"
