@@ -1,0 +1,190 @@
+[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+I'm playing the role of a brand-new developer. Let me start by orienting myself the way any newcomer would — looking at the repo root, then diving straight into the docs.
+[0m→ [0mRead . 
+> build · accounts/fireworks/models/glm-5p3-flash
+The catalog update is noted, but my work here is reading docs, running the demo, and writing a report — my direct file tools handle that fine.
+
+A newcomer starts at the README and the docs/ directory. Let me look at both.
+[0m→ [0mRead README.md 
+[0m✱ [0mGlob "docs/**/*" [90m66 matches[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+This is "TaskQ", a Postgres-backed job library. Notably, the root README never mentions a fleet demo or workflows — that's already a small stumble worth noting. The user pointed at `examples/fleet_demo/README.md`, so let me check the examples directory and the workflow docs.
+[0m✱ [0mGlob "examples/**/*" [90m39 matches[0m
+[0m→ [0mRead docs/guides/workflows.md 
+> build · accounts/fireworks/models/glm-5p3-flash
+This is a dense but informative guide. It got truncated right at the HITL section (§4), which is exactly what I need for the approval-hold explanation. Let me read the rest, plus the fleet demo README.
+[0m→ [0mRead docs/guides/workflows.md [90m[offset=889][0m
+[0m→ [0mRead examples/fleet_demo/README.md 
+> build · accounts/fireworks/models/glm-5p3-flash
+I now have the demo command and a picture of the seven acts. Notably, the fleet demo covers actors/rate-limits/cron/shutdown — but not the workflow engine, which is what I also need to explain. Let me read the docs a newcomer would hit next: the docs index, installation, and the workflows API reference.
+[0m→ [0mRead docs/index.md 
+[0m→ [0mRead docs/api-reference/workflows.md 
+[0m→ [0mRead docs/getting-started/installation.md 
+> build · accounts/fireworks/models/glm-5p3-flash
+I now have the workflow API picture from the docs. Before running the demo, let me check (a) whether the docs even point a newcomer to the fleet demo, and (b) whether my environment has the prerequisites (uv, Docker).
+[0m✱ [0mGrep "fleet" [90min docs · 100 matches[0m
+[0m$ [0mwhich uv docker python3; docker --version 2>&1; uv --version 2>&1; docker info --format '{{.ServerVersion}}' 2>&1 | head -5
+/usr/bin/uv
+/usr/bin/docker
+/usr/bin/python3
+Docker version 29.8.2, build 7fc2dff9bc
+uv 0.12.23 (46b84fd0b 2026-10-03 x86_64-unknown-linux-gnu)
+29.8.0
+> build · accounts/fireworks/models/glm-5p3-flash
+Environment is ready: `uv` 0.12.23, Docker 29.8.2 with a running daemon, and Python 3 present. Also interesting: the docs only mention the fleet demo deep inside `docs/guides/actors.md` (~line 1249) — not in the index or README. Let me look at that mention, then launch the demo in the background since it runs seven acts with real containers.
+[0m$ [0muv run python -m examples.fleet_demo.run_demo > /tmp/opencode/fleet_demo_output.log 2>&1
+Command moved to the background (shell ID: sh_11cbaca13001OSaJMtqzXVq7Yg).
+Output is streaming to: /home/rich/.local/share/opencode/shell/e60a7f0b6faf0637df4334d322da3b659651c623/sh_11cbaca13001OSaJMtqzXVq7Yg.out
+[0m→ [0mRead docs/guides/actors.md [90m[offset=1230, limit=30][0m
+> build · accounts/fireworks/models/glm-5p3-flash
+While the demo runs, let me pin down the operator-side story for resolving a hold — the guide mentions `HitlClient.resolve` and the admin UI panel, and the CLI runbook mentions `taskq flows holds`. I want to know if there's a CLI *resolve* verb, since that's what an operator would reach for.
+[0m✱ [0mGrep "HitlClient|wait_signal|flows resolve|hold" [90min docs · 100 matches[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+`docs/examples/doc-ingest.md` looks like the end-to-end workflow walkthrough a newcomer needs — including the HITL hold. Let me read it, and check the CLI reference for the `taskq flows` verbs.
+[0m→ [0mRead docs/examples/doc-ingest.md 
+[0m✱ [0mGrep "flows" [90min docs/api-reference/cli.md · 0 matches[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+Two more findings: the guide says the join failure policy is `"fail_closed" | "collect"` but the worked example uses `on_failure="maybe"` — and the CLI API reference has no `flows` verbs at all, even though the workflow runbook tells me to run `taskq flows status`. Let me check the main CLI guide.
+[0m✱ [0mGrep "flows|hold" [90min docs/guides/cli.md · 19 matches[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+The CLI guide does document the `taskq flows` verbs (`list/status/holds/signal/resolve/cancel/retry`) — so the API-reference gap is just an inconsistency between doc pages, not a missing feature. Let me peek once at the demo log to make sure the infra came up (image pulls or port conflicts would fail early).
+[0m$ [0mtail -40 /tmp/opencode/fleet_demo_output.log; echo '--- line count:'; wc -l /tmp/opencode/fleet_demo_output.log
+Using CPython 3.13.15
+Creating virtual environment at: .venv
+   Building taskq-py @ file:///tmp/opencode/stranger-wt
+      Built taskq-py @ file:///tmp/opencode/stranger-wt
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 114 packages in 206ms
+--- line count:
+8 /tmp/opencode/fleet_demo_output.log
+> build · accounts/fireworks/models/glm-5p3-flash
+Environment synced cleanly (114 packages). While the demo runs its acts, let me finish the newcomer's doc path — the quick-start guide — so my report reflects the full documented onboarding.
+[0m→ [0mRead docs/getting-started/quick-start.md 
+> build · accounts/fireworks/models/glm-5p3-flash
+The quick-start covers actors only — it never mentions workflows or the fleet demo, another discoverability gap. Let me check the demo's progress now.
+[0m$ [0mtail -30 /tmp/opencode/fleet_demo_output.log; echo '---'; wc -l /tmp/opencode/fleet_demo_output.log; docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null
+it picked who owns this write; act 5's cancel_origin_counts
+    event is where a shutdown origin surfaces.
+
+  the job's event trail (the cancel_request entry with the operator's reason):
+    2026-10-08 18:16:38.347207+00:00  cancel_request  {"reason": "operator drill"}
+    2026-10-08 18:16:38.818047+00:00  state_change  {"to_state": "cancelled", "worker_id": "01a11cba-ea4e-7ba3-9b9b-cef03fc02e9a", "from_state": "runnin... (+24 characters)
+
+════════════════════════════════════════════════════════════════════════
+ACT 4 — the cron tick budget + the catch-up window
+────────────────────────────────────────────────────────────────────────
+  three cron schedules are live (every worker startup registers them):
+    cron_digest      */15  — fast factory, the honest peer
+    cron_greedy_one  */5   — factory burns 4.0s of the tick's 4.5s funded budget
+    cron_greedy_two  */5   — same; the tick can fund ONE of the two
+
+  watching the leader's cron loop for 12s …
+
+  the tick-budget refusal: every tick that fires a greedy factory
+  leaves a leftover (≈0.45s) below the minimum fundable grant (a
+  quarter of the funded budget) — so the NEXT schedule in the tick's
+  plan (the other greedy, and the honest digest peer on greedy ticks)
+  is DEFERRED: next_fire_at advances one cadence, no strike, no retry
+  budget burned:
+  worker events “cron-fire-budget-deferred”: 11
+    {'event': 'cron-fire-budget-deferred', 'actor': 'cron_digest', 'next_fire_at': '2026-10-08T18:16:41.261060+00:00', 'schedule_id': '01a11cba-ea61-7b80-bb33-4be64511b0d2'}
+    {'event': 'cron-fire-budget-deferred', 'actor': 'cron_greedy_one', 'next_fire_at': '2026-10-08T18:16:41.261060+00:00', 'schedule_id': '01a11cba-ea65-7401-8b77-3070eb1200bc'}
+    {'event': 'cron-fire-budget-deferred', 'actor': 'cron_digest', 'next_fire_at': '2026-10-08T18:16:46.268071+00:00', 'schedule_id': '01a11cba-ea61-7b80-bb33-4be64511b0d2'}
+    {'event': 'cron-fire-budget-deferred', 'actor': 'cron_greedy_one', 'next_fire_at': '2026-10-08T18:16:46.268071+00:00', 'schedule_id': '01a11cba-ea65-7401-8b77-3070eb1200bc'}
+
+  ── the catch-up window's BUDGET SKIPPING ──---
+113 /tmp/opencode/fleet_demo_output.log
+taskq-fleet-demo-postgres-1 0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
+taskq-fleet-demo-redis-1 0.0.0.0:6380->6379/tcp, [::]:6380->6379/tcp
+taskq-stranger-pg 0.0.0.0:5750->5432/tcp, [::]:5750->5432/tcp
+taskq-p5-matrix-pg18 0.0.0.0:5748->5432/tcp, [::]:5748->5432/tcp
+taskq-p5-matrix-pg17 0.0.0.0:5747->5432/tcp, [::]:5747->5432/tcp
+taskq-p5-matrix-pg16 0.0.0.0:5746->5432/tcp, [::]:5746->5432/tcp
+taskq-p5-matrix-pg15 0.0.0.0:5745->5432/tcp, [::]:5745->5432/tcp
+taskq-consolidator-pg 0.0.0.0:5718->5432/tcp, [::]:5718->5432/tcp
+taskq-fixerlane-pg 0.0.0.0:5717->5432/tcp, [::]:5717->5432/tcp
+taskq-evidence-matrix-pg 0.0.0.0:5716->5432/tcp, [::]:5716->5432/tcp
+taskq-fv-pg 0.0.0.0:5715->5432/tcp, [::]:5715->5432/tcp
+taskq-hygiene-pg 0.0.0.0:5709->5432/tcp, [::]:5709->5432/tcp
+taskq-exec-pg 0.0.0.0:5708->5432/tcp, [::]:5708->5432/tcp
+taskq-typefix-pg 0.0.0.0:5707->5432/tcp, [::]:5707->5432/tcp
+taskq-t20-pg 0.0.0.0:5704->5432/tcp, [::]:5704->5432/tcp
+taskq-t21-pg 0.0.0.0:5705->5432/tcp, [::]:5705->5432/tcp
+taskq-ecopatterns-pg 0.0.0.0:5701->5432/tcp, [::]:5701->5432/tcp
+ops-dashboard-worker 8000/tcp
+ops-dashboard-db 0.0.0.0:15438->5432/tcp, [::]:15438->5432/tcp
+ops-dashboard-dragonfly 0.0.0.0:16451->6379/tcp, [::]:16451->6379/tcp
+taskqflow-p3fix-pg 0.0.0.0:5698->5432/tcp, [::]:5698->5432/tcp
+taskqflow-p4-pg 0.0.0.0:5697->5432/tcp, [::]:5697->5432/tcp
+taskqflow-p2fix-pg 0.0.0.0:5695->5432/tcp, [::]:5695->5432/tcp
+taskqflow-p3-pg 0.0.0.0:5693->5432/tcp, [::]:5693->5432/tcp
+taskq-redis 0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp
+agentloop-pg 0.0.0.0:5651->5432/tcp, [::]:5651->5432/tcp
+fanout-pg 0.0.0.0:5650->5432/tcp, [::]:5650->5432/tcp
+hardening-pg 0.0.0.0:5640->5432/tcp, [::]:5640->5432/tcp
+hitl-proof-pg 0.0.0.0:5631->5432/tcp, [::]:5631->5432/tcp
+vibrant_mendel 0.0.0.0:40540->5432/tcp, [::]:40540->5432/tcp
+proto3-pg 0.0.0.0:5630->5432/tcp, [::]:5630->5432/tcp
+proto1-pg 0.0.0.0:5620->5432/tcp, [::]:5620->5432/tcp
+taskq-mvcc-pg 0.0.0.0:5599->5432/tcp, [::]:5599->5432/tcp
+cennan-seaweedfs-1 7333/tcp, 8080/tcp, 8888/tcp, 9333/tcp, 18080/tcp, 18888/tcp, 19333/tcp, 127.0.0.1:58333->8333/tcp
+cennan-db-1 127.0.0.1:55432->5432/tcp
+taskq-compose-e2e-1494921-admin-1 0.0.0.0:49935->8001/tcp, [::]:49935->8001/tcp
+taskq-compose-e2e-1494921-app-1 0.0.0.0:48107->8000/tcp, [::]:48107->8000/tcp
+taskq-compose-e2e-1494921-redis-1 6379/tcp
+taskq-compose-e2e-1494918-app-1 0.0.0.0:46229->8000/tcp, [::]:46229->8000/tcp
+taskq-compose-e2e-1494918-admin-1 0.0.0.0:51331->8001/tcp, [::]:51331->8001/tcp
+taskq-compose-e2e-1494918-redis-1 6379/tcp
+jovial_jemison 0.0.0.0:33937->5432/tcp, [::]:33937->5432/tcp
+redis60probe 0.0.0.0:6399->6379/tcp, [::]:6399->6379/tcp
+warden-db-1 127.0.0.1:5432->5432/tcp
+suspicious_mirzakhani 0.0.0.0:56762->6379/tcp, [::]:56762->6379/tcp
+bold_bhaskara 0.0.0.0:56760->5432/tcp, [::]:56760->5432/tcp
+vigilant_tu 0.0.0.0:56757->6379/tcp, [::]:56757->6379/tcp
+xenodochial_jackson 0.0.0.0:56756->5432/tcp, [::]:56756->5432/tcp
+beautiful_wing 0.0.0.0:56753->6379/tcp, [::]:56753->6379/tcp
+clever_gould 0.0.0.0:56752->5432/tcp, [::]:56752->5432/tcp
+cranky_visvesvaraya 0.0.0.0:56750->6379/tcp, [::]:56750->6379/tcp
+frosty_easley 0.0.0.0:56749->5432/tcp, [::]:56749->5432/tcp
+strange_lehmann 0.0.0.0:56743->6379/tcp, [::]:56743->6379/tcp
+infallible_mclaren 0.0.0.0:56742->5432/tcp, [::]:56742->5432/tcp
+friendly_yalow 0.0.0.0:56739->6379/tcp, [::]:56739->6379/tcp
+romantic_driscoll 0.0.0.0:56738->5432/tcp, [::]:56738->5432/tcp
+nice_heisenberg 0.0.0.0:56734->6379/tcp, [::]:56734->6379/tcp
+sad_hawking 0.0.0.0:56733->5432/tcp, [::]:56733->5432/tcp
+serene_napier 0.0.0.0:56730->6379/tcp, [::]:56730->6379/tcp
+clever_newton 0.0.0.0:56729->5432/tcp, [::]:56729->5432/tcp
+goofy_benz 0.0.0.0:56723->6379/tcp, [::]:56723->6379/tcp
+relaxed_feistel 0.0.0.0:56722->5432/tcp, [::]:56722->5432/tcp
+frosty_chandrasekhar 0.0.0.0:56300->5432/tcp, [::]:56300->5432/tcp
+wedge-toxiproxy 0.0.0.0:5545->5545/tcp, [::]:5545->5545/tcp, 0.0.0.0:5574->8474/tcp, [::]:5574->8474/tcp
+practical_moser 
+cennan-pgb-pin-9f77e34e-pgbouncer 5432/tcp, 127.0.0.1:41339->6432/tcp
+distracted_tesla 0.0.0.0:44813->6379/tcp, [::]:44813->6379/tcp
+cennan-tsbench-ts 0.0.0.0:55452->5432/tcp, [::]:55452->5432/tcp
+devcontainer-azurite-1 0.0.0.0:37604->10000/tcp, [::]:37604->10000/tcp, 0.0.0.0:26585->10001/tcp, [::]:26585->10001/tcp, 0.0.0.0:40209->10002/tcp, [::]:40209->10002/tcp
+caddy 443/tcp, 0.0.0.0:80->80/tcp, 2019/tcp, 443/udp
+portainer 8000/tcp, 9000/tcp, 0.0.0.0:9443->9443/tcp
+uptime-kuma 0.0.0.0:3001->3001/tcp
+glances 0.0.0.0:61208->61208/tcp, 61209/tcp
+dozzle 8080/tcp
+code-server 8080/tcp
+homepage 3000/tcp
+> build · accounts/fireworks/models/glm-5p3-flash
+The demo is healthy — its own containers are up on :5433/:6380 as promised, acts 1–3 are done, and it's mid-act-4. While it finishes, let me nail down the `on_failure` naming discrepancy precisely (`"collect"` vs `"maybe"`) so my report can state it exactly.
+[0m✱ [0mGrep "on_failure=|collect"|maybe"" [90min docs · 7 matches[0m
+> build · accounts/fireworks/models/glm-5p3-flash
+Confirmed: `docs/guides/workflows.md` (line 599) calls the second failure policy `"collect"`, while the runnable example in `docs/examples/doc-ingest.md` uses `on_failure="maybe"`, and the API reference never names the alternative at all. That's a genuine naming inconsistency to flag.
+
+I now have everything I need from the docs for the workflow-API explanation. The demo is still running (mid act 4 of 7, its own containers up on the advertised ports), so I'll wait for it to finish before writing the report.
+
+Key facts gathered so far:
+
+**From the demo README** (`examples/fleet_demo/README.md`): one command, `uv run python -m examples.fleet_demo.run_demo`; brings up its own compose project (`taskq-fleet-demo`, PG :5433, Redis :6380), applies migrations, runs a real worker subprocess, seven acts, cleans up with `down -v`.
+
+**From the workflow docs** (guide + API ref + `docs/examples/doc-ingest.md`): `WorkflowApp`, `@app.actor`, a sync/pure `@app.workflow` build function, `step`/`gather`/`map_source`/`sink`/`build` wiring, `compiled.validate()`, `FlowRunner.create_flow/drive/result`, and the HITL surface (`ctx.wait_signal`, `HitlClient.resolve`, `taskq flows resolve`, admin UI holds panel).
+
+**Stumbles already collected**: no pointer to the flagship demo from README/index/quick-start (only deep in `actors.md`); the flagship demo never demonstrates workflows; `"collect"` vs `"maybe"` naming conflict; `HitlClient` imported from a private `_hitl` module in official docs; a placeholder URL (`https://github.com/#/examples`) in `doc-ingest.md`; `taskq flows` verbs missing from the CLI API reference; jumbled section numbering in the workflows guide; engine internals presented before the authoring API.

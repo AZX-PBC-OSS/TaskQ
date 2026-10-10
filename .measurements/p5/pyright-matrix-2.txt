@@ -1,0 +1,4 @@
+/tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_wf_app.py
+  /tmp/opencode/wt-taskqflow-p5/tests/system_e2e/_wf_app.py:124:36 - error: Cannot access attribute "step_key" for class "FailureInfo"
+    Attribute "step_key" is unknown (reportAttributeAccessIssue)
+1 error, 0 warnings, 0 informations

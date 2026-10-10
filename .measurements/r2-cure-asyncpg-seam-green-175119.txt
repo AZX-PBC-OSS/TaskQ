@@ -1,0 +1,3 @@
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+15 passed, 1 skipped in 6.55s

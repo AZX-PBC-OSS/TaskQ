@@ -1,0 +1,5 @@
+# ruff check src tests examples scripts + ruff format --check (the lint gate's own commands)
+All checks passed!
+1516 files already formatted
+rc=0
+head: 96d5ff1b1e233b14e6e18b877b8e9a252e868621

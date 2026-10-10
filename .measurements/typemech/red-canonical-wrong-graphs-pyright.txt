@@ -1,0 +1,7 @@
+error[invalid-argument-type]: Argument to function `build` is incorrect
+--
+
+error[invalid-argument-type]: Argument to function `_handle_consumer` is incorrect
+--
+
+error[invalid-argument-type]: Argument to function `_list_consumer` is incorrect

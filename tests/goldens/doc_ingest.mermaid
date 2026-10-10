@@ -1,0 +1,23 @@
+flowchart TD
+    classify["classify"]
+    extract_entities["extract_entities"]
+    gather[["gather"]]
+    gather:1[["gather:1"]]
+    ingest(["ingest ⇢ map: enrich_item"])
+    ingest.join{{"ingest.join"}}
+    publish[["publish"]]
+    review([("review ⇅ ⏳ReviewDecision/604800.0s")])
+    route["route"]
+    summarize["summarize"]
+    classify -->|list[str]| gather:1
+    extract_entities -->|list[str]| gather
+    gather -->|?| publish
+    gather:1 -->|?| publish
+    ingest -->|list[str]| ingest.join
+    ingest.join -->|?| classify
+    ingest.join -->|?| extract_entities
+    ingest.join -->|?| publish
+    ingest.join -->|?| route
+    ingest.join -->|?| summarize
+    review -->|?| publish
+    summarize -->|list[str]| gather

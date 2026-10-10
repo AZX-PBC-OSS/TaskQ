@@ -1,0 +1,43 @@
+=== THE CONSOLIDATED PROOF, PHASE D at 5402a4b8c25a69c742792489d0087124e320296b — 2026-10-10T03:22:14Z
+=== the container contract: the repo's own (_PG_PASSWORD=taskq, the taskq role+db, max_connections default-tuned); the DSN matches
+
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+_ ERROR at setup of TestConsumedAndBackpressure.test_backpressure_errors_by_kind _
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+_ ERROR at setup of TestProgressPublishFailures.test_publish_failures_by_channel_and_error _
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>
+            f"worker probe failed:\nstdout={result.stdout[-4000:]}\nstderr={result.stderr[-4000:]}"
+E       PROBE_TASK_FAILED:URLError:<urlopen error [Errno 111] Connection refused>

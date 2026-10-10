@@ -1,0 +1,7 @@
+pyright error line 90 [reportArgumentType] Argument of type "Promise[Report]" cannot be assigned to parameter "residuals" of type "Promise[Never]" in function "build"
+pyright error line 108 [reportArgumentType] Argument of type "Promise[Report]" cannot be assigned to parameter "p" of type "Promise[Config]" in function "_handle_consumer"
+pyright error line 126 [reportArgumentType] Argument of type "Promise[list[Report]]" cannot be assigned to parameter "p" of type "Promise[list[Config]]" in function "_list_consumer"
+pyright summary: 3 errors
+
+ty:
+Found 3 diagnostics

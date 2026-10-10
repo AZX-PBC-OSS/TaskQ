@@ -1,0 +1,23 @@
+........................................................................ [  8%]
+.................................................F
+=================================== FAILURES ===================================
+_______________ test_compiled_css_covers_every_class_the_ui_uses _______________
+
+    def test_compiled_css_covers_every_class_the_ui_uses() -> None:
+        """B4's teeth: a class added to a template (or the static JS) without
+        a rebuild reds here - the stale-compiled-css failure mode, caught in
+        a plain pytest run."""
+        css = (_STATIC / "admin.css").read_text()
+        missing = sorted(t for t in _used_class_tokens() if not _in_css(t, css))
+>       assert not missing, (
+            "classes the templates/JS use are missing from the COMPILED "
+            f"admin.css (stale build; run `npm ci && npm run build`): {missing}"
+        )
+E       AssertionError: classes the templates/JS use are missing from the COMPILED admin.css (stale build; run `npm ci && npm run build`): ['border-slate-100', 'dark:text-amber-200', 'mb-6', 'p-6', 'pr-4', 'rounded-sm', 'sr-only', 'text-amber-800']
+E       assert not ['border-slate-100', 'dark:text-amber-200', 'mb-6', 'p-6', 'pr-4', 'rounded-sm', ...]
+
+tests/web_admin/test_admin_css_drift.py:109: AssertionError
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_admin_css_drift.py::test_compiled_css_covers_every_class_the_ui_uses
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 121 passed in 14.03s

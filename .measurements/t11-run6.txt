@@ -1,0 +1,392 @@
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~ Stack of AnyIO worker thread (140124325140160) ~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1089, in run
+    item = self.queue.get()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/queue.py", line 199, in get
+    self.not_empty.wait()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 359, in wait
+    waiter.acquire()
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_0 (140124341925568) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+FE....FF+++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~ Stack of AnyIO worker thread (140124325140160) ~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1089, in run
+    item = self.queue.get()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/queue.py", line 199, in get
+    self.not_empty.wait()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 359, in wait
+    waiter.acquire()
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_0 (140124341925568) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+FE+++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~ Stack of AnyIO worker thread (140124325140160) ~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1089, in run
+    item = self.queue.get()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/queue.py", line 199, in get
+    self.not_empty.wait()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 359, in wait
+    waiter.acquire()
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_0 (140124341925568) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/thread.py", line 90, in _worker
+    work_item = work_queue.get(block=True)
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+FE....                                                                   [100%]
+==================================== ERRORS ====================================
+________ ERROR at teardown of test_sse_first_frame_is_the_full_snapshot ________
+test left asyncio task(s) still pending on the module event loop - a live loop keeps writing shared state into later tests. Cancel and await every task the test created:
+  - task 'Task-14' still pending; coroutine: <coroutine object test_sse_first_frame_is_the_full_snapshot at 0x7f712fddbcc0>
+  - task 'starlette.responses.StreamingResponse.__call__.<locals>.wrap' still pending; coroutine: <coroutine object TaskHandle._run_coro at 0x7f712f9abf10>
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:40:31 [info     ] node.held                      hold_id=01a11962-3f7a-7593-8dcb-ad5c9669424d node=review run_id=01a11962-3f56-71a0-911f-4a7148de2db4 signals=['Approval']
+2026-10-07 19:40:31 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:40:31 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+_____ ERROR at teardown of test_sse_unknown_run_streams_the_empty_snapshot _____
+test left asyncio task(s) still pending on the module event loop - a live loop keeps writing shared state into later tests. Cancel and await every task the test created:
+  - task 'Task-239' still pending; coroutine: <coroutine object test_sse_unknown_run_streams_the_empty_snapshot at 0x7f712f81f220>
+  - task 'starlette.responses.StreamingResponse.__call__.<locals>.wrap' still pending; coroutine: <coroutine object TaskHandle._run_coro at 0x7f712f8bb100>
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:42:01 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:42:02 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+__ ERROR at teardown of test_sse_reconnect_last_event_id_continues_the_cursor __
+test left asyncio task(s) still pending on the module event loop - a live loop keeps writing shared state into later tests. Cancel and await every task the test created:
+  - task 'Task-428' still pending; coroutine: <coroutine object test_sse_reconnect_last_event_id_continues_the_cursor at 0x7f712f9c0700>
+  - task 'starlette.responses.StreamingResponse.__call__.<locals>.wrap' still pending; coroutine: <coroutine object TaskHandle._run_coro at 0x7f712f8bb4c0>
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:43:32 [info     ] node.held                      hold_id=01a11965-005b-7df1-b137-d205e2bff86a node=review run_id=01a11965-0046-75e3-8d32-a3a186fcbd36 signals=['Approval']
+2026-10-07 19:43:32 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:43:32 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=================================== FAILURES ===================================
+__________________ test_sse_first_frame_is_the_full_snapshot ___________________
+
+item = <Coroutine test_sse_first_frame_is_the_full_snapshot>
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_call(item: pytest.Item) -> object:
+        """Snapshot the test-end residue: tasks minted during THIS call and
+        still pending when the call phase ends (before any fixture teardown
+        can reap them).
+    
+        Bounded and cheap: two :func:`asyncio.all_tasks` set diffs per async
+        item, the same primitive the guard's baseline diff uses.  The window
+        is read only when the guard stashed a loop for this item (async items
+        on the module loop); sync tests mint no loop tasks and skip.  The
+        snapshot is captured even when the call raises - a settle-assertion
+        failure unwinding through ``finally`` blocks is exactly the path
+        whose residue must be remembered.
+        """
+        loop = item.stash.get(_GUARD_LOOP_KEY, None)
+        if loop is None:
+            result = yield
+            return result
+        pending_at_call_start = asyncio.all_tasks(loop)
+        try:
+>           result = yield
+                     ^^^^^
+
+tests/conftest.py:503: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:569: in runtest
+    super().runtest()
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:905: in inner
+    runner.run(coro, context=context)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:713: in run_until_complete
+    self.run_forever()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:684: in run_forever
+    self._run_once()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:2023: in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <selectors.EpollSelector object at 0x7f713da55450>, timeout = 1.0
+
+    def select(self, timeout=None):
+        if timeout is None:
+            timeout = -1
+        elif timeout <= 0:
+            timeout = 0
+        else:
+            # epoll_wait() has a resolution of 1 millisecond, round away
+            # from zero to wait *at least* timeout seconds.
+            timeout = math.ceil(timeout * 1e3) * 1e-3
+    
+        # epoll_wait() expects `maxevents` to be greater than zero;
+        # we want to make sure that `select()` can be called when no
+        # FD is registered.
+        max_ev = len(self._fd_to_key) or 1
+    
+        ready = []
+        try:
+>           fd_event_list = self._selector.poll(timeout, max_ev)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: Timeout (>90.0s) from pytest-timeout.
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/selectors.py:452: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:40:31 [info     ] node.held                      hold_id=01a11962-3f7a-7593-8dcb-ad5c9669424d node=review run_id=01a11962-3f56-71a0-911f-4a7148de2db4 signals=['Approval']
+2026-10-07 19:40:31 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:40:31 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+_________ test_resolve_without_mounted_definitions_is_the_501_residual _________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f713dbe4a00>
+module_pg_schema = ModulePgSchema(schema_name='tq_394b61f50f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_394b61f50fca')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_resolve_without_mounted_definitions_is_the_501_residual(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        demo_app_module: Any,
+    ) -> None:
+        """THE NO-UNTYPED-DOOR PIN: a router mounted WITHOUT the workflow
+        definitions answers 501 — the resolve refuses to deliver untyped."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                f"/api/runs/{run_id}/resolve", data={"hold_id": "x", "decision": "{}"}
+            )
+>       assert resp.status_code == 501
+E       assert 403 == 501
+E        +  where 403 = <Response [403 Forbidden]>.status_code
+
+tests/web_admin/test_workflows_page.py:316: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:42:01 [info     ] node.held                      hold_id=01a11963-9f60-7b23-b91b-d78db186bee3 node=review run_id=01a11963-9f4d-7b03-b92b-4b887137acb6 signals=['Approval']
+2026-10-07 19:42:01 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:42:01 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+___________ test_resolve_through_the_typed_door_delivers_and_audits ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f713dbe4a00>
+module_pg_schema = ModulePgSchema(schema_name='tq_394b61f50f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_394b61f50fca')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f712f8b9130>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_resolve_through_the_typed_door_delivers_and_audits(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        clean_pg_conn: asyncpg.Connection,
+        demo_app_module: Any,
+    ) -> None:
+        """THE AUDIT PIN (G4): a Resolve with the mounted definitions
+        delivers + writes the audit row; a WRONG payload is the named
+        pydantic refusal and moves nothing."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        from taskq.workflows.api._hitl import HitlClient
+    
+        client = HitlClient(module_pg_pool, schema=schema)
+        (hold,) = await client.list(run_id)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    
+        # THE WRONG PAYLOAD: the named refusal, the hold SURVIVES.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            bad = await http.post(
+                f"/api/runs/{run_id}/resolve",
+                data={"hold_id": hold.hold_id, "decision": json.dumps({"verdict": 42})},
+            )
+>       assert bad.status_code == 422
+E       assert 403 == 422
+E        +  where 403 = <Response [403 Forbidden]>.status_code
+
+tests/web_admin/test_workflows_page.py:345: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:42:01 [info     ] node.held                      hold_id=01a11963-9ff7-7d71-8c6c-dbd61f7e621a node=review run_id=01a11963-9fe3-7e32-8b0f-de0c417cd214 signals=['Approval']
+2026-10-07 19:42:01 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:42:01 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+_______________ test_sse_unknown_run_streams_the_empty_snapshot ________________
+
+item = <Coroutine test_sse_unknown_run_streams_the_empty_snapshot>
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_call(item: pytest.Item) -> object:
+        """Snapshot the test-end residue: tasks minted during THIS call and
+        still pending when the call phase ends (before any fixture teardown
+        can reap them).
+    
+        Bounded and cheap: two :func:`asyncio.all_tasks` set diffs per async
+        item, the same primitive the guard's baseline diff uses.  The window
+        is read only when the guard stashed a loop for this item (async items
+        on the module loop); sync tests mint no loop tasks and skip.  The
+        snapshot is captured even when the call raises - a settle-assertion
+        failure unwinding through ``finally`` blocks is exactly the path
+        whose residue must be remembered.
+        """
+        loop = item.stash.get(_GUARD_LOOP_KEY, None)
+        if loop is None:
+            result = yield
+            return result
+        pending_at_call_start = asyncio.all_tasks(loop)
+        try:
+>           result = yield
+                     ^^^^^
+
+tests/conftest.py:503: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:569: in runtest
+    super().runtest()
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:905: in inner
+    runner.run(coro, context=context)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:713: in run_until_complete
+    self.run_forever()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:684: in run_forever
+    self._run_once()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:2023: in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <selectors.EpollSelector object at 0x7f713da55450>, timeout = 0.926
+
+    def select(self, timeout=None):
+        if timeout is None:
+            timeout = -1
+        elif timeout <= 0:
+            timeout = 0
+        else:
+            # epoll_wait() has a resolution of 1 millisecond, round away
+            # from zero to wait *at least* timeout seconds.
+            timeout = math.ceil(timeout * 1e3) * 1e-3
+    
+        # epoll_wait() expects `maxevents` to be greater than zero;
+        # we want to make sure that `select()` can be called when no
+        # FD is registered.
+        max_ev = len(self._fd_to_key) or 1
+    
+        ready = []
+        try:
+>           fd_event_list = self._selector.poll(timeout, max_ev)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: Timeout (>90.0s) from pytest-timeout.
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/selectors.py:452: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:42:01 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:42:02 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+____________ test_sse_reconnect_last_event_id_continues_the_cursor _____________
+
+item = <Coroutine test_sse_reconnect_last_event_id_continues_the_cursor>
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_call(item: pytest.Item) -> object:
+        """Snapshot the test-end residue: tasks minted during THIS call and
+        still pending when the call phase ends (before any fixture teardown
+        can reap them).
+    
+        Bounded and cheap: two :func:`asyncio.all_tasks` set diffs per async
+        item, the same primitive the guard's baseline diff uses.  The window
+        is read only when the guard stashed a loop for this item (async items
+        on the module loop); sync tests mint no loop tasks and skip.  The
+        snapshot is captured even when the call raises - a settle-assertion
+        failure unwinding through ``finally`` blocks is exactly the path
+        whose residue must be remembered.
+        """
+        loop = item.stash.get(_GUARD_LOOP_KEY, None)
+        if loop is None:
+            result = yield
+            return result
+        pending_at_call_start = asyncio.all_tasks(loop)
+        try:
+>           result = yield
+                     ^^^^^
+
+tests/conftest.py:503: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:569: in runtest
+    super().runtest()
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:905: in inner
+    runner.run(coro, context=context)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:713: in run_until_complete
+    self.run_forever()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:684: in run_forever
+    self._run_once()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:2023: in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <selectors.EpollSelector object at 0x7f713da55450>, timeout = 0.961
+
+    def select(self, timeout=None):
+        if timeout is None:
+            timeout = -1
+        elif timeout <= 0:
+            timeout = 0
+        else:
+            # epoll_wait() has a resolution of 1 millisecond, round away
+            # from zero to wait *at least* timeout seconds.
+            timeout = math.ceil(timeout * 1e3) * 1e-3
+    
+        # epoll_wait() expects `maxevents` to be greater than zero;
+        # we want to make sure that `select()` can be called when no
+        # FD is registered.
+        max_ev = len(self._fd_to_key) or 1
+    
+        ready = []
+        try:
+>           fd_event_list = self._selector.poll(timeout, max_ev)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: Timeout (>90.0s) from pytest-timeout.
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/selectors.py:452: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:43:32 [info     ] node.held                      hold_id=01a11965-005b-7df1-b137-d205e2bff86a node=review run_id=01a11965-0046-75e3-8d32-a3a186fcbd36 signals=['Approval']
+2026-10-07 19:43:32 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 19:43:32 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+ERROR tests/web_admin/test_workflows_page.py::test_sse_first_frame_is_the_full_snapshot
+ERROR tests/web_admin/test_workflows_page.py::test_sse_unknown_run_streams_the_empty_snapshot
+ERROR tests/web_admin/test_workflows_page.py::test_sse_reconnect_last_event_id_continues_the_cursor
+FAILED tests/web_admin/test_workflows_page.py::test_sse_first_frame_is_the_full_snapshot
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_without_mounted_definitions_is_the_501_residual
+FAILED tests/web_admin/test_workflows_page.py::test_resolve_through_the_typed_door_delivers_and_audits
+FAILED tests/web_admin/test_workflows_page.py::test_sse_unknown_run_streams_the_empty_snapshot
+FAILED tests/web_admin/test_workflows_page.py::test_sse_reconnect_last_event_id_continues_the_cursor
+5 failed, 8 passed, 3 errors in 273.35s (0:04:33)

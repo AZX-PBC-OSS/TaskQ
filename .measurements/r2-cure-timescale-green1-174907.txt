@@ -1,0 +1,2 @@
+FAILED tests/test_timescaledb_hypertables.py::test_mid_population_conversion_preserves_every_row_and_index
+1 failed in 5.02s

@@ -46,6 +46,7 @@ from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
     _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
     _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pin must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
+    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the wrapper composes the PRODUCTION capability CTE verbatim (the lateral's fence references it) — the plan the pin explains is the plan the dispatch runs.
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -225,7 +226,12 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             "WITH params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
             "$3::uuid AS worker_id, $4::interval AS lock_lease, "
             "$5::int AS oversample), "
-            "queue_cap_headroom AS (SELECT NULL::text AS actor, "
+            # The execution fence's capability CTE: the lateral's fence
+            # references it, so the wrapper composes the PRODUCTION
+            # constant verbatim (the plan the pin explains is the plan
+            # the dispatch runs).
+            + _WF_EXEC_CAPABLE_CTE.format(schema=dispatch_schema)
+            + "queue_cap_headroom AS (SELECT NULL::text AS actor, "
             "NULL::text AS queue, NULL::bigint AS headroom WHERE false) "
             "SELECT * FROM (SELECT 'dispatch_probe'::text AS actor, 10::int AS residual) pac "
             "CROSS JOIN LATERAL (VALUES ('default'::text)) AS sq(queue_name) "
@@ -241,19 +247,25 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             2,
         )
 
-        assert "jobs_actor_dispatch_idx" in plan or "jobs_unrouted_actor_dispatch_idx" in plan, (
-            f"expected a per-(actor, queue) dispatch probe index in the plan:\n{plan}"
+        # THE INDEX-SERVED PROPERTY, not the index NAME (F2-6): the
+        # doctrine this pin owns is "the scheduled_at bound is index-
+        # SERVED" — an Index Cond, never a Filter. Which index the
+        # planner NAMES is stats- and catalog-dependent (the planner may
+        # serve the probe from ANY index whose key order delivers the
+        # per-(actor, queue) prefix plus the priority/scheduled_at order
+        # — the shipped twins jobs_actor_dispatch_idx /
+        # jobs_unrouted_actor_dispatch_idx today, a renamed or rebuilt
+        # index tomorrow): asserting the name would make the pin a
+        # catalog snapshot, planner-fragile in exactly the way that
+        # fails on a healthy estate. The property: (1) NO Seq Scan of
+        # jobs serves the lateral (a walk of the whole backlog — the
+        # depth-proportional shape this module exists to forbid), and
+        # (2) the scheduled_at bound appears in an Index Cond (the bound
+        # rides the index's own order, never a post-scan Filter).
+        assert "Seq Scan on jobs" not in plan, (
+            "the lateral's probe degraded to a Seq Scan of jobs — the "
+            f"depth-proportional walk the bound exists to forbid:\n{plan}"
         )
-        # Why either twin: this module's seed is exclusively producer-
-        # placed rows (the direct-INSERT shape: no re-pends), so the
-        # pending-only jobs_actor_dispatch_idx and its marker-partial
-        # jobs_unrouted_actor_dispatch_idx (01.00.12_09) hold the SAME
-        # rows and cost the same; which one the planner names is
-        # stats-dependent, and both serve the doctrine this test pins.
-        # The critical difference between the twins, the unrouted
-        # one never walking a re-pended tail, is pinned by
-        # tests/test_migration_lock_scope_dead_index.py's oracle,
-        # which seeds the mixed population.
         cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]
         assert cond_lines and any("scheduled_at <=" in line for line in cond_lines), (
             "expected an Index Cond containing 'scheduled_at <= ...' on a "

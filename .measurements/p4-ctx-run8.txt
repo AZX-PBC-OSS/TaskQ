@@ -1,0 +1,135 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f9df4126680>
+wf_schema = 'tq_a2971681ad'
+wf_conn = <asyncpg.connection.Connection object at 0x7f9def7777a0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return "ok"
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            assert ctx.node_key == "enrich", ctx.node_key
+            SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+>       outcome = await runner.drive(flow_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_context_contract.py:72: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:670: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:691: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:812: in _run_node
+    await self._finalize_success(flow_id, row, attempt, node, result)
+src/taskq/workflows/api/_runner.py:966: in _finalize_success
+    await finalize_node(
+src/taskq/workflows/engine.py:692: in finalize_node
+    applied = await _deadlock_retry(_tx1)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:203: in _deadlock_retry
+    return await coro_factory()
+           ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:672: in _tx1
+    return await _run_tx1(
+src/taskq/workflows/engine.py:309: in _run_tx1
+    await insert_fork(
+src/taskq/workflows/_fork.py:48: in insert_fork
+    validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
+    ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+fork = ForkSpec(children=(), join=JoinSpec(step_key='asserting.join', actor='wf', queue='default', payload=None, consumers=(), failure_policy='fail_closed', child_driven=False), trace_id=None, max_attempts=3, retry_kind='transient')
+
+    def validate_fork(fork: ForkSpec) -> None:
+        """Refuse a malformed fork at build time: an EMPTY fork (zero children)
+        owes a join that can never fire, and a join declared over them counts
+        edges that will never exist — both the 'record healthy, work wrong'
+        class, convicted before any row is written."""
+        if not fork.children:
+>           raise ValueError(
+                "an empty fork (zero children) is refused at build time: a join "
+                "declared over zero children waits on edges that never exist — "
+                "the stranded invisible join"
+            )
+E           ValueError: an empty fork (zero children) is refused at build time: a join declared over zero children waits on edges that never exist — the stranded invisible join
+
+src/taskq/workflows/definitions.py:159: ValueError
+__________________ test_the_loop_ctx_carries_the_budget_wall ___________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f9df4126980>
+wf_schema = 'tq_a2971681ad'
+
+    async def test_the_loop_ctx_carries_the_budget_wall(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
+        number, not None — the wall EXISTS when budget_s is set)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["budget_ms"] = ctx.budget_remaining_ms
+            seen["flow_name"] = ctx.flow_name
+            return Done("finished")
+    
+        @app.workflow("ctx_budget")
+        def ctx_budget() -> object:
+            return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+    
+        runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()  # no input — ctx.input is None (the honest zero)
+        assert await runner.drive(flow_id) == "terminal"
+        assert seen["flow_name"] == "ctx_budget"
+>       assert seen["budget_ms"] is not None
+E       assert None is not None
+
+tests/test_wf_context_contract.py:105: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+FAILED tests/test_wf_context_contract.py::test_the_loop_ctx_carries_the_budget_wall
+2 failed in 1.81s

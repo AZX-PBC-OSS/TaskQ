@@ -1,0 +1,29 @@
+F
+=================================== FAILURES ===================================
+_______________ test_derive_flow_status_is_the_shared_derivation _______________
+
+    def test_derive_flow_status_is_the_shared_derivation() -> None:
+        """The CLI's derivation IS the §17.5 derivation (one engine): the
+        same input the engine's NodeViews take yields the same status."""
+>       assert derive_flow_status([_held_row()]) == "blocked"
+                                   ^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:336: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+overrides = {}
+
+    def _held_row(**overrides: Any) -> FlowNodeRow:
+>       hold = HoldContext(
+               ^^^^^^^^^^^
+            hold_id="h-1", run_id="r-1", node_key="review", signal_name="Approval",
+            hold_epoch=1, call_id="c", payload=None, payload_schema=None,
+            reason="editorial approval", created_at=None, expires_at=None, status="held",
+        )
+E       NameError: name 'HoldContext' is not defined
+
+tests/test_wf_cli_pins.py:269: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_derive_flow_status_is_the_shared_derivation
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.37s

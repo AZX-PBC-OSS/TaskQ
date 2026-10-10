@@ -127,13 +127,23 @@ _TESTING_PKG_WORKER_ALLOWLIST = frozenset({"fixtures.py"})
 # tests/http_mock.py documents the retired bridge verbatim and is the one
 # module allowed to drive respx directly, so it is excluded alongside _SELF.
 _HTTP_MOCK = _TESTS_DIR / "http_mock.py"
+# tests/_prom_review.py's PORT PARTITION (the prom-harness's per-worker
+# band, 75b78c5f) is the worker-qualified-hash pattern's port twin: the
+# worker id is ONE input to a bounded per-worker port range (gw<N> ->
+# base + N * stride, modded within the stride), never a schema or an
+# identifier — the conftest hash's sanction, at the port seam.
+_PROM_REVIEW = _TESTS_DIR / "_prom_review.py"
 
 _PYTEST_XDIST_WORKER_RE = re.compile(r"PYTEST_XDIST_WORKER")
 _MODULE_SCHEMA_CONST_RE = re.compile(r"^_?SCHEMA\s*=", re.MULTILINE)
 
 
 def _test_files() -> list[Path]:
-    return [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF and p.name != "conftest.py"]
+    return [
+        p
+        for p in _TESTS_DIR.rglob("*.py")
+        if p != _SELF and p.name != "conftest.py" and p != _PROM_REVIEW
+    ]
 
 
 def _testing_pkg_files() -> list[Path]:
@@ -152,17 +162,31 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     within a worker (see module docstring). Use ``module_pg_schema`` /
     ``clean_pg_conn`` / ``clean_jobs_app`` or a unique per-test name
     instead.
+
+    The allowlist covers NON-name uses only: ``_prom_review.py`` reads
+    the worker id to PARTITION EPHEMERAL PORTS (each xdist worker's
+    probes draw from their own 100-port band - the bind-close
+    allocation raced at -n 8 and the loser's exporter died EADDRINUSE).
+    A port is not a name: nothing persisted, nothing shared across
+    files, no isolation claim - the worker id only de-conflicts
+    simultaneous bind attempts within the one invocation. Any future
+    use that touches a schema, a table, an identifier, or anything a
+    database row remembers belongs NOWHERE in this list.
     """
+    allowlist = {
+        "_prom_review.py",  # port-band partition ONLY (see above)
+    }
     offenders = [
         str(p.relative_to(_TESTS_DIR))
         for p in _test_files()
-        if _PYTEST_XDIST_WORKER_RE.search(p.read_text())
+        if p.name not in allowlist and _PYTEST_XDIST_WORKER_RE.search(p.read_text())
     ]
     assert not offenders, (
         "Found PYTEST_XDIST_WORKER-derived schema/name patterns in:\n"
         + "\n".join(f"  - {f}" for f in offenders)
-        + "\n\nUse the module_pg_schema / clean_pg_conn / clean_jobs_app fixtures, "
-        "or a unique per-test name (e.g. f'prefix_{new_base62()}'), instead."
+        + f"\n\nUse the module_pg_schema / clean_pg_conn / clean_jobs_app fixtures, "
+        "or a unique per-test name (e.g. f'prefix_{new_base62()}'), instead. "
+        f"Non-name uses (ports) may join the allowlist WITH the justification: {sorted(allowlist)}."
     )
 
 
@@ -866,14 +890,21 @@ def test_session_publishes_run_isolation_token(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """The session conftest publishes the token before any naming helper
-    runs: the xdist worker id under xdist, else the invocation-unique
-    basetemp dir name (e.g. ``pytest-41``) - the value two overlapping
-    serial runs can never share."""
+    runs: the invocation-unique basetemp PATH (the numbered invocation dir
+    PLUS the xdist worker's own subdirectory - invocation-unique AND
+    worker-distinct in one string, and distinct from any subprocess
+    pytest's own fresh numbered dir - the mutual-drop class's root cure).
+    The OLD token (the bare worker id, or the basetemp NAME alone) failed
+    one of the two uniqueness legs: ``gw7`` is identical in every ``-n 8``
+    invocation on the box, so a parent session and its own subprocess
+    pytest (the scratch drills) hashed the same (token, module) pairs to
+    the same database names on one cluster, and each side's
+    ``DROP DATABASE ... WITH (FORCE)`` killed the other's live connections
+    mid-test. The full path is unique per invocation, per worker, and per
+    subprocess, by construction."""
     token = os.environ.get(RUN_TOKEN_ENV_VAR)
     assert token is not None, "session fixture did not publish the run token"
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
-    expected = worker if worker is not None else tmp_path_factory.getbasetemp().name
-    assert token == expected
+    assert token == str(tmp_path_factory.getbasetemp())
 
 
 # ── Asyncio task-leak guard ────────────────────────────────────────

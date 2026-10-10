@@ -1,0 +1,52 @@
+SIM105 Use `contextlib.suppress(json.JSONDecodeError)` instead of `try`-`except`-`pass`
+   --> src/taskq/web/admin/_wf_rows.py:211:9
+    |
+209 |       payload: object = root["payload"]
+210 |       if isinstance(payload, str):
+211 | /         try:
+212 | |             payload = json.loads(payload)
+213 | |         except json.JSONDecodeError:
+214 | |             pass
+    | |________________^
+215 |       return RunView(
+216 |           run_id=str(root["id"]),
+    |
+help: Replace `try`-`except`-`pass` with `with contextlib.suppress(json.JSONDecodeError): ...`
+
+F841 Local variable `data` is assigned to but never used
+   --> tests/web_admin/test_workflows_page.py:281:9
+    |
+279 |         assert resp.status_code == 200
+280 |         event_id: str | None = None
+281 |         data: list[str] = []
+    |         ^^^^
+282 |         async for line in resp.aiter_lines():
+283 |             if line.startswith("id: "):
+    |
+help: Remove assignment to unused variable `data`
+
+F841 Local variable `app` is assigned to but never used
+   --> tests/web_admin/test_workflows_page.py:318:5
+    |
+316 |     schema = module_pg_schema.schema_name
+317 |     run_id = await _seed_run(module_pg_pool, schema)
+318 |     app = _make_admin_app(module_pg_pool, schema)
+    |     ^^^
+319 |     frames = await _stream_frames(module_pg_schema, run_id)
+320 |     last_seq = frames[0]["seq"]
+    |
+help: Remove assignment to unused variable `app`
+
+RUF002 Docstring contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+   --> tests/web_admin/test_workflows_page.py:487:32
+    |
+485 |     """THE LATENCY BAND (set from the measurement, pinned — the G11
+486 |     method): the panel route's full read ≤ 50 ms p95 on this stack (the
+487 |     measured p95 is 3.2 ms — 15× headroom; the file:
+    |                                ^
+488 |     .measurements/t11-latency-band.json)."""
+489 |     import time as time_mod
+    |
+
+Found 4 errors.
+No fixes available (3 hidden fixes can be enabled with the `--unsafe-fixes` option).

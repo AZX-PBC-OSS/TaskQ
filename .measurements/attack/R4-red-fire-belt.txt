@@ -1,0 +1,14 @@
+# F-R4's receipt — the fire's exactly-once belt (ON CONFLICT (join_job_id) DO NOTHING), the concurrent-fire-window drill (pin 25)
+# The drill: the engine's tx2 fire (fired_by='finalize') x the sweep's healing fire (fired_by='sweep') racing ONE join,
+# both guards live — the belt decides: one fire row, one winner, the loser a CLEAN empty (never an error).
+
+# ── the SHIPPED code (the belt in):
+1 passed, 6 deselected in 2.70s
+
+# ── THE BELT'S REMOVAL (both fire statements' 'ON CONFLICT (join_job_id) DO NOTHING' dropped from the source):
+E   asyncpg.exceptions.UniqueViolationError: duplicate key value violates unique constraint "wf_join_fire_join_job_id_key"
+E   DETAIL:  Key (join_job_id)=(01a11de7-0b25-7d52-bfbf-5d324ac1df0a) already exists.
+FAILED tests/test_wf_finalize_pins.py::test_pin_25_concurrent_fire_window_one_row
+1 failed, 6 deselected in 1.53s
+
+# (the shipped code restored; the belt's conviction is the graceful loss — the loser's UniqueViolationError, captured above — plus the twin's in-suite raise: pin25-beltless-fire-raises in pin-reds.json)

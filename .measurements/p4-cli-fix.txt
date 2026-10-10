@@ -1,0 +1,460 @@
+....FFF.F....F..                                                         [100%]
+=================================== FAILURES ===================================
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_2487f88ec7', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2487f88ec72b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f03993d1840>
+wf_schema = 'tq_2487f88ec7'
+wf_conn = <asyncpg.connection.Connection object at 0x7f03992df7a0>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f03992d42f0>
+flow_id = UUID('01a11a18-5128-7ef3-8e67-4192f91334d6')
+row = {'id': UUID('01a11a18-512e-7e81-b9ec-dd7fedf13eb4'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a18-513f-7872-bfc7-31903c5ee329')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7f0399646200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7f0399646200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+>           schema_decl=self._progress_schema(node_key, node),
+                                              ^^^^^^^^
+        )
+E       NameError: name 'node_key' is not defined
+
+src/taskq/workflows/api/_runner.py:459: NameError
+_______________ test_holds_on_a_terminal_run_is_the_healthy_zero _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_2487f88ec7', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2487f88ec72b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f03993d3280>
+wf_schema = 'tq_2487f88ec7', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_holds_on_a_terminal_run_is_the_healthy_zero(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
+        defined healthy-zero state — the line SAYS the zero is state (a blank
+        section that reads as zero-holds reds)."""
+        compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+>       await flow_runner.drive(flow_id)
+
+tests/test_wf_cli_pins.py:157: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f0399213b10>
+flow_id = UUID('01a11a18-5222-7982-951f-ad15853419a5')
+row = {'id': UUID('01a11a18-5227-72b1-b013-66ff9586d729'), 'step_key': 'doomed', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a18-5236-7611-abc0-91b84ceaabfe')
+node = NodeDecl(key='doomed', actor='wf', queue='default', body=<function _explode_once at 0x7f03996462a0>, parents=(), args=...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _explode_once at 0x7f03996462a0>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+>           schema_decl=self._progress_schema(node_key, node),
+                                              ^^^^^^^^
+        )
+E       NameError: name 'node_key' is not defined
+
+src/taskq/workflows/api/_runner.py:459: NameError
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_2487f88ec7', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2487f88ec72b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f03993d3400>
+wf_schema = 'tq_2487f88ec7', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:221: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f0399212490>
+flow_id = UUID('01a11a18-536a-74d2-9077-d4d53f4df23a')
+row = {'id': UUID('01a11a18-5370-7950-acff-bb6e690f44a1'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a18-5381-7cb0-a07f-b835a489b9c4')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7f0399646200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7f0399646200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+>           schema_decl=self._progress_schema(node_key, node),
+                                              ^^^^^^^^
+        )
+E       NameError: name 'node_key' is not defined
+
+src/taskq/workflows/api/_runner.py:459: NameError
+______________ test_status_reports_the_blocked_run_and_the_remedy ______________
+
+cli_settings = ModulePgSchema(schema_name='tq_2487f88ec7', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2487f88ec72b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f03993d3a00>
+wf_schema = 'tq_2487f88ec7', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_status_reports_the_blocked_run_and_the_remedy(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:171: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f03992f16e0>
+flow_id = UUID('01a11a18-5462-75f0-8ab1-1db6f2db130f')
+row = {'id': UUID('01a11a18-546a-7892-8ac8-2c253ca6877b'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a18-547e-7f80-8fd8-6e2b4e991ecb')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7f0399646200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7f0399646200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+>           schema_decl=self._progress_schema(node_key, node),
+                                              ^^^^^^^^
+        )
+E       NameError: name 'node_key' is not defined
+
+src/taskq/workflows/api/_runner.py:459: NameError
+_________ test_retry_reopens_the_failed_closure_and_the_run_completes __________
+
+cli_settings = ModulePgSchema(schema_name='tq_2487f88ec7', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_2487f88ec72b')
+wf_pool = <asyncpg.pool.Pool object at 0x7f03993d1e40>
+wf_schema = 'tq_2487f88ec7'
+wf_conn = <asyncpg.connection.Connection object at 0x7f0399fbd220>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_retry_reopens_the_failed_closure_and_the_run_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
+        completes after the operator's retry (§22.6's manual leg)."""
+        compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+>       await flow_runner.drive(flow_id)
+
+tests/test_wf_cli_pins.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f03992f1ba0>
+flow_id = UUID('01a11a18-5652-76f3-8e4a-25073a778898')
+row = {'id': UUID('01a11a18-5659-7580-a9bb-5eead7f283ad'), 'step_key': 'doomed', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a18-5668-7742-bb1a-a36798e370a8')
+node = NodeDecl(key='doomed', actor='wf', queue='default', body=<function _explode_once at 0x7f03996462a0>, parents=(), args=...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _explode_once at 0x7f03996462a0>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+>           schema_decl=self._progress_schema(node_key, node),
+                                              ^^^^^^^^
+        )
+E       NameError: name 'node_key' is not defined
+
+src/taskq/workflows/api/_runner.py:459: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+FAILED tests/test_wf_cli_pins.py::test_holds_on_a_terminal_run_is_the_healthy_zero
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+FAILED tests/test_wf_cli_pins.py::test_retry_reopens_the_failed_closure_and_the_run_completes
+5 failed, 11 passed in 2.34s

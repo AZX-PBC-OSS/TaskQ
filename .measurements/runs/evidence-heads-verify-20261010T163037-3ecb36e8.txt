@@ -1,0 +1,3 @@
+# the evidence-heads verifier's own run at the cure head (the lane's estate refresh)
+head: 3ecb36e897c531b23f2afbacfb62d2b7b00898d9
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-pg17/.measurements/runs is recorded at THIS head (3ecb36e897c5) or explicitly superseded

@@ -1,0 +1,201 @@
+..F.................                                                     [100%]
+=================================== FAILURES ===================================
+________ test_bundled_migrations_apply_stepwise_onto_populated_database ________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_d2c5eef799e7'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f18eb2434d0>
+
+    def test_bundled_migrations_apply_stepwise_onto_populated_database(
+        pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Apply every bundled migration one step at a time onto populated data.
+    
+        Each iteration: apply exactly ONE migration → generic invariants →
+        migration-specific checks → seed the next slice → assert cumulative
+        counts. After the loop: data round-trips, index spot-checks, a
+        functional smoke through the real backend API, and the end-user CLI
+        contract. CliRunner runs in-process, so the monkeypatched env vars
+        apply to the real CLI; it is synchronous, so this test drives async
+        phases through asyncio.run and must itself stay sync (asyncpg
+        connections are bound to the loop that created them - one asyncio.run
+        per phase, like conftest's _pg_admin and tests/test_migrate_no_transaction.py).
+        """
+        schema = f"mig_pop_{new_base62()}".lower()
+    
+        async def _stepwise() -> None:
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                await _drop_schema(conn, schema)
+                counts: dict[str, int] = {}
+                for slice_id, migration in enumerate(migrate_mod.discover()):
+                    applied = await migrate_mod.apply_pending(conn, schema=schema, max_steps=1)
+                    assert [m.key for m in applied] == [migration.key], (
+                        f"step {slice_id}: expected exactly {migration.key!r} to apply, got "
+                        f"{[m.key for m in applied]} - runner order drifted or the "
+                        "migration failed against a populated database"
+                    )
+                    assert await migrate_mod.list_invalid_indexes(conn, schema) == [], (
+                        f"{migration.key} left INVALID indexes behind on populated data"
+                    )
+                    ledger = await _ledger_transactions(conn, schema)
+                    assert ledger[migration.key] is migration.use_transaction, (
+                        f"ledger use_transaction mismatch for {migration.key}"
+                    )
+                    await _MIGRATION_SPECIFIC_CHECKS.get(migration.key, _noop_check)(conn, schema)
+                    await _seed_slice(conn, schema, slice_id=slice_id, counts=counts)
+                    await _assert_table_counts(conn, schema, counts)
+            finally:
+                await conn.close()
+    
+        async def _round_trips_and_index_spot_checks() -> None:
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                # Payload/tags/result round-trip on deterministic sample ids:
+                # i=1 (small payload, no key), i=10 (~2KB payload, keyed).
+                small = await conn.fetchrow(
+                    f'SELECT payload, tags, result, status, idempotency_key FROM "{schema}".jobs WHERE id = $1',
+                    _uuid5("job:0:1"),
+                )
+                assert small is not None
+                assert loads(small["payload"]) == _payload(1)
+                assert list(small["tags"]) == _tags(0, 1)
+                assert loads(small["result"]) == _result(1)
+                assert small["status"] == "succeeded"
+                assert small["idempotency_key"] is None
+    
+                large = await conn.fetchrow(
+                    f'SELECT payload, idempotency_key FROM "{schema}".jobs WHERE id = $1',
+                    _uuid5("job:0:10"),
+                )
+                assert large is not None
+                assert loads(large["payload"]) == _payload(10), "the ~2KB payload must survive intact"
+                assert large["idempotency_key"] == "idem-00010"
+    
+                running = await conn.fetchrow(
+                    f'SELECT status, locked_by_worker, lock_expires_at FROM "{schema}".jobs WHERE id = $1',
+                    _uuid5("job:0:95"),
+                )
+                assert running is not None
+                assert running["status"] == "running"
+                assert running["locked_by_worker"] == _uuid5("worker:0")
+                assert running["lock_expires_at"] > datetime.now(UTC)
+    
+                archived = await conn.fetchrow(
+                    f'SELECT status, result FROM "{schema}".jobs_archive WHERE id = $1',
+                    _uuid5("arc:0:0"),
+                )
+                assert archived is not None
+                assert archived["status"] == "succeeded"
+                assert loads(archived["result"]) == _result(0)
+    
+                # Index spot-checks: the hot dispatch index is VALID, and the
+                # lock_expired reclaim partial index (built by 01.00.02_01 over
+                # seeded events) exists.
+                assert await _index_validity(conn, schema, "jobs_dispatch_idx") is True
+                assert await _index_validity(conn, schema, "job_events_reclaim_idx") is True
+            finally:
+                await conn.close()
+    
+        async def _real_api_smoke() -> None:
+            """End-state functional smoke through the REAL public API.
+    
+            The real API is used ONLY here, against the final schema: the
+            current enqueue SQL inserts ``idempotency_scope``, which raises
+            UndefinedColumnError against pre-``01.00.03_01:pre`` schemas, and
+            ``job_events`` has no public append API at all - intermediate
+            schemas are therefore seeded raw (schema-shaped), never via enqueue.
+            """
+            settings = WorkerSettings.load_from_dict(make_integration_settings_dict(pg_dsn))
+            settings.schema_name = schema
+            stack = AsyncExitStack()
+            deps = await stack.enter_async_context(open_worker_deps(settings))
+            try:
+                backend = PostgresBackend(
+                    deps,
+                    clock=SystemClock(),
+                    cancellation_grace_period=timedelta(
+                        seconds=deps.settings.cancellation_grace_period
+                    ),
+                    cleanup_grace_period=timedelta(seconds=deps.settings.cleanup_grace_period),
+                )
+                key = f"smoke-{schema}"
+                row = await backend.enqueue(
+                    make_enqueue_args(actor="test_actor", idempotency_key=key, priority=10)
+                )
+                assert row.status == "pending"  # type: ignore[comparison-overlap] # Why: JobStatus is Literal[...]; pyright narrows too conservatively across frozen dataclass fields (same as tests/test_dispatch_pg.py).
+    
+                duplicate = await backend.enqueue(
+                    make_enqueue_args(
+                        actor="test_actor", idempotency_key=key, payload={"v": 2}, priority=10
+                    )
+                )
+                assert duplicate.id == row.id, "same key + same scope must dedupe"
+    
+                scoped = await backend.enqueue(
+                    make_enqueue_args(
+                        actor="test_actor", idempotency_key=key, idempotency_scope="smoke-b"
+                    )
+                )
+                assert scoped.id != row.id, (
+                    "the SAME key under a SECOND scope must insert a second row - only legal "
+                    "after 01.00.03_01:post dropped the legacy global-unique index; the "
+                    "sharpest end-to-end proof the deploy sequence landed on populated data"
+                )
+    
+                # priority=10 outranks every seeded row (priorities 0..2), so
+                # limit=1 leases exactly our row.
+                worker_id = new_uuid()
+                dispatched = await backend.dispatch_batch(
+                    worker_id=worker_id,
+                    queues=["default"],
+                    limit=1,
+                    lock_lease=timedelta(seconds=30),
+                )
+                assert len(dispatched) == 1
+                assert dispatched[0].id == row.id
+                assert dispatched[0].status == "running"  # type: ignore[comparison-overlap] # Why: see enqueue assertion above.
+                assert dispatched[0].locked_by_worker == worker_id
+            finally:
+                await stack.aclose()
+    
+        async def _cleanup() -> None:
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                await _drop_schema(conn, schema)
+            finally:
+                await conn.close()
+    
+        try:
+>           asyncio.run(_stepwise())
+
+tests/test_migrations_populated.py:910: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:196: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_migrations_populated.py:786: in _stepwise
+    await _seed_slice(conn, schema, slice_id=slice_id, counts=counts)
+tests/test_migrations_populated.py:593: in _seed_slice
+    tuple(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x7f18e8498160>
+
+        tuple(
+>           dumps_str(row[c]) if c in jsonb and row[c] is not None else row[c] for c in columns
+                                                                        ^^^^^^
+        )
+        for row in rows
+    ]
+E   KeyError: 'budget_deadline'
+
+tests/test_migrations_populated.py:594: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_migrations_populated.py::test_bundled_migrations_apply_stepwise_onto_populated_database
+1 failed, 19 passed in 43.36s

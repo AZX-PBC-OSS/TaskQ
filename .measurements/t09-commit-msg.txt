@@ -1,0 +1,54 @@
+feat(workflows): T09 — the flow API: the wiring, the validator, the Mermaid emission, the runner
+
+The authoring surface over the DAG engine (taskq[flows]): plain types
+for data, Promise[T] for wiring — the graph is SPELLED, never stored
+(same module → same compile, byte-stable).
+
+- api/_graph.py: the recorder + the wiring verbs (step / map_source /
+  gather / sink / build). The fan-in's user body IS the join's node
+  body (cut #1's cure — decoded parents, the result cascades as normal
+  steps); sequencing is dataflow (cut #2); skip= is the DISPATCH-TIME
+  predicate (cut #4); gather([]) refused at the verb.
+- api/_app.py: WorkflowApp + @app.actor (a different decorator,
+  projecting the F3 carrier into the estate's config/guard surface —
+  no second, invisible actor population; the vanilla path untouched) +
+  @app.workflow(name, capture=..., redact=...) (the hook POST-COMPOSES
+  on the chain — never a replacement) + the channel/TypedGate
+  declaration (the payload type bound ONCE at the gate).
+- api/_validate.py: wf.validate() — the checker-independent totality
+  refusals (E1 acyclicity owned unconditionally, E2 the unconsumed
+  residual, E3 the edge-less join, E4 the unannotated step, E5 the
+  incompatible consumer, E6 the fan-in bound, W1 the eternal-wait
+  WARNING — the zero-false-positive doctrine), the tsc-style one-pass
+  report.
+- api/_mermaid.py: the compile-time emission — byte-stable, the shape
+  vocabulary (stadium/hexagon/rectangle/[[join]]/[(hold)]), edge
+  labels = the promise types; the diagram-lies property pinned.
+- api/_runner.py: create_flow(spec, input) (cut #7 — the input rides
+  the ROW) + drive(flow_id, until="held"|"terminal") (cut #10) +
+  result(flow_id) (cuts #14/#19 — decoded once). Dispatch resolves
+  bodies from the REGISTERED DEFINITION (D1 — the pin the round-1
+  fixer deferred); the claim = the fenced job write + the LEDGER
+  claim (T05's grant of work); the ladder emits NO terminal until
+  exhaustion (P3 rule 7); retry_kind routes (cut #12); the map forks
+  per-item children with per-child ledger identity (cuts #2/#15).
+- context.py: WorkflowSteps.step records its OWN terminal (the defect
+  the runner pins convicted: a claim left 'running' would re-execute
+  on every resume — the re-execution doctrine's cheap side was
+  cheaper than stated).
+- definitions.py: register() is IDEMPOTENT for an identical body map
+  (the deterministic recompile is not a shadow; a differing
+  re-registration stays the refused coding error).
+- typeprobe: the corpus is a LIST (the gate runs every surface's
+  probes) + wf_api_negative_types.py (the Promise-is-wiring doors —
+  6 MUST_ERROR markers red on pyright 1.1.414 AND ty 0.0.85).
+
+Evidence: .measurements/t09-*.txt (the red-first captured runs: the
+T17 contract probes' strict-xfail reds flipped green HERE — the cure
+commit removed the markers), the coverage (94% branch on api/, the
+90 floor), the full local battery green (188 passed,
+t09-commit-battery.txt).
+
+The T17 dispositions' re-tests land in the runner pins (cuts #1, #2,
+#4, #7, #9, #12, #14, #15, #19) — traceability in
+.measurements/t17-dispositions.md.

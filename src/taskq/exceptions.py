@@ -1414,3 +1414,53 @@ class UnknownQueueError(TaskQError):
                 f"{offending} from TASKQ_QUEUES, or deploy/register an actor "
                 f"whose queue is {offending}."
             )
+
+
+class SignalTimeoutError(TaskQError):
+    """A held signal's deadline passed under ``on_timeout="fail"`` — the
+    dedicated typed failure (GAPS-ESTATE F9's glossary shape: the
+    ``Signal`` prefix, the :class:`TaskQError` base; NOT
+    ``TaskQSignalTimeout``, which would break the exceptions glossary's
+    one-prefix rule). The named state's ledger record: the hold row's
+    ``abandoned`` + the node's typed failure — never a silent orphan.
+
+    THE MACHINERY NEVER RAISES THIS (T26's amendment — the expiry is a
+    VALUE): the wait site RETURNS the closed union's ``Expired`` member
+    and the body MATCHES the fail-close arm; a body that WANTS the
+    failure raises THIS exception ITSELF off the member (the escalation
+    ladder's own use — the raised error is a body exception exactly
+    like any other).
+
+    See also :class:`SignalAbandonedError` (the operator-abandon shape —
+    the same defined state, a different door)."""
+
+
+class SignalAbandonedError(TaskQError):
+    """A held signal was abandoned by policy (the operator-abandon / the
+    sweep's escalation arm): the same DEFINED state as
+    :class:`SignalTimeoutError` — a named ledger record, never a silent
+    orphan. The distinction is the DOOR (the timeout sweep vs the
+    operator's action), not the state."""
+
+
+class SignalPayloadError(TaskQError):
+    """A delivered payload validated against NONE of the wait's declared
+    models (the typed door's runtime boundary — attack-3 B2/H2's cure):
+    the refusal happens BEFORE the deliver CAS consumes the hold, so the
+    hold SURVIVES and the operator sees WHY. Never a silent drop into the
+    body's re-validation (the convicted shape: the payload consumed, then
+    the body's laddering ``ValidationError`` kills the flow).
+
+    See also :class:`SignalPayloadAmbiguousError` — the same refusal when
+    the payload fits MORE than one declared model and the gate declared
+    no discriminator."""
+
+
+class SignalPayloadAmbiguousError(SignalPayloadError):
+    """A delivered payload fit MORE than one of the wait's declared
+    models and the gate declared no discriminator: which member the body
+    receives would be decided by DECLARATION ORDER (the convicted
+    first-fit mis-narrowing — attack-3 B2), so the delivery is refused
+    instead. The gate's escape is the explicit ``discriminator=`` on the
+    wait site; the operator's escape is a payload whose shape names one
+    model unambiguously."""

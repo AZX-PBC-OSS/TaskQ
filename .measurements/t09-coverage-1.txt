@@ -1,0 +1,16 @@
+............................                                             [100%]
+================================ tests coverage ================================
+___________________________________ coverage ___________________________________
+
+Name                                   Stmts   Miss Branch BrPart  Cover
+------------------------------------------------------------------------
+src/taskq/workflows/api/__init__.py        3      0      0      0   100%
+src/taskq/workflows/api/_app.py           81     16     18      4    78%
+src/taskq/workflows/api/_graph.py         99      4     10      4    93%
+src/taskq/workflows/api/_hints.py          4      0      0      0   100%
+src/taskq/workflows/api/_mermaid.py       42      8     22      7    77%
+src/taskq/workflows/api/_runner.py       276     14     74     16    91%
+src/taskq/workflows/api/_validate.py      86      0     46      3    98%
+------------------------------------------------------------------------
+TOTAL                                    591     42    170     34    90%
+28 passed in 5.29s

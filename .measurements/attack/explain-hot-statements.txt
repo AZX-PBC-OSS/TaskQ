@@ -1,0 +1,315 @@
+=== TERMINAL_MARK (the fenced CAS) ===
+Update on jobs (actual time=0.085..0.086 rows=0.00 loops=1)
+  Buffers: shared hit=16
+  ->  Index Scan using jobs_actor_running_idx on jobs (actual time=0.084..0.085 rows=0.00 loops=1)
+        Filter: ((id = '01a1173a-f9d5-7ca0-bab5-4746cb6ad6f2'::uuid) AND (status = 'running'::wfattack.job_status) AND (locked_by_worker = '01a1173b-1b57-7253-b3d2-1d5392283ab7'::uuid) AND (attempt = '1'::smallint) AND (claim_epoch = '0'::bigint))
+        Rows Removed by Filter: 202
+        Index Searches: 1
+        Buffers: shared hit=16
+Planning:
+  Buffers: shared hit=274 read=7
+Planning Time: 0.417 ms
+Execution Time: 0.116 ms
+=== DECREMENT (tx2's guarded decrement) ===
+Update on jobs j (actual time=0.186..0.186 rows=0.00 loops=1)
+  Buffers: shared hit=421
+  InitPlan 1
+    ->  Index Scan using jobs_pkey on jobs f (actual time=0.004..0.004 rows=1.00 loops=1)
+          Index Cond: (id = '01a1173a-f9c4-7b82-960b-eb2503877486'::uuid)
+          Filter: (status <> ALL ('{succeeded,failed,cancelled,crashed,abandoned}'::wfattack.job_status[]))
+          Index Searches: 1
+          Buffers: shared hit=3
+  ->  Result (actual time=0.185..0.186 rows=0.00 loops=1)
+        One-Time Filter: (InitPlan 1).col1
+        Buffers: shared hit=421
+        ->  Nested Loop (actual time=0.180..0.181 rows=0.00 loops=1)
+              Buffers: shared hit=418
+              ->  Index Scan using jobs_dispatch_idx on jobs j (actual time=0.004..0.078 rows=201.00 loops=1)
+                    Filter: ((deps_pending > 0) AND (status = 'pending'::wfattack.job_status))
+                    Index Searches: 1
+                    Buffers: shared hit=16
+              ->  Index Scan using wf_edge_pkey on wf_edge e (actual time=0.000..0.000 rows=0.00 loops=201)
+                    Index Cond: ((child_id = j.id) AND (parent_id = '01a1173b-1b16-78b3-8750-ccdca5b594b7'::uuid))
+                    Index Searches: 201
+                    Buffers: shared hit=402
+Planning:
+  Buffers: shared hit=163
+Planning Time: 0.417 ms
+Execution Time: 0.199 ms
+=== FIRE (the guarded fire) ===
+Nested Loop (actual time=0.037..0.037 rows=0.00 loops=1)
+  Buffers: shared hit=19
+  CTE wins
+    ->  Insert on wf_join_fire (actual time=0.036..0.037 rows=0.00 loops=1)
+          Conflict Resolution: NOTHING
+          Conflict Arbiter Indexes: wf_join_fire_join_job_id_key
+          Tuples Inserted: 0
+          Conflicting Tuples: 0
+          Buffers: shared hit=19
+          InitPlan 1
+            ->  Index Scan using jobs_pkey on jobs f (actual time=0.002..0.002 rows=1.00 loops=1)
+                  Index Cond: (id = '01a1173a-f9c4-7b82-960b-eb2503877486'::uuid)
+                  Filter: (status <> ALL ('{succeeded,failed,cancelled,crashed,abandoned}'::wfattack.job_status[]))
+                  Index Searches: 1
+                  Buffers: shared hit=3
+          ->  Result (actual time=0.036..0.036 rows=0.00 loops=1)
+                One-Time Filter: (InitPlan 1).col1
+                Buffers: shared hit=19
+                ->  Index Scan using jobs_dispatch_idx on jobs j_1 (actual time=0.033..0.033 rows=0.00 loops=1)
+                      Filter: ((id = '01a1173b-1b1f-7d50-94a0-b36a4adc8076'::uuid) AND (deps_pending = 0))
+                      Rows Removed by Filter: 201
+                      Index Searches: 1
+                      Buffers: shared hit=16
+  ->  CTE Scan on wins w (actual time=0.037..0.037 rows=0.00 loops=1)
+        Storage: Memory  Maximum Storage: 17kB
+        Buffers: shared hit=19
+  ->  Index Scan using jobs_pkey on jobs j (never executed)
+        Index Cond: (id = w.join_job_id)
+        Index Searches: 0
+Planning:
+  Buffers: shared hit=58
+Planning Time: 0.294 ms
+Execution Time: 0.050 ms
+=== REDERIVE_SWEEP (the lock-first re-derive) ===
+Result (actual time=1.897..1.899 rows=1.00 loops=1)
+  Buffers: shared hit=2019
+  CTE locked
+    ->  Limit (actual time=0.015..0.130 rows=200.00 loops=1)
+          Buffers: shared hit=216
+          ->  LockRows (actual time=0.014..0.120 rows=200.00 loops=1)
+                Buffers: shared hit=216
+                ->  Index Scan using jobs_wf_join_wait_idx on jobs c (actual time=0.007..0.070 rows=200.00 loops=1)
+                      Filter: ((deps_pending > 0) AND (metadata @> '{"blocking_reason": "join"}'::jsonb) AND (status = 'pending'::wfattack.job_status) AND (scheduled_at <= statement_timestamp()))
+                      Index Searches: 1
+                      Buffers: shared hit=16
+  CTE counts
+    ->  GroupAggregate (actual time=0.537..0.574 rows=200.00 loops=1)
+          Group Key: e.child_id
+          Buffers: shared hit=1419
+          ->  Sort (actual time=0.533..0.538 rows=200.00 loops=1)
+                Sort Key: e.child_id
+                Sort Method: quicksort  Memory: 35kB
+                Buffers: shared hit=1419
+                ->  Nested Loop Left Join (actual time=0.026..0.509 rows=200.00 loops=1)
+                      Buffers: shared hit=1416
+                      ->  Nested Loop (actual time=0.024..0.371 rows=200.00 loops=1)
+                            Buffers: shared hit=816
+                            ->  CTE Scan on locked l (actual time=0.016..0.165 rows=200.00 loops=1)
+                                  Storage: Memory  Maximum Storage: 35kB
+                                  Buffers: shared hit=216
+                            ->  Bitmap Heap Scan on wf_edge e (actual time=0.001..0.001 rows=1.00 loops=200)
+                                  Recheck Cond: (child_id = l.id)
+                                  Heap Blocks: exact=200
+                                  Buffers: shared hit=600
+                                  ->  Bitmap Index Scan on wf_edge_pkey (actual time=0.000..0.000 rows=1.00 loops=200)
+                                        Index Cond: (child_id = l.id)
+                                        Index Searches: 200
+                                        Buffers: shared hit=400
+                      ->  Index Scan using jobs_pkey on jobs p (actual time=0.001..0.001 rows=1.00 loops=200)
+                            Index Cond: (id = e.parent_id)
+                            Index Searches: 200
+                            Buffers: shared hit=600
+  CTE blocked
+    ->  Update on jobs j (actual time=0.592..0.592 rows=0.00 loops=1)
+          Buffers: shared hit=1419
+          ->  Nested Loop (actual time=0.592..0.592 rows=0.00 loops=1)
+                Buffers: shared hit=1419
+                ->  CTE Scan on counts c_1 (actual time=0.591..0.591 rows=0.00 loops=1)
+                      Filter: (missing_parents > 0)
+                      Rows Removed by Filter: 200
+                      Storage: Memory  Maximum Storage: 27kB
+                      Buffers: shared hit=1419
+                ->  Index Scan using jobs_pkey on jobs j (never executed)
+                      Index Cond: (id = c_1.child_id)
+                      Filter: (NOT (metadata @> '{"blocking_reason": "orphan_parent"}'::jsonb))
+                      Index Searches: 0
+  CTE reconciled
+    ->  Update on jobs j_1 (actual time=0.160..0.160 rows=0.00 loops=1)
+          Buffers: shared hit=600
+          ->  Nested Loop (actual time=0.160..0.160 rows=0.00 loops=1)
+                Buffers: shared hit=600
+                ->  CTE Scan on counts c_2 (actual time=0.004..0.029 rows=200.00 loops=1)
+                      Filter: (missing_parents = 0)
+                      Storage: Memory  Maximum Storage: 27kB
+                ->  Index Scan using jobs_pkey on jobs j_1 (actual time=0.001..0.001 rows=0.00 loops=200)
+                      Index Cond: (id = c_2.child_id)
+                      Filter: (deps_pending <> (c_2.unterminal)::smallint)
+                      Rows Removed by Filter: 1
+                      Index Searches: 200
+                      Buffers: shared hit=600
+  InitPlan 5
+    ->  Aggregate (actual time=0.593..0.593 rows=1.00 loops=1)
+          Buffers: shared hit=1419
+          ->  CTE Scan on blocked (actual time=0.592..0.592 rows=0.00 loops=1)
+                Storage: Memory  Maximum Storage: 17kB
+                Buffers: shared hit=1419
+  InitPlan 6
+    ->  Aggregate (actual time=0.160..0.160 rows=1.00 loops=1)
+          Buffers: shared hit=600
+          ->  CTE Scan on reconciled (actual time=0.160..0.160 rows=0.00 loops=1)
+                Storage: Memory  Maximum Storage: 17kB
+                Buffers: shared hit=600
+  InitPlan 7
+    ->  Aggregate (actual time=1.143..1.143 rows=1.00 loops=1)
+          ->  Nested Loop (actual time=1.143..1.143 rows=0.00 loops=1)
+                Join Filter: (l_1.id = c_3.child_id)
+                ->  CTE Scan on locked l_1 (actual time=0.000..0.009 rows=200.00 loops=1)
+                      Storage: Memory  Maximum Storage: 35kB
+                ->  CTE Scan on counts c_3 (actual time=0.006..0.006 rows=0.00 loops=200)
+                      Filter: ((missing_parents = 0) AND (unterminal = 0))
+                      Rows Removed by Filter: 200
+                      Storage: Memory  Maximum Storage: 27kB
+Planning:
+  Buffers: shared hit=54
+Planning Time: 0.389 ms
+Execution Time: 1.941 ms
+=== SWEEP_FIRE (the set-based fire arm) ===
+Nested Loop (actual time=0.759..0.761 rows=0.00 loops=1)
+  Buffers: shared hit=1421
+  CTE locked
+    ->  Limit (actual time=0.194..0.284 rows=200.00 loops=1)
+          Buffers: shared hit=221
+          ->  LockRows (actual time=0.193..0.273 rows=200.00 loops=1)
+                Buffers: shared hit=221
+                ->  Sort (actual time=0.183..0.191 rows=200.00 loops=1)
+                      Sort Key: c.id
+                      Sort Method: quicksort  Memory: 37kB
+                      Buffers: shared hit=21
+                      ->  Index Scan using jobs_dispatch_idx on jobs c (actual time=0.047..0.163 rows=201.00 loops=1)
+                            Index Cond: (scheduled_at <= statement_timestamp())
+                            Filter: ((metadata @> '{"blocking_reason": "join"}'::jsonb) AND (status = 'pending'::wfattack.job_status))
+                            Index Searches: 1
+                            Buffers: shared hit=21
+  CTE wins
+    ->  Insert on wf_join_fire (actual time=0.757..0.758 rows=0.00 loops=1)
+          Conflict Resolution: NOTHING
+          Conflict Arbiter Indexes: wf_join_fire_join_job_id_key
+          Tuples Inserted: 0
+          Conflicting Tuples: 0
+          Buffers: shared hit=1421
+          ->  Nested Loop (actual time=0.756..0.757 rows=0.00 loops=1)
+                Buffers: shared hit=1421
+                ->  WindowAgg (actual time=0.756..0.757 rows=0.00 loops=1)
+                      Window: w1 AS (ORDER BY l.id ROWS UNBOUNDED PRECEDING)
+                      Run Condition: (row_number() OVER w1 <= 1)
+                      Buffers: shared hit=1421
+                      ->  Nested Loop (actual time=0.755..0.755 rows=0.00 loops=1)
+                            Join Filter: (l.id = e.child_id)
+                            Buffers: shared hit=1421
+                            ->  GroupAggregate (actual time=0.755..0.755 rows=0.00 loops=1)
+                                  Group Key: e.child_id
+                                  Filter: ((count(*) FILTER (WHERE (p.id IS NULL)) = 0) AND (count(*) FILTER (WHERE ((p.id IS NOT NULL) AND (p.status <> ALL ('{succeeded,failed,cancelled,crashed,abandoned}'::wfattack.job_status[])))) = 0))
+                                  Rows Removed by Filter: 200
+                                  Buffers: shared hit=1421
+                                  ->  Sort (actual time=0.716..0.722 rows=200.00 loops=1)
+                                        Sort Key: e.child_id
+                                        Sort Method: quicksort  Memory: 35kB
+                                        Buffers: shared hit=1421
+                                        ->  Nested Loop Left Join (actual time=0.210..0.690 rows=200.00 loops=1)
+                                              Buffers: shared hit=1421
+                                              ->  Nested Loop (actual time=0.205..0.540 rows=200.00 loops=1)
+                                                    Buffers: shared hit=821
+                                                    ->  CTE Scan on locked l_1 (actual time=0.196..0.310 rows=200.00 loops=1)
+                                                          Storage: Memory  Maximum Storage: 31kB
+                                                          Buffers: shared hit=221
+                                                    ->  Bitmap Heap Scan on wf_edge e (actual time=0.001..0.001 rows=1.00 loops=200)
+                                                          Recheck Cond: (child_id = l_1.id)
+                                                          Heap Blocks: exact=200
+                                                          Buffers: shared hit=600
+                                                          ->  Bitmap Index Scan on wf_edge_pkey (actual time=0.001..0.001 rows=1.00 loops=200)
+                                                                Index Cond: (child_id = l_1.id)
+                                                                Index Searches: 200
+                                                                Buffers: shared hit=400
+                                              ->  Index Scan using jobs_pkey on jobs p (actual time=0.001..0.001 rows=1.00 loops=200)
+                                                    Index Cond: (id = e.parent_id)
+                                                    Index Searches: 200
+                                                    Buffers: shared hit=600
+                            ->  CTE Scan on locked l (never executed)
+                                  Storage: Memory  Maximum Storage: 31kB
+                ->  Index Scan using jobs_pkey on jobs fl (never executed)
+                      Index Cond: (id = l.flow_id)
+                      Filter: (status <> ALL ('{succeeded,failed,cancelled,crashed,abandoned}'::wfattack.job_status[]))
+                      Index Searches: 0
+  ->  CTE Scan on wins w (actual time=0.759..0.759 rows=0.00 loops=1)
+        Storage: Memory  Maximum Storage: 17kB
+        Buffers: shared hit=1421
+  ->  Index Scan using jobs_pkey on jobs j (never executed)
+        Index Cond: (id = w.join_job_id)
+        Index Searches: 0
+Planning:
+  Buffers: shared hit=40
+Planning Time: 0.785 ms
+Execution Time: 0.816 ms
+=== OUTBOX_FETCH (the drain's read) ===
+Limit (actual time=0.005..0.006 rows=0.00 loops=1)
+  ->  LockRows (actual time=0.005..0.005 rows=0.00 loops=1)
+        ->  Sort (actual time=0.005..0.005 rows=0.00 loops=1)
+              Sort Key: id
+              Sort Method: quicksort  Memory: 25kB
+              ->  Seq Scan on wf_outbox o (actual time=0.003..0.003 rows=0.00 loops=1)
+                    Filter: (NOT delivered)
+Planning:
+  Buffers: shared hit=44 read=2
+Planning Time: 0.127 ms
+Execution Time: 0.016 ms
+=== LEDGER_CLAIM (the step-ledger claim) ===
+Insert on wf_step_ledger (actual time=0.110..0.111 rows=1.00 loops=1)
+  Conflict Resolution: UPDATE
+  Conflict Arbiter Indexes: wf_step_ledger_flow_id_step_key_attempt_key
+  Tuples Inserted: 1
+  Conflicting Tuples: 0
+  Buffers: shared hit=6 read=3 dirtied=7 written=4
+  ->  Result (actual time=0.001..0.001 rows=1.00 loops=1)
+Planning:
+  Buffers: shared hit=42
+Planning Time: 0.042 ms
+Execution Time: 0.128 ms
+=== LEDGER_MEMOIZED (the replay read) ===
+Limit (actual time=0.006..0.006 rows=0.00 loops=1)
+  Buffers: shared hit=2
+  ->  Index Scan Backward using wf_step_ledger_flow_id_step_key_attempt_key on wf_step_ledger (actual time=0.006..0.006 rows=0.00 loops=1)
+        Index Cond: ((flow_id = '01a1173a-f9c4-7b82-960b-eb2503877486'::uuid) AND (step_key = 's'::text))
+        Filter: ((map_index IS NULL) AND (status = ANY ('{succeeded,failed}'::text[])))
+        Rows Removed by Filter: 1
+        Index Searches: 1
+        Buffers: shared hit=2
+Planning:
+  Buffers: shared hit=30
+Planning Time: 0.067 ms
+Execution Time: 0.017 ms
+=== PHANTOM_REAP (the reaper) ===
+Update on wf_step_ledger l (actual time=0.009..0.009 rows=0.00 loops=1)
+  Buffers: shared hit=4
+  ->  Nested Loop (actual time=0.008..0.008 rows=0.00 loops=1)
+        Buffers: shared hit=4
+        ->  Seq Scan on wf_step_ledger l (actual time=0.003..0.004 rows=1.00 loops=1)
+              Filter: (status = 'running'::text)
+              Buffers: shared hit=1
+        ->  Index Scan using jobs_pkey on jobs f (actual time=0.004..0.004 rows=0.00 loops=1)
+              Index Cond: (id = l.flow_id)
+              Filter: (status = ANY ('{succeeded,failed,cancelled,crashed,abandoned}'::wfattack.job_status[]))
+              Rows Removed by Filter: 1
+              Index Searches: 1
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=10
+Planning Time: 0.165 ms
+Execution Time: 0.020 ms
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)
+
+=== STRICT-FIFO CLAIM WITH THE DISPATCH FENCE (pin 2, 2026-10-07) ===
+Update on jobs j  (cost=10978.24..10994.46 rows=1 width=200)

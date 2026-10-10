@@ -1,0 +1,9 @@
+# lint-format at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9 (20261010T062427Z)
+== ruff check .
+All checks passed!
+ruff rc=0
+== ruff format --check .
+1666 files already formatted
+format rc=0
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/lint-format-20261010T085747.txt

@@ -1,0 +1,4 @@
+................x                                                        [100%]
+=========================== short test summary info ============================
+XFAIL tests/attack4_wf_held_drive_livelock.py::test_drive_until_held_sees_a_no_deadline_hold - F-P4-HELD-DRIVE-NULL-DEADLINE: the driver's held-question reads scheduled_at > now(), NULL for a legal no-deadline hold — the phase-3 fixer lands `metadata ? 'hold'` (see .measurements/p4-attack-held-drive-null-deadline.md)
+16 passed, 1 xfailed in 4.31s

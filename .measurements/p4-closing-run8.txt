@@ -1,0 +1,73 @@
+.....F.......F............                                               [100%]
+=================================== FAILURES ===================================
+______ test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason ______
+
+    def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None:
+        from taskq.workflows._cli import FlowNodeRow, format_flow_status
+    
+        # THE EMPTY NODES (the honest degraded line + the remedy):
+        lines = format_flow_status(run_id="r-1", workflow="wf", root_status="running", nodes=[])
+        joined = "\n".join(lines)
+        assert "nodes: none yet" in joined
+        assert "taskq flows list" in joined
+        # The HOLD's REASON line (the context's reason rides the listing):
+        from taskq.workflows.api._hitl import HoldContext
+    
+        hold = HoldContext(
+            hold_id="h-9", run_id="r-1", node_key="review", signal_name="Approval",
+            hold_epoch=2, call_id="c", payload=None, payload_schema=None,
+            reason="waiting for the editor", created_at=None,
+            expires_at="soon", status="held",
+        )
+        lines = format_flow_status(
+            run_id="r-1", workflow="wf", root_status="running",
+            nodes=[FlowNodeRow(step_key="review", status="pending", hold=hold)],
+        )
+        joined = "\n".join(lines)
+>       assert "waiting for the editor" in joined
+E       assert 'waiting for the editor' in "run r-1\nworkflow: wf\nstatus: blocked  (derived from the node rows — §17.5; the root row caches 'running')\nnodes: 1... — waiting for: signal 'Approval' · hold h-9 · deadline soon\n       remedy: taskq flows resolve h-9 '<decision json>'"
+
+tests/test_wf_coverage_closing.py:233: AssertionError
+__________ test_the_pages_degrade_when_the_workflow_tables_are_absent __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fafd2fb2380>
+module_pg_schema = ModulePgSchema(schema_name='tq_d9a6d02d99', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_d9a6d02d9958')
+
+    async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
+        module_pg_pool: Any, module_pg_schema: Any
+    ) -> None:
+        """THE UNINSTALLED DEGRADE: a schema with ONLY the vanilla tables (a
+        pre-workflow migration state) renders the NOTICE (both pages), never
+        a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
+        per module — the drop here would break the family; the fresh schema
+        applies the migrations then drops the workflow series' two tables."""
+        import httpx as _httpx
+    
+        schema = module_pg_schema.schema_name + "_nowf"
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn.rpartition("/")[0] + "/taskq")
+        from taskq.migrate import apply_pending
+    
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        bare = await asyncpg.connect(module_pg_schema.pg_dsn)
+        await apply_pending(bare, schema=schema)
+        await bare.execute(f'DROP TABLE "{schema}".wf_signals')
+        await bare.execute(f'DROP TABLE "{schema}".wf_edge')
+        await bare.close()
+        app = _make_admin_app(module_pg_pool, schema)
+        async with _httpx.AsyncClient(
+            transport=_httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            listed = await client.get("/workflows")
+            assert listed.status_code == 200
+>           assert "workflows not installed" in listed.text
+E           assert 'workflows not installed' in '<!DOCTYPE html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createIcons();\n        });\n    </script>\n</body>\n</html>'
+E            +  where '<!DOCTYPE html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createIcons();\n        });\n    </script>\n</body>\n</html>' = <Response [200 OK]>.text
+
+tests/web_admin/test_workflows_page.py:614: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 21:16:10 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 21:16:10 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing.py::test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason
+FAILED tests/web_admin/test_workflows_page.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+2 failed, 24 passed in 5.46s

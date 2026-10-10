@@ -1,0 +1,267 @@
+...FE                                                                    [100%]
+==================================== ERRORS ====================================
+_ ERROR at teardown of test_the_lost_job_probe_with_the_db_restarted_mid_round _
+  + Exception Group Traceback (most recent call last):
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 361, in from_call
+  |     result: TResult | None = func()
+  |                              ~~~~^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 250, in <lambda>
+  |     lambda: runtest_hook(item=item, **kwds),
+  |             ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_hooks.py", line 512, in __call__
+  |     return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  |            ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_manager.py", line 120, in _hookexec
+  |     return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  |            ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_callers.py", line 167, in _multicall
+  |     raise exception
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_callers.py", line 139, in _multicall
+  |     teardown.throw(exception)
+  |     ~~~~~~~~~~~~~~^^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/logging.py", line 873, in pytest_runtest_teardown
+  |     yield
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_callers.py", line 139, in _multicall
+  |     teardown.throw(exception)
+  |     ~~~~~~~~~~~~~~^^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/capture.py", line 905, in pytest_runtest_teardown
+  |     return (yield)
+  |             ^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pluggy/_callers.py", line 121, in _multicall
+  |     res = hook_impl.function(*args)
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 199, in pytest_runtest_teardown
+  |     item.session._setupstate.teardown_exact(nextitem)
+  |     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 579, in teardown_exact
+  |     raise exceptions[0]
+  | ExceptionGroup: errors while tearing down <Module attack4-nothing-stuck-probes.py> (2 sub-exceptions)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 568, in teardown_exact
+    |     fin()
+    |     ~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/fixtures.py", line 1166, in finish
+    |     raise exceptions[0]
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/fixtures.py", line 1156, in finish
+    |     fin()
+    |     ~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/fixtures.py", line 1014, in _teardown_yield_fixture
+    |     next(it)
+    |     ~~~~^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/tests/conftest.py", line 1072, in pg_dsn
+    |     _pg_admin(base_dsn, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+    |     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/tests/conftest.py", line 997, in _pg_admin
+    |     raise error[0]
+    |   File "/tmp/opencode/wt-taskqflow-p4/tests/conftest.py", line 979, in _target
+    |     asyncio.run(_go())
+    |     ~~~~~~~~~~~^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 196, in run
+    |     return runner.run(main)
+    |            ~~~~~~~~~~^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 119, in run
+    |     return self._loop.run_until_complete(task)
+    |            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    |     return future.result()
+    |            ~~~~~~~~~~~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/tests/conftest.py", line 971, in _go
+    |     conn = await asyncpg.connect(base_dsn)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 2443, in connect
+    |     return await connect_utils._connect(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<22 lines>...
+    |     )
+    |     ^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1249, in _connect
+    |     raise last_error or exceptions.TargetServerAttributeNotMatched(
+    |     ...<2 lines>...
+    |     )
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1218, in _connect
+    |     conn = await _connect_addr(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |     ...<6 lines>...
+    |     )
+    |     ^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1054, in _connect_addr
+    |     return await __connect_addr(params, True, *args)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1099, in __connect_addr
+    |     tr, pr = await connector
+    |              ^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 969, in _create_ssl_connection
+    |     tr, pr = await loop.create_connection(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<2 lines>...
+    |         host, port)
+    |         ^^^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1172, in create_connection
+    |     raise exceptions[0]
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1147, in create_connection
+    |     sock = await self._connect_sock(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |         exceptions, addrinfo, laddr_infos)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1046, in _connect_sock
+    |     await self.sock_connect(sock, address)
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/selector_events.py", line 643, in sock_connect
+    |     return await fut
+    |            ^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/selector_events.py", line 683, in _sock_connect_cb
+    |     raise OSError(err, f'Connect call failed {address}')
+    | ConnectionRefusedError: [Errno 111] Connect call failed ('127.0.0.1', 5711)
+    +---------------- 2 ----------------
+    | Traceback (most recent call last):
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/runner.py", line 568, in teardown_exact
+    |     fin()
+    |     ~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/fixtures.py", line 1166, in finish
+    |     raise exceptions[0]
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/_pytest/fixtures.py", line 1156, in finish
+    |     fin()
+    |     ~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py", line 424, in finalizer
+    |     runner.run(async_finalizer(), context=context)
+    |     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 119, in run
+    |     return self._loop.run_until_complete(task)
+    |            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    |     return future.result()
+    |            ~~~~~~~~~~~~~^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py", line 416, in async_finalizer
+    |     await gen_obj.__anext__()
+    |   File "/tmp/opencode/wt-taskqflow-p4/src/taskq/testing/fixtures.py", line 974, in module_pg_schema
+    |     conn = await asyncpg.connect(pg_dsn)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 2443, in connect
+    |     return await connect_utils._connect(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<22 lines>...
+    |     )
+    |     ^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1249, in _connect
+    |     raise last_error or exceptions.TargetServerAttributeNotMatched(
+    |     ...<2 lines>...
+    |     )
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1218, in _connect
+    |     conn = await _connect_addr(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |     ...<6 lines>...
+    |     )
+    |     ^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1054, in _connect_addr
+    |     return await __connect_addr(params, True, *args)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 1099, in __connect_addr
+    |     tr, pr = await connector
+    |              ^^^^^^^^^^^^^^^
+    |   File "/tmp/opencode/wt-taskqflow-p4/.venv/lib/python3.13/site-packages/asyncpg/connect_utils.py", line 969, in _create_ssl_connection
+    |     tr, pr = await loop.create_connection(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     ...<2 lines>...
+    |         host, port)
+    |         ^^^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1172, in create_connection
+    |     raise exceptions[0]
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1147, in create_connection
+    |     sock = await self._connect_sock(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |         exceptions, addrinfo, laddr_infos)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 1046, in _connect_sock
+    |     await self.sock_connect(sock, address)
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/selector_events.py", line 643, in sock_connect
+    |     return await fut
+    |            ^^^^^^^^^
+    |   File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/selector_events.py", line 683, in _sock_connect_cb
+    |     raise OSError(err, f'Connect call failed {address}')
+    | ConnectionRefusedError: [Errno 111] Connect call failed ('127.0.0.1', 5711)
+    +------------------------------------
+=================================== FAILURES ===================================
+___________ test_the_lost_job_probe_with_the_db_restarted_mid_round ____________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_29d10bad32', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_29d10bad3295')
+
+    @pytest.mark.skipif(
+        not os.environ.get("ATTACK4_PG_DATA"),
+        reason="needs a restartable cluster (ATTACK4_PG_DATA + the port; the "
+        "capture ran with the attacker's own PG on :5711)",
+    )
+    async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """THE RESTART ROUNDS: five rounds; each seeds a 2-node run, drives
+        one tick (the parent mid-flight), RESTARTS the database, reconnects,
+        and drives to terminal. Every node lands terminal with its ledger
+        row — a job lost across the restart is the defect; the claim's lease
+        + the crash-window heal own the recovery."""
+        import subprocess as sp
+    
+        pg_data = os.environ["ATTACK4_PG_DATA"]
+    
+        def restart_pg() -> None:
+            """The crash world: `-m immediate` (no graceful drain — the
+            postmaster is SIGKILLed, every backend dies mid-write), then the
+            start (the WAL recovery). This is the crash's own shape."""
+            r = sp.run(["pg_ctl", "-D", pg_data, "stop", "-m", "immediate"],
+                       capture_output=True, text=True, timeout=60)
+            assert r.returncode == 0, f"the kill failed: {r.stderr}"
+            r = sp.run(["pg_ctl", "-D", pg_data, "start", "-w"],
+                       capture_output=True, text=True, timeout=60)
+            assert r.returncode == 0, f"the restart failed: {r.stderr}"
+    
+        dsn = module_pg_schema.pg_dsn
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+    
+        async def _parent(ctx: Any, params: Ingest) -> str:
+            return "up"
+    
+        async def _child(ctx: Any, up: str) -> str:
+            return up + "!"
+    
+        @app.workflow("attack4_restart_round")
+        def restart_round() -> object:
+            return build(step(_child, step(_parent, Ingest(doc_id="d1"), key="up"), key="down"))
+    
+        compiled = app.get("attack4_restart_round")
+        for round_no in range(5):
+            pool = await asyncpg.create_pool(dsn, min_size=1)
+            runner = FlowRunner(compiled, pool, schema)
+            flow_id = await runner.create_flow()
+            await runner.tick(flow_id)  # the parent claims + finalizes mid-round
+            mid = await pool.fetchval(
+                f'SELECT status FROM "{schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'up'",
+                flow_id,
+            )
+            await pool.close()
+            # THE RESTART (mid-round — the child has never run).
+>           restart_pg()
+
+tests/attack4-nothing-stuck-probes.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def restart_pg() -> None:
+        """The crash world: `-m immediate` (no graceful drain — the
+        postmaster is SIGKILLed, every backend dies mid-write), then the
+        start (the WAL recovery). This is the crash's own shape."""
+        r = sp.run(["pg_ctl", "-D", pg_data, "stop", "-m", "immediate"],
+                   capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, f"the kill failed: {r.stderr}"
+        r = sp.run(["pg_ctl", "-D", pg_data, "start", "-w"],
+                   capture_output=True, text=True, timeout=60)
+>       assert r.returncode == 0, f"the restart failed: {r.stderr}"
+E       AssertionError: the restart failed: pg_ctl: could not start server
+E         Examine the log output.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['pg_ctl', '-D', '/home/rich/.attack4-pg/data', 'start', '-w'], returncode=1, stdout='waiting fo... database system is shut down\n stopped waiting\n', stderr='pg_ctl: could not start server\nExamine the log output.\n').returncode
+
+tests/attack4-nothing-stuck-probes.py:262: AssertionError
+=========================== short test summary info ============================
+ERROR tests/attack4-nothing-stuck-probes.py::test_the_lost_job_probe_with_the_db_restarted_mid_round
+FAILED tests/attack4-nothing-stuck-probes.py::test_the_lost_job_probe_with_the_db_restarted_mid_round
+1 failed, 3 passed, 1 error in 1.59s

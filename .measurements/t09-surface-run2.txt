@@ -1,0 +1,60 @@
+...F....                                                                 [100%]
+=================================== FAILURES ===================================
+________________________ test_mermaid_shape_vocabulary _________________________
+
+    def test_mermaid_shape_vocabulary() -> None:
+        """The emission's grammar: rectangle = plain actor, ``[[...]]`` =
+        the gather join, ``{{...}}`` = the collapsed map's join, ``([(...)])``
+        = the HOLD node (its gate + timeout policy ON the node), and the
+        label fallback for an unresolvable type."""
+        from taskq.workflows import map_source
+    
+        async def source(ctx: Any, params: Ingest) -> list[Report]:
+            return []  # pragma: no cover - the runner drives real bodies
+    
+        app = WorkflowApp()
+    
+        @app.workflow("shapes")
+        def shapes() -> object:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
+            plain = step(_body, Ingest(doc_id="d"), key="plain")
+            sink(plain)
+            joined = gather([plain])
+            sink(joined)
+            mapped = map_source(plain, _body)
+            sink(mapped)
+            return build(
+                step(
+                    _body,
+                    Ingest(doc_id="d"),
+                    key="hold",
+                    gates=(gate,),
+                )
+            )
+    
+>       text = app.get("shapes").mermaid()
+               ^^^^^^^^^^^^^^^^^
+
+tests/test_wf_api_surface_pins.py:201: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:262: in get
+    returned = record_under(graph, build_fn)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_graph.py:191: in record_under
+    return build_fn()
+           ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @app.workflow("shapes")
+    def shapes() -> object:
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
+        plain = step(_body, Ingest(doc_id="d"), key="plain")
+        sink(plain)
+>       joined = gather([plain])
+                 ^^^^^^
+E       NameError: name 'gather' is not defined
+
+tests/test_wf_api_surface_pins.py:188: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_api_surface_pins.py::test_mermaid_shape_vocabulary - Nam...
+1 failed, 7 passed in 0.30s

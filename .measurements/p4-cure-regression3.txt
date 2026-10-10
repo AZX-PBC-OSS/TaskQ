@@ -1,0 +1,54 @@
+........................................................................ [ 54%]
+..........................................................F.             [100%]
+=================================== FAILURES ===================================
+________________________________ test_bar_walk _________________________________
+
+    def test_bar_walk() -> None:
+        """THE BAR WALK (T17's red-first 2): the authoring agent's original
+        graph — the shapes the paper cuts were hit on — compiles with zero
+        boilerplate: plain-type data, Promise wiring, a gather-join,
+        sequencing, a consumed terminal, the input parameter on create_flow."""
+        app = WorkflowApp()
+    
+        @app.workflow("doc_ingest")
+        def doc_ingest() -> object:
+            fetched = step(_fetch, DocIngest(doc_id="d1"))  # Promise[Report]
+            embed_p = step(_embed, fetched)  # Promise[Vec] — sequenced
+            sink(embed_p)  # the explicit fire-and-forget (recorded, never silent)
+            both = gather([fetched, fetched])  # the ALL-upstream join
+            return build(step(_summarize, both, key="summarize"))
+    
+>       compiled = app.get("doc_ingest")
+                   ^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_ergonomics_contract.py:159: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_app.py:308: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:331: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f728f749010>
+definition = WorkflowDef(name='doc_ingest', bodies={'_fetch': <function _fetch at 0x7f728e2d7ce0>, '_embed': <function _embed at 0x..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'doc_ingest' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+=========================== short test summary info ============================
+FAILED tests/test_wf_ergonomics_contract.py::test_bar_walk - taskq.workflows....
+1 failed, 131 passed in 127.58s (0:02:07)

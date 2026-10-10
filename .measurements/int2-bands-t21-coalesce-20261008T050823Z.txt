@@ -1,0 +1,21 @@
+# the integration battery (round 2): the T21 numbers run (the coalesce cadence, the constant rows, the honest counters, the ring bound, the finalize asymmetry, the 200-child map line) — head d130fca5, pg :5706 (the lane script's DSN overridden in a scratch copy; tests/t21_numbers_run.py untouched)
+        "failed": 0,
+        "avg_pct": null,
+        "freshest": null
+      }
+    ],
+    "aggregate_children": 200,
+    "aggregate_value": 2.97,
+    "aggregate_fn_ms": 0.008,
+    "join_fires_dataflow": 1,
+    "aggregate_wrote_nothing": true
+  },
+  "red_counterfactual": {
+    "emissions": 2000,
+    "rows": 2000,
+    "write_s": 4.122,
+    "writes_per_s": 485,
+    "verdict": "the every-emission-a-row shape grows with emissions \u2014 kept red"
+  },
+  "captured_at": "20261008T050843Z"
+}

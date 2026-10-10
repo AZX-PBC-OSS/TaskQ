@@ -91,6 +91,7 @@ __all__ = [
     "ChecksumDrift",
     "ChecksumDriftError",
     "Migration",
+    "MigrationConnectionError",
     "MigrationLockTimeoutError",
     "Phase",
     "apply_pending",
@@ -238,6 +239,34 @@ class MigrationLockTimeoutError(RuntimeError):
             "wait for it, then re-run; to wait longer, raise ddl_lock_timeout "
             "(apply_pending / apply_pending_locked), 0 waits indefinitely, at the cost "
             "of parking every statement on the table behind the queued DDL."
+        )
+
+
+class MigrationConnectionError(RuntimeError):
+    """A migration apply was handed a POOL where ONE ``asyncpg.Connection``
+    belongs.
+
+    :func:`apply_pending` runs every migration on the CALLER'S connection
+    — the caller owns the transaction scope (the CLI wraps its own
+    ledger upgrade around it; a programmatic caller composes the apply
+    into a larger run). A ``Pool`` cannot serve that contract (it has no
+    ``transaction()`` — the apply would die the untyped
+    ``AttributeError`` at the first statement). The refusal NAMES the
+    Connection: acquire one from the pool and pass that.
+
+    Raised in place of the driver traceback so the setup defect reads
+    actionable, the same doctrine the client arm's
+    ``SchemaNotMigratedError`` translation keeps."""
+
+    def __init__(self, received: type[object]) -> None:
+        self.received = received
+        super().__init__(
+            f"apply_pending takes ONE asyncpg.Connection — the caller's "
+            f"transaction scope — and was handed a {received.__name__!r} "
+            "(a Pool has no transaction() and cannot serve the apply's "
+            "own transaction management): acquire a connection from the "
+            "pool and pass THAT — `async with pool.acquire() as conn: "
+            "await apply_pending(conn, schema=…)`"
         )
 
 
@@ -819,7 +848,7 @@ async def list_invalid_indexes(conn: asyncpg.Connection, schema: str) -> list[st
 
 
 async def apply_pending(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.Pool,
     *,
     schema: str,
     phase: Phase | None = None,
@@ -829,6 +858,12 @@ async def apply_pending(
     allow_checksum_drift: bool = False,
 ) -> list[Migration]:
     """Apply pending migrations.
+
+    Takes ONE :class:`asyncpg.Connection` — the caller's transaction
+    scope. A :class:`asyncpg.Pool` is the typed
+    :class:`MigrationConnectionError` refusal (the Pool cannot serve the
+    apply's own transaction management — acquire a connection and pass
+    that).
 
     Each migration runs in its own transaction so a failure in one file does
     not leave a half-applied schema, unless the file carries the
@@ -871,6 +906,12 @@ async def apply_pending(
     _validate_timeout_bound(ddl_lock_timeout, "ddl_lock_timeout")
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
+    if isinstance(conn, asyncpg.Pool):
+        # THE TYPED REFUSAL (the teardown round's cure): the Pool dies
+        # the untyped AttributeError at the first transaction (the Pool
+        # has no transaction()) — refuse it BY NAME instead, the remedy
+        # in the message.
+        raise MigrationConnectionError(type(conn))
 
     exists = await conn.fetchval(
         """

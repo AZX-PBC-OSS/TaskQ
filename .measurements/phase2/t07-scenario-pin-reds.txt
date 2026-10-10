@@ -1,0 +1,6 @@
+1 passed in 2.99s
+1 failed in 2.95s
+== GREEN barrier: 1 passed in 2.90s
+== GREEN pin6: 1 passed in 2.96s
+1 failed in 3.59s
+== GREEN pin6: 1 passed in 4.68s

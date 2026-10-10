@@ -1,0 +1,87 @@
+....F......                                                              [100%]
+=================================== FAILURES ===================================
+________ test_a_nodes_error_text_carrying_markup_is_escaped_everywhere _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_83bfc4b522', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_83bfc4b5222a')
+module_pg_pool = <asyncpg.pool.Pool object at 0x7fcbe5f39c00>
+demo_env = <module 'attack4_admin_demo_flows'>
+
+    async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
+        module_pg_schema: ModulePgSchema,
+        module_pg_pool: asyncpg.Pool,
+        demo_env: types.ModuleType,
+    ) -> None:
+        """THE XSS PROBE: a node's error text contains <script>, an
+        <img onerror>, and a literal </script> closer (the wf-boot JSON
+        renders INSIDE a <script> tag — an unescaped closer is the injected
+        script's exit). The page must render it ESCAPED (server), and the
+        panel API must carry it as JSON data (never markup)."""
+        schema = module_pg_schema.schema_name
+        evil = '<script>alert(1)</script> <img src=x onerror=alert(2)> </script>'
+        run_uuid = uuid.uuid4()
+        # A run whose node carries the hostile error text (written AS a run's
+        # own row — the error text is job-data, never operator input).
+        await module_pg_pool.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, step_key, status, attempt, max_attempts, payload, metadata, queue, "
+            " error_class, error_message, retry_kind, created_at) "
+            "VALUES ($1, 'attack4', 'evil_step', 'failed', 1, 3, 'null'::jsonb, "
+            " $2::jsonb, 'default', 'EvilError', $3, 'transient', now())",
+            uuid.uuid4(),
+            json.dumps({"flow_id": str(run_uuid), "workflow": "attack4_evil"}),
+            evil,
+        )
+        await module_pg_pool.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, step_key, status, payload, metadata, queue, max_attempts, retry_kind, created_at) "
+            "VALUES ($1, 'attack4', '__flow__', 'failed', 'null'::jsonb, "
+            " $2::jsonb, 'default', 3, 'transient', now())",
+            run_uuid,
+            json.dumps({"flow_id": str(run_uuid), "workflow": "attack4_evil"}),
+        )
+        app = _make_admin_app(module_pg_pool, schema)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            page = await client.get(f"/workflows/{run_uuid}")
+            assert page.status_code == 200
+            html = page.text
+            # THE SERVER RENDER: no raw markup survives into the HTML — the
+            # sharper check: the wf-boot JSON's script tag must not be
+            # CLOSED by the payload (the parse succeeding IS the proof).
+            assert "<script>alert(1)" not in html
+            assert "<img src=x onerror" not in html
+            boot_json = html.split('<script id="wf-boot" type="application/json">')[1]
+            boot = json.loads(boot_json.split("</script>")[0])
+            assert boot["runId"] == str(run_uuid)
+            # THE PANEL API: the raw error is DATA (a JSON string), not markup.
+            panel = await client.get(f"/api/runs/{run_uuid}/nodes/evil_step")
+            assert panel.status_code == 200
+            assert panel.json()["error_message"] == evil  # intact as data
+            assert panel.headers["content-type"].startswith("application/json")
+        # THE CLIENT'S CONVENTION (the redecoration surface): every dynamic
+        # line the workflow JS writes uses textContent — an innerHTML on an
+        # error/label line is the injection's door.
+        js = (__import__("pathlib").Path(__file__).parent.parent /
+              "src/taskq/web/static/workflows.js").read_text()
+        for line in js.splitlines():
+            if "innerHTML" in line:
+                # The ONLY allowed innerHTML sites: the mermaid SVG (the
+                # vendored renderer's own output) and the deliberate clear.
+                stripped = line.strip()
+>               assert "res.svg" in stripped or stripped == 'panelBody.innerHTML = "";', (
+                    f"the JS writes non-SVG markup via innerHTML: {stripped!r}"
+                )
+E               AssertionError: the JS writes non-SVG markup via innerHTML: 'graphHost.innerHTML = "";'
+E               assert ('res.svg' in 'graphHost.innerHTML = "";' or 'graphHost.innerHTML = "";' == 'panelBody.innerHTML = "";'
+E                 
+E                 - panelBody.innerHTML = "";
+E                 + graphHost.innerHTML = "";)
+
+tests/attack4-admin-chaos.py:488: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 00:16:31 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-08 00:16:31 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/attack4-admin-chaos.py::test_a_nodes_error_text_carrying_markup_is_escaped_everywhere
+1 failed, 10 passed in 15.36s

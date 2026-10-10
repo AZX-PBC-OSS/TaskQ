@@ -1,0 +1,89 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________________ test_diff_fsm_serial_plans_mirror_pg _____________________
+
+pg_dsn = 'postgresql://postgres:taskq@localhost:5756/tq_db_af88934d9d66'
+
+    @settings(max_examples=10, deadline=None)
+>   @given(plan=st.lists(_FSMS, max_size=24))
+                   ^^^^^^^^^
+
+tests/test_attack_fsm_fuzz_pg.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:905: in inner
+    runner.run(coro, context=context)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_attack_fsm_fuzz_pg.py:198: in test_diff_fsm_serial_plans_mirror_pg
+    _assert_snapshot_invariants(mem_obs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+obs = {'jobs': {'j1': {'present': True, 'id': 'j1', 'actor': 'test_actor', 'queue': 'default', ...}}, 'status_counts': {'can...queued', 'j1', 'pending'], ['cancel_request', 'j1', True], ['retry_job', 'j1', True], ['cancel_request', 'j1', True]]}}
+
+    def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
+        """The twin machine's invariants, projected onto a snapshot."""
+        from taskq.backend.statemachine import TERMINAL_STATUSES, VALID_TRANSITIONS
+    
+        terminal = TERMINAL_STATUSES
+        for token, job in obs["jobs"].items():
+            if not job.get("present", False):
+                continue
+            # Truthful terminal columns.
+            assert (job["finished_at"] is not None) == (job["status"] in terminal), (
+                f"{token}: untruthful terminal columns"
+            )
+            # One attempt row per epoch.
+            seen: set[int] = set()
+            for a in job["attempts"]:
+                assert a["attempt"] not in seen, f"{token}: duplicate attempt epoch {a['attempt']}"
+                seen.add(a["attempt"])
+            # Legal event edges; terminal absorbing.  One documented
+            # self-loop allowance: the cancel escalation's phase-carrying
+            # (running, running) event (both backends' _write_cancel_escalation
+            # spell it identically, the row stays running).
+            terminal_seen = False
+            for e in job["events"]:
+                if e["kind"] != "state_change":
+                    continue
+                frm = e["detail"]["from_state"]
+                to = e["detail"]["to_state"]
+                is_escalation = (
+                    frm == "running"
+                    and to == "running"
+                    and "cancel_phase_from" in e["detail"]
+                    and "cancel_phase_to" in e["detail"]
+                )
+                if not is_escalation:
+                    assert to in VALID_TRANSITIONS[frm], f"{token}: illegal event edge {frm}->{to}"
+>                   assert not terminal_seen, f"{token}: state_change after a terminal event"
+E                   AssertionError: j1: state_change after a terminal event
+E                   assert not True
+E                   Failing test case: test_diff_fsm_serial_plans_mirror_pg(
+E                       pg_dsn='postgresql://postgres:taskq@localhost:5756/tq_db_af88934d9d66',
+E                       plan=[('enqueue', 'j1'),
+E                        ('cancel_request', 'j1'),
+E                        ('retry_job', 'j1'),
+E                        ('cancel_request', 'j1')],
+E                   )
+
+tests/test_attack_fsm_fuzz_pg.py:187: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 03:11:08 [debug    ] state-change                   actor=test_actor from_state=None job_id=01a1254b-84e5-7e10-8476-8fa378a2e73a kind=state_change to_state=pending
+2026-10-10 03:11:08 [debug    ] state-change                   from_state=pending job_id=UUID('01a1254b-84e5-7e10-8476-8fa378a2e73a') kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [debug    ] state-change                   from_state=pending job_id=UUID('01a1254b-84e5-7e10-8476-8fa378a2e73a') kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [debug    ] enqueue                        actor=test_actor idempotency_key=None job_id=01a1254b-84e5-7e10-8476-8fb13d9ce653 kind=enqueue queue=default
+2026-10-10 03:11:08 [info     ] state-change                   from_state=pending job_id=01a1254b-84e5-7e10-8476-8fb13d9ce653 kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [info     ] state-change                   from_state=pending job_id=01a1254b-84e5-7e10-8476-8fb13d9ce653 kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [debug    ] state-change                   actor=test_actor from_state=None job_id=01a1254b-85bd-7a31-a926-83adcbc063b1 kind=state_change to_state=pending
+2026-10-10 03:11:08 [debug    ] state-change                   from_state=pending job_id=UUID('01a1254b-85bd-7a31-a926-83adcbc063b1') kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [debug    ] state-change                   from_state=pending job_id=UUID('01a1254b-85bd-7a31-a926-83adcbc063b1') kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [debug    ] enqueue                        actor=test_actor idempotency_key=None job_id=01a1254b-85be-7072-85e2-53e813037d9c kind=enqueue queue=default
+2026-10-10 03:11:08 [info     ] state-change                   from_state=pending job_id=01a1254b-85be-7072-85e2-53e813037d9c kind=state_change to_state=cancelled
+2026-10-10 03:11:08 [info     ] state-change                   from_state=pending job_id=01a1254b-85be-7072-85e2-53e813037d9c kind=state_change to_state=cancelled
+=========================== short test summary info ============================
+FAILED tests/test_attack_fsm_fuzz_pg.py::test_diff_fsm_serial_plans_mirror_pg
+1 failed in 0.92s

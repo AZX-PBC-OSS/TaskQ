@@ -36,6 +36,7 @@ to ``tests/web_admin/``.
 import asyncio
 import contextlib
 import glob
+import inspect
 import os
 import signal
 from collections.abc import AsyncIterator, Iterator
@@ -123,6 +124,29 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
+
+# Fixture registration: pytest sees fixtures imported into conftest (the
+# web_admin/_fixtures.py pattern — pytest 9.1.1 drops nested-conftest
+# fixtures for non-adjacent argument lists). Only the FIXTURES register
+# here; the pin files import the non-fixture helpers directly from
+# tests._wf_fixtures. The per-line ignores repeat: pyright does not
+# propagate the import block's first-line ignore.
+from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
+    createseam_redlog,  # pyright: ignore[reportUnusedImport]
+    engine_redlog,  # pyright: ignore[reportUnusedImport]
+    hitl_redlog,  # pyright: ignore[reportUnusedImport]
+    ledger_redlog,  # pyright: ignore[reportUnusedImport]
+    loop_redlog,  # pyright: ignore[reportUnusedImport]
+    progress_redlog,  # pyright: ignore[reportUnusedImport]
+    propagation_redlog,  # pyright: ignore[reportUnusedImport]
+    t20_redlog,  # pyright: ignore[reportUnusedImport]
+    wedge_redlog,  # pyright: ignore[reportUnusedImport]
+    wf_conn,  # pyright: ignore[reportUnusedImport]
+    wf_g7_status_truth,  # pyright: ignore[reportUnusedImport]
+    wf_pool,  # pyright: ignore[reportUnusedImport]
+    wf_schema,  # pyright: ignore[reportUnusedImport]
+    wf_sql,  # pyright: ignore[reportUnusedImport]
+)
 from tests.web_admin._fixtures import (
     _dev_env,
     make_app,
@@ -205,6 +229,43 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
         await original_start(self, deps)
 
     monkeypatch.setattr(HealthServer, "start", _start_isolated)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Clear the workflow app registry around every test.
+
+    THE LEAKED-PROJECTION CLASS (named and cured 2026-10-08; ported to
+    this lane with the evidence-integrity round's executor tests): the
+    boot projection (``project_workflow_actor_configs``) reads the
+    process-global app registry at EVERY in-process worker boot, so a
+    WorkflowApp one module constructed keeps projecting its cohorts into
+    every later test's boot on the same xdist worker. Two observed
+    victims of the same mechanism, rotating with pytest-randomly's seed:
+
+    - ``test_worker_bootstrap``: the boot synced the STRANGERS' rows
+      (``wf-demo-*`` from the imported ``examples.workflows`` app) next
+      to the test's own two — ``assert len(rows) == 2`` saw 9.
+    - ``test_health_lifecycle``: the doc fence's app (default-named
+      ``step`` actors — ``actor="wf"`` — landing on BOTH ``classify``
+      and ``cpu``) tripped the one-queue law at the boot's compile:
+      ``WorkflowActorQueueConflictError`` before the test's own stubs ran.
+
+    The registry is the src seam (``reset_app_registry_for_tests`` — the
+    projection's only input); this fixture is the suite's law that a
+    test's projection sees only what IT registered. Cleared at BOTH ends:
+    setup clears another module's import residue, teardown clears this
+    test's own constructions. A within-test app registered after setup
+    survives until teardown — the projection sees it for the test that
+    made it and nobody else.
+    """
+    from taskq.workflows._worker_execution import reset_app_registry_for_tests
+
+    reset_app_registry_for_tests()
+    try:
+        yield
+    finally:
+        reset_app_registry_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -665,12 +726,24 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
     invocations' names can never land in one cluster - if that isolation ever
     regressed, distinct tokens would keep the runs' names from colliding on
-    whatever they ended up sharing. Under xdist the worker id IS the token;
-    serial runs use the invocation-unique basetemp dir name (``pytest-N``) -
-    pytest allocates a fresh numbered dir per invocation, so two overlapping
-    runs can never hold the same one.
+    whatever they ended up sharing.
+
+    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root cure,
+    2026-10-08): the invocation-unique numbered dir (``pytest-N``) PLUS the
+    xdist worker's own subdirectory (``popen-gwK``) - invocation-unique AND
+    worker-distinct in one string, which neither candidate alone is. The
+    plain worker id is NOT invocation-unique: ``gw7`` is identical in every
+    ``-n 8`` invocation on the box, so two overlapping invocations (or a
+    parent session and its own subprocess pytest - the scratch drills) hashing
+    (worker, module) landed the SAME database name on one cluster, and each
+    side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
+    connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
+    fuzz pins, every victim green solo. A subprocess pytest also mints its
+    own fresh ``pytest-M`` root (the lowest free number), so its basetemp
+    path is distinct from its parent's by construction - the scratch child
+    can never re-hash the parent's names, whatever it inherits.
     """
-    token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
+    token = str(tmp_path_factory.getbasetemp())
     # A raw ``MonkeyPatch`` instance, not the function-scoped fixture (this is
     # session-scoped): the sanctioned env seam with correct undo semantics -
     # ``os.environ[...] =`` here would be the suite's one direct env write,
@@ -884,7 +957,21 @@ def pg_container(
     container instead - never this one. Skips with a reason (never errors)
     when the Docker daemon is unreachable, so a Docker-less machine runs the
     non-container tiers instead.
+
+    ``TASKQ_TEST_PG_DSN`` (set): the container boot is SKIPPED and this DSN
+    is used as-is - the local dev loop's own warm cluster. Per-module
+    databases are still created and dropped on it (the caller owns the
+    cluster's lifecycle).
     """
+    # The LOCAL DEV LOOP's override (BUILD-PROTOCOL §7b: the dev loop is
+    # local): an externally-provisioned cluster (e.g. the phase worktree's
+    # own warm container on a fixed port) is used AS-IS — no container boot,
+    # no teardown sweep, the DSN is the whole contract. Default-inert: unset
+    # (CI, the plain dev run), the shared per-invocation pair boots below.
+    external_dsn = os.environ.get("TASKQ_TEST_PG_DSN")
+    if external_dsn:
+        yield _PgContainerShim(dsn=external_dsn)
+        return
     skip_test_without_docker()
     with shared_service_pair(invocation_state_dir(tmp_path_factory)) as services:
         delta = _pg_clock_delta(services.pg_dsn)
@@ -1077,32 +1164,94 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     default load-balancing strategy.
 
     Grouping is defense-in-depth and efficiency, NOT a correctness
-    requirement: every module-scoped name is already worker-qualified
-    (``module_pg_schema`` / ``module_pg_pool`` / ``module_jobs_app`` hash the
-    xdist worker id into the schema name, ``_module_db_name`` does the same
-    for the per-module database, and ``module_redis_url`` allocates from a
-    per-process counter), so a module accidentally split across workers
-    would get DISTINCT schemas/databases/Redis DBs rather than clobbering.
-    What grouping prevents is the waste and noise of that split: duplicated
-    create/migrate/drop work per worker, doubled pool pressure against the
-    session container, and e2e modules paying for a second worker container
-    (``e2e_schema``, ``e2e_pg_pool``, ``e2e_worker``). This hook assigns
-    ``xdist_group(name=<module basename>)`` to every ``integration`` or
-    ``e2e`` test that doesn't already carry an explicit ``xdist_group``
-    marker, so chaos-style tests keep whatever group they already declared
-    (e.g. the per-module chaos families: ``chaos_leader``, ``chaos_notify``,
-    ``chaos_ratelimit``, ``chaos_livelock``, ``chaos_health``) while
-    everything else gets a safe, per-file default. The e2e namespace prefix keeps an e2e module from
+    requirement for the NAMES alone: every module-scoped name is already
+    worker-qualified (``module_pg_schema`` / ``module_pg_pool`` /
+    ``module_jobs_app`` hash the xdist worker id into the schema name,
+    ``_module_db_name`` does the same for the per-module database, and
+    ``module_redis_url`` allocates from a per-process counter), so a module
+    accidentally split across workers would get DISTINCT schemas/databases/
+    Redis DBs rather than clobbering. What grouping prevents is the waste
+    and noise of that split: duplicated create/migrate/drop work per worker,
+    doubled pool pressure against the session container, and e2e modules
+    paying for a second worker container (``e2e_schema``, ``e2e_pg_pool``,
+    ``e2e_worker``). This hook assigns ``xdist_group(name=<module
+    basename>)`` to every ``integration`` or ``e2e`` test that doesn't
+    already carry an explicit ``xdist_group`` marker, so chaos-style tests
+    keep whatever group they already declared (e.g. the per-module chaos
+    families: ``chaos_leader``, ``chaos_notify``, ``chaos_ratelimit``,
+    ``chaos_livelock``, ``chaos_health``) while everything else gets a
+    safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
+
+    THE SPLIT-DROP CLASS (named and cured 2026-10-08, the recon run's 3
+    failed + 3 errors): grouping IS a correctness requirement for every
+    module-scoped FIXTURE LIFECYCLE, not just its names. A fast-tier module
+    whose tests take the module-scoped PG fixtures (``pg_dsn`` et al.) but
+    carries no ``integration`` mark was NOT grouped — its tests split
+    across THREE workers under load-scheduling, and each worker ran its
+    own module-db lifecycle (create at first use, drop at scope end). The
+    drops land while the module is still mid-flight elsewhere:
+    ``DROP DATABASE ... WITH (FORCE)`` terminated live connections
+    (``terminating connection due to administrator command`` in the PG
+    log) and the stranded tests died on ``InvalidCatalogNameError:
+    database "tq_db_..." does not exist`` — rotating with pytest-randomly's
+    seed, every victim green solo. The cure is the same grouping the
+    integration modules have always had: any item requesting a
+    module-scoped PG/Redis fixture joins its module's own group, so the
+    whole module — one fixture lifecycle, one create/migrate/drop — runs
+    on ONE worker.
     """
+    # The module-scoped fixtures whose LIFECYCLE (not just their names)
+    # assumes the module's tests all land on one worker: the PG database
+    # (``pg_dsn``), the schema/pool/jobs-app stack built on it, and the
+    # per-process Redis DB. ``fixturenames`` is the transitive closure, so
+    # a test requesting ``module_pg_schema`` (which requests ``pg_dsn``)
+    # matches on ``pg_dsn`` alone.
+    _lifecycle_fixtures = ("pg_dsn", "module_redis_url")
     for item in items:
         is_e2e = "e2e" in item.keywords
-        if "integration" not in item.keywords and not is_e2e:
-            continue
         if item.get_closest_marker("xdist_group") is not None:
             continue
-        group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
+        if "integration" not in item.keywords and not is_e2e:
+            # The split-drop cure: a fast-tier item riding a module-scoped
+            # PG/Redis fixture joins its module's group too — same law, the
+            # lifecycle needs the single worker regardless of the tier.
+            # (The Function narrow: ``fixturenames`` — the transitive
+            # fixture closure — is a Function attribute; non-Function
+            # items request no fixtures and have no lifecycle stake.)
+            if not (
+                isinstance(item, pytest.Function)
+                and any(f in item.fixturenames for f in _lifecycle_fixtures)
+            ):
+                continue
+            group = item.path.stem
+        else:
+            group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
+
+    # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
+    # pin files ends with the reported==reconstructed check (the fixture
+    # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
+    # cure): a ``usefixtures`` MARKER added here is INERT — the items'
+    # fixture closures are computed before this hook runs, so the marker
+    # never reached the fixture set (the attack's proof: two pins ended
+    # root-contradicts-rows and passed their teardowns). Appending to
+    # ``fixturenames`` IS the effective registration: the closure list is
+    # read at setup time. The scope is the wf pin files' own prefix, and
+    # only the ASYNC items: the check's fixtures need the PG connection,
+    # and a sync item would drag PG into a unit lane (the sync pins
+    # assert the derivation table directly, in memory).
+    for item in items:
+        if not item.path.name.startswith(("test_wf_", "test_workflows_")):
+            continue
+        # The Function narrow: the closure list and the test function are
+        # a Function item's attributes (the hook's items list is Item).
+        if not isinstance(item, pytest.Function):
+            continue
+        if not inspect.iscoroutinefunction(item.function):
+            continue
+        if "wf_g7_status_truth" not in item.fixturenames:
+            item.fixturenames.append("wf_g7_status_truth")
 
 
 def interpreter_is_traced() -> bool:

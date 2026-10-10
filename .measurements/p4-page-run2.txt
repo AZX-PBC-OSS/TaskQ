@@ -1,0 +1,67 @@
+..............F....                                                      [100%]
+=================================== FAILURES ===================================
+____ test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped _____
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7ff1a150d3c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_58ec3a4954', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_58ec3a49542a')
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
+        module_pg_pool: Any, module_pg_schema: Any, demo_app_module: Any
+    ) -> None:
+        """THE DEGRADE's real path: a run EXISTS (the root row) + the
+        workflow tables dropped mid-flight — the fetch's edge read raises,
+        the page renders the NOTICE (never a 500)."""
+        import httpx as _httpx
+    
+        from taskq.migrate import apply_pending
+    
+        schema = module_pg_schema.schema_name + "_nowf2"
+        module_db = module_pg_schema.pg_dsn
+        conn = await asyncpg.connect(module_db)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        bare = await asyncpg.connect(module_db)
+        await apply_pending(bare, schema=schema)
+        await bare.close()
+    
+        # A REAL run (the root + the nodes exist), then the workflow tables drop.
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
+        compiled = sys.modules[MODULE_NAME].app.get("admin_hold_flow")  # type: ignore[attr-defined]
+        runner = FlowRunner(compiled, pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+        await pool.close()
+        await conn.execute(f'DROP TABLE "{schema}".wf_edge')
+        await conn.execute(f'DROP TABLE "{schema}".wf_signals')
+        await conn.close()
+    
+        app = _make_admin_app(module_pg_pool, schema)
+        async with _httpx.AsyncClient(
+            transport=_httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/workflows/{flow_id}")
+            assert resp.status_code == 200
+            assert "workflows not installed" in resp.text
+>       await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+tests/web_admin/test_workflows_page.py:663: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:347: in execute
+    self._check_open()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <asyncpg.connection.Connection object at 0x7ff19b3bd6d0>
+
+    def _check_open(self):
+        if self.is_closed():
+>           raise exceptions.InterfaceError('connection is closed')
+E           asyncpg.exceptions._base.InterfaceError: connection is closed
+
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1605: InterfaceError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 21:19:26 [info     ] node.held                      hold_id=01a119bc-ce15-7b03-8f64-96b78a407f0a node=review run_id=01a119bc-cdf6-73f1-8ed1-7d0ab3c170d6 signals=['Approval']
+2026-10-07 21:19:26 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 21:19:26 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped
+1 failed, 18 passed in 4.29s

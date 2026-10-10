@@ -1,0 +1,29 @@
+=== THE FINAL PROOF at 2309f4b41a80d6a55c921e2f46ef886c74228e55 — 2026-10-10T09:20:02Z
+=== the estate re-stamp + the 9-gate battery at the fully-consolidated head
+
+[1/8] ruff:
+All checks passed!
+[2/8] format:
+1678 files already formatted
+[3/8] pyright FULL:
+0 errors, 0 warnings, 0 informations
+[4/8] the type gate:
+the type gate holds: every MUST_ERROR marker (38) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+[5/8] the estate refresh (the battery+cov re-record, the bands, the attack corpus):
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+TOTAL                                          32036   1209   8944    658    95%
+Required test coverage of 90% reached. Total coverage: 95.05%
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 13410 passed, 12 skipped, 144 warnings in 2308.39s (0:38:28)
+[6/8] the verifier (unmasked rc):
+  wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T013941.json is stale — recorded on eeba3ef6b33c, the head is 2309f4b41a80. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+VERIFIER-RC=0
+[7/8] mkdocs strict:
+INFO    -  Documentation built in 15.48 seconds
+[8/8] THE FAST TIER AT -n 8:
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+FAILED tests/test_attack_fsm_fuzz_pg.py::test_diff_fsm_serial_plans_mirror_pg
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+2 failed, 13242 passed, 8 skipped, 150 warnings in 656.92s (0:10:56)

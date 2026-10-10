@@ -1,0 +1,1 @@
+the type gate holds: every MUST_ERROR marker (18) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers

@@ -1,0 +1,294 @@
+CREATE SCHEMA
+CREATE TABLE
+ERROR:  invalid input syntax for type json
+LINE 10:     metadata            jsonb NOT NULL DEFAULT '{{}}'::jsonb
+                                                        ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.workers" does not exist
+ERROR:  relation "attack2.workers" does not exist
+ERROR:  relation "attack2.workers" does not exist
+ERROR:  relation "attack2.workers" does not exist
+ERROR:  relation "attack2.workers" does not exist
+CREATE TYPE
+ERROR:  invalid input syntax for type json
+LINE 37:     progress_state      jsonb NOT NULL DEFAULT '{{}}'::jsonb...
+                                                        ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  invalid input syntax for type json
+LINE 12:     metadata        jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                                                    ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  invalid input syntax for type json
+LINE 9:     metadata            jsonb NOT NULL DEFAULT '{{}}'::jsonb...
+                                                       ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+CREATE TABLE
+ERROR:  invalid input syntax for type json
+LINE 13:     metadata             jsonb NOT NULL DEFAULT '{{}}'::json...
+                                                         ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.cron_schedules" does not exist
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE TABLE
+CREATE TABLE
+CREATE INDEX
+ERROR:  invalid input syntax for type json
+LINE 6:     detail      jsonb NOT NULL DEFAULT '{{}}'::jsonb
+                                               ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.job_events" does not exist
+ERROR:  relation "attack2.job_events" does not exist
+ERROR:  invalid input syntax for type json
+LINE 29:     progress_state      jsonb NOT NULL DEFAULT '{{}}'::jsonb...
+                                                        ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  invalid input syntax for type json
+LINE 12:     metadata        jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                                                    ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.job_attempts_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.job_attempts_archive" does not exist
+CREATE FUNCTION
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.job_events" does not exist
+NOTICE:  index "jobs_idempotency_key_uniq" does not exist, skipping
+DROP INDEX
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ALTER TABLE
+ALTER TABLE
+ERROR:  invalid input syntax for type json
+LINE 16: ...   metadata                jsonb NOT NULL DEFAULT '{{}}'::js...
+                                                              ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.batches" does not exist
+ERROR:  relation "attack2.batches" does not exist
+ERROR:  relation "attack2.batches" does not exist
+ERROR:  relation "attack2.batches" does not exist
+ERROR:  relation "attack2.batches" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_events" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CONTEXT:  SQL statement "ALTER TABLE "attack2".jobs
+        ADD CONSTRAINT jobs_max_attempts_check CHECK (max_attempts >= 1) NOT VALID"
+PL/pgSQL function inline_code_block line 3 at SQL statement
+ERROR:  relation "attack2.jobs" does not exist
+LINE 4:           AND conrelid = '"attack2".jobs'::regclass
+                                 ^
+QUERY:  EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'jobs_max_attempts_check'
+          AND conrelid = '"attack2".jobs'::regclass
+          AND NOT convalidated
+    )
+CONTEXT:  PL/pgSQL function inline_code_block line 3 at IF
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+NOTICE:  index "jobs_actor_fairness_dispatch_idx" does not exist, skipping
+DROP INDEX
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ALTER TABLE
+ALTER TABLE
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+COMMENT
+ERROR:  relation "attack2.maintenance_leader" does not exist
+ERROR:  relation "attack2.maintenance_leader" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CONTEXT:  SQL statement "ALTER TABLE "attack2".jobs
+        ADD CONSTRAINT jobs_retry_backoff_check
+        CHECK (retry_backoff IN ('exponential', 'linear', 'fixed')) NOT VALID"
+PL/pgSQL function inline_code_block line 3 at SQL statement
+ERROR:  relation "attack2.jobs" does not exist
+CONTEXT:  SQL statement "ALTER TABLE "attack2".jobs
+        ADD CONSTRAINT jobs_retry_base_cap_check
+        CHECK (retry_cap_seconds >= retry_base_seconds) NOT VALID"
+PL/pgSQL function inline_code_block line 3 at SQL statement
+ERROR:  relation "attack2.jobs" does not exist
+CONTEXT:  SQL statement "ALTER TABLE "attack2".jobs
+        ADD CONSTRAINT jobs_retry_jitter_check
+        CHECK (retry_jitter >= 0.0 AND retry_jitter <= 1.0) NOT VALID"
+PL/pgSQL function inline_code_block line 3 at SQL statement
+ERROR:  relation "attack2.jobs" does not exist
+LINE 4:           AND conrelid = '"attack2".jobs'::regclass
+                                 ^
+QUERY:  EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'jobs_retry_backoff_check'
+          AND conrelid = '"attack2".jobs'::regclass
+          AND NOT convalidated
+    )
+CONTEXT:  PL/pgSQL function inline_code_block line 3 at IF
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.job_events" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+LINE 1: UPDATE "attack2".jobs
+               ^
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.actor_config" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CREATE FUNCTION
+ERROR:  relation "attack2.jobs" does not exist
+CREATE FUNCTION
+DROP INDEX
+NOTICE:  index "jobs_finished_at_idx" does not exist, skipping
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.actor_config" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+NOTICE:  index "jobs_locked_by_worker_running_idx" does not exist, skipping
+DROP INDEX
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  invalid input syntax for type json
+LINE 9:     detail            jsonb NOT NULL DEFAULT '{{}}'::jsonb
+                                                     ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+ERROR:  relation "attack2.admin_audit" does not exist
+ERROR:  relation "attack2.admin_audit" does not exist
+ERROR:  relation "attack2.admin_audit" does not exist
+ERROR:  relation "attack2.admin_audit" does not exist
+ERROR:  relation "attack2.admin_audit" does not exist
+CREATE TABLE
+COMMENT
+ERROR:  relation "attack2.cron_schedules" does not exist
+LINE 1: UPDATE "attack2".cron_schedules
+               ^
+ERROR:  relation "attack2.cron_schedules" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CREATE TABLE
+INSERT 0 1
+COMMENT
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_attempts_archive" does not exist
+ERROR:  relation "attack2.job_attempts" does not exist
+ERROR:  relation "attack2.job_attempts_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+DO
+NOTICE:  index "jobs_locked_by_worker_running_idx_old" does not exist, skipping
+DROP INDEX
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.batches" does not exist
+CONTEXT:  SQL statement "ALTER TABLE "attack2".batches
+            ADD CONSTRAINT batches_expected_size_check
+            CHECK (expected_size >= 0)"
+PL/pgSQL function inline_code_block line 11 at EXECUTE
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs_archive" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CREATE TABLE
+CREATE TABLE
+ERROR:  invalid input syntax for type json
+LINE 7:     bindings          jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                                                     ^
+DETAIL:  Expected string or "}", but found "{".
+CONTEXT:  JSON data, line 1: {{...
+CREATE TABLE
+COMMENT
+COMMENT
+ERROR:  relation "attack2.wf_outbox" does not exist
+COMMENT
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+ERROR:  relation "attack2.jobs" does not exist
+CREATE INDEX
+ERROR:  relation "attack2.wf_outbox" does not exist
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+ALTER TABLE
+COMMENT
+ERROR:  relation "attack2.jobs" does not exist

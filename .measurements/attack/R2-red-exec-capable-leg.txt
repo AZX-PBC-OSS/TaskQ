@@ -1,0 +1,159 @@
+F
+=================================== FAILURES ===================================
+_____________ test_pin_2_dispatch_fence_refuses_post_cancel_claim ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f0197f05d60>
+wf_schema = 'tq_441388d2b5'
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7f019c1d9be0>
+
+    @pytest.mark.integration
+    async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        engine_redlog: RedLog,
+    ) -> None:
+        """Pin 2's green, the ticket's shape: a pending workflow child of a
+        CANCELLED flow is NOT claimable — the claim's candidate WHERE carries
+        the flow-status EXISTS (the fence's second leg; the fire guard's leg
+        and the finalize fence are the other two). The leg refuses cleanly and
+        the sweep re-derives (the asymmetry doctrine: a refused claim is
+        re-derivable, a claimed one is not un-runnable). The RED drill is the
+        fence dropped (recorded: ``.measurements/attack/B2-red-dispatch-fence.txt``
+        — the shipped claim re-claims the dead flow's child); the attack file
+        ``tests/attack_wf_dispatch_fence.py`` keeps the same conviction on the
+        REAL backend path (``dispatch_batch`` over ``clean_jobs_app``).
+    
+        The plan stays serviceable: the fence short-circuits on the step_key
+        probe (vanilla rows evaluate no subplan) — this pin records the
+        claimed statement's EXPLAIN alongside the hot-statement corpus."""
+        from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
+    
+        # The cancelled flow + one of its pending children (a fork-child shape:
+        # deps_pending 0 — claimable by the counter's verdict alone).
+        flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
+        child = new_uuid()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, scheduled_at) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'c', "
+            "$2::jsonb, now() - interval '1 hour')",
+            child,
+            json.dumps({"flow_id": str(flow_id)}),
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
+            "VALUES ('wf', 'default') ON CONFLICT (actor) DO NOTHING"
+        )
+    
+        worker_id = new_uuid()
+        # THE CAPABILITY STAMP (the execution fence's data leg): the claim's
+        # execution leg reads the WORKERS ROW's ``workflow_execution``
+        # metadata — a flow row is claimable only by a worker whose boot ran
+        # the F3 projection (the definitions imported, the cohorts synced).
+        # The pin's claiming worker is a registered, capable worker, the
+        # deployment shape the projection's boot stamps.
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
+            "VALUES ($1, 'wf-pin', 1, '{default}', $2::jsonb)",
+            worker_id,
+            json.dumps({"workflow_execution": True}),
+        )
+        dispatched = await dispatch_batch(
+            wf_conn,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+            queues=["default"],
+            limit_n=5,
+            worker_id=worker_id,
+            lock_lease=timedelta(seconds=30),
+        )
+        claimed = {str(r["id"]) for r in dispatched}
+        assert str(child) not in claimed, (
+            f"the dispatch fence's flow-status leg is absent: the cancelled "
+            f"flow's pending child {child} was claimed (claimed={sorted(claimed)})"
+        )
+        status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child)
+        assert status == "pending", "the refusal leaves the row untouched (the sweep re-derives)"
+    
+        # A LIVE flow's child still claims for the CAPABLE worker (the fence
+        # must not over-reject).
+        live_flow = await seed_flow(wf_conn, wf_schema, status="running")
+        live_child = new_uuid()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, scheduled_at) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live', "
+            "$2::jsonb, now() - interval '1 hour')",
+            live_child,
+            json.dumps({"flow_id": str(live_flow)}),
+        )
+        dispatched = await dispatch_batch(
+            wf_conn,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+            queues=["default"],
+            limit_n=5,
+            worker_id=worker_id,
+            lock_lease=timedelta(seconds=30),
+        )
+        claimed = {str(r["id"]) for r in dispatched}
+        assert str(live_child) in claimed, (
+            f"the fence over-rejected: a LIVE flow's pending child {live_child} "
+            f"was not claimed (claimed={sorted(claimed)})"
+        )
+    
+        # THE EXECUTION LEG (the execution verdict's fence): the SAME live
+        # child is UNCLAIMABLE by a worker that cannot execute it — an
+        # unregistered worker id (the COALESCE-safe default) and a registered
+        # NON-capable worker both refuse. THE VACUITY LAW (F-R2, the fresh
+        # reviewer's mutation drill): each leg asserts on a pending flow row
+        # INSERTED WITHIN THE LEG — the row the dead fence leaks must be the
+        # row the pin observes. The unregistered leg's row (``live2``) was
+        # once passed to the INSERT inline and never re-observed: the earlier
+        # legs had already made every asserted row unclaimable (running /
+        # flow-fenced), so flipping the capability CTE's safe default to
+        # ``true`` let an UNREGISTERED worker claim ``live2`` with the pin
+        # green — the data leg unpinned. The row's id is now held and the
+        # refusal asserted on IT.
+        other_id = new_uuid()
+        live2_id = new_uuid()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, scheduled_at) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live2', "
+            "$2::jsonb, now() - interval '1 hour')",
+            live2_id,
+            json.dumps({"flow_id": str(live_flow)}),
+        )
+        unregistered_worker = new_uuid()
+        dispatched = await dispatch_batch(
+            wf_conn,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+            queues=["default"],
+            limit_n=5,
+            worker_id=unregistered_worker,
+            lock_lease=timedelta(seconds=30),
+        )
+        claimed = {str(r["id"]) for r in dispatched}
+>       assert str(live2_id) not in claimed, (
+            f"the execution fence's capability leg is absent: an UNREGISTERED "
+            f"worker claimed the leg's own pending flow row {live2_id} "
+            f"(claimed={sorted(claimed)})"
+        )
+E       AssertionError: the execution fence's capability leg is absent: an UNREGISTERED worker claimed the leg's own pending flow row 01a11ddf-aff3-7f22-8476-bf9eecb36f32 (claimed=['01a11ddf-aff3-7f22-8476-bf9eecb36f32'])
+E       assert '01a11ddf-aff3-7f22-8476-bf9eecb36f32' not in {'01a11ddf-aff3-7f22-8476-bf9eecb36f32'}
+E        +  where '01a11ddf-aff3-7f22-8476-bf9eecb36f32' = str(UUID('01a11ddf-aff3-7f22-8476-bf9eecb36f32'))
+
+tests/test_wf_sweep_pins.py:288: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 16:36:01 [debug    ] dispatch                       count=0 from_state=pending kind=dispatch limit_n=5 queues=['default'] to_state=running worker_id=01a11ddf-afda-7900-a34e-1e2a9495f2e5
+2026-10-08 16:36:01 [info     ] dispatch                       count=1 from_state=pending kind=dispatch limit_n=5 queues=['default'] to_state=running worker_id=01a11ddf-afda-7900-a34e-1e2a9495f2e5
+2026-10-08 16:36:01 [info     ] dispatch                       count=1 from_state=pending kind=dispatch limit_n=5 queues=['default'] to_state=running worker_id=01a11ddf-aff6-7ac0-8f00-7b28c34436c1
+=========================== short test summary info ============================
+FAILED tests/test_wf_sweep_pins.py::test_pin_2_dispatch_fence_refuses_post_cancel_claim
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 6 deselected in 1.01s
+
+# ── the VACUITY proof (the shipped pin, pre-cure, under the same mutation):
+# $ pytest tests/test_wf_sweep_pins.py -k pin_2  (CTE COALESCE false→true, shipped pin)
+# 3 passed — the shipped pin CANNOT red on this mutation (F-R2's vacuity, the
+#  reviewer's drill re-proven on the cure lane). The CURE above makes the same
+#  mutation red at the shipped refusal (captured above).

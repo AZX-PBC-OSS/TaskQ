@@ -1,0 +1,4 @@
+# the attack rounds — the corpus's union at -n 8 (the rounds' split retired: ONE corpus walk, -k attack, non-integration; head d7f8581f7e47)
+================= 419 passed, 2 skipped, 8 warnings in 27.56s ==================
+rc=0
+head: d7f8581f7e47508fd7ffe656fa6667e4e9ab46b0

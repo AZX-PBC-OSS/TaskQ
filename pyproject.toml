@@ -59,6 +59,15 @@ dependencies = [
     "uuid-utils>=1.0.0,<2",
 ]
 
+flows = []
+# The workflows engine (src/taskq/workflows/) is core-deps-only by design:
+# tors (canonical hashes, truncation, secret scrubbing), asyncpg, uuid_utils —
+# every one already a base dependency, so the extra carries no requirements of
+# its own. It exists as the operator-facing opt-in marker (the §16.1 import
+# law: `import taskq` never imports taskq.workflows; the package only loads
+# when a caller imports it directly), matching the lazy-extra discipline of
+# the obs prometheus module.
+
 [project.scripts]
 taskq = "taskq.cli:main"
 
@@ -192,7 +201,10 @@ exclude-newer = "24 hours"
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false }
+# ty is T01's probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
+# the probe gate's reds are asserted against that release, so the quarantine
+# cutoff is waived for it the same way: the pin IS the review.
+exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false, ty = "0d" }
 # Security floors for packages TaskQ does not depend on directly. A bare
 # `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
 # fixed, and fails the lock loudly if a parent ever pins back below the floor
@@ -228,6 +240,9 @@ include = ["src/taskq", "examples", "README.md", "LICENSE", "pyproject.toml"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "examples"]
+# F1 (the certifier's finding): the append-only measurement corpus's probe
+# scripts are captured artifacts, not linted source — they stay out of the gate.
+extend-exclude = [".measurements/**"]
 
 [tool.ruff.lint]
 select = [
@@ -293,6 +308,14 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# T01's probe GATE: it invokes the pinned checkers by name ("pyright"/"ty",
+# resolved from the venv) on the repo's own probe corpus — fixed argv, no
+# user input reaches a command line; the partial executable path and the
+# subprocess calls are the gate's whole job.
+"tests/typeprobe/_gate.py" = ["S603", "S607"]
+# T17's abstraction check: the same shape — a fixed-argv grep over the
+# repo's own surface paths (no user input; the check IS the grep).
+"tests/test_wf_ergonomics_contract.py" = ["S603", "S607"]
 # The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
 # every other module goes through, so the ban cannot apply to its definition.
 "src/taskq/_ids.py" = ["TID251"]
@@ -304,6 +327,41 @@ ignore = [
 # caller-controlled value uses $N parameter binding. The file's SQL is the
 # audit-trail red-team's own setup and assertion DDL (test-local triggers).
 "tests/test_audit_redteam.py" = ["S608"]
+# The fleet executor's pins (the evidence-integrity round): the SAME
+# shape — the f-strings' ONLY interpolation is the module fixture's
+# schema identifier, values all $N-bound.
+"tests/test_worker_execution_seam.py" = ["S608"]
+# The wf fixtures' head_sha() helper + the coverage gate + the head-stamp
+# verifier: fixed-argv git probes of the repo's own state (the
+# head-stamp law's provenance check; no user input reaches a command line).
+"scripts/check_wf_coverage.py" = ["S603", "S607"]
+"scripts/verify_evidence_heads.py" = ["S603", "S607"]
+# The T09 runner pins: the same shape — the f-string's ONLY interpolation
+# is the module fixture's schema identifier (module_pg_schema), values all
+# $N-bound.
+"tests/test_wf_runner_pins.py" = ["S608"]
+"tests/test_wf_loop_pins.py" = ["S608"]
+# The T10 hitl pins + the phase-3 cure pins + the attack-3 probes: the
+# SAME shape — the f-strings' ONLY interpolation is the module fixture's
+# schema identifier (wf_schema / module_pg_schema), values all $N-bound.
+# The attack probes' dash-named modules (attack3-*) are the red team's
+# run-directly probes (pytest node ids, not import surfaces).
+"tests/test_wf_hitl_pins.py" = ["S608"]
+# The T26 broadcast pins: the same shape — the f-strings' ONLY
+# interpolation is the module fixture's schema identifier (wf_schema),
+# every caller-controlled value $N-bound.
+"tests/test_wf_hitl_pubsub_pins.py" = ["S608"]
+# The D2 soak's cure pins (the hold-stamp wedge): the same shape — the
+# f-strings' ONLY interpolation is the module fixture's schema identifier
+# (wf_schema), every caller-controlled value $N-bound.
+"tests/test_wf_hold_stamp_wedge_pins.py" = ["S608"]
+# The D2 soak's outbox-TTL cure pins: the same shape (wf_schema the only
+# interpolation, values all $N-bound).
+"tests/test_wf_outbox_retention_pins.py" = ["S608"]
+"tests/test_wf_phase3_cure_pins.py" = ["S608"]
+"tests/attack3-hitl.py" = ["S608", "N999"]
+"tests/attack3-loop.py" = ["S608", "N999"]
+"tests/attack3-validate.py" = ["N999"]
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated (a test-generated, fixture-owned name), and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the
@@ -313,6 +371,15 @@ ignore = [
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
 "src/taskq/exceptions.py" = ["N818"]
+# N818: the class name IS the row's error_class vocabulary (the ledger
+# reads 'RouterNotTotal' off the failed chain row — the spike's pinned
+# name; renaming the exception would fork the record's vocabulary).
+"src/taskq/workflows/chain.py" = ["N818"]
+# The runner's internal control-flow unwinding (the wait site's hold
+# signal to the driver) predates the naming rule and reads as a noun on
+# purpose: it is not an error the caller handles, it is the held
+# representation's own shape.
+"src/taskq/workflows/api/_runner.py" = ["N818"]
 # ASYNC109: _consume_transactional and _consume_autonomous accept a
 # pre-computed start_to_close timeout from the job row; this is not a
 # user-facing async-with-timeout API — the timeout is consumed
@@ -355,9 +422,63 @@ ignore = [
 # static module-level tuple of column names, not user input — so there is
 # no injection surface; all row values still use $N parameter binding.
 "src/taskq/worker/_leader_shared.py" = ["S608"]
-# Same rationale — the smoke script's only interpolated identifier is the
-# SCHEMA constant it passes through render()/apply_pending(), which validate
-# against _IDENT_RE; every row value uses $N parameter binding.
+# The workflows engine's named statement constants (the backend/_sql_templates
+# pattern, GAPS-ESTATE F10). Schema name is validated against _IDENT_RE at
+# WorkflowSql construction; every user-supplied value uses $N parameter
+# binding. S311: random module used for jitter in the deadlock-retry backoff
+# (the hardening H7 cure), not crypto.
+"src/taskq/workflows/_sql.py" = ["S608"]
+"src/taskq/workflows/_sql_status.py" = ["S608"]
+"src/taskq/workflows/_progress_read.py" = ["S608"]
+"src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]
+# Same rationale — schema name validated via the WorkflowSql bundle every
+# fixture builds; all user-supplied values use $N parameter binding. The
+# shared seed helpers live in _wf_fixtures (the composed-fixture home);
+# the pin files split by pin family (finalize/sweep/fork/units/_schema/
+# perf-bands/ledger). S311: timing jitter in the race pins. S607: the
+# head-stamp law's head_sha() helper — a fixed-argv git probe of the
+# repo's own state (the evidence-integrity round; no user input).
+"tests/_wf_fixtures.py" = ["S608", "S607", "S603"]
+# The redlog guard's scoping probes git the same fixed-argv way (the
+# head-sha read + the off-by-one's diff probe + the captures'-home
+# trackability check — the repo's own state, never user input).
+"tests/test_fv_redlog_guard.py" = ["S603", "S607"]
+"tests/test_wf_schema_migration.py" = ["S608"]
+"tests/test_wf_progress_persistence.py" = ["S608"]
+"tests/test_wf_progress_emission.py" = ["S608"]
+"tests/test_wf_progress_faces.py" = ["S608"]
+"tests/t21_numbers_run.py" = ["S608"]
+"tests/test_wf_t2021_gate_cures.py" = ["S608"]
+"tests/test_wf_t20_crashed_terminal_wedge.py" = ["S608"]
+"tests/test_wf_finalize_pins.py" = ["S608", "S311"]
+"tests/test_wf_sweep_pins.py" = ["S608"]
+"tests/test_wf_fork_pins.py" = ["S608", "S311"]
+"tests/test_wf_engine_units.py" = ["S608"]
+"tests/test_wf_perf_bands.py" = ["S608"]
+"tests/test_workflows_ledger_pins.py" = ["S608"]
+"tests/test_wf_propagation_pins.py" = ["S608"]
+"tests/test_wf_scenario_pins.py" = ["S608"]
+"tests/test_wf_status_pins.py" = ["S608"]
+# T20's streaming pins: only the schema identifier is interpolated
+# (validated by the test fixtures upstream); every caller-controlled
+# value uses $N parameter binding — the same rationale as the wf family
+# above.
+"tests/test_wf_t20_maintain_liveness.py" = ["S608"]
+"tests/test_wf_t20_emit_pins.py" = ["S608"]
+"tests/test_wf_t20_fence_probe.py" = ["S608"]
+"tests/test_wf_t20_router_pins.py" = ["S608"]
+"tests/test_wf_state_event_totality.py" = ["S608"]
+"tests/test_wf_pruner_pins.py" = ["S608"]
+"tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]
+# The phase-2 attack's recorded red files (the certification report's
+# evidence paths — name-frozen, dash-named): the same rationale as the wf
+# pin files above (the schema identifier is the only interpolation, and
+# it is validated at WorkflowSql.build).
+"tests/attack2-t06-cascade.py" = ["S608", "N999"]
+"tests/attack2-t07-t18.py" = ["S608", "N999"]
+"tests/attack2-probe-pin6.py" = ["S608", "N999"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
 "validation/**" = ["S608"]
 "tests/test_postgres_terminal_writes.py" = ["S608"]
 # Same rationale as test_postgres_terminal_writes.py — schema name is
@@ -571,7 +692,11 @@ include = ["src", "tests", "examples"]
 # either, and every cross-test import (e.g. tests.conftest, the differential
 # harness's DiffSide) degrades to Unknown — "Type of parameter is unknown"
 # across every importing file while the defining file stays clean.
-exclude = [".worktrees"]
+# tests/typeprobe/ is excluded for the opposite reason: the probe corpus is
+# INTENTIONALLY full of checker errors (the T01 negative probes) — the
+# `type-probes` CI job owns it under its own pyrightconfig.json, the root
+# run would only re-flag what that gate already asserts.
+exclude = [".worktrees", "tests/typeprobe"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
@@ -765,6 +890,41 @@ paths = [
     "src/taskq/backend/_protocol.py",
     "src/taskq/backend/_sql_templates.py",
     "src/taskq/retry.py",
+    # 4. The workflow engine's guard statements (T04 G5): the terminal-mark
+    #    CAS, the decrement's `deps_pending > 0`, the fire's flow-status
+    #    leg, the rederive's missing-parent arm, the held-row exclusivity
+    #    clause. Reproducible run (the pin files' REAL names — the killers
+    #    of these gremlins are the finalize/sweep/ledger pin families; an
+    #    earlier draft named `tests/test_workflows_engine_pins.py`, which
+    #    never shipped):
+    #
+    #   uv run pytest --gremlins --gremlin-executor=subprocess \
+    #       tests/test_wf_finalize_pins.py tests/test_wf_sweep_pins.py \
+    #       tests/test_workflows_ledger_pins.py \
+    #       --gremlin-report=console,json
+    "src/taskq/workflows/engine.py",
+    "src/taskq/workflows/_sweep.py",
+    "src/taskq/workflows/_sql.py",
+    # 5. The phase-2 guard statements' surfaces (T06/T07/T08/T18 + the
+    #    phase-2 attack's M2): the fail-closed cascade's block/peers/flow
+    #    arms + the absorbed decrement's policy filter + the fan-in cap's
+    #    three arms (_sql_finalize), the rederive's blocked_required +
+    #    flow-fenced arms (_sql_sweep), the absorbed predicate +
+    #    maintenance leg (_sql_status), the expiry arm's guard + the
+    #    rolling-deploy tolerance (backend/_sweeps), the candidate
+    #    predicate's guard (worker/_leader_shared). Reproducible run (the
+    #    killers are the propagation/status/sweeper/pruner pin families):
+    #
+    #   uv run pytest --gremlins --gremlin-executor=subprocess \
+    #       tests/test_wf_propagation_pins.py tests/test_wf_status_pins.py \
+    #       tests/test_wf_sweep_pins.py tests/test_wf_pruner_pins.py \
+    #       tests/test_wf_pre_workflow_tolerance_pins.py \
+    #       --gremlin-report=console,json
+    "src/taskq/workflows/_sql_finalize.py",
+    "src/taskq/workflows/_sql_sweep.py",
+    "src/taskq/workflows/_sql_status.py",
+    "src/taskq/backend/_sweeps.py",
+    "src/taskq/worker/_leader_shared.py",
 ]
 
 [tool.coverage.run]
@@ -819,6 +979,16 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.16.5,<0.17",
     "testcontainers[postgres,redis]>=4.14.2",
+]
+# T01's negative type-probe corpus checkers, pinned EXACTLY: the probes'
+# MUST_ERROR markers are asserted against specific checker releases (a
+# floating checker moves the corpus's reds under the gate's feet; the tests
+# executionEnvironment's reportArgumentType=false does NOT apply here — the
+# probe corpus is checked under its own pyrightconfig.json, the finding the
+# gate exists to keep pinned).
+typeprobe = [
+    "pyright==1.1.414",
+    "ty==0.0.85",
 ]
 # Containerized e2e tier (tests/e2e): container image builds for worker
 # containers. Kept out of the default dev group so plain `uv sync` and

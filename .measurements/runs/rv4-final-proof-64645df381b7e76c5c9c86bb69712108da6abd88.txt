@@ -1,0 +1,16 @@
+head: 55bb1b22f10fb0011e45eaeb158a28d70d0d02d1
+=== THE RV4 CURE LANE'S FINAL PROOF at 64645df381b7e76c5c9c86bb69712108da6abd88 — 2026-10-10T19:15:33Z ===
+
+[ruff] All checks passed!
+[format] 1692 files already formatted
+[pyright FULL] 0 errors, 0 warnings, 0 informations
+[the type gate] the type gate holds: every MUST_ERROR marker (39) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+[the wf battery x2] run1: 1 failed, 555 passed (the 1 failed = rv2-13's own estate-circularity red, cured by the estate commit); run2: 1 failed, 555 passed (the same bootstrap)
+[the wf battery, final head] 101 passed (the rv4 pack + the rv2/rv3/pubsub/route/deps/ratelimit packs + the docs lane together)
+[the wf-scoped coverage] 93.91% vs floor 90.0 — GREEN, head-stamped (the 22 omitted pin files + the guard wired into the test-wf-cov list)
+[the bands] 40 passed — the nine band artifacts re-stamped at the source-final head 1c17402d
+[the fast tier x1 at -n 8] 9639 passed, 3 skipped, 0 failed — the full capture
+[mkdocs strict] rc=0 — built in 16.25 seconds
+[rv2-13] GREEN (17/17; the committed-estate verdict: the head-stamp verifier rc=0)
+[the verifier] rc=0 — the head-stamp law holds at 64645df381b7e76c5c9c86bb69712108da6abd88
+[the examples' e2e x2] 2 passed x2

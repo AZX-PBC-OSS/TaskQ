@@ -1,0 +1,162 @@
+FF....FF.                                                                [100%]
+=================================== FAILURES ===================================
+_______________________ test_insert_node_the_deps_guard ________________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fca10407580>
+wf_schema = 'tq_42903d953c'
+
+    def test_insert_node_the_deps_guard(wf_pool: Any, wf_schema: str) -> None:
+        """The joined node's counter guard: the deps_pending is the declared
+        parent count's twin — a mismatching spec is the named refusal."""
+        import asyncio
+        import os
+    
+        import asyncpg as _asyncpg
+    
+        from taskq.workflows import insert_node
+        from taskq.workflows._sql import WorkflowSql
+        from taskq.workflows._types import NodeSpec
+    
+        async def go() -> None:
+            wsql = WorkflowSql.build(wf_schema)
+            async with _asyncpg.create_pool(os.environ["TASKQ_PG_DSN"]) as pool:
+                async with pool.acquire() as conn:
+                    with pytest.raises(ValueError, match="deps_pending must be >= 0"):
+                        await insert_node(
+                            conn, wsql,
+                            NodeSpec(flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", step_key="n",
+                                     actor="wf", queue="q", payload={}, parents=("p",), deps_pending=-1),
+                        )
+                    with pytest.raises(ValueError, match="must equal the declared parent count"):
+                        await insert_node(
+                            conn, wsql,
+                            NodeSpec(flow_id="018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", step_key="n",
+                                     actor="wf", queue="q", payload={}, parents=("p", "p2"), deps_pending=1),
+                        )
+    
+>       asyncio.run(go())
+
+tests/test_wf_coverage_closing2.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:196: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_wf_coverage_closing2.py:90: in go
+    async with _asyncpg.create_pool(os.environ["TASKQ_PG_DSN"]) as pool:
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = environ({'SHELL': '/bin/fish', 'SESSION_MANAGER': 'local/rich-cachyos-azx:@/tmp/.ICE-unix/12266,unix/rich-cachyos-azx:..._guard (call)', 'DOTENV_DIR': '/tmp/pytest-of-rich/pytest-17758/no-dotfiles0', 'TASKQ_TEST_RUN_TOKEN': 'pytest-17758'})
+key = 'TASKQ_PG_DSN'
+
+>   ???
+E   KeyError: 'TASKQ_PG_DSN'
+
+<frozen os>:717: KeyError
+_______ test_build_capture_truncates_the_multibyte_payload_under_the_cap _______
+
+    def test_build_capture_truncates_the_multibyte_payload_under_the_cap() -> None:
+        """The halving loop: a multi-byte-heavy payload (each char 3 UTF-8
+        bytes) truncates to the byte cap — the cap is BYTES, never chars.
+        (The multibyte text is the input's VALUE — the redact chain's
+        processing is the caller's; the capture passes it through.)"""
+        from taskq.workflows._capture import build_capture, utf8_byte_len
+    
+        heavy = "冰" * 4000  # 12 000 bytes of payload
+>       capture = build_capture(
+            policy="errors-only", node_input=heavy, error="e", max_bytes=1024,
+            redact=lambda text: text,  # the identity hook: the raw text walks
+        )
+
+tests/test_wf_coverage_closing2.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_capture.py:153: in build_capture
+    total = sum(utf8_byte_len(v) for v in capture.values())
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <dict_valueiterator object at 0x7fca12420fe0>
+
+>   total = sum(utf8_byte_len(v) for v in capture.values())
+                ^^^^^^^^^^^^^^^^
+E   TypeError: 'int' object is not an instance of 'str'
+E   while processing 's'
+
+src/taskq/workflows/_capture.py:153: TypeError
+____________ test_build_capture_redact_chain_runs_before_truncation ____________
+
+    def test_build_capture_redact_chain_runs_before_truncation() -> None:
+        """The redact HOOK: the marker is masked before the truncation —
+        the persisted row carries no marker (pin 11: masks are irreversible,
+        so truncating scrubbed text cannot reveal what the mask hid)."""
+        from taskq.workflows._capture import build_capture
+    
+>       capture = build_capture(
+            policy="errors-only",
+            node_input="SECRET_MARKER the rest of the payload text",
+            error=None,
+            redact=lambda text: text.replace("SECRET_MARKER", "[MASKED]"),
+            max_bytes=32,
+        )
+
+tests/test_wf_coverage_closing2.py:55: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/_capture.py:153: in build_capture
+    total = sum(utf8_byte_len(v) for v in capture.values())
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <dict_valueiterator object at 0x7fca12267c90>
+
+>   total = sum(utf8_byte_len(v) for v in capture.values())
+                ^^^^^^^^^^^^^^^^
+E   TypeError: 'int' object is not an instance of 'str'
+E   while processing 's'
+
+src/taskq/workflows/_capture.py:153: TypeError
+_________________ test_resolve_reducer_the_definition_fallback _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fca10174400>
+wf_schema = 'tq_42903d953c'
+
+    async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
+        """The body-from-definition resolution (D1): a fired join's reducer
+        resolves from the REGISTERED DEFINITION in whatever process heals —
+        the definition fallback's adapter is the boundary."""
+        from taskq.workflows import FlowRunner, WorkflowApp, build, step
+    
+        ran: dict[str, bool] = {}
+    
+        async def join_body(ctx: Any, items: list[str]) -> list[str]:
+            ran["join"] = True
+            return items
+    
+        app = WorkflowApp()
+    
+        @app.workflow("reducer_fallback")
+        def reducer_fallback() -> object:
+            return build(step(join_body, Ingest(doc_id="d"), key="solo"))
+    
+        from taskq.workflows._reducers import resolve_flow_reducer, register_flow_reducers
+    
+        # The cache answers the PROCESS's own finalize first; the DEFINITION
+        # fallback resolves when the registry could not (the healed join's
+        # body-from-definition — D1).
+        register_flow_reducers(int(0) if False else None or __import__("uuid").UUID(int=0) if False else None) if False else None
+>       body = resolve_flow_reducer(wf_schema, "reducer_fallback", "solo")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: resolve_flow_reducer() takes 2 positional arguments but 3 were given
+
+tests/test_wf_coverage_closing2.py:165: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_wf_coverage_closing2.py::test_insert_node_the_deps_guard - ...
+FAILED tests/test_wf_coverage_closing2.py::test_build_capture_truncates_the_multibyte_payload_under_the_cap
+FAILED tests/test_wf_coverage_closing2.py::test_build_capture_redact_chain_runs_before_truncation
+FAILED tests/test_wf_coverage_closing2.py::test_resolve_reducer_the_definition_fallback
+4 failed, 5 passed in 1.00s

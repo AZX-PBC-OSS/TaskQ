@@ -1,0 +1,60 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+__________________ test_wf_pre_workflow_actor_prune_tolerance __________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7fb000648140>
+module_pg_schema = ModulePgSchema(schema_name='tq_cbcbe431c7', pg_dsn='postgresql://taskq:taskq@localhost:42579/tq_db_cbcbe431c7be')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_actor_prune_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The per-actor prune arm on a schema with NO workflow tables and an
+        actor_overrides entry: the arm survives (the per-batch unguarded
+        fallback — the pre-tolerance shape was the leader's death) and prunes
+        the actor's aged rows; the convicted variant (the guarded actor
+        candidate raw) raises the miss."""
+        pre = module_pg_schema.schema_name + "_prewf2"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+        await _seed_expired_result(clean_pg_conn, schema_name, actor="override_me", key="tol-2")
+    
+>       result = await prune_terminal_jobs(
+            clean_pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            batch_size=100,
+            schema=schema_name,
+            actor_overrides={"override_me": timedelta(days=1)},
+        )
+
+tests/test_wf_pre_workflow_tolerance_pins.py:108: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/worker/_leader_shared.py:1067: in prune_terminal_jobs
+    rows = await _run_prune_archive_batch(
+src/taskq/worker/_leader_shared.py:884: in _run_prune_archive_batch
+    rows = await conn.fetch(write_sql, status, archive_interval, ids, retention)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:694: in fetch
+    return await self._execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedColumnError: column "parent_id" of relation "jobs_archive" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedColumnError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=bc6c09ee60bd redis=1d4d778d4bee state_dir=/tmp/pytest-of-rich/pytest-17137
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 16:04:17 [warning  ] prune-workflow-guard-fallback  kind=prune_workflow_guard_fallback reason='wf_edge does not exist (the workflow round has not applied) — the candidate runs unguarded'
+=========================== short test summary info ============================
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_actor_prune_tolerance
+1 failed, 1 passed in 4.90s

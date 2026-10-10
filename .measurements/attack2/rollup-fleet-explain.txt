@@ -1,0 +1,15 @@
+===== rollup (uuid cast — the shipped shape)
+Aggregate rows=3.0 time=0.539ms
+  Sort rows=500.0 time=0.516ms
+    Seq Scan on jobs rows=500.0 time=0.480ms
+
+===== rollup (text equality — the index's own shape)
+Aggregate rows=3.0 time=0.405ms
+  Sort rows=500.0 time=0.382ms
+    Seq Scan on jobs rows=500.0 time=0.346ms
+
+===== nodes (uuid cast — the shipped shape)
+Seq Scan on jobs rows=500.0 time=0.932ms
+
+===== nodes (text equality — the index's own shape)
+Seq Scan on jobs rows=500.0 time=0.641ms

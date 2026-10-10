@@ -1,0 +1,15 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=706887594
+rootdir: /tmp/opencode/wt-taskqflow
+configfile: pyproject.toml
+plugins: anyio-4.15.1, cov-7.1.0, hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, respx-0.23.1, randomly-5.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 300.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [14 items]
+
+..............                                                           [100%]
+============================== 14 passed in 6.31s ==============================

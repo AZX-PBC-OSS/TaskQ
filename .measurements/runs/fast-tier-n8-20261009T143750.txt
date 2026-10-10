@@ -1,0 +1,33 @@
+# the fast tier x1 at -n 8 (re-run; full summary; box loadavg ~12/32)
+_ ERROR at teardown of test_a_failed_rebuild_is_reported_and_the_loop_continues _
+2026-10-09 14:39:43 [warning  ] leader-conn-abandoned-caller-owned kind=leader_conn_abandoned_caller_owned reason=election_attempt_failed worker_id=01a1229b-9258-7252-9e6b-c6cd9a260c93
+2026-10-09 14:39:43 [warning  ] election-attempt-failed        error="InterfaceError('connection is closed')" kind=election_attempt_failed worker_id=01a1229b-9258-7252-9e6b-c6cd9a260c93
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+        resumed-and-completed, terminal-failed) and nothing is left pending +
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+ERROR tests/test_heartbeat_cadence.py::test_heartbeat_cadence_holds_the_bound_and_does_not_drift
+ERROR tests/test_attack_loop_liveness.py::test_cancel_during_failure_sleep_absorbed_no_metric_lie
+ERROR tests/test_taskq_client_rotation.py::test_explicit_reload_interval_overrides_the_lease
+ERROR tests/test_taskq_client_rotation.py::test_scheduled_and_explicit_reloads_are_serialized
+ERROR tests/test_taskq_client_rotation.py::test_an_opaque_pool_factory_rotates_on_the_schedule_it_declares
+ERROR tests/test_reload_loop.py::test_a_failed_rebuild_is_reported_and_the_loop_continues
+ERROR tests/test_reload_loop.py::test_rebuild_is_scheduled_at_half_the_granted_lease
+ERROR tests/test_reload_loop.py::test_a_shorter_lease_on_rebuild_tightens_the_next_wait
+ERROR tests/test_cli_ui_rotation.py::test_rotation_cadence_is_derived_from_the_granted_lease
+ERROR tests/test_cli_ui_rotation.py::test_an_explicit_interval_overrides_the_lease
+ERROR tests/test_producer_claim_cooldown.py::test_a_full_round_re_claims_without_a_cooldown
+ERROR tests/test_producer_claim_cooldown.py::test_a_short_round_waits_out_the_cooldown_before_the_next
+ERROR tests/test_producer_claim_cooldown.py::test_a_wake_during_a_round_yields_exactly_one_follow_up_round
+ERROR tests/test_producer_claim_cooldown.py::test_a_wake_storm_collapses_into_a_few_claim_rounds
+ERROR tests/test_watchdog_safety.py::test_shutdown_watchdog_cancel_leaves_no_pending_waiters
+ERROR tests/test_leader.py::test_election_upsert_survives_connection_loss - F...
+FAILED tests/test_attack_loop_liveness.py::test_cancel_during_failure_sleep_absorbed_no_metric_lie
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_live_hold_is_left_standing
+rc=0
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

@@ -1,0 +1,4 @@
+2 failed, 29 passed in 24.74s
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt
+# the mark's reason: (the one-off fix-round drill's receipt died with its ephemeral lane; the substance is owned by the LIVE pins — pin 2/23/25's behavioral teeth + the wf battery — green at the head)
+head: 64a2cc435073a3b083f36167494eb2a288411556

@@ -1,0 +1,4 @@
+# the type gate (the CI's own invocation) at the source-final head 906bf384a60916f9e975ccb8c2e0f7bd14f97362
+python: can't open file '/home/rich/src/TaskQ/tests/typeprobe/_gate.py': [Errno 2] No such file or directory
+gate rc=0
+head: 906bf384a60916f9e975ccb8c2e0f7bd14f97362

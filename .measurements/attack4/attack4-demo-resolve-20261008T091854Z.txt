@@ -1,0 +1,44 @@
+== the admin's typed-door resolve (the sidecar :8001):
+csrf=...
+{"detail":"Not Found"}
+== the run's terminal:
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job Result — 01a11ace-a708-7081-85f2-f3edb58d8944</title>
+  
+  <meta http-equiv="refresh" content="2">
+  
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; }
+    .status { font-weight: bold; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 0.05em; }
+    .status.succeeded { color: #16a34a; }
+    .status.running, .status.pending { color: #2563eb; }
+    .status.failed, .status.crashed, .status.cancelled { color: #dc2626; }
+    pre { background: #f4f4f5; border-radius: 6px; padding: 1rem; overflow-x: auto; }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Job Result</h1>
+  <div class="card">
+    <p><strong>Job ID:</strong> 01a11ace-a708-7081-85f2-f3edb58d8944</p>
+    <p><strong>Status:</strong> <span class="status running">running</span></p>
+
+    
+    <p>Job is still running — this page refreshes every 2 seconds.</p>
+    
+
+    <p><a href="http://localhost:8001/admin/jobs/01a11ace-a708-7081-85f2-f3edb58d8944">View full details in admin &rarr;</a></p>
+    <p><a href="/">Back to trigger UI</a></p>
+  </div>
+</body>
+</html>
+run 01a11ace-a708-7081-85f2-f3edb58d8944
+workflow: doc_ingest
+status: blocked  (derived from the node rows — §17.5; the root row caches 'running')
+nodes: 17 — 16 pending, 1 succeeded (source: jobs rows by metadata.flow_id)
+  classify: JOIN-WAIT — waiting on 1 upstream result(s) (source: the row's deps_pending counter, jobs.deps_pending)

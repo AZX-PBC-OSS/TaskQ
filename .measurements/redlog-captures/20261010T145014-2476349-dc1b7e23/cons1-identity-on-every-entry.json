@@ -1,0 +1,16 @@
+{
+  "mutation": "run_display at 37ab05b8: entries carry no step_key/map_index (the uuid is the only identity) \u2014 scripts/_cons_cure1_red_drill.py",
+  "observed": {
+    "entries": 5,
+    "entry_keys": [
+      "error_class",
+      "message",
+      "pct",
+      "status"
+    ],
+    "missing_identity": 5
+  },
+  "pin": "cons1-identity-on-every-entry",
+  "run": "20261010T145014-2476349-dc1b7e23",
+  "ts": "2026-10-10T14:50:14"
+}

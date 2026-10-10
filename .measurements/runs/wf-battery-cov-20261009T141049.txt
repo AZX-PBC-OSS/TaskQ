@@ -1,0 +1,21 @@
+# the wf battery + THE SCOPED COVERAGE GATE (head 8b95e4e6c06b12cae43a0ade5f859407a865c71b)
+src/taskq/workflows/api/_runner_errors.py       3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py        85      5     24      7    89%
+src/taskq/workflows/api/_runner_ladder.py      41      0      6      1    98%
+src/taskq/workflows/api/_runner_loop.py       154     17     42     10    85%
+src/taskq/workflows/api/_sql_loop.py           26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py         34      0      0      0   100%
+src/taskq/workflows/api/_validate.py          214     11    120     11    93%
+src/taskq/workflows/chain.py                   63      2     20      3    94%
+src/taskq/workflows/context.py                 42      2     10      2    92%
+src/taskq/workflows/definitions.py             66      2     14      1    96%
+src/taskq/workflows/engine.py                 109      0     34      1    99%
+src/taskq/workflows/ledger.py                  78      9     14      3    83%
+-----------------------------------------------------------------------------
+TOTAL                                        3188    178    832    113    92%
+
+[gate] head 8b95e4e6c06b (dirty=False)
+[gate] wf-scoped branch coverage 92.06% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261009T141213.json
+make rc=0
+head: 8b95e4e6c06b12cae43a0ade5f859407a865c71b

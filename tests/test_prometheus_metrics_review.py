@@ -45,6 +45,7 @@ pytest.importorskip("opentelemetry.exporter.prometheus")
 from tests._prom_review import (
     Exposition,
     docker_available,
+    once_per_invocation,
     parse_exposition,
     run_emitter_probe,
     run_hostile_probe,
@@ -93,11 +94,28 @@ _PROMQL_KEYWORDS = frozenset(
 def worker_scrapes(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[str, str]:
     """Expositions from the real worker probe: keys ``LIVE``/``FINAL``
     (served by the bridge router) and ``LIVE.port``/``FINAL.port`` (served
-    by the worker's own TASKQ_METRICS_PORT pull listener)."""
-    return run_worker_probe(
-        pg_dsn,
-        module_pg_schema.schema_name,
-        tmp_path_factory.mktemp("prom_worker_probe"),
+    by the worker's own TASKQ_METRICS_PORT pull listener).
+
+    ONCE PER INVOCATION, not once per xdist worker: the probe is ~130s
+    of real worker + follower + migrations; module scope is per worker,
+    and at ``-n 8`` the concurrent fleets drowned the box (the
+    follower's boot outran every poll — the consolidated proof's
+    PROBE_TASK_FAILED wall). The invocation state dir is the container
+    pair's own sharing shape: the first worker's probe writes the
+    result there, the rest read the same files."""
+    from taskq.testing._shared_containers import invocation_state_dir
+
+    state_dir = invocation_state_dir(tmp_path_factory)
+    workdir = state_dir / "prom-worker-probe"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return once_per_invocation(
+        "worker",
+        state_dir,
+        lambda: run_worker_probe(
+            pg_dsn,
+            module_pg_schema.schema_name,
+            workdir,
+        ),
     )
 
 
@@ -120,12 +138,22 @@ def follower(worker_scrapes: dict[str, str]) -> Exposition:
 
 @pytest.fixture(scope="module")
 def hostile(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[str, str]:
-    mid, recovered = run_hostile_probe(
-        pg_dsn,
-        module_pg_schema.schema_name,
-        tmp_path_factory.mktemp("prom_hostile_probe"),
+    from taskq.testing._shared_containers import invocation_state_dir
+
+    state_dir = invocation_state_dir(tmp_path_factory)
+    workdir = state_dir / "prom-hostile-probe"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return once_per_invocation(
+        "hostile",
+        state_dir,
+        lambda: (lambda mid, recovered: {"MID": mid, "RECOVERED": recovered})(
+            *run_hostile_probe(
+                pg_dsn,
+                module_pg_schema.schema_name,
+                workdir,
+            )
+        ),
     )
-    return {"MID": mid, "RECOVERED": recovered}
 
 
 @pytest.fixture(scope="module")
@@ -605,6 +633,12 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQStrandedJobs": ({"actor": "probe_ghost_actor", "reason": "unserved_queue"}, 4.0),
     "TaskQRunningLeaseExpired": ({}, 3.0),
     "TaskQClaimLatencyDegraded": ({"queue": "probe_queue"}, 12.0),
+    # T08: the blocked-stuck alert ships WITH the gauge (GAPS-ESTATE F4 —
+    # a metric nobody alerts on is a decoration). The pathology: a run's
+    # blocked-node count pinned above zero past the 30m bound. The rule's
+    # expression is a bare selector (no aggregation), so the result
+    # vector carries the series' FULL label set — state included.
+    "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf", "state": "blocked"}, 3.0),
 }
 
 
@@ -1123,6 +1157,37 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
         )
     )
 
+    # T08 — TaskQWorkflowBlockedStuck: the alert suggestion shipped WITH
+    # the gauge, evaluated through the honest harness: the pathology
+    # (blocked nodes pinned past the 30m bound) staged through promtool;
+    # the silent side is the healthy fleet (no blocked nodes).
+    cases.append(
+        _firing_case(
+            "TaskQWorkflowBlockedStuck",
+            [
+                (
+                    "taskq_wf_progress_nodes_total",
+                    {"workflow": "probe_wf", "state": "blocked"},
+                    "3+0x35",
+                ),
+            ],
+            "32m",
+        )
+    )
+    cases.append(
+        _silent_case(
+            "TaskQWorkflowBlockedStuck",
+            [
+                (
+                    "taskq_wf_progress_nodes_total",
+                    {"workflow": "probe_wf", "state": "blocked"},
+                    "0+0x35",
+                ),
+            ],
+            "32m",
+        )
+    )
+
     return cases
 
 
@@ -1360,20 +1425,24 @@ def test_harness_series_are_bound_to_the_served_exposition(
     """A rule-test harness that hand-types series can drift from the
     emitted truth while every case still passes (a wrong-but-consistent
     name evaluates an empty vector and the SILENT guards still pass). The
-    binding pin: every input series name the cases feed must be a name
+    binding pin: every input series name the 37 cases feed must be a name
     a real scrape actually served - the worker probes for everything a
-    live worker carries, the emitter probe for the families whose
+    live worker carries, the emitter probe for the four families whose
     pathology cannot be staged live (the sweep-abort pair, the
-    skipped-slots counter no live run reaches, and the claim-health
-    degradation ratio whose 5-minute baseline warm-up a seconds-long
-    probe cannot warm) - and the case counts must be the honest 24
-    firing + 11 healthy guards covering every shipped rule."""
+    skipped-slots counter no live run reaches: the 1-hour default
+    catch-up window swallows the probes' staged backlog, and the
+    wf-progress gauge whose observable emission is the maintenance
+    leader's admin-surface sample, never a worker scrape) - and the case
+    counts must be the honest 25 firing + 12 healthy guards covering
+    every shipped rule (the consolidation's 25-rule estate: the
+    claim-latency degradation AND the workflow blocked-stuck both
+    landed)."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
     firing = [c for c in cases if c["alert_rule_test"][0]["exp_alerts"]]
     guards = [c for c in cases if not c["alert_rule_test"][0]["exp_alerts"]]
-    assert (len(firing), len(guards)) == (24, 11), (
-        f"the harness must stay 24 firing + 11 guards, got {len(firing)} + {len(guards)}"
+    assert (len(firing), len(guards)) == (25, 12), (
+        f"the harness must stay 25 firing + 12 guards, got {len(firing)} + {len(guards)}"
     )
     for case in cases:
         for input_entry in case["input_series"]:
@@ -1382,12 +1451,13 @@ def test_harness_series_are_bound_to_the_served_exposition(
                 f"promtool input series {name!r} is not a series the real "
                 "scrapes served - the harness has drifted from the emitted truth"
             )
-    # The three emitter-bound families: the fed LABEL VALUES must match
+    # The four emitter-bound families: the fed LABEL VALUES must match
     # what the real emitters serve, not just the names.
     for family, bound_label in (
         ("taskq_maintenance_leader_sweep_timeouts_total", "sweep_name"),
         ("taskq_maintenance_leader_sweep_unexpected_errors_total", "sweep_name"),
         ("taskq_cron_skipped_slots_total", "actor"),
+        ("taskq_wf_progress_nodes_total", "workflow"),
     ):
         served_label_values = emitter.label_values(family, bound_label)
         for case in cases:
@@ -1453,13 +1523,17 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
             assert token in emitted, (
                 f"rule {rule['alert']} references {token}, which the real scrapes never emitted"
             )
-        # The label names the rule matches on must be real too.
+        # The label names the rule matches on must be real too (the
+        # emitter-bound families' labels are real the same way — the
+        # wf-progress gauge's `state` lives only on the emitter's series).
         for label in set(re.findall(r"(\w+)\s*=\"", str(rule["expr"]))):
             assert (
                 any(
                     label in s.labels
                     for family in emitted
-                    for s in (live.series(family) or hostile_mid.series(family))
+                    for s in (
+                        live.series(family) or hostile_mid.series(family) or emitter.series(family)
+                    )
                 )
                 or label == "le"
             ), f"rule {rule['alert']} filters on label {label!r}, which no emitted series carries"
@@ -1471,3 +1545,67 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     }
     out = run_promtool_rule_tests(RULES_PATH, yaml.safe_dump(test_doc), tmp_path)
     assert "SUCCESS" in out, out
+
+
+# ── THE RUNBOOK-ANCHOR PIN (the F-R3 discipline, re-landed 2026-10-09) ──
+
+
+def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
+    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 drill,
+    made mechanical): every ``## TaskQ…`` alert row in
+    ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
+    ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``
+    (the pair ships lockstep), and every shipped alert has a runbook row —
+    an operator paged by the real alert must find its row, and a row no
+    alert can fire is a page that lies. The convicted shape (F-R3's
+    original + its carry-regression, both 2026-10-09): the runbook's
+    ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules NO rule
+    file carried — the runbook's promise had no code behind it. The two
+    rows' operational content lives in ``TaskQWorkflowBlockedStuck``'s
+    row (the alert that actually measures the blocked/held shape)."""
+    runbook = Path(__file__).parent.parent / "docs" / "guides" / "runbooks.md"
+    # The alert-anchored rows only: a ``## TaskQ…`` heading whose next
+    # non-empty line is the alert's "What fired" (the runbook row's own
+    # shape). Non-alert sections (the stall-attribution guide, the
+    # related-docs links) name no rule and are out of the pin's scope.
+    row_names = set(re.findall(r"^## (TaskQ[A-Za-z0-9]+)\s*$", runbook.read_text(), re.M))
+    prometheus_alerts: set[str] = set()
+    rules_data = yaml.safe_load(RULES_PATH.read_text())
+    for group in rules_data.get("groups", []):
+        for rule in group.get("rules", []):
+            if "alert" in rule:
+                prometheus_alerts.add(rule["alert"])
+    kubernetes_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "taskq"
+        / "contrib"
+        / "kubernetes"
+        / "prometheus_rule.yaml"
+    )
+    kubernetes_alerts: set[str] = set()
+    kubernetes_data = yaml.safe_load(kubernetes_path.read_text())
+    for group in kubernetes_data.get("spec", {}).get("groups", []):
+        for rule in group.get("rules", []):
+            if "alert" in rule:
+                kubernetes_alerts.add(rule["alert"])
+    assert prometheus_alerts == kubernetes_alerts, (
+        "THE RULE FILES' LOCKSTEP: prometheus/rules.yaml and "
+        "kubernetes/prometheus_rule.yaml disagree — "
+        f"prometheus-only {sorted(prometheus_alerts - kubernetes_alerts)}, "
+        f"kubernetes-only {sorted(kubernetes_alerts - prometheus_alerts)}"
+    )
+    phantom_rows = row_names - prometheus_alerts
+    anchorless_alerts = prometheus_alerts - row_names
+    assert not phantom_rows, (
+        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the F-R3 class): "
+        f"{sorted(phantom_rows)} — a runbook row no shipped rule can fire "
+        "is a page that lies: ship the rule (both files, lockstep, with "
+        "its metric) or fold the row's content into the shipped alert's "
+        "row"
+    )
+    assert not anchorless_alerts, (
+        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the F-R3 cross-face): "
+        f"{sorted(anchorless_alerts)} — an operator paged by this alert "
+        "finds no runbook row: write the row"
+    )

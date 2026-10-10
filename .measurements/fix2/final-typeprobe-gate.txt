@@ -1,0 +1,5 @@
+  note: pyright flags line 45 (reportUnusedVariable) — not a MUST_ERROR marker (informational)
+  note: pyright flags line 105 (reportArgumentType) — not a MUST_ERROR marker (informational)
+  note: pyright flags line 113 (reportUnusedFunction) — not a MUST_ERROR marker (informational)
+  note: pyright flags line 114 (reportUnusedCoroutine) — not a MUST_ERROR marker (informational)
+the type gate holds: every MUST_ERROR marker (5) reds on pyright 1.1.414 AND ty 0.0.85

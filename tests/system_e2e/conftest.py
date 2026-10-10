@@ -54,10 +54,19 @@ async def sys_ledger(
     owned its jobs. Scenario bodies use the connection for seeding,
     chaos SQL and invariant reads; per-scenario tags keep the DELETEs
     bounded.
+
+    The connection carries a server-side ``statement_timeout`` (30s):
+    every ledger statement this tier issues is a plain read or a
+    teardown delete — never a legitimately-long query — and the tier's
+    per-test budgets (240s) must be spent on the SCENARIO, not on one
+    statement the server wedged on. The dead-socket half (the server
+    never sees the statement at all) is the client-side bounds' job —
+    see ``delete_tagged_resilient`` and the convicted module's read
+    bounds (the system-e2e (17) lane's conviction, run 38053606389).
     """
     import asyncpg as _asyncpg
 
-    conn = await _asyncpg.connect(pg_dsn)
+    conn = await _asyncpg.connect(pg_dsn, server_settings={"statement_timeout": "30000"})
     await conn.execute(_EFFECTS_DDL.format(schema=module_pg_schema.schema_name))
     yield conn
     await conn.execute(f'DROP TABLE IF EXISTS "{module_pg_schema.schema_name}".sys_effects')

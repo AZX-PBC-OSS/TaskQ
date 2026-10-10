@@ -1,0 +1,217 @@
+.............................................F.......................... [ 48%]
+....................F......F............................................ [ 96%]
+.....                                                                    [100%]
+=================================== FAILURES ===================================
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_6089344ea3', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_6089344ea357')
+wf_pool = <asyncpg.pool.Pool object at 0x7f9488106a40>
+wf_conn = <asyncpg.connection.Connection object at 0x7f9487ec47d0>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+            held = await runner.drive(run_id, until="held")
+            assert held == "held", f"round {round_no}: the run never held (the review gate)"
+            client = HitlClient(wf_pool, schema=schema)
+            (hold,) = await client.list(run_id)
+            result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+            assert result.status == "delivered"
+            outcome = await runner.drive(run_id)
+            # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
+            # corrupted-terminal probe's lesson: a failed run is terminal
+            # too; asserting "terminal" alone was the vacuous assertion the
+            # cursored fence's first green hid behind).
+            assert outcome == "terminal"
+            root = await wf_conn.fetchval(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+            )
+>           assert root == "succeeded", (
+                f"round {round_no}: the run terminalized as {root!r} — the "
+                "corrupted-terminal class (the work was wrong; the record "
+                "must not look healthy)"
+            )
+E           AssertionError: round 0: the run terminalized as 'failed' — the corrupted-terminal class (the work was wrong; the record must not look healthy)
+E           assert 'failed' == 'succeeded'
+E             
+E             - succeeded
+E             + failed
+
+tests/test_doc_ingest_example.py:199: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:48:26 [info     ] signal.delivered               hold_id=01a119a0-4f13-73e2-a22d-d1e350599865 run_id=01a119a0-4969-78a0-b11b-ab4f506dea66 signal=ReviewDecision
+2026-10-07 20:48:26 [debug    ] loop.wake                      loop=review remaining_ms=3591805
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f948819f3e0>
+wf_schema = 'tq_e94018d58f'
+wf_pool = <asyncpg.pool.Pool object at 0x7f9486d37f40>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7f9487f5fd10>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
+            # unconditional — the answers replay per attempt; the operator
+            # never re-answers): after both gates, the body fails ONCE (the
+            # ladder) then succeeds — the holds never touched the ladder.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+>       assert statuses.count("awaited") == 2, statuses
+E       AssertionError: ['awaited', 'failed', 'failed', 'failed']
+E       assert 1 == 2
+E        +  where 1 = <built-in method count of list object at 0x7f9486d900c0>('awaited')
+E        +    where <built-in method count of list object at 0x7f9486d900c0> = ['awaited', 'failed', 'failed', 'failed'].count
+
+tests/test_wf_hitl_pins.py:221: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:48:59 [info     ] node.held                      hold_id=01a119a0-eced-7582-888d-74c8eb37917f node=review run_id=01a119a0-ebfa-7020-a30c-fb77e10608aa signals=['Approval']
+2026-10-07 20:48:59 [info     ] signal.delivered               hold_id=01a119a0-eced-7582-888d-74c8eb37917f run_id=01a119a0-ebfa-7020-a30c-fb77e10608aa signal=Approval
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f9487ec77a0>
+wf_schema = 'tq_e94018d58f'
+wf_pool = <asyncpg.pool.Pool object at 0x7f9486d35840>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT: the two wait sites are
+            # UNCONDITIONAL (the same sequence re-runs from the top on every
+            # resume; each attempt's cursor consumes the delivered answers in
+            # epoch order); the SECOND site's hold is a NEW EPOCH on the SAME
+            # signal name — the multi-hold.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            return {"verdict": second.verdict or first.verdict}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+        assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+        # DELIVER → the resume re-executes → HOLD 2 (a NEW epoch, the same
+        # name — the (flow,name) PK variant would UniqueViolation HERE and
+        # wedge the iteration).
+        await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(rows[0]["id"]),
+            payload={"verdict": "approve"},
+            payload_json=json.dumps({"verdict": "approve"}),
+        )
+        await runner.drive(flow_id, until="held", max_ticks=100)
+        rows2 = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows2) == 2, "the second hold did not register (multi-hold broken)"
+E       AssertionError: the second hold did not register (multi-hold broken)
+E       assert 1 == 2
+E        +  where 1 = len([<Record id=UUID('01a119a1-12e2-7d00-bd6e-53250b8d138b') hold_epoch=1 status='delivered'>])
+
+tests/test_wf_hitl_pins.py:288: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 20:49:09 [info     ] node.held                      hold_id=01a119a1-12e2-7d00-bd6e-53250b8d138b node=review run_id=01a119a1-119a-7ae0-b73d-b4d0282b5946 signals=['Approval']
+2026-10-07 20:49:09 [info     ] signal.delivered               hold_id=01a119a1-12e2-7d00-bd6e-53250b8d138b run_id=01a119a1-119a-7ae0-b73d-b4d0282b5946 signal=Approval
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+3 failed, 146 passed in 149.86s (0:02:29)

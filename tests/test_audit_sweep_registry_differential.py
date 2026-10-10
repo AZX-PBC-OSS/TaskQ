@@ -161,6 +161,14 @@ class ScriptConn:
         self.stream = stream if stream is not None else []
 
     async def execute(self, sql: str, *args: object) -> str:
+        # The workflow statements' calls carry the wf_ prefix (the
+        # composition pin strips them with the wf events; a legacy call
+        # never matches — the strip stays conservative). The jobs-table
+        # workflow statements (the nodeless-root reap) carry no wf_ table
+        # — the flow-root marker they filter on IS the classifier.
+        if "wf_" in sql or "__flow__" in sql:
+            self.stream.append(("call", "wf_stmt"))
+            return "UPDATE 0"
         self.stream.append(("call", "stale_workers"))
         if self._execute is None:
             return "DELETE 0"
@@ -170,6 +178,15 @@ class ScriptConn:
         return item
 
     async def fetchval(self, sql: str, *args: object) -> int:
+        # The SAME wf_ classification the execute path carries (the ring
+        # prune's owner count is the first wf statement on this channel —
+        # an unclassified fetchval would ride the stale_batches script's
+        # deque and shift a 7 into the wrong arm's verdict). The
+        # jobs-table workflow statements (the nodeless-root reap) carry
+        # no wf_ table — the flow-root marker IS the classifier.
+        if "wf_" in sql or "__flow__" in sql:
+            self.stream.append(("call", "wf_stmt"))
+            return 0
         self.stream.append(("call", "stale_batches"))
         if self._fetchval is None:
             return 0
@@ -178,11 +195,29 @@ class ScriptConn:
             raise item
         return item
 
+    def transaction(self) -> "_PoolCtx":
+        """The workflow arms' transaction context (asyncpg's
+        ``conn.transaction()`` is called UNAWAITED — it returns the
+        context manager; the arms ``async with`` it). No legacy sweep
+        enters a transaction on the conn — adding the context manager
+        cannot disturb the legacy scenarios."""
+        return _PoolCtx(self)
+
+    async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+        """The workflow rederive arm's summary read. The ZERO summary: no
+        join-wait rows in the double's world — the fire arm never engages,
+        the pass is one benign read per tick. No legacy sweep calls
+        ``fetchrow`` — this cannot disturb the legacy scenarios."""
+        return {
+            "blocked": 0,
+            "blocked_required": 0,
+            "flow_fenced": 0,
+            "reconciled": 0,
+            "firable": 0,
+        }
+
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         return []
-
-    async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
 
 
 class _PoolCtx:
@@ -593,3 +628,110 @@ async def test_audit_hasattr_gate_keeps_sweeps_off_in_memory_backend(
     assert old_events == new_events
     names = [e[1] for e in new_events if e[0] == "metric_duration"]
     assert set(names) == {"expired_locks", "deadline_exceeded"}
+
+
+# ── The workflow arms' own expectations (the capability-gated appends) ────
+#
+# The differential above audits the REFACTOR equivalence: the vendored
+# eight-sweep module vs the spec-driven one, on doubles that implement the
+# LEGACY maintenance surface. The workflow arms (T04) are NOT part of that
+# claim — they registered later, admitted through the same hasattr seam on
+# their OWN capability marker (``workflow_sweeps_capable`` — the
+# backend's declaration; the arms never borrow another sweep's method
+# name). These pins hold the registration's COMPOSITION SHAPE, so the
+# arms are load-bearing here too: without the capability the arms
+# contribute NOTHING (the legacy loop the differential audits is
+# unchanged); with it, the arms are pure APPENDS after the legacy block —
+# never a reorder, a rename, or a legacy-event mutation.
+
+_WF_ARMS = (
+    "wf_join_rederive",
+    "wf_outbox_drain",
+    "wf_signal_sweep",
+    # The D2 soak's cures: the hold-stamp reconcile (the SIGKILL-during-
+    # hold wedge's fleet arm — the hold's state decides) and the outbox
+    # TTL (delivered rows are narration, never forever). Pure appends,
+    # same as the arms before them.
+    "wf_hold_stamp_reconcile",
+    "wf_outbox_retention",
+    "wf_loop_budget",
+    "wf_phantom_reap",
+    "wf_nodeless_root_reap",
+    "wf_progress_ring_prune",
+)
+
+
+def _is_wf_event(entry: Any) -> bool:
+    return (
+        isinstance(entry, tuple)
+        and len(entry) > 1
+        and isinstance(entry[1], str)
+        and entry[1].startswith("wf_")
+    )
+
+
+def _until_wf_arms_sampled(legacy_calls: int) -> Callable[[list[Any]], bool]:
+    """The legacy block's calls are in AND all three arms have sampled
+    their duration (the tick reached the table's tail)."""
+    return lambda events: (
+        len(_calls(events)) >= legacy_calls
+        and (len([e for e in events if e[0] == "metric_duration" and e[1].startswith("wf_")]) >= 3)
+    )
+
+
+async def test_audit_wf_arms_stay_off_without_the_capability_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The admission gate: a backend implementing the LEGACY maintenance
+    surface only (every differential double above is exactly that) runs
+    no wf arm — the legacy loop's observable behavior is unchanged by the
+    arms' registration."""
+    events = await _run_one_tick(
+        new_sweeps,
+        monkeypatch,
+        backend=ScriptedBackend(_success_scripts()),
+        conn=_success_conn(),
+        until=_after_calls(_all_success_calls()),
+    )
+    assert not [e for e in events if _is_wf_event(e)], (
+        "the workflow arms ran on a backend that does not declare the "
+        "workflow capability — the arms must be admitted through their own "
+        "marker (the same hasattr seam the legacy sweeps use), never by "
+        "borrowing another sweep's"
+    )
+
+
+async def test_audit_wf_arms_are_pure_appends_after_the_legacy_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a capability-declaring backend the arms run IN TABLE ORDER after
+    the legacy block — and stripping the wf events yields the
+    legacy-only stream byte-for-byte (composition, not mutation: the
+    differential's legacy contract holds on the capable backend too)."""
+    legacy_events = await _run_one_tick(
+        new_sweeps,
+        monkeypatch,
+        backend=ScriptedBackend(_success_scripts()),
+        conn=_success_conn(),
+        until=_after_calls(_all_success_calls()),
+    )
+    capable_backend = ScriptedBackend(_success_scripts())
+    capable_backend.workflow_sweeps_capable = True  # type: ignore[reportAttributeAccessIssue]  # Why: the capability probe is a plain hasattr — the double declares the marker the real backend's class carries.
+    capable_events = await _run_one_tick(
+        new_sweeps,
+        monkeypatch,
+        backend=capable_backend,
+        conn=_success_conn(),
+        until=_until_wf_arms_sampled(_all_success_calls()),
+    )
+    assert [e for e in capable_events if not _is_wf_event(e)] == legacy_events
+    # The arms really ran, in table order, under the SAME sample
+    # discipline as every legacy sweep (duration always; rows + success
+    # when the call returned — 0 rows here, the double's world is empty).
+    wf_names = [
+        e[1] for e in capable_events if e[0] == "metric_duration" and e[1].startswith("wf_")
+    ]
+    assert wf_names == list(_WF_ARMS), wf_names
+    for name in _WF_ARMS:
+        assert ("metric_rows", name, 0) in capable_events
+        assert ("success", name) in capable_events

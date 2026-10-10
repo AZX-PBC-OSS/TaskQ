@@ -331,6 +331,26 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
     "AND status IN ('pending', 'scheduled', 'running')"
 )
 
+#: The workflow progress rollup (T08): per (declared workflow, node state)
+#: node counts — ONE grouped read for the wf-progress gauge and the
+#: admin's status panel alike (the query-count pin). Index-driven: the
+#: node rows ride jobs_wf_flow_nodes_idx (01.00.26_02 — the uuid-cast
+#: expression, the workflow-rows-only partial `metadata ? 'flow_id'`,
+#: which this WHERE names exactly: the read is O(the fleet's WORKFLOW
+#: rows), never a seq scan of the fleet table), each root a primary-key
+#: probe. The `_other_` collapse happens in the SAMPLER (it knows the
+#: registered names); the read groups by the run's own stamped name,
+#: unregistered or not.
+_QUERY_WF_PROGRESS_SQL_TEMPLATE = (
+    "SELECT COALESCE(r.metadata->>'workflow', '_other_') AS workflow, "
+    "n.status AS state, count(*) AS count "
+    'FROM "{schema}".jobs n '
+    "JOIN \"{schema}\".jobs r ON r.id = (n.metadata->>'flow_id')::uuid "
+    "WHERE n.metadata ? 'flow_id' "
+    "AND n.step_key IS NOT NULL AND n.step_key <> '__flow__' "
+    "GROUP BY 1, 2"
+)
+
 #: The scheduled wave's horizon: MAX(scheduled_at) over the scheduled
 #: population minus now, in seconds. statement_timestamp() (STABLE) for
 #: the two-clock rule every sampler here follows; the measured
@@ -424,10 +444,94 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # drift between the fleet-wide and per-actor forms; the plan pins bind
 # the composed statements (tests/test_index_audit.py), so a composition
 # that changed the executed text fails on arrival.
-_ARCHIVE_CANDIDATE_PREDICATE_SQL = (
+# The terminal-status SQL literal — the statement-side twin of
+# statemachine.TERMINAL_STATUSES (the same derivation the engine's
+# TERMINAL_SQL_SET pin covers; the import rides taskq.backend — the import
+# law binds taskq.workflows only, and backend is the engine's own layer).
+_TERMINAL_SQL_LITERAL = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+
+# The BASE candidate predicate: terminal status + the retention age.
+_ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
     'SELECT id FROM "{schema}".jobs'
     ' WHERE status = $1::"{schema}".job_status'
     "   AND finished_at < statement_timestamp() - $2::interval"
+)
+
+# THE WORKFLOW-LIVENESS GUARD (T18, PRUNED-PARENT): retention must not
+# prune a PARENT row of a NON-TERMINAL run -- the sweep's ledger recount
+# (the lock-first re-derive) reads parent rows as truth; a pruned parent
+# mid-run breaks the recount (the recount's count is corrupted by the
+# missing row). A row that is NO parent (no wf_edge row points at it)
+# prunes on the normal schedule, and a TERMINAL/CANCELLED run's rows
+# prune on the NORMAL schedule too (the guard is LIVENESS-scoped, not a
+# retention exemption -- the over-hold shape is its own convicted
+# variant, the pin rides it). Index-backed: the guard's probe rides
+# wf_edge_parent_idx + the flow root's primary key, one bounded probe
+# per candidate. The rolling-deploy tolerance composes it AWAY (see
+# _compose_candidate_sql): a pre-workflow schema has no wf_edge table,
+# and a guard that cannot resolve is the prune's death -- the fallback is
+# the UNGUARDED predicate, which is semantically EXACT there (no
+# workflow tables = no liveness to protect); the fallback is logged once
+# per process (a stuck fallback would otherwise mute the guard silently;
+# a per-batch line would be noise during a deploy).
+_WORKFLOW_LIVENESS_GUARD_SQL = (
+    "   AND NOT EXISTS ("
+    '       SELECT 1 FROM "{schema}".wf_edge e'
+    '       JOIN "{schema}".jobs fl ON fl.id = e.flow_id'
+    '       WHERE e.parent_id = "{schema}".jobs.id'
+    "         AND fl.status NOT IN " + _TERMINAL_SQL_LITERAL + ")"
+)
+
+#: The rolling-deploy fallback: logged once per process, never per batch.
+_workflow_guard_fallback_logged = False
+
+
+def _log_workflow_guard_fallback_once() -> None:
+    """The fallback's log-once latch (one home — the fleet-wide arm and
+    the per-actor arm both fall back through this)."""
+    global _workflow_guard_fallback_logged
+    if not _workflow_guard_fallback_logged:
+        log.warning(
+            "prune-workflow-guard-fallback",
+            kind="prune_workflow_guard_fallback",
+            reason="wf_edge does not exist (the workflow round "
+            "has not applied) — the candidate runs unguarded",
+        )
+        _workflow_guard_fallback_logged = True
+
+
+def _unguarded_candidate_sql(schema: str) -> str:
+    """The UNGUARDED candidate window (the fallback's statement): the
+    base predicate + the caller's tail — semantically exact on a schema
+    the workflow round has not applied (no wf_edge table = no liveness to
+    protect). The schema identifier is the only interpolation
+    (require_schema-validated by every caller)."""
+    require_schema(schema)
+    return (
+        _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
+        + " ORDER BY finished_at"
+        + " LIMIT $3"
+    )
+
+
+def _unguarded_candidate_actor_sql(schema: str) -> str:
+    """The per-actor variant of the same fallback: the base predicate +
+    the actor equality (the actor filter rides along as a Filter, like
+    status)."""
+    require_schema(schema)
+    return (
+        _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL.format(schema=schema)
+        + "   AND actor = $4"
+        + " ORDER BY finished_at"
+        + " LIMIT $3"
+    )
+
+
+#: The composed candidate windows: the GUARDED predicate is the shipped
+#: shape (the guard rides every candidate read — the prune and the
+#: per-actor variant compose the SAME guard).
+_ARCHIVE_CANDIDATE_PREDICATE_SQL = (
+    _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL + _WORKFLOW_LIVENESS_GUARD_SQL
 )
 
 _ARCHIVE_CANDIDATE_SQL = _ARCHIVE_CANDIDATE_PREDICATE_SQL + " ORDER BY finished_at" + " LIMIT $3"
@@ -580,6 +684,27 @@ _ARCHIVE_CTE_SQL = (
 )
 
 _DB_NOW_SQL = "SELECT clock_timestamp()"
+
+#: The workflow-era columns the LOOP-BUDGET round added (01.00.27 jobs,
+#: 01.00.31 the archive mirror): the columns the PRE-BUDGET schemas (the
+#: rolling-deploy tolerance's own target, 01.00.24_01) do not carry.
+_BUDGET_ERA_JOBS_COLUMNS = frozenset({"budget_deadline", "budget_paused", "budget_remaining_ms"})
+_JOBS_PRE_BUDGET_COLUMNS = tuple(c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS)
+
+#: The archive write's PRE-BUDGET variant (the rolling-deploy tolerance's
+#: write half): identical statement, the column lists minus the budget
+#: trio — a schema the budget round has not landed on cannot mirror
+#: columns it does not have, and the mirror's own law (name EXACTLY the
+#: columns BOTH sides carry) makes the variant the honest write there.
+#: The qualified list replaces FIRST (the ``j.`` prefixes make it
+#: unambiguous), the plain list second.
+_ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
+    _JOBS_COLUMNS_QUALIFIED_CSV,
+    ", ".join(f"j.{c}" for c in _JOBS_PRE_BUDGET_COLUMNS),
+).replace(
+    _JOBS_COLUMNS_CSV,
+    ", ".join(_JOBS_PRE_BUDGET_COLUMNS),
+)
 
 
 # The expire_at bound is statement_timestamp() (STABLE) for the same
@@ -868,19 +993,59 @@ async def prune_terminal_jobs(
                 break
             size = _effective_prune_batch_size(batch_size, sizer)
             _record_prune_batch_size("prune", size, sizer)
-            rows = await _run_prune_archive_batch(
-                conn,
-                candidate_sql=candidate_sql,
-                write_sql=write_sql,
-                status=status,
-                retention=retention,
-                size=size,
-                archive_interval=archive_interval,
-                actor=None,
-                statement_timeout_ms=statement_timeout_ms,
-                sweep_name="prune",
-                sizer=sizer,
-            )
+            try:
+                rows = await _run_prune_archive_batch(
+                    conn,
+                    candidate_sql=candidate_sql,
+                    write_sql=write_sql,
+                    status=status,
+                    retention=retention,
+                    size=size,
+                    archive_interval=archive_interval,
+                    actor=None,
+                    statement_timeout_ms=statement_timeout_ms,
+                    sweep_name="prune",
+                    sizer=sizer,
+                )
+            except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                # THE ROLLING-DEPLOY TOLERANCE (T18's own guard's edge): a
+                # schema the 01.00.24 round has not landed on yet has NO
+                # wf_edge table — the guard cannot resolve, and an
+                # untolerated miss is the prune's death (a
+                # non-transient error class fatal to the leader). The
+                # fallback is the UNGUARDED predicate, semantically EXACT
+                # there (no workflow tables = no liveness to protect);
+                # logged once per process, never per batch. THE FALLBACK
+                # IS PER BATCH: the unguarded statement rides a LOCAL (the
+                # pre-rewrite shape reassigned ``candidate_sql``, leaving
+                # the REST of the drain unguarded after a migration
+                # landed mid-prune — the next batch re-tries the guarded
+                # statement and resumes guarded).
+                #
+                # THE COLUMN HALF (the deploy matrix's battery finding):
+                # the budget round (01.00.27/31) added its trio to BOTH
+                # mirror sides — a schema the budget round has not landed
+                # on raises UndefinedColumnError from the WRITE (the
+                # mirror names columns the schema does not carry), the
+                # same fatal class at the same tolerance edge. The
+                # fallback's write is the PRE-BUDGET variant (the
+                # mirror's own law: name exactly the columns BOTH sides
+                # carry) — the tolerance survives its own round's
+                # successors, not only its own round.
+                _log_workflow_guard_fallback_once()
+                rows = await _run_prune_archive_batch(
+                    conn,
+                    candidate_sql=_unguarded_candidate_sql(schema),
+                    write_sql=_ARCHIVE_CTE_PRE_BUDGET_SQL.format(schema=schema),
+                    status=status,
+                    retention=retention,
+                    size=size,
+                    archive_interval=archive_interval,
+                    actor=None,
+                    statement_timeout_ms=statement_timeout_ms,
+                    sweep_name="prune",
+                    sizer=sizer,
+                )
             if not rows:
                 break
             batch_total = 0
@@ -910,19 +1075,45 @@ async def prune_terminal_jobs(
                         break
                     size = _effective_prune_batch_size(batch_size, sizer)
                     _record_prune_batch_size("prune", size, sizer)
-                    rows = await _run_prune_archive_batch(
-                        conn,
-                        candidate_sql=candidate_sql,
-                        write_sql=write_sql,
-                        status=status,
-                        retention=actor_retention,
-                        size=size,
-                        archive_interval=archive_interval,
-                        actor=actor_name,
-                        statement_timeout_ms=statement_timeout_ms,
-                        sweep_name="prune",
-                        sizer=sizer,
-                    )
+                    try:
+                        rows = await _run_prune_archive_batch(
+                            conn,
+                            candidate_sql=candidate_sql,
+                            write_sql=write_sql,
+                            status=status,
+                            retention=actor_retention,
+                            size=size,
+                            archive_interval=archive_interval,
+                            actor=actor_name,
+                            statement_timeout_ms=statement_timeout_ms,
+                            sweep_name="prune",
+                            sizer=sizer,
+                        )
+                    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+                        # THE SAME ROLLING-DEPLOY TOLERANCE, PER-ACTOR ARM:
+                        # the per-actor candidate composes the SAME
+                        # workflow-liveness guard (the pre-rewrite shape
+                        # had NO tolerance here — a pre-workflow schema
+                        # with actor_overrides configured was the leader's
+                        # death). Same per-batch fallback, same log-once;
+                        # the COLUMN half rides too (the budget round's
+                        # trio — the write's mirror names columns a
+                        # pre-budget schema does not carry), the fallback's
+                        # write is the PRE-BUDGET variant.
+                        _log_workflow_guard_fallback_once()
+                        rows = await _run_prune_archive_batch(
+                            conn,
+                            candidate_sql=_unguarded_candidate_actor_sql(schema),
+                            write_sql=_ARCHIVE_CTE_PRE_BUDGET_SQL.format(schema=schema),
+                            status=status,
+                            retention=actor_retention,
+                            size=size,
+                            archive_interval=archive_interval,
+                            actor=actor_name,
+                            statement_timeout_ms=statement_timeout_ms,
+                            sweep_name="prune",
+                            sizer=sizer,
+                        )
                     if not rows:
                         break
                     batch_total = 0

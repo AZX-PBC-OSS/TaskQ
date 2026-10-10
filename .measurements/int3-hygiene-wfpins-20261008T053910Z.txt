@@ -1,0 +1,3 @@
+# the hygiene round's battery: the wf pin suite + the attack rounds — head 59c7b188, pg :5709
+  FAILED tests/test_wf_sweep_pins.py::test_pin_2_dispatch_fence_refuses_post_cancel_claim
+  57 failed, 169 passed, 1 warning in 137.83s (0:02:17)

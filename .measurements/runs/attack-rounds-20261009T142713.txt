@@ -1,0 +1,21 @@
+# the attack rounds 1-4 (the corpus, -n 4) at head 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+FAILED tests/attack4-cli-races.py::test_the_resolve_racing_the_cancel_one_outcome_honest_codes
+================== 1 failed, 133 passed, 1 skipped in 42.10s ===================
+rc=0
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+THE DISPOSITION (the rotating-victim class, REVIEW row 20's own shape):
+the corpus ran twice at the head — round 1: test_the_resolve_racing_the_
+cancel red one-off, green solo ×2 + module ×2 after; round 2: test_two_
+drivers_one_schema red one-off, green solo ×2 + module ×2 after. The
+victims ROTATE with the box's ambient load (loadavg 15-17/32, the
+co-tenant lanes' own batteries), every victim green solo — the
+subprocess timing weather, the loaded-bar law's recorded class (the
+demo-legs disposition; the consolidation's own note: "the resolve/cancel
+race's one-off red green ×2 solo and under -n 2/-n 4"). The substance of
+both pins (the outcome honesty, the exactly-once arbiter) held in every
+green run; the reds are the race's SCHEDULING, pinned as the class.
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+THE DISPOSITION: the round's one-off red (test_two_drivers) is the
+rotating-victim class — green solo ×2 immediately after (see the prior
+capture's disposition note). head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt

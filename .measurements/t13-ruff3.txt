@@ -1,0 +1,50 @@
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/_sweep.py:306:13
+    |
+304 |           ]
+305 |           await conn.executemany(
+306 | /             f"INSERT INTO {schema_of(wsql)}.wf_edge "
+307 | |             "(child_id, flow_id, parent_id, failure_policy) "
+308 | |             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+    | |____________________________________________________________^
+309 |               edge_rows,
+310 |           )
+    |
+
+N818 Exception name `_NodeHeld` should be named with an Error suffix
+  --> src/taskq/workflows/api/_runner.py:71:7
+   |
+71 | class _NodeHeld(Exception):
+   |       ^^^^^^^^^
+72 |     """The wait site's control-flow unwinding (INTERNAL): the body
+73 |     raised it after registering the hold — the runner catches it, leaves
+   |
+
+RUF003 Comment contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+    --> src/taskq/workflows/api/_runner.py:1093:58
+     |
+1091 |                     outcome = await node.loop_body(loop_ctx, carry)
+1092 |                 except _NodeHeld:
+1093 |                     # THE HOLD INSIDE THE ITERATION (T10 × T19's
+     |                                                          ^
+1094 |                     # composition): the loop node rests in the held
+1095 |                     # representation (the budget PAUSED — register_hold's
+     |
+
+RUF100 [*] Unused `noqa` directive (unused: `S607`)
+ --> tests/test_doc_ingest_example.py:1:1
+  |
+1 | # ruff: noqa: S608,S603,S607  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fix…
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 | """T13 — THE EXAMPLES' PINS: the doc-ingest example (docs/examples/
+3 | doc-ingest.md's fence) is CODE THAT RUNS, not decoration.
+  |
+help: Remove unused `noqa` directive
+  |
+  - # ruff: noqa: S608,S603,S607  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
+1 + # ruff: noqa: S608, S603  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
+2 | """T13 — THE EXAMPLES' PINS: the doc-ingest example (docs/examples/
+  |
+
+Found 4 errors.
+[*] 1 fixable with the `--fix` option.

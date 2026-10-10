@@ -1,0 +1,471 @@
+FFFFFFFFF                                                                [100%]
+=================================== FAILURES ===================================
+__________ test_pubsub_knock_is_a_pointer_and_the_consumer_converges ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b12d4f0>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b226500>
+
+    async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
+        + event) — NEVER the sole copy of the payload; a consumer that
+        MISSES the knock still converges by polling ``client.hitl.list()``
+        (the row is the truth)."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, _runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+        client = HitlClient(wf_pool, schema=wf_schema)
+        # THE KNOB's payload shape: pinned via the notify's content (the
+        # pointer: hold_id + run_id + event) — the row is the truth.
+        holds_before = await client.list(run=flow_id)
+>       assert len(holds_before) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:379: AssertionError
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b1b5d60>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05c1c0>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+>       flow_id, _runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:323: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_hold_id_reply_handle_and_context_contract.<locals>.hold..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b054d70>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05d480>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+        holds = {"n": 0}
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            holds["n"] += 1
+            decision = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if holds["n"] == 1:
+                # the SECOND hold (the same signal name — the new epoch)
+                second = await ctx.wait_signal(Approval, timeout_s=120.0)
+                return {"verdict": second.verdict, "note": "second"}
+            return {"verdict": decision.verdict, "note": "first"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+E       assert (0 == 1)
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:273: AssertionError
+_______________ test_cancel_workflow_one_transaction_idempotent ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b0b8320>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05dcc0>
+
+    async def test_cancel_workflow_one_transaction_idempotent(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 4 through the public API: the flip is the linearization;
+        the held signals → cancelled; IDEMPOTENT (cancel twice = one
+        cancel); the audit row is a ROW (the principal + the reason)."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:427: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_cancel_workflow_one_transaction_idempotent.<locals>.hol..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+_______________________ test_hold_to_resume_latency_band _______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b0bbb60>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05d300>
+
+    async def test_hold_to_resume_latency_band(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G11c (the third unpinned workflow band — the band is SET from this
+        measurement, then pinned in perf-evidence-workflows.md): send_signal
+        commit → the row claimable."""
+        import time
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:460: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_hold_to_resume_latency_band.<locals>.hold_body at 0x7f1..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b072d50>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05d540>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        holds = {"n": 0}
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            holds["n"] += 1
+            if holds["n"] <= 2:
+                # the first two ATTEMPTS hold (the delivered row arrives on
+                # the resume — the wait returns)
+                return await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": "approved", "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+>       assert statuses.count("awaited") == 2, statuses
+E       AssertionError: ['failed', 'failed', 'failed', 'succeeded']
+E       assert 0 == 2
+E        +  where 0 = <built-in method count of list object at 0x7f1e3af3eb00>('awaited')
+E        +    where <built-in method count of list object at 0x7f1e3af3eb00> = ['failed', 'failed', 'failed', 'succeeded'].count
+
+tests/test_wf_hitl_pins.py:222: AssertionError
+____________________ test_signal_timeout_fires_on_db_clock _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b0e5f40>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05ce80>
+
+    async def test_signal_timeout_fires_on_db_clock(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 13 (G6): the expiry arm compares PG's clock — the expired
+        hold → the DEFINED 'abandoned' state; the node resumes (the body
+        re-runs and the wait site raises the typed timeout face)."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=1.0)
+    
+>       flow_id, _runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:404: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_signal_timeout_fires_on_db_clock.<locals>.hold_body at ..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+________________ test_double_send_is_a_defined_no_op_one_resume ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3af61310>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05cc40>
+
+    async def test_double_send_is_a_defined_no_op_one_resume(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 2: two concurrent delivers → exactly ONE 'delivered' result,
+        exactly one resume (the 'held' → 'delivered' CAS is the fence)."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, _node = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:138: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_double_send_is_a_defined_no_op_one_resume.<locals>.hold..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+___________ test_late_deliver_after_cancel_is_refused_no_zombie_wake ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f1e3b0e57c0>
+wf_schema = 'tq_9d50891acf'
+wf_pool = <asyncpg.pool.Pool object at 0x7f1e3b05d000>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7f1e3b2dba10>
+
+    async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 1 (P3 2b): a deliver against a CANCELLED signal returns the
+        typed refusal — no zombie wake, no resume event. The deliver CAS
+        requires the unresolved-signal + held-representation predicate."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, node_id = await _held_flow(wf_conn, wf_schema, wf_pool, wait_body=hold_body)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_hitl_pins.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:73: in _held_flow
+    runner = FlowRunner(app.get("hold_flow"), wf_pool, wf_schema)
+                        ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_app.py:280: in get
+    _register_bodies(compiled)
+src/taskq/workflows/api/_app.py:303: in _register_bodies
+    get_registry().register(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.definitions.WorkflowRegistry object at 0x7f1e41531160>
+definition = WorkflowDef(name='hold_flow', bodies={'review': <function test_late_deliver_after_cancel_is_refused_no_zombie_wake.<lo..., actor='workflow', queue='default', max_attempts=3, retry_kind='transient', capture_policy='errors-only', redact=None)
+
+    def register(self, definition: WorkflowDef) -> WorkflowDef:
+        if definition.name in self._workflows:
+            existing = self._workflows[definition.name]
+            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # module → same graph → the same body map): recompiling the
+            # SAME definition is not a second registration — the registry
+            # is keyed by name and the compile is deterministic. Only a
+            # DIFFERING re-definition (a shadow) is the coding error.
+            if existing.bodies == definition.bodies:
+                return existing
+>           raise DuplicateWorkflowError(
+                f"workflow {definition.name!r} is already registered; a second "
+                "registration is a coding error, never a shadow"
+            )
+E           taskq.workflows.definitions.DuplicateWorkflowError: workflow 'hold_flow' is already registered; a second registration is a coding error, never a shadow
+
+src/taskq/workflows/definitions.py:83: DuplicateWorkflowError
+=============================== warnings summary ===============================
+tests/test_wf_hitl_pins.py::test_pubsub_knock_is_a_pointer_and_the_consumer_converges
+tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:652: RuntimeWarning: coroutine '_deadline_expr' was never awaited
+    return
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_pubsub_knock_is_a_pointer_and_the_consumer_converges
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+FAILED tests/test_wf_hitl_pins.py::test_cancel_workflow_one_transaction_idempotent
+FAILED tests/test_wf_hitl_pins.py::test_hold_to_resume_latency_band - taskq.w...
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_signal_timeout_fires_on_db_clock - ta...
+FAILED tests/test_wf_hitl_pins.py::test_double_send_is_a_defined_no_op_one_resume
+FAILED tests/test_wf_hitl_pins.py::test_late_deliver_after_cancel_is_refused_no_zombie_wake
+9 failed, 3 warnings in 4.26s

@@ -57,6 +57,7 @@ _PRUNE_RENAMES: dict[str, str] = {
     "batch_count": "POST_SUCCESS_CLEANUP_COUNT",
     "cutoff": "COMPLETED_DETAIL",
     "cutoffs": "COMPLETED_CUTOFFS",
+    "pruned_date": "DONE_DATE",
 }
 _ARCHIVE_RENAMES: dict[str, str] = {
     "last_expiry_date": "LAST_DONE_DATE",
@@ -64,6 +65,7 @@ _ARCHIVE_RENAMES: dict[str, str] = {
     "archive_expiry_sweep": "SWEEP_OP",
     "archive_expiry_cron_expr": "SWEEP_CRON_EXPR",
     "archive_expiry_schedule_utc": "SWEEP_SCHEDULE_UTC",
+    "expired_date": "DONE_DATE",
     "expire_before": "COMPLETED_DETAIL",
 }
 # Loop-specific string literals (loop names, kinds, event names) →
@@ -76,6 +78,7 @@ _PRUNE_STRINGS: dict[str, str] = {
     "prune-completed": "EV_COMPLETED",
     "prune-failed": "EV_FAILED",
     "prune-skipped-advisory-lock-held": "EV_LOCK_HELD",
+    "prune-skipped-day-latch": "EV_LATCH_SKIPPED",
     "prune-lock-attempt-failed": "EV_LOCK_ATTEMPT_FAILED",
     "prune_lock_failed": "KIND_LOCK_ATTEMPT_FAILED",
     "batches pruned": "EV_POST_SUCCESS",
@@ -90,6 +93,7 @@ _ARCHIVE_STRINGS: dict[str, str] = {
     "archive-expiry-completed": "EV_COMPLETED",
     "archive-expiry-failed": "EV_FAILED",
     "archive-expiry-skipped-advisory-lock-held": "EV_LOCK_HELD",
+    "archive-expiry-skipped-day-latch": "EV_LATCH_SKIPPED",
     "archive-expiry-lock-attempt-failed": "EV_LOCK_ATTEMPT_FAILED",
     "archive_expiry_lock_failed": "KIND_LOCK_ATTEMPT_FAILED",
 }
@@ -153,6 +157,11 @@ def _norm(node: ast.AST, renames: dict[str, str], strings: dict[str, str]) -> st
         if isinstance(sub, ast.Attribute) and sub.attr in renames:
             sub.attr = renames[sub.attr]
         if isinstance(sub, ast.arg) and sub.arg in renames:
+            sub.arg = renames[sub.arg]
+        # The log lines' keyword args (ast.keyword, not ast.arg) — the
+        # surfaced day-latch event's per-loop detail field renames through
+        # the same map.
+        if isinstance(sub, ast.keyword) and sub.arg in renames:
             sub.arg = renames[sub.arg]
         if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value in strings:
             sub.value = strings[sub.value]
@@ -420,8 +429,14 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
     ):
         lines = _scaffold_lines(fn, renames, strings)
         joined = "\n".join(lines)
-        day_gate = "if LAST_DONE_DATE == today_utc:"
-        assert day_gate in joined, f"{label} lost the once-per-day date gate"
+        day_gate = "if not check_lane and LAST_DONE_DATE == today_utc:"
+        assert day_gate in joined, (
+            f"{label} lost the once-per-day date gate (the DAILY lane's — "
+            "the check_lane bypass is the retention-cadence decoupling's "
+            "own: a sub-daily schedule is a retention policy, checked "
+            "every tick, never latched — the D2 soak's at-most-daily "
+            "conviction)"
+        )
         gate_idx = lines.index(day_gate)
         # Invariants, not token shapes: a mirrored edit inside the gate
         # (a debug line, an extra field) must stay green; what may not
@@ -555,7 +570,7 @@ def test_both_loops_arm_the_leaderless_miss() -> None:
             f"{label}'s leaderless-miss arm stamps the date latch — a MISSED "
             f"fire is not a done day: {arm}"
         )
-        day_gate = lines.index("if LAST_DONE_DATE == today_utc:", miss_idx)
+        day_gate = lines.index("if not check_lane and LAST_DONE_DATE == today_utc:", miss_idx)
         assert fire_reset < miss_idx < day_gate, (
             f"{label}'s leaderless-miss arm must sit between the "
             "scheduled-fire ladder reset and the date gate"

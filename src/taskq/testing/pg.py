@@ -101,6 +101,14 @@ DEFAULT_ACTORS: tuple[str, ...] = (
 # hypertable), so the explicit entry keeps the reset complete in both
 # modes. schema_migrations is excluded, migration metadata is not test data.
 _TRUNCATE_TABLES: tuple[str, ...] = (
+    # The workflow ledger tables (01.00.24) are FK-less by design (the
+    # no-FK decision), so the CASCADE below never reaches them: they are
+    # truncated explicitly, in child-first order, or a workflow-scoped
+    # suite inherits the previous test's ledger rows.
+    "wf_outbox",
+    "wf_join_fire",
+    "wf_step_ledger",
+    "wf_edge",
     "reservation_slots",
     "rate_limit_window_entries",
     "rate_limit_buckets",

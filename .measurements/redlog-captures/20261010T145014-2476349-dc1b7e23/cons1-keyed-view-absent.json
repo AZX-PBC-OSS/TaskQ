@@ -1,0 +1,9 @@
+{
+  "mutation": "keyed_display/display_key do not exist at 37ab05b8 \u2014 the pin file's import fails (ImportError: cannot import name 'display_key')",
+  "observed": {
+    "error": "ImportError: cannot import name 'display_key' from 'taskq.workflows._progress_read'"
+  },
+  "pin": "cons1-keyed-view-absent",
+  "run": "20261010T145014-2476349-dc1b7e23",
+  "ts": "2026-10-10T14:50:14"
+}

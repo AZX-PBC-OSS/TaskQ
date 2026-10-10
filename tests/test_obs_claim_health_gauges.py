@@ -296,3 +296,82 @@ def test_the_health_dataclass_carries_exactly_the_runbook_operands() -> None:
         "claims_per_second",
         "degradation_ratio",
     }
+
+
+# ── finding 11: the gauge racing itself — the hot-load pin ───────────────
+
+
+def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
+    """FINDING 11's PIN (RED-FIRST): the gauge callbacks scrape on the
+    OTel collection THREAD while the claim path records on the EVENT-
+    LOOP thread — the pre-cure stores had no lock, and the two walkers
+    raced inside the deque/dict: **287 RuntimeErrors in 3 s of hot
+    load** ("deque mutated during iteration"), every raise killing the
+    callback's observation batch — the alert's operand VANISHED exactly
+    when the queue was hottest. THE CURE: the read is ATOMIC (the
+    stores' lock — the snapshot and the record each hold it for their
+    whole walk). This pin hammers the record path on a writer thread
+    while a scraper thread snapshots continuously for 3 s and convicts:
+    ZERO RuntimeErrors, and the scrape's operands PRESENT (zero is a
+    number, not an error — a warmed baseline reports a NUMBER)."""
+    import threading
+    import time as time_mod
+
+    reset_claim_health_state()
+    stop = threading.Event()
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+    operands_seen: list[bool] = []
+
+    def _record_hot(tid: int) -> None:
+        # The claim path's shape: one record per claim round, the clock
+        # advancing. The ts step lands >5 minute-buckets inside the 3 s
+        # wall, so the baseline WARMED and the ratio is a NUMBER by the
+        # final scrapes (the empty/ratio-None face is the cold-start's
+        # own pin, not this one).
+        ts = _T0 + float(tid)
+        try:
+            while not stop.is_set():
+                record_claim_latency(f"hot-q{tid}", 0.001, now=ts)
+                ts += 0.05
+                time_mod.sleep(0.0005)
+        except BaseException as exc:  # Why: the pin convicts ANY raise on the hot path.
+            with errors_lock:
+                errors.append(exc)
+
+    def _scrape_hot() -> None:
+        # The OTel collection thread's shape: the FIVE gauge callbacks'
+        # snapshots, back to back, for the whole window.
+        try:
+            while not stop.is_set():
+                snap = claim_health_snapshot(now=_T0 + 600.0)
+                with errors_lock:
+                    operands_seen.append(bool(snap) and snap["hot-q0"].p99_seconds >= 0.0)
+                time_mod.sleep(0.001)
+        except BaseException as exc:  # Why: the convicted shape raised RuntimeError here.
+            with errors_lock:
+                errors.append(exc)
+
+    # THE PRODUCTION SHAPE'S CONCURRENCY: several claim paths recording
+    # (the loop + the fleet's rounds) AND several gauge callbacks
+    # scraping at once — the pre-cure race needed BOTH walkers live (the
+    # convicted run: 287 RuntimeErrors in 3 s).
+    threads = [threading.Thread(target=_record_hot, args=(i,)) for i in range(4)]
+    threads += [threading.Thread(target=_scrape_hot) for _ in range(3)]
+    for t in threads:
+        t.start()
+    time_mod.sleep(3.0)
+    stop.set()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, (
+        f"the hot-load scrape raised {len(errors)}x — the gauge raced "
+        f"itself and the alert's operand vanished hot: {errors[:3]}"
+    )
+    assert operands_seen, "the scraper never saw a snapshot — the operand vanished"
+    assert all(operands_seen), "a scrape lost its operand mid-window"
+    assert len(operands_seen) >= 100, (
+        f"only {len(operands_seen)} scrapes in 3 s — the hot loop did not exercise the race"
+    )
+    reset_claim_health_state()

@@ -1,0 +1,21 @@
+{
+  "t03bulk_t03x_anehowew_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "t03bulk_t03x_anehowew_parent_id_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "t03bulk_t03x_anehowew_parent_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "_red_drill": {
+    "note": "the full control index against the smallest partial is the convicted shape; its ratio is the RED the pin exists to flag"
+  },
+  "head_sha": "db1ec6f71d2e2c6a82f714f9ce6fa10c23e08ef6"
+}

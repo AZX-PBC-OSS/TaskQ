@@ -1,0 +1,35 @@
+head: a858272b18c66e28a69cfebaa664279568ca6d30
+# THE T26 CURE LANE'S PROOF at a858272b (the tree this stamp names):
+
+== ruff check (src/taskq tests examples) ==
+All checks passed!
+== ruff format --check (the CI's whole-tree shape) ==
+1670 files already formatted
+== pyright FULL ==
+0 errors, 0 warnings, 0 informations
+== the type gate ==
+the type gate holds: every MUST_ERROR marker (36) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+== mkdocs --strict ==
+INFO    -  Documentation built in 16.35 seconds
+== the head-stamp verifier ==
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-t26cure/.measurements/runs is recorded at THIS head (a858272b18c6) or explicitly superseded
+verifier rc=0
+
+== THE WF BATTERY x2 (327 each — the battery's file list now carries the two new
+   pin files: test_wf_hitl_pubsub_pins.py + test_wf_hitl_web_demo.py) ==
+leg 1 (the cov gate's own run): 327 passed — wf-scoped branch coverage 90.51% vs floor 90.0 — green
+leg 2: 327 passed — runs/wf-battery-leg2-20261010T062906.txt
+
+== THE EXAMPLE E2E x2 (the deep-research approve/expiry pair + the web half) ==
+run 1: 25 passed (the pubsub pins 11 + the web demo 2 + the hitl pins 12) — this session's log
+run 2: 25 passed — this session's log
+
+== THE FAST TIER AT -n 8 (the FULL capture — every FAILED/ERROR line, there are none) ==
+9,581 PASSED / 0 FAILED / 0 ERRORS / 3 skipped in 107.54s — runs/fast-tier-n8-20261010T063510.txt
+
+== THE RED-FIRST CAPTURES ==
+the new pins' reds at the pre-cure head 1a32451f: .measurements/t26-cure-pins-red.txt
+the type gate's red-first receipt (the pre-union silence, re-run ON the pre-union
+tree): .measurements/t26-typegate-red-first.txt
+the redlog receipt chain (P1, P6, P7, P8, P9, P10 drills): .measurements/t10-pin-reds.json
++ .measurements/redlog-captures/ — the guard green (tests/test_fv_redlog_guard.py, 4 passed)

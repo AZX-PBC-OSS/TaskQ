@@ -1,0 +1,231 @@
+F401 [*] `taskq.web.admin._wf_rows.RunNode` imported but unused
+  --> src/taskq/web/admin/_wf_actions.py:53:5
+   |
+51 | from taskq.web.admin._wf_rows import (
+52 |     NOT_INSTALLED,
+53 |     RunNode,
+   |     ^^^^^^^
+54 |     RunView,
+55 |     fetch_run_view,
+   |
+help: Remove unused import: `taskq.web.admin._wf_rows.RunNode`
+   |
+52 |     NOT_INSTALLED,
+   -     RunNode,
+53 |     RunView,
+   |
+
+F401 [*] `taskq.workflows._sql_status.WORKFLOW_NODES_SQL` imported but unused
+  --> src/taskq/web/admin/_wf_actions.py:58:41
+   |
+56 |     run_state_json,
+57 | )
+58 | from taskq.workflows._sql_status import WORKFLOW_NODES_SQL
+   |                                         ^^^^^^^^^^^^^^^^^^
+59 |
+60 | logger = structlog.get_logger("taskq.web.admin.wf_actions")
+   |
+help: Remove unused import: `taskq.workflows._sql_status.WORKFLOW_NODES_SQL`
+   |
+57 | )
+   - from taskq.workflows._sql_status import WORKFLOW_NODES_SQL
+58 |
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/taskq/web/admin/_wf_rows.py:20:1
+   |
+18 |   """
+19 |
+20 | / from __future__ import annotations
+21 | |
+22 | | import json
+23 | | import uuid
+24 | | from collections.abc import Mapping, Sequence
+25 | | from dataclasses import dataclass, field
+26 | | from datetime import datetime
+27 | | from typing import Any, Final
+28 | |
+29 | | from taskq.workflows._status import NodeView, derive_workflow_status
+30 | | from taskq.workflows._sql_status import (
+31 | |     WORKFLOW_MAP_PROGRESS_SQL,
+32 | |     WORKFLOW_NODES_SQL,
+33 | | )
+   | |_^
+34 |
+35 |   __all__ = [
+   |
+help: Organize imports
+   |
+28 |
+   - from taskq.workflows._status import NodeView, derive_workflow_status
+29 | from taskq.workflows._sql_status import (
+30 |     WORKFLOW_MAP_PROGRESS_SQL,
+31 |     WORKFLOW_NODES_SQL,
+32 | )
+33 + from taskq.workflows._status import NodeView, derive_workflow_status
+34 |
+   |
+
+SIM105 Use `contextlib.suppress(json.JSONDecodeError)` instead of `try`-`except`-`pass`
+   --> src/taskq/web/admin/_wf_rows.py:211:9
+    |
+209 |       payload: object = root["payload"]
+210 |       if isinstance(payload, str):
+211 | /         try:
+212 | |             payload = json.loads(payload)
+213 | |         except json.JSONDecodeError:
+214 | |             pass
+    | |________________^
+215 |       return RunView(
+216 |           run_id=str(root["id"]),
+    |
+help: Replace `try`-`except`-`pass` with `with contextlib.suppress(json.JSONDecodeError): ...`
+
+F401 [*] `taskq.workflows.api._hitl.HoldContext` imported but unused
+  --> tests/web_admin/test_workflows_page.py:50:39
+   |
+48 | from taskq.workflows import FlowRunner, WorkflowApp, build, step
+49 | from taskq.workflows.api import GateDecl
+50 | from taskq.workflows.api._hitl import HoldContext
+   |                                       ^^^^^^^^^^^
+51 |
+52 | pytestmark = pytest.mark.integration
+   |
+help: Remove unused import: `taskq.workflows.api._hitl.HoldContext`
+   |
+49 | from taskq.workflows.api import GateDecl
+   - from taskq.workflows.api._hitl import HoldContext
+50 |
+   |
+
+SIM117 [*] Use a single `with` statement with multiple contexts instead of nested `with` statements
+   --> tests/web_admin/test_workflows_page.py:275:5
+    |
+273 |       headers = {"Last-Event-ID": last_event_id} if last_event_id is not None else {}
+274 |       frames: list[dict[str, Any]] = []
+275 | /     async with httpx.AsyncClient(
+276 | |         transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=10.0
+277 | |     ) as client:
+278 | |         async with client.stream(
+279 | |             "GET", f"/api/runs/{run_id}/stream", headers=headers
+280 | |         ) as resp:
+    | |__________________^
+281 |               assert resp.status_code == 200
+282 |               event_id: str | None = None
+    |
+help: Combine `with` statements
+    |
+276 |         transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=10.0
+    -     ) as client:
+    -         async with client.stream(
+    -             "GET", f"/api/runs/{run_id}/stream", headers=headers
+    -         ) as resp:
+    -             assert resp.status_code == 200
+    -             event_id: str | None = None
+    -             data: list[str] = []
+    -             async for line in resp.aiter_lines():
+    -                 if line.startswith("id: "):
+    -                     event_id = line[4:]
+    -                 elif line.startswith("data: ") and event_id is not None:
+    -                     frames.append(json.loads(line[6:]))
+    -                     event_id = None
+    -                     if len(frames) >= count:
+    -                         break
+277 +     ) as client, client.stream(
+278 +         "GET", f"/api/runs/{run_id}/stream", headers=headers
+279 +     ) as resp:
+280 +         assert resp.status_code == 200
+281 +         event_id: str | None = None
+282 +         data: list[str] = []
+283 +         async for line in resp.aiter_lines():
+284 +             if line.startswith("id: "):
+285 +                 event_id = line[4:]
+286 +             elif line.startswith("data: ") and event_id is not None:
+287 +                 frames.append(json.loads(line[6:]))
+288 +                 event_id = None
+289 +                 if len(frames) >= count:
+290 +                     break
+291 |     return frames
+    |
+
+F841 Local variable `data` is assigned to but never used
+   --> tests/web_admin/test_workflows_page.py:283:13
+    |
+281 |             assert resp.status_code == 200
+282 |             event_id: str | None = None
+283 |             data: list[str] = []
+    |             ^^^^
+284 |             async for line in resp.aiter_lines():
+285 |                 if line.startswith("id: "):
+    |
+help: Remove assignment to unused variable `data`
+
+F841 Local variable `app` is assigned to but never used
+   --> tests/web_admin/test_workflows_page.py:320:5
+    |
+318 |     schema = module_pg_schema.schema_name
+319 |     run_id = await _seed_run(module_pg_pool, schema)
+320 |     app = _make_admin_app(module_pg_pool, schema)
+    |     ^^^
+321 |     frames = await _stream_frames(module_pg_schema, run_id)
+322 |     last_seq = frames[0]["seq"]
+    |
+help: Remove assignment to unused variable `app`
+
+RUF002 Docstring contains ambiguous `×` (MULTIPLICATION SIGN). Did you mean `x` (LATIN SMALL LETTER X)?
+   --> tests/web_admin/test_workflows_page.py:489:32
+    |
+487 |     """THE LATENCY BAND (set from the measurement, pinned — the G11
+488 |     method): the panel route's full read ≤ 50 ms p95 on this stack (the
+489 |     measured p95 is 3.2 ms — 15× headroom; the file:
+    |                                ^
+490 |     .measurements/t11-latency-band.json)."""
+491 |     import time as time_mod
+    |
+
+N814 Camelcase `BaseModel` imported as constant `_BM`
+   --> tests/web_admin/test_workflows_page.py:494:26
+    |
+493 |     schema = module_pg_schema.schema_name
+494 |     from pydantic import BaseModel as _BM  # noqa: PLC0415
+    |                          ^^^^^^^^^^^^^^^^
+495 |
+496 |     # A plain run (the panel read is status-independent).
+    |
+
+F401 [*] `pydantic.BaseModel` imported but unused
+   --> tests/web_admin/test_workflows_page.py:494:39
+    |
+493 |     schema = module_pg_schema.schema_name
+494 |     from pydantic import BaseModel as _BM  # noqa: PLC0415
+    |                                       ^^^
+495 |
+496 |     # A plain run (the panel read is status-independent).
+    |
+help: Remove unused import: `pydantic.BaseModel`
+    |
+493 |     schema = module_pg_schema.schema_name
+    -     from pydantic import BaseModel as _BM  # noqa: PLC0415
+494 |
+    |
+
+RUF100 [*] Unused `noqa` directive (non-enabled: `PLC0415`)
+   --> tests/web_admin/test_workflows_page.py:494:44
+    |
+493 |     schema = module_pg_schema.schema_name
+494 |     from pydantic import BaseModel as _BM  # noqa: PLC0415
+    |                                            ^^^^^^^^^^^^^^^
+495 |
+496 |     # A plain run (the panel read is status-independent).
+    |
+help: Remove unused `noqa` directive
+    |
+493 |     schema = module_pg_schema.schema_name
+    -     from pydantic import BaseModel as _BM  # noqa: PLC0415
+494 +     from pydantic import BaseModel as _BM
+495 |
+    |
+
+Found 12 errors.
+[*] 7 fixable with the `--fix` option (3 hidden fixes can be enabled with the `--unsafe-fixes` option).

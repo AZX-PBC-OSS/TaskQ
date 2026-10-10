@@ -1,0 +1,37 @@
+# the T20 streaming bands after the split — head 223a09b1, pg :5709 (the before: emit_tx p50 5.51ms, dispatch_200_chain p50 10.78ms on the same lane; the delta rides the co-tenant's concurrent battery load — 69 containers up — the band ASSERTIONS are the gate: tests/test_wf_perf_bands.py green in the suite)
+{
+  "measured_at": "2026-10-08T06:14:25.615863+00:00",
+  "dsn_schema": "band_after",
+  "page_size": 40,
+  "jit": "off (the container's tuning; fsync/synchronous_commit off)",
+  "emit_tx_per_page": {
+    "p50_ms": 6.685,
+    "p95_ms": 17.342,
+    "max_ms": 17.342,
+    "rounds": 5
+  },
+  "dispatch_band_200_chain": {
+    "p50_ms": 22.787,
+    "p95_ms": 25.636,
+    "max_ms": 29.85,
+    "rounds": 30
+  },
+  "dispatch_band_200_plain": {
+    "p50_ms": 12.212,
+    "p95_ms": 14.043,
+    "max_ms": 14.08,
+    "rounds": 30
+  },
+  "dispatch_band_800_mixed": {
+    "p50_ms": 12.207,
+    "p95_ms": 14.553,
+    "max_ms": 16.942,
+    "rounds": 30
+  },
+  "chain_fork_tx": {
+    "p50_ms": 5.795,
+    "p95_ms": 7.229,
+    "max_ms": 8.98,
+    "rounds": 50
+  }
+}

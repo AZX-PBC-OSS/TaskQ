@@ -1,0 +1,8 @@
+error[invalid-argument-type]: Argument is incorrect
+error[invalid-argument-type]: Argument to function `loop` is incorrect
+error[invalid-argument-type]: Argument is incorrect
+error[invalid-argument-type]: Argument to function `loop` is incorrect
+error[invalid-argument-type]: Argument to bound method `HitlClient.resolve` is incorrect
+error[invalid-argument-type]: Argument is incorrect
+error[no-matching-overload]: No overload of function `ensure_future` matches arguments
+error[invalid-argument-type]: Argument is incorrect

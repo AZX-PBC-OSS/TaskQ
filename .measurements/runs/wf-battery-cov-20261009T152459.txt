@@ -1,0 +1,7 @@
+# the wf battery + THE SCOPED COVERAGE GATE (head b4534d29edc132aca4e6501a8c5a0146576679cb)
+======================= 307 passed, 1 warning in 31.73s ========================
+[gate] head b4534d29edc1 (dirty=False)
+[gate] wf-scoped branch coverage 92.06% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261009T152532.json
+gate rc=0
+head: b4534d29edc132aca4e6501a8c5a0146576679cb

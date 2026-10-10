@@ -1,0 +1,320 @@
+FFFFFF                                                                   [100%]
+=================================== FAILURES ===================================
+____________ test_rollback_cell_the_v1_pod_never_claims_a_flow_row _____________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe445336c60>
+
+    @pytest.mark.timeout(600)
+    async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.3: a v1 worker (the VANILLA entry — no workflow capability)
+        meets a v2 fleet mid-run: the dispatch fence NEVER hands it a
+        workflow row (no crash loop — the pod claims nothing it cannot
+        execute); the capable fleet finishes the run; the additive-only
+        ledger means the vanilla rollback always safe — the v1 pod's own
+        writes are row shapes it knows (tags, statuses), never the wf
+        columns."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        v1: WorkerProc | None = None
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["v2a"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:364: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-v2a-1709698-M6FKcQbl.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+_____ test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock ______
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe445337110>
+
+    @pytest.mark.timeout(600)
+    async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.2: a held migration lock (a REAL session holding ACCESS
+        EXCLUSIVE on jobs) during a finalize → the transient classification
+        (``LockNotAvailable``) → the ladder retries → succeeds; no state
+        corruption, no orphaned counter decrement. The injection rides the
+        real held-migration-lock drill (a second session's ``LOCK TABLE``),
+        never a bespoke fault hack."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        lock_session: asyncpg.Connection | None = None
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["m1", "m2"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:286: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-m1-1709698-sdOXfsoU.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+_______ test_config_drift_cell_the_unserved_queue_is_named_not_orphaned ________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe445248320>
+
+    @pytest.mark.timeout(600)
+    async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.5: an in-flight run whose downstream node is re-routed to a
+        REMOVED queue: the node enters the blocked-with-reason state the
+        derivation renders, the row stays claimable (never a crash, never a
+        silent orphan), and the shipped alert's confirming read
+        (``TaskQQueueUnserved``: depth > 0 with zero live workers) names the
+        queue — the operator's next step is NAMED."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["d1"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:449: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-d1-1709698-ztduC4fk.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+______________________ test_cron_slot_fires_twice_one_run ______________________
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe4452496d0>
+
+    @pytest.mark.timeout(600)
+    async def test_cron_slot_fires_twice_one_run(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """G3's system-tier pin: the cron entry's slot fires twice (a clock
+        edge, an operator re-trigger) → ONE run — the run-level arbiter
+        composes with the cron-slot key. The variant regimes RACE (the two
+        creates run concurrently); one row is born."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["c1"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:521: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-c1-1709698-Ipuq8AmI.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+_______ test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once _______
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe44524a6c0>
+
+    @pytest.mark.timeout(600)
+    async def test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """F7: a worker receiving SIGTERM MID-LOOP-ITERATION must
+        finish-or-requeue per the termination grace; the loop's carry
+        advances EXACTLY ONCE on the requeue (no double-apply, no lost
+        iteration) — P3 rule 3's shape under drain."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["dr1", "dr2"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:598: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-dr1-1709698-kxtiQER0.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+___ test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves ____
+
+matrix_pool = <asyncpg.pool.Pool object at 0x7fe44660ba00>
+module_pg_schema = ModulePgSchema(schema_name='tq_4bf13c0c34', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_4bf13c0c3402')
+sys_ledger = <asyncpg.connection.Connection object at 0x7fe44524af30>
+
+    @pytest.mark.timeout(600)
+    async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves(
+        matrix_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+        sys_ledger: asyncpg.Connection,
+    ) -> None:
+        """§22.1: a node job mid-flight on a killed worker is re-pended by
+        the lease/reclaim machinery (``lock_expired``); the join counter
+        never moved while the row was owned by the corpse; a surviving pod
+        finishes the work; the per-attempt ``code_version`` record rides
+        BOTH claims (§22.1's per-attempt record)."""
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        fleet: dict[str, WorkerProc] = {}
+        try:
+>           fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["w1", "w2"])
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_wf_deploy_matrix.py:165: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/system_e2e/_wf_harness.py:78: in spawn_wf_fleet
+    fleet[name] = await spawn_joined_worker(
+tests/system_e2e/_harness.py:271: in spawn_joined_worker
+    wait_worker_ready(worker)
+tests/system_e2e/_harness.py:327: in wait_worker_ready
+    wait_for_socket(worker.sock_path, worker.proc)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+socket_path = '/tmp/tq-syse2e-wf-w1-1709698-Bqnkkzp9.sock'
+proc = <Popen: returncode: 1 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/python...>
+
+    def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+        """Block until the worker's health socket accepts, or fail loudly with
+        the worker's stderr (a bootstrap crash must not surface as a bare
+        socket timeout)."""
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _stdout, stderr = proc.communicate(timeout=5)
+>               raise RuntimeError(
+                    f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
+                )
+E               RuntimeError: worker exited rc=1 before readiness: ''
+
+tests/system_e2e/_harness.py:312: RuntimeError
+=========================== short test summary info ============================
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_rollback_cell_the_v1_pod_never_claims_a_flow_row
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_config_drift_cell_the_unserved_queue_is_named_not_orphaned
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_cron_slot_fires_twice_one_run
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once
+FAILED tests/system_e2e/test_wf_deploy_matrix.py::test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_moves
+6 failed in 3.69s

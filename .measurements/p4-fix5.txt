@@ -1,0 +1,346 @@
+.FF.....F........F...F......................                             [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+obj = Ingest(doc_id='d1')
+
+    def _orjson_fallback(obj: Any) -> Any:
+        """Convert types orjson can't serialize natively to a JSON-safe form.
+    
+        Only reached when *obj* is not a type orjson handles (UUID, datetime,
+        str, int, float, bool, None, list, dict).  Kept fast-path: the vast
+        majority of values never hit this function.
+        """
+        cls: type[Any] = type(obj)  # pyright: ignore[reportUnknownVariableType]  # Why: obj is Any from orjson's default function; type() always returns a valid type object.
+        mod = cls.__module__
+        name = cls.__qualname__
+    
+        # asyncpg protocol-level UUID, raw record access can leak these into
+        # structlog event dicts; convert to standard UUID string form.
+        if mod.startswith("asyncpg") and "UUID" in name:
+            return str(obj)
+    
+        # bytes in a log event dict, decode with replacement.
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="replace")
+    
+>       raise TypeError(f"Type is not JSON serializable: {mod}.{name}")
+E       TypeError: Type is not JSON serializable: tests.test_wf_context_contract.Ingest
+
+src/taskq/_json.py:74: TypeError
+
+The above exception was the direct cause of the following exception:
+
+value = {'wf_input': Ingest(doc_id='d1')}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+>           return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+E           TypeError: Type is not JSON serializable: Ingest
+
+src/taskq/_json.py:110: TypeError
+
+The above exception was the direct cause of the following exception:
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fec3cbe3e80>
+wf_schema = 'tq_377c0aef5e'
+wf_conn = <asyncpg.connection.Connection object at 0x7fec3ece58b0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return ["a", "b", "c"]  # the map's source returns the LIST (the fork's items)
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            if ctx.node_key != "asserting.item":
+                SEEN.setdefault("child_keys", []).append(ctx.node_key)
+                SEEN["child_failed"] = ctx.node_key
+            else:
+                SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+>       flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_context_contract.py:79: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:172: in create_flow
+    claim: RunClaim = await self._insert_root(input, run_key)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:187: in _insert_root
+    return await insert_flow_run(
+src/taskq/workflows/ledger.py:267: in insert_flow_run
+    entry.payload if isinstance(entry.payload, str) else dumps_jsonb_str(entry.payload or {}),
+                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/_json.py:202: in dumps_jsonb_str
+    data = dumps(value)
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+value = {'wf_input': Ingest(doc_id='d1')}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+            return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+        except TypeError as exc:
+>           raise UnencodableValue(str(exc)) from exc
+E           taskq.exceptions.UnencodableValue: Type is not JSON serializable: Ingest
+
+src/taskq/_json.py:116: UnencodableValue
+__________________ test_the_loop_ctx_carries_the_budget_wall ___________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fec3cbe3b80>
+wf_schema = 'tq_377c0aef5e'
+
+    async def test_the_loop_ctx_carries_the_budget_wall(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
+        number, not None — the wall EXISTS when budget_s is set)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["budget_ms"] = ctx.budget_remaining_ms
+            seen["flow_name"] = ctx.flow_name
+            return Done("finished")
+    
+        @app.workflow("ctx_budget")
+        def ctx_budget() -> object:
+            return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+    
+        runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()  # no input — ctx.input is None (the honest zero)
+        assert await runner.drive(flow_id) == "terminal"
+>       assert seen["flow_name"] == "ctx_budget"
+E       AssertionError: assert None == 'ctx_budget'
+
+tests/test_wf_context_contract.py:123: AssertionError
+__________________ test_capture_policies_none_and_errors_only __________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7fec3ed6ca00>
+wf_schema = 'tq_de7f1ede91'
+wf_conn = <asyncpg.connection.Connection object at 0x7fec39e1cc80>
+
+    async def test_capture_policies_none_and_errors_only(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """The declared capture policy decides the failing node's capture
+        jsonb: none → NO capture; errors-only → the error text, never the
+        input."""
+        from pydantic import BaseModel as _BM
+    
+        for policy, want_capture in (("none", False), ("errors-only", True)):
+            app = WorkflowApp()
+    
+            async def fails(ctx: Any, params: Ingest) -> str:
+                raise ValueError("the capture probe's boom")
+    
+            @app.workflow(f"cap_{policy}", capture=policy)
+            def cap_wf() -> object:
+                return build(step(fails, Ingest(doc_id="the input text"), key="solo"))
+    
+            runner = FlowRunner(app.get(f"cap_{policy}"), wf_pool, wf_schema)
+            flow_id = await runner.create_flow()
+            assert await runner.drive(flow_id) == "terminal"
+            rows = await wf_pool.fetch(
+                f'SELECT capture FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1',
+                flow_id,
+            )
+            captures = [r["capture"] for r in rows if r["capture"] is not None]
+            if want_capture:
+                assert captures, f"{policy}: the error capture must ride the ledger"
+                text = str(captures[-1])
+                assert "boom" in text
+            else:
+>               assert not captures, f"{policy}: the capture is REFUSED by the policy"
+E               AssertionError: none: the capture is REFUSED by the policy
+E               assert not ['{"error": "the capture probe\'s boom"}']
+
+tests/test_wf_coverage_closing.py:160: AssertionError
+_______________________ test_insert_node_the_deps_guard ________________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fec39e0c230>
+wf_schema = 'tq_9c33f2a049'
+
+    async def test_insert_node_the_deps_guard(wf_conn: Any, wf_schema: str) -> None:
+        """The joined node's counter guard: the deps_pending is the declared
+        parent count's twin — a mismatching spec is the named refusal."""
+>       from taskq.workflows import WorkflowSql
+E       ImportError: cannot import name 'WorkflowSql' from 'taskq.workflows' (/tmp/opencode/wt-taskqflow-p4/src/taskq/workflows/__init__.py). Did you mean: 'workflows'?
+
+tests/test_wf_coverage_closing2.py:83: ImportError
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_df2a1e31f8', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_df2a1e31f817')
+wf_pool = <asyncpg.pool.Pool object at 0x7fec3ed6f1c0>
+wf_conn = <asyncpg.connection.Connection object at 0x7fec39e0e990>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+            held = await runner.drive(run_id, until="held")
+            assert held == "held", f"round {round_no}: the run never held (the review gate)"
+            client = HitlClient(wf_pool, schema=schema)
+            (hold,) = await client.list(run_id)
+            result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
+            assert result.status == "delivered"
+            outcome = await runner.drive(run_id)
+            # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
+            # corrupted-terminal probe's lesson: a failed run is terminal
+            # too; asserting "terminal" alone was the vacuous assertion the
+            # cursored fence's first green hid behind).
+>           assert outcome == "terminal"
+E           AssertionError: assert 'max_ticks' == 'terminal'
+E             
+E             - terminal
+E             + max_ticks
+
+tests/test_doc_ingest_example.py:195: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 23:06:03 [info     ] signal.resolved                hold_id=01a11a1e-6b11-7f62-ac0f-bc127b7a99c1 run_id=01a11a1e-6a99-7d71-99e1-1102fef1196e signal=ReviewDecision
+2026-10-07 23:06:03 [debug    ] loop.wake                      loop=review remaining_ms=3599966
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+FAILED tests/test_wf_context_contract.py::test_the_loop_ctx_carries_the_budget_wall
+FAILED tests/test_wf_coverage_closing.py::test_capture_policies_none_and_errors_only
+FAILED tests/test_wf_coverage_closing2.py::test_insert_node_the_deps_guard - ...
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+5 failed, 39 passed in 137.14s (0:02:17)

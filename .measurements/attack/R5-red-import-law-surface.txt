@@ -1,0 +1,14 @@
+# F-R5's receipt — the §16.1 law's widened enforcement (every boot surface probed fresh-interpreter)
+# The widening: the old pin checked ONLY 'import taskq'; the violator (web/admin/_wf_rows.py:31-32,
+# module-scope 'from taskq.workflows._sql import WorkflowSql' + '_status import NodeView, derive_workflow_status',
+# transited by web/admin/workflows.py:48) sailed through. The widened probes cover web/admin + worker + api/root/cli.
+
+# ── the PRE-FIX tree (the module-scope import restored) — the WIDENED pin reds:
+E       AssertionError: {"surface": "import taskq.web.admin.workflows", "violates": true}
+E         
+E       assert '"violates": false' in '{"surface": "import taskq.web.admin.workflows", "violates": true}\n'
+FAILED tests/test_wf_schema_migration.py::test_import_law_every_boot_surface_never_imports_workflows[import taskq.web.admin.workflows]
+1 failed, 4 passed, 14 deselected in 1.96s
+
+# ── the same widened pin on the SAME pre-fix tree, the OLD probe's scope (root only) — green (the enforcement gap, visualized):
+1 passed, 18 deselected in 0.50s

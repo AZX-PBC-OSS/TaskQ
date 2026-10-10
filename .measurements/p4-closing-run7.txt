@@ -1,0 +1,156 @@
+....F.EFE                                                                [100%]
+==================================== ERRORS ====================================
+_________ ERROR at setup of test_capture_policies_none_and_errors_only _________
+
+self = <Coroutine test_capture_policies_none_and_errors_only>
+
+    def setup(self) -> None:
+        runner_fixture_id = f"_{self._loop_scope}_scoped_runner"
+        if runner_fixture_id not in self.fixturenames:
+            self.fixturenames.append(runner_fixture_id)
+        # When loop factories are configured, resolve the loop factory
+        # fixture early so that a factory variant change cascades cache
+        # invalidation before any async fixture checks its cache.
+        hook_caller = self.config.hook.pytest_asyncio_loop_factories
+        if hook_caller.get_hookimpls():
+            _ = self._request.getfixturevalue(_asyncio_loop_factory.__name__)
+>       return super().setup()
+               ^^^^^^^^^^^^^^^
+
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:558: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:944: in pytest_fixture_setup
+    hook_result = yield
+                  ^^^^^
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:407: in _asyncgen_fixture_wrapper
+    result = runner.run(setup(), context=context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:403: in setup
+    res = await gen_obj.__anext__()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/testing/fixtures.py:1079: in clean_pg_conn
+    await reset_schema(conn, module_pg_schema.schema_name)
+src/taskq/testing/pg.py:228: in reset_schema
+    await truncate_schema(conn, schema)
+src/taskq/testing/pg.py:193: in truncate_schema
+    await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:354: in execute
+    result = await self._protocol.query(query, timeout)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "tq_6a54f54f6f.wf_edge" does not exist
+
+asyncpg/protocol/protocol.pyx:369: UndefinedTableError
+____ ERROR at setup of test_ctx_step_the_memoized_replay_returns_the_record ____
+
+self = <Coroutine test_ctx_step_the_memoized_replay_returns_the_record>
+
+    def setup(self) -> None:
+        runner_fixture_id = f"_{self._loop_scope}_scoped_runner"
+        if runner_fixture_id not in self.fixturenames:
+            self.fixturenames.append(runner_fixture_id)
+        # When loop factories are configured, resolve the loop factory
+        # fixture early so that a factory variant change cascades cache
+        # invalidation before any async fixture checks its cache.
+        hook_caller = self.config.hook.pytest_asyncio_loop_factories
+        if hook_caller.get_hookimpls():
+            _ = self._request.getfixturevalue(_asyncio_loop_factory.__name__)
+>       return super().setup()
+               ^^^^^^^^^^^^^^^
+
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:558: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:944: in pytest_fixture_setup
+    hook_result = yield
+                  ^^^^^
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:407: in _asyncgen_fixture_wrapper
+    result = runner.run(setup(), context=context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py:726: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:403: in setup
+    res = await gen_obj.__anext__()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/testing/fixtures.py:1079: in clean_pg_conn
+    await reset_schema(conn, module_pg_schema.schema_name)
+src/taskq/testing/pg.py:228: in reset_schema
+    await truncate_schema(conn, schema)
+src/taskq/testing/pg.py:193: in truncate_schema
+    await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
+.venv/lib/python3.13/site-packages/asyncpg/connection.py:354: in execute
+    result = await self._protocol.query(query, timeout)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "tq_6a54f54f6f.wf_edge" does not exist
+
+asyncpg/protocol/protocol.pyx:369: UndefinedTableError
+=================================== FAILURES ===================================
+__________ test_the_pages_degrade_when_the_workflow_tables_are_absent __________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f10bd1c6140>
+module_pg_schema = ModulePgSchema(schema_name='tq_6a54f54f6f', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_6a54f54f6fa8')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f10b6f17200>
+
+    async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
+        module_pg_pool: Any, module_pg_schema: Any, clean_pg_conn: Any
+    ) -> None:
+        """THE UNINSTALLED DEGRADE: a schema without the workflow tables
+        renders the NOTICE (both pages), never a 500."""
+        import httpx
+    
+        schema = module_pg_schema.schema_name
+        await clean_pg_conn.execute(f'DROP TABLE IF EXISTS "{schema}".wf_signals')
+        await clean_pg_conn.execute(f'DROP TABLE IF EXISTS "{schema}".wf_edge')
+>       app = _make_admin_app(module_pg_pool, schema)
+              ^^^^^^^^^^^^^^^
+E       NameError: name '_make_admin_app' is not defined
+
+tests/test_wf_coverage_closing.py:224: NameError
+______ test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason ______
+
+    def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None:
+        from taskq.workflows._cli import FlowNodeRow, format_flow_status
+    
+        # THE EMPTY NODES (the honest degraded line + the remedy):
+        lines = format_flow_status(run_id="r-1", workflow="wf", root_status="running", nodes=[])
+        joined = "\n".join(lines)
+        assert "nodes: none yet" in joined
+        assert "taskq flows list" in joined
+        # The HOLD's REASON line (the context's reason rides the listing):
+        from taskq.workflows.api._hitl import HoldContext
+    
+        hold = HoldContext(
+            hold_id="h-9", run_id="r-1", node_key="review", signal_name="Approval",
+            hold_epoch=2, call_id="c", payload=None, payload_schema=None,
+            reason="waiting for the editor", created_at=None,
+            expires_at="soon", status="held",
+        )
+        lines = format_flow_status(
+            run_id="r-1", workflow="wf", root_status="running",
+            nodes=[FlowNodeRow(step_key="review", status="pending", hold=hold)],
+        )
+        joined = "\n".join(lines)
+>       assert "waiting for the editor" in joined
+E       assert 'waiting for the editor' in "run r-1\nworkflow: wf\nstatus: blocked  (derived from the node rows — §17.5; the root row caches 'running')\nnodes: 1... — waiting for: signal 'Approval' · hold h-9 · deadline soon\n       remedy: taskq flows resolve h-9 '<decision json>'"
+
+tests/test_wf_coverage_closing.py:260: AssertionError
+=========================== short test summary info ============================
+ERROR tests/test_wf_coverage_closing.py::test_capture_policies_none_and_errors_only
+ERROR tests/test_wf_coverage_closing.py::test_ctx_step_the_memoized_replay_returns_the_record
+FAILED tests/test_wf_coverage_closing.py::test_the_pages_degrade_when_the_workflow_tables_are_absent
+FAILED tests/test_wf_coverage_closing.py::test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason
+2 failed, 5 passed, 2 errors in 1.94s

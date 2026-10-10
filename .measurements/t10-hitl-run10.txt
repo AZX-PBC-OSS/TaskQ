@@ -1,0 +1,229 @@
+F.FF.....                                                                [100%]
+=================================== FAILURES ===================================
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdfc7e2d130>
+wf_schema = 'tq_f0f3fe5c2c'
+wf_pool = <asyncpg.pool.Pool object at 0x7fdfd412e740>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+        holds = {"n": 0}
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            holds["n"] += 1
+            decision = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if holds["n"] == 1:
+                # the SECOND hold (the same signal name — the new epoch)
+                second = await ctx.wait_signal(Approval, timeout_s=120.0)
+                return {"verdict": second.verdict, "note": "second"}
+            return {"verdict": decision.verdict, "note": "first"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+        assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+        # DELIVER → the resume re-executes → HOLD 2 (a NEW epoch, the same
+        # name — the (flow,name) PK variant would UniqueViolation HERE and
+        # wedge the iteration).
+        await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(rows[0]["id"]),
+            payload={"verdict": "approve"},
+            payload_json=json.dumps({"verdict": "approve"}),
+        )
+        await runner.drive(flow_id, until="held", max_ticks=100)
+        rows2 = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows2) == 2, "the second hold did not register (multi-hold broken)"
+E       AssertionError: the second hold did not register (multi-hold broken)
+E       assert 1 == 2
+E        +  where 1 = len([<Record id=UUID('01a11916-e34e-79b2-a730-e761f7405f16') hold_epoch=1 status='delivered'>])
+
+tests/test_wf_hitl_pins.py:297: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:18:12 [info     ] node.held                      hold_id=01a11916-e34e-79b2-a730-e761f7405f16 node=review run_id=01a11916-e329-7d92-9bc8-4a1ad1cb60d7 signals=['Approval']
+2026-10-07 18:18:12 [info     ] signal.delivered               hold_id=01a11916-e34e-79b2-a730-e761f7405f16 run_id=01a11916-e329-7d92-9bc8-4a1ad1cb60d7 signal=Approval
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdfc7ec88c0>
+wf_schema = 'tq_f0f3fe5c2c'
+wf_pool = <asyncpg.pool.Pool object at 0x7fdfd412f880>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE: two sequential waits in ONE body — the
+            # second registers a NEW hold (the first was CONSUMED — the
+            # watermark), each hold its own epoch.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+>       assert statuses.count("awaited") == 2, statuses
+E       AssertionError: ['awaited', 'awaited', 'awaited', 'awaited', 'awaited', 'awaited', ...]
+E       assert 7 == 2
+E        +  where 7 = <built-in method count of list object at 0x7fdfc7d141c0>('awaited')
+E        +    where <built-in method count of list object at 0x7fdfc7d141c0> = ['awaited', 'awaited', 'awaited', 'awaited', 'awaited', 'awaited', ...].count
+
+tests/test_wf_hitl_pins.py:228: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e54d-7b71-be26-174840598948 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e54d-7b71-be26-174840598948 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e56f-7ca1-bb2b-1eb085631a60 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e56f-7ca1-bb2b-1eb085631a60 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e58c-7431-8298-d8a27c091005 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e58c-7431-8298-d8a27c091005 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e5a5-7362-880b-2e0034ba2fe4 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e5a5-7362-880b-2e0034ba2fe4 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e5bd-7f80-a458-152a989d7907 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e5bd-7f80-a458-152a989d7907 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e5d5-7072-bb59-9908978975d9 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+2026-10-07 18:18:13 [info     ] signal.delivered               hold_id=01a11916-e5d5-7072-bb59-9908978975d9 run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signal=Approval
+2026-10-07 18:18:13 [info     ] node.held                      hold_id=01a11916-e5ec-76a0-b9c7-c8358a7ef285 node=review run_id=01a11916-e52a-7140-90ec-f7b3785709b4 signals=['Approval']
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fdfc7d0ec60>
+wf_schema = 'tq_f0f3fe5c2c'
+wf_pool = <asyncpg.pool.Pool object at 0x7fdfc7d20580>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds = await client.list(run=flow_id)
+        assert len(holds) == 1
+        hold = holds[0]
+        # THE ID IS THE REPLY HANDLE (uuid7 — time-ordered, NOT random).
+        parsed = uuid_module.UUID(hold.hold_id)
+        assert parsed.version == 7, parsed
+        # THE CONTEXT CONTRACT: the schema reference + the provenance.
+        assert hold.payload_schema is not None
+        assert "Approval" in hold.payload_schema
+        assert hold.signal_name == "Approval|Escalate"  # the tuple form's joined spelling — the canonical row name
+        assert hold.node_key == "review"
+        assert hold.status == "held"
+        # THE REDACT LAW EXTENDS (pin 11): the canary secret in the wait
+        # context must not reach the ENUMERATION surface — the client's
+        # redact hook (the chain-then-hook composition) scrubs it.
+        client_redacted = HitlClient(
+            wf_pool,
+            schema=wf_schema,
+            redact=lambda ctx: {
+                k: ("***" if "canary" in str(v) else v) for k, v in (ctx or {}).items()
+            }
+            if isinstance(ctx, dict)
+            else ctx,
+        )
+        holds_redacted = await client_redacted.list(run=flow_id)
+        assert all(
+            "sk-canary-never-leak" not in str(h.payload) for h in holds_redacted
+        ), "the canary reached the enumeration surface — the redact law is violated"
+        # THE RESOLVE (by id) + THE IDEMPOTENCE (the defined no-op).
+        first = await client.resolve(
+            hold.hold_id, {"verdict": "approve"}, reason="the operator's click", principal="op-1"
+        )
+>       assert first.status == "delivered", first
+E       AssertionError: DeliveryResult(status='no-op', reason='already delivered')
+E       assert 'no-op' == 'delivered'
+E         
+E         - delivered
+E         + no-op
+
+tests/test_wf_hitl_pins.py:365: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:18:20 [info     ] node.held                      hold_id=01a11916-ffb6-7493-9594-80bbad8e6e5e node=review run_id=01a11916-ff68-7993-88cc-f3e100292363 signals=['Approval', 'Escalate']
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+3 failed, 6 passed in 13.79s

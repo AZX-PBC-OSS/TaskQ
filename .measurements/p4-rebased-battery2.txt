@@ -1,0 +1,1380 @@
+............F...F.........FF.............F.................FFFFF.FFF..F. [ 46%]
+.......................................F...............F....F..F........ [ 92%]
+......F....                                                              [100%]
+=================================== FAILURES ===================================
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_e88e1c183e', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_e88e1c183e2e')
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098bce500>
+wf_conn = <asyncpg.connection.Connection object at 0x7f409820e990>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+>           held = await runner.drive(run_id, until="held")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_doc_ingest_example.py:184: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:848: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:864: in tick
+    await drain_outbox(self.pool, self.wsql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pool = <asyncpg.pool.Pool object at 0x7f4098bce500>
+wsql = WorkflowSql(schema='tq_e88e1c183e', terminal_mark='UPDATE tq_e88e1c183e.jobs\nSET status = $2::"tq_e88e1c183e".job_sta...status, result\nFROM tq_e88e1c183e.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+batch_size = 200, default_max_attempts = 3, default_retry_kind = 'transient'
+
+    async def drain_outbox(
+        pool: asyncpg.Pool,
+        wsql: WorkflowSql,
+        *,
+        batch_size: int = 200,
+        default_max_attempts: int = 3,
+        default_retry_kind: str = "transient",
+    ) -> int:
+        """The delivery half of the exactly-once fire (re-red-team F6).
+    
+        Read undelivered outbox rows (lock-first), insert the consumer rows
+        IDEMPOTENTLY on the consumer step key (the composite
+        ``(idempotency_scope, idempotency_key)`` arbiter — ``ON CONFLICT DO
+        NOTHING``), flip the undelivered flag IN THE INSERT'S TRANSACTION. A
+        crash between fire-commit and consumer-insert re-drains: the drain
+        completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
+        (actor/queue/payload) rides the outbox row's ``bindings`` — declared
+        on the JoinSpec, stamped at fork, resolved at fire.
+        """
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
+            if not rows:
+                return 0
+            ids = [new_uuid() for _ in rows]
+            # asyncpg returns the jsonb bindings as str on un-coded connections
+            # (the estate's _json seam parses; the stdlib import is banned).
+            bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
+            await conn.execute(
+                wsql.outbox_drain_consumers,
+                ids,
+                [b.get("actor", "workflow") for b in bindings],
+                [b.get("queue", "default") for b in bindings],
+                # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
+                # the DECLARED payload, never the transport envelope it rode
+                # in on (the envelope's actor/queue are the placement columns
+                # above; the payload key is the body's own contract).
+                [_jsonb(b.get("payload")) for b in bindings],
+                [default_max_attempts] * len(rows),
+                [default_retry_kind] * len(rows),
+                [r["join_job_id"] for r in rows],
+                [r["map_index"] for r in rows],
+                [r["consumer_step_key"] for r in rows],
+                # THE TRACE (§18.2's stamp-at-enqueue): the fire wrote the
+                # join's trace — or the fire's own id — into the bindings;
+                # the consumer row carries it, never a NULL.
+                [b.get("trace_id") for b in bindings],
+                # The consumer row's metadata: the flow link, no blocking
+                # reason (a normal step, dispatchable like any other).
+                [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
+                [f"workflow:{r['flow_id']}" for r in rows],
+                [
+                    # THE ARBITER'S KEY — the STATIC ROW's own convention
+                    # (``step_idempotency_key``): the map-join's downstream is
+                    # a static row since create (the consumption cure), so the
+                    # drain's consumer insert for it is the arbiter's CONFLICT
+                    # (the belt, never a second dispatch). The fired-join
+                    # consumer rows that DO insert fresh (a fork's own
+                    # item-shape consumer) keep the map-index leg.
+                    f"wf:{r['consumer_step_key']}"
+                    + (f":{r['map_index']}" if r["map_index"] is not None else "")
+                    for r in rows
+                ],
+            )
+            await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
+            # THE SPAWN'S EDGE ROW (attack4's direct-consumer cure): the
+            # spawned consumer's parent edge joins the EDGE LEDGER in the
+            # drain's own transaction — the parent-result resolution READS
+            # the ledger (``_PARENT_RESULTS_BY_KEY_SQL``), so a spawned
+            # consumer without its edge row could never resolve its parent's
+            # result (the dispatch-bug assert; the probe file:
+            # tests/attack4_wf_map_grandchild.py). The policy is the
+            # consumer's declared on_failure (the binding carried it).
+            edge_rows = [
+                (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+                for spawn_id, r, b in zip(ids, rows, bindings, strict=True)
+            ]
+            await conn.executemany(
+>               f"INSERT INTO {schema_of(wsql)}.wf_edge "  # noqa: S608  # Why: only the validated schema identifier interpolates; every value is $-bound.
+                               ^^^^^^^^^
+                "(child_id, flow_id, parent_id, failure_policy) "
+                "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                edge_rows,
+            )
+E           NameError: name 'schema_of' is not defined
+
+src/taskq/workflows/_sweep.py:312: NameError
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_47f07180ad', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_47f07180ad34')
+wf_pool = <asyncpg.pool.Pool object at 0x7f409cdeb940>
+wf_schema = 'tq_47f07180ad'
+wf_conn = <asyncpg.connection.Connection object at 0x7f4098b36b70>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+>       hold_id = _hold_id_of(holds.output)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:188: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+holds_output = "holds: none pending for run 01a119f5-c560-7a13-8dcd-fda75abf2245 (source: wf_signals rows with status = 'held')\n       that is a healthy zero — nothing in this run waits on a human\n"
+
+    def _hold_id_of(holds_output: str) -> str:
+        """The reply handle from the holds listing (the id IS the handle —
+        the parse mirrors the operator's copy-paste)."""
+        assert holds_output, f"the holds listing rendered nothing: {holds_output!r}"
+>       return holds_output.split("hold ")[1].split(" ")[0]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: list index out of range
+
+tests/test_wf_cli_pins.py:114: IndexError
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_47f07180ad', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_47f07180ad34')
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824e080>
+wf_schema = 'tq_47f07180ad', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+>       hold_id = _hold_id_of(holds.output)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:223: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+holds_output = "holds: none pending for run 01a119f5-caee-77c2-8e7c-33ac00e45f16 (source: wf_signals rows with status = 'held')\n       that is a healthy zero — nothing in this run waits on a human\n"
+
+    def _hold_id_of(holds_output: str) -> str:
+        """The reply handle from the holds listing (the id IS the handle —
+        the parse mirrors the operator's copy-paste)."""
+        assert holds_output, f"the holds listing rendered nothing: {holds_output!r}"
+>       return holds_output.split("hold ")[1].split(" ")[0]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: list index out of range
+
+tests/test_wf_cli_pins.py:114: IndexError
+______________ test_status_reports_the_blocked_run_and_the_remedy ______________
+
+cli_settings = ModulePgSchema(schema_name='tq_47f07180ad', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_47f07180ad34')
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824dcc0>
+wf_schema = 'tq_47f07180ad', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_status_reports_the_blocked_run_and_the_remedy(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        run_id = await _held_run(wf_pool, wf_schema)
+        result = await to_thread(runner.invoke, app, ["flows", "status", run_id])
+        assert result.exit_code == 0, result.output
+        out = plain_cli_output(result.output)
+>       assert "status: blocked" in out
+E       AssertionError: assert 'status: blocked' in 'run 01a119f5-cd0f-7b33-aef4-a3bd6c4dc590 workflow: cli_hold_flow status: failed (derived from the node rows — §17.5; ...dy: taskq flows retry 01a119f5-cd0f-7b33-aef4-a3bd6c4dc590 review (re-pends the node and re-opens its blocked closure)'
+
+tests/test_wf_cli_pins.py:175: AssertionError
+____________________ test_pin_20_outbox_drain_exactly_once _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409822f7a0>
+wf_schema = 'tq_98cdaaa010'
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f409824e980>
+wf_sql = WorkflowSql(schema='tq_98cdaaa010', terminal_mark='UPDATE tq_98cdaaa010.jobs\nSET status = $2::"tq_98cdaaa010".job_sta...status, result\nFROM tq_98cdaaa010.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+engine_redlog = <tests._wf_fixtures.RedLog object at 0x7f409cbefb10>
+
+    @pytest.mark.integration
+    async def test_pin_20_outbox_drain_exactly_once(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        module_pg_pool: asyncpg.Pool,
+        wf_sql: WorkflowSql,
+        engine_redlog: RedLog,
+    ) -> None:
+        """A crash between fire-commit and consumer-insert → the drain
+        completes the dispatch EXACTLY ONCE (the consumer insert idempotent
+        ``ON CONFLICT`` on the consumer step key via the composite arbiter,
+        the undelivered flag flipped in the insert's tx). The stranded-join
+        state (fired join, no consumer) and the double-insert variant each
+        red."""
+        flow_id = await seed_flow(wf_conn, wf_schema)
+    
+        # The finalize forks one child + a join declaring ONE consumer; the
+        # join fires in the same finalize's tx2 (deps 1 → 0) and the
+        # consumer's outbox row rides tx2. THE CRASH WINDOW: the worker dies
+        # before the drain — the outbox row sits undelivered.
+        fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+        fork = ForkSpec(
+            children=(ChildSpec(step_key="c", actor="wf", queue="default"),),
+            join=JoinSpec(
+                step_key="join",
+                actor="wf",
+                queue="default",
+                consumers=(ConsumerBinding(step_key="consumer", actor="wf", queue="default"),),
+            ),
+        )
+        # The fork parent's terminal + fork land atomically (the engine's own
+        # tx1); the join waits on its one child c.
+        child_ids, _join_id = await _fork_with_edges(
+            wf_conn, wf_schema, wf_sql, flow_id, fork_parent, fork
+        )
+    
+        # The child c is claimed (running) and finalizes → the join hits 0 and
+        # fires in its tx2; the consumer's outbox row rides the same tx2. The
+        # worker then DIES before the drain — the outbox row sits undelivered
+        # (the stranded-join state the drain exists to cure).
+        child_c = child_ids[0]
+        c_worker = new_uuid()
+        await wf_conn.execute(
+            f"UPDATE \"{wf_schema}\".jobs SET status = 'running', attempt = 1, "
+            "locked_by_worker = $2, claim_epoch = 0, lock_expires_at = "
+            "now() + interval '90 seconds' WHERE id = $1",
+            child_c,
+            c_worker,
+        )
+>       result = await finalize_node(
+            module_pg_pool,
+            wf_sql,
+            flow_id=flow_id,
+            job_id=child_c,
+            step_key="c",
+            worker_id=c_worker,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+        )
+
+tests/test_wf_fork_pins.py:312: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/engine.py:712: in finalize_node
+    hits, fired = await _deadlock_retry(_tx2)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:203: in _deadlock_retry
+    return await coro_factory()
+           ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:698: in _tx2
+    return await _run_tx2(
+src/taskq/workflows/engine.py:443: in _run_tx2
+    result = await _fire_and_deliver(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <PoolConnectionProxy [released] 0x7f409c9a7ac0>
+wsql = WorkflowSql(schema='tq_98cdaaa010', terminal_mark='UPDATE tq_98cdaaa010.jobs\nSET status = $2::"tq_98cdaaa010".job_sta...status, result\nFROM tq_98cdaaa010.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+flow_id = UUID('01a119f5-d1b6-7250-b822-f5c72e66fdc0')
+join_id = UUID('01a119f5-d1ce-7ba2-a490-c76e4c5ca7db')
+fire_id = UUID('01a119f5-d1e6-7e30-b4a7-5b51b7710b41'), fired_by = 'finalize'
+reducers = None
+
+    async def _fire_and_deliver(
+        conn: ConnLike,
+        wsql: WorkflowSql,
+        *,
+        flow_id: JobId,
+        join_id: JobId,
+        fire_id: JobId,
+        fired_by: str,
+        reducers: dict[str, Callable[[], Awaitable[None]]] | None,
+    ) -> FiredJoin | None:
+        """One guarded fire + its delivery: the fire statement (the rowcount
+        gate, the join-wait status, the flow-status EXISTS leg, the UNIQUE's
+        exactly-once) → the winner → the reducer body INSIDE the caller's tx2
+        → one outbox row per declared consumer. ``None`` = the guard refused
+        (another writer fired first, or the flow died): no outbox row, no body
+        — the PK/legs did their job."""
+        winner = await conn.fetchrow(wsql.fire, join_id, flow_id, fire_id, fired_by)
+        if winner is None:
+            return None
+        fired = FiredJoin(
+            join_job_id=JobId(winner["join_job_id"]),
+            step_key=winner["step_key"],
+            consumers=_consumer_bindings(winner["consumers"]),
+        )
+        if reducers is not None:
+            body = reducers.get(winner["step_key"])
+            if body is not None:
+                # The exactly-once boundary is the FIRE's boundary, never the
+                # body's: a raising reducer rolls tx2 back (the decrement, the
+                # fire row and the outbox rows all roll back), the re-derivation
+                # re-fires, and the body RE-RUNS — at-least-once body execution,
+                # stated.
+                await body()
+        if fired.consumers:
+            # THE TRACE RIDES THE OUTBOX (§18.2's stamp-at-enqueue): the
+            # consumer rows' trace_id is the join's own trace when it has one,
+            # else the FIRE's id — every consumer of one fire shares one trace
+            # chain, never a NULL trace on the drain's dispatch.
+            trace_id = winner["trace_id"] or str(fire_id)
+            await conn.executemany(
+                wsql.outbox_insert,
+                [
+                    (
+                        new_uuid(),
+                        fired.join_job_id,
+                        flow_id,
+                        c.step_key,
+                        c.map_index,
+                        _jsonb(
+                            {
+                                "actor": c.actor,
+                                "queue": c.queue,
+                                "payload": c.payload,
+                                "trace_id": trace_id,
+>                               "on_failure": c.on_failure,
+                                              ^^^^^^^^^^^^
+                            }
+                        ),
+                    )
+                    for c in fired.consumers
+                ],
+            )
+E           AttributeError: 'ConsumerBinding' object has no attribute 'on_failure'
+
+src/taskq/workflows/engine.py:374: AttributeError
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4098aaa030>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824e5c0>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7f409cbb2b50>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
+            # unconditional — the answers replay per attempt; the operator
+            # never re-answers): after both gates, the body fails ONCE (the
+            # ladder) then succeeds — the holds never touched the ladder.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+            await runner.drive(flow_id, until="held", max_ticks=50)
+            # deliver the pending hold (the operator's click)
+            held = await wf_conn.fetchval(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+                "AND status = 'held' ORDER BY id LIMIT 1",
+                flow_id,
+            )
+            if held is None:
+                break
+            await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(held),
+                payload={"verdict": "approve"},
+                payload_json=json.dumps({"verdict": "approve"}),
+            )
+        await runner.drive(flow_id, max_ticks=200)
+        ledger = await wf_conn.fetch(
+            f'SELECT status FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key = 'review' ORDER BY id",
+            flow_id,
+        )
+        statuses = [r["status"] for r in ledger]
+        # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
+        # holds NEVER consumed the ladder (the retries EXIST after holds).
+>       assert statuses.count("awaited") == 2, statuses
+E       AssertionError: ['failed', 'failed', 'failed']
+E       assert 0 == 2
+E        +  where 0 = <built-in method count of list object at 0x7f409b369b40>('awaited')
+E        +    where <built-in method count of list object at 0x7f409b369b40> = ['failed', 'failed', 'failed'].count
+
+tests/test_wf_hitl_pins.py:221: AssertionError
+_______________________ test_hold_to_resume_latency_band _______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4098b36300>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824f580>
+
+    async def test_hold_to_resume_latency_band(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G11c (the third unpinned workflow band — the band is SET from this
+        measurement, then pinned in perf-evidence-workflows.md): send_signal
+        commit → the row claimable."""
+        import time
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="band_flow"
+        )
+        hold_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+        )
+        start = time.perf_counter()
+        result = await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(hold_id),
+            payload={"verdict": "approve"},
+            payload_json=json.dumps({"verdict": "approve"}),
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+>       assert result.status == "delivered", f"the deliver refused: {result.reason}"
+E       AssertionError: the deliver refused: hold None is None — the deliver CAS refused
+E       assert 'refused' == 'delivered'
+E         
+E         - delivered
+E         + refused
+
+tests/test_wf_hitl_pins.py:538: AssertionError
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f4098b0d4f0>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824f640>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds = await client.list(run=flow_id)
+>       assert len(holds) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:326: AssertionError
+__________ test_pubsub_knock_is_a_pointer_and_the_consumer_converges ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f40981c9b80>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b15180>
+module_pg_schema = ModulePgSchema(schema_name='tq_afa9bc7823', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_afa9bc78234d')
+
+    async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+    ) -> None:
+        """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
+        + event) — NEVER the sole copy of the payload; a consumer that
+        MISSES the knock still converges by polling ``client.hitl.list()``
+        (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's
+        cure — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
+        nothing): a raw pg_notify consumer on the MODULE's database
+        (pg_notify is per-database — the env DSN's db is not the module's)
+        observes the resolved knock's SHAPE."""
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="knock_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds_before = await client.list(run=flow_id)
+>       assert len(holds_before) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:389: AssertionError
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409822d8b0>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b159c0>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT: the two wait sites are
+            # UNCONDITIONAL (the same sequence re-runs from the top on every
+            # resume; each attempt's cursor consumes the delivered answers in
+            # epoch order); the SECOND site's hold is a NEW EPOCH on the SAME
+            # signal name — the multi-hold.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            return {"verdict": second.verdict or first.verdict}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+E       assert (0 == 1)
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:270: AssertionError
+________________ test_double_send_is_a_defined_no_op_one_resume ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409cbe9b80>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b14c40>
+
+    async def test_double_send_is_a_defined_no_op_one_resume(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 2: two concurrent delivers → exactly ONE 'delivered' result,
+        exactly one resume (the 'held' → 'delivered' CAS is the fence)."""
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="double_send_flow"
+        )
+        hold_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+        )
+        payload_json = json.dumps({"verdict": "approve"})
+    
+        async def deliver_one() -> Any:
+            return await deliver_payload(
+                wf_pool,
+                schema=wf_schema,
+                workflow_id=flow_id,
+                hold_id=JobId(hold_id),
+                payload={"verdict": "approve"},
+                payload_json=payload_json,
+            )
+    
+        results = await asyncio.gather(deliver_one(), deliver_one())
+        delivered = [r for r in results if r.status == "delivered"]
+>       assert len(delivered) == 1, results
+E       AssertionError: [DeliveryResult(status='refused', reason='hold None is None — the deliver CAS refused'), DeliveryResult(status='refused', reason='hold None is None — the deliver CAS refused')]
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_wf_hitl_pins.py:155: AssertionError
+_______________ test_cancel_workflow_one_transaction_idempotent ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409cb78500>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b15f00>
+
+    async def test_cancel_workflow_one_transaction_idempotent(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 4 through the public API: the flip is the linearization;
+        the held signals → cancelled; IDEMPOTENT (cancel twice = one
+        cancel); the audit row is a ROW (the principal + the reason)."""
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+        flow_id, runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="cancel_flow"
+        )
+        first = await runner.cancel_workflow(flow_id, reason="the operator's stop", principal="op-9")
+>       assert first >= 1
+E       assert 0 >= 1
+
+tests/test_wf_hitl_pins.py:491: AssertionError
+____________________ test_signal_timeout_fires_on_db_clock _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409cb7bd40>
+wf_schema = 'tq_afa9bc7823'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b156c0>
+
+    async def test_signal_timeout_fires_on_db_clock(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 13 (G6): the expiry arm compares PG's clock — the expired
+        hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
+        REAL (the vacuous-audit's cure — the shipped pin's docstring claimed
+        the face it never exercised): the resume's wait site RAISES
+        :class:`taskq.exceptions.SignalTimeoutError` (the glossary
+        exception; the body's ladder/except owns it from there), the node
+        terminal-fails, and NO new epoch is ever minted — hold → expire →
+        re-hold → ∞ is the convicted dragon, kept red by the attack probe."""
+    
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=1.0)
+    
+        flow_id, runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="timeout_flow"
+        )
+        # THE DEADLINE PASSES (DB time).
+        await asyncio.sleep(1.1)
+        abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
+>       assert abandoned == 1
+E       assert 0 == 1
+
+tests/test_wf_hitl_pins.py:447: AssertionError
+__________ test_the_resolve_racing_the_cancel_lands_in_a_named_state ___________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f409824cd00>
+wf_schema = 'tq_2671afecaa'
+wf_conn = <asyncpg.connection.Connection object at 0x7f409b3e0410>
+
+    async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        """The operator resolves WHILE the cancel cascade runs: either the
+        resolve WINS (the hold delivered → the cancel's cascade resolves it
+        delivered — the node takes the cooperative path) or the CANCEL wins
+        (the resolve is the typed no-op/refusal). Every landing is a NAMED
+        state; the ZOMBIE WAKE (a delivered hold waking a cancelled node)
+        is the dragon this probe hunts."""
+        from taskq.workflows import cancel_workflow_run
+    
+        app = WorkflowApp()
+    
+        async def holds(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the race probe")
+            return "done"
+    
+        @app.workflow("attack4_race")
+        def attack4_race() -> object:
+            return build(step(holds, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("attack4_race"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+    
+        client = HitlClient(wf_pool, schema=wf_schema)
+>       (hold,) = await client.list(str(flow_id))
+        ^^^^^^^
+E       ValueError: not enough values to unpack (expected 1, got 0)
+
+tests/attack4_stuck_probes.py:168: ValueError
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+obj = Ingest(doc_id='d1')
+
+    def _orjson_fallback(obj: Any) -> Any:
+        """Convert types orjson can't serialize natively to a JSON-safe form.
+    
+        Only reached when *obj* is not a type orjson handles (UUID, datetime,
+        str, int, float, bool, None, list, dict).  Kept fast-path: the vast
+        majority of values never hit this function.
+        """
+        cls: type[Any] = type(obj)  # pyright: ignore[reportUnknownVariableType]  # Why: obj is Any from orjson's default function; type() always returns a valid type object.
+        mod = cls.__module__
+        name = cls.__qualname__
+    
+        # asyncpg protocol-level UUID, raw record access can leak these into
+        # structlog event dicts; convert to standard UUID string form.
+        if mod.startswith("asyncpg") and "UUID" in name:
+            return str(obj)
+    
+        # bytes in a log event dict, decode with replacement.
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="replace")
+    
+>       raise TypeError(f"Type is not JSON serializable: {mod}.{name}")
+E       TypeError: Type is not JSON serializable: tests.test_wf_context_contract.Ingest
+
+src/taskq/_json.py:74: TypeError
+
+The above exception was the direct cause of the following exception:
+
+value = {'wf_input': Ingest(doc_id='d1')}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+>           return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+E           TypeError: Type is not JSON serializable: Ingest
+
+src/taskq/_json.py:110: TypeError
+
+The above exception was the direct cause of the following exception:
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b17640>
+wf_schema = 'tq_0580f43322'
+wf_conn = <asyncpg.connection.Connection object at 0x7f409cb786e0>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return ["a", "b", "c"]  # the map's source returns the LIST (the fork's items)
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            if ctx.node_key != "asserting.item":
+                SEEN.setdefault("child_keys", []).append(ctx.node_key)
+                SEEN["child_failed"] = ctx.node_key
+            else:
+                SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            mapped = map_source(first, map_item, key="enrich")
+            return build(mapped)
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+>       flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_context_contract.py:79: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:724: in create_flow
+    claim: RunClaim = await self._insert_root(input, run_key)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:739: in _insert_root
+    return await insert_flow_run(
+src/taskq/workflows/ledger.py:267: in insert_flow_run
+    entry.payload if isinstance(entry.payload, str) else dumps_jsonb_str(entry.payload or {}),
+                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/_json.py:202: in dumps_jsonb_str
+    data = dumps(value)
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+value = {'wf_input': Ingest(doc_id='d1')}
+
+    def dumps(value: Any, /) -> bytes:
+        """Serialize to bytes. Uses orjson defaults (UTC datetimes, UUID, etc.).
+    
+        Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
+        set, so a dict with ``int`` (or other non-``str``) keys raises
+        ``TypeError`` instead of being silently coerced to strings. Dropping
+        the flag is 1.29-1.73x faster on str-keyed input (its only effect
+        there).
+    
+        This is a contract for raw (unvalidated) caller dicts ,
+        ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+        and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+        dump the dict directly): non-str keys raise ``TypeError`` instead of
+        silently coercing to ``{"1": ...}``. Pydantic-validated payloads are
+        unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+        validation (they do not coerce), so a payload that reaches
+        :class:`~taskq.backend._protocol.EnqueueArgs` through
+        ``jobs.enqueue`` already has string keys. Non-str keys are always
+        lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+        string keys, so failing fast surfaces at the boundary what would
+        otherwise surface as a silently rewritten key on read-back. NUL handling
+        (``dumps_jsonb_str``) and all other behaviour are unchanged.
+    
+        Every ``TypeError`` orjson raises here, a lone surrogate, a
+        non-``str`` dict key, an object the fallback cannot convert, is
+        re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+        ``TypeError`` subclass, so ``except TypeError`` callers and wording
+        pins are unaffected). The distinct class is what lets the retry
+        classifier fail a deterministic encoding defect non-retryably, and
+        what lets the durable-write boundary recognize exactly the family it
+        escapes rather than strands.
+        """
+        try:
+            return orjson.dumps(
+                value,
+                default=_orjson_fallback,
+                option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+            )
+        except TypeError as exc:
+>           raise UnencodableValue(str(exc)) from exc
+E           taskq.exceptions.UnencodableValue: Type is not JSON serializable: Ingest
+
+src/taskq/_json.py:116: UnencodableValue
+________ test_iteration_cap_terminated_by_the_advance_guard_named_state ________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409820c5f0>
+wf_schema = 'tq_f19fb2d56a'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b16200>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7f409c523a10>
+
+    async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """An always-Refine body terminates at max_iterations — the named
+        ``iteration_cap_exhausted`` state on the loop node, the FLOW
+        TERMINAL in the same tx (never wedged running)."""
+        spawns: list[int] = []
+    
+        async def refine_forever(ctx: Any, carry: object) -> Refine[dict[str, int]]:
+            spawns.append(1)
+            return Refine({"acc": len(spawns)})
+    
+        app, name = _loop_app(refine_forever, max_iterations=5)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:140: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:848: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:864: in tick
+    await drain_outbox(self.pool, self.wsql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pool = <asyncpg.pool.Pool object at 0x7f4098b16200>
+wsql = WorkflowSql(schema='tq_f19fb2d56a', terminal_mark='UPDATE tq_f19fb2d56a.jobs\nSET status = $2::"tq_f19fb2d56a".job_sta...status, result\nFROM tq_f19fb2d56a.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+batch_size = 200, default_max_attempts = 3, default_retry_kind = 'transient'
+
+    async def drain_outbox(
+        pool: asyncpg.Pool,
+        wsql: WorkflowSql,
+        *,
+        batch_size: int = 200,
+        default_max_attempts: int = 3,
+        default_retry_kind: str = "transient",
+    ) -> int:
+        """The delivery half of the exactly-once fire (re-red-team F6).
+    
+        Read undelivered outbox rows (lock-first), insert the consumer rows
+        IDEMPOTENTLY on the consumer step key (the composite
+        ``(idempotency_scope, idempotency_key)`` arbiter — ``ON CONFLICT DO
+        NOTHING``), flip the undelivered flag IN THE INSERT'S TRANSACTION. A
+        crash between fire-commit and consumer-insert re-drains: the drain
+        completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
+        (actor/queue/payload) rides the outbox row's ``bindings`` — declared
+        on the JoinSpec, stamped at fork, resolved at fire.
+        """
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
+            if not rows:
+                return 0
+            ids = [new_uuid() for _ in rows]
+            # asyncpg returns the jsonb bindings as str on un-coded connections
+            # (the estate's _json seam parses; the stdlib import is banned).
+            bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
+            await conn.execute(
+                wsql.outbox_drain_consumers,
+                ids,
+                [b.get("actor", "workflow") for b in bindings],
+                [b.get("queue", "default") for b in bindings],
+                # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
+                # the DECLARED payload, never the transport envelope it rode
+                # in on (the envelope's actor/queue are the placement columns
+                # above; the payload key is the body's own contract).
+                [_jsonb(b.get("payload")) for b in bindings],
+                [default_max_attempts] * len(rows),
+                [default_retry_kind] * len(rows),
+                [r["join_job_id"] for r in rows],
+                [r["map_index"] for r in rows],
+                [r["consumer_step_key"] for r in rows],
+                # THE TRACE (§18.2's stamp-at-enqueue): the fire wrote the
+                # join's trace — or the fire's own id — into the bindings;
+                # the consumer row carries it, never a NULL.
+                [b.get("trace_id") for b in bindings],
+                # The consumer row's metadata: the flow link, no blocking
+                # reason (a normal step, dispatchable like any other).
+                [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
+                [f"workflow:{r['flow_id']}" for r in rows],
+                [
+                    # THE ARBITER'S KEY — the STATIC ROW's own convention
+                    # (``step_idempotency_key``): the map-join's downstream is
+                    # a static row since create (the consumption cure), so the
+                    # drain's consumer insert for it is the arbiter's CONFLICT
+                    # (the belt, never a second dispatch). The fired-join
+                    # consumer rows that DO insert fresh (a fork's own
+                    # item-shape consumer) keep the map-index leg.
+                    f"wf:{r['consumer_step_key']}"
+                    + (f":{r['map_index']}" if r["map_index"] is not None else "")
+                    for r in rows
+                ],
+            )
+            await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
+            # THE SPAWN'S EDGE ROW (attack4's direct-consumer cure): the
+            # spawned consumer's parent edge joins the EDGE LEDGER in the
+            # drain's own transaction — the parent-result resolution READS
+            # the ledger (``_PARENT_RESULTS_BY_KEY_SQL``), so a spawned
+            # consumer without its edge row could never resolve its parent's
+            # result (the dispatch-bug assert; the probe file:
+            # tests/attack4_wf_map_grandchild.py). The policy is the
+            # consumer's declared on_failure (the binding carried it).
+            edge_rows = [
+                (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+                for spawn_id, r, b in zip(ids, rows, bindings, strict=True)
+            ]
+            await conn.executemany(
+>               f"INSERT INTO {schema_of(wsql)}.wf_edge "  # noqa: S608  # Why: only the validated schema identifier interpolates; every value is $-bound.
+                               ^^^^^^^^^
+                "(child_id, flow_id, parent_id, failure_policy) "
+                "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                edge_rows,
+            )
+E           NameError: name 'schema_of' is not defined
+
+src/taskq/workflows/_sweep.py:312: NameError
+_____________ test_infra_fault_routes_to_reclaim_never_the_ladder ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f409bfdfb60>
+wf_schema = 'tq_f19fb2d56a'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b16b00>
+
+    async def test_infra_fault_routes_to_reclaim_never_the_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """THE SEMANTICS DECISION, stated once — attack-3 H5's cure sharpened
+        it: the classifier reads WHERE the error ESCAPED, never merely its
+        type. A fault raised by the BODY is a BODY failure even when it
+        wears a ConnectionError's face (the body cannot forge an infra
+        fault — the poison-body wedge, 20 crashed rows + a ``running`` flow
+        forever, is the convicted variant the attack probe keeps red); a
+        fault raised by the DRIVER'S OWN machinery is the reclaim (the
+        ladder untouched, the lease machinery re-claims)."""
+        kills2: dict[str, int] = {"n": 0}
+    
+        async def body_failure(ctx: Any, carry: object) -> Done[dict[str, int]]:
+            kills2["n"] += 1
+            raise ConnectionError("the body's own network flake — deterministically")
+    
+        app2, name2 = _loop_app(body_failure, max_iterations=5)
+        runner2 = await _runner_of(app2, name2, wf_pool, wf_schema)
+        flow_id2 = await runner2.create_flow()
+>       await runner2.drive(flow_id2, max_ticks=30)
+
+tests/test_wf_loop_pins.py:283: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:848: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:864: in tick
+    await drain_outbox(self.pool, self.wsql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pool = <asyncpg.pool.Pool object at 0x7f4098b16b00>
+wsql = WorkflowSql(schema='tq_f19fb2d56a', terminal_mark='UPDATE tq_f19fb2d56a.jobs\nSET status = $2::"tq_f19fb2d56a".job_sta...status, result\nFROM tq_f19fb2d56a.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+batch_size = 200, default_max_attempts = 3, default_retry_kind = 'transient'
+
+    async def drain_outbox(
+        pool: asyncpg.Pool,
+        wsql: WorkflowSql,
+        *,
+        batch_size: int = 200,
+        default_max_attempts: int = 3,
+        default_retry_kind: str = "transient",
+    ) -> int:
+        """The delivery half of the exactly-once fire (re-red-team F6).
+    
+        Read undelivered outbox rows (lock-first), insert the consumer rows
+        IDEMPOTENTLY on the consumer step key (the composite
+        ``(idempotency_scope, idempotency_key)`` arbiter — ``ON CONFLICT DO
+        NOTHING``), flip the undelivered flag IN THE INSERT'S TRANSACTION. A
+        crash between fire-commit and consumer-insert re-drains: the drain
+        completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
+        (actor/queue/payload) rides the outbox row's ``bindings`` — declared
+        on the JoinSpec, stamped at fork, resolved at fire.
+        """
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
+            if not rows:
+                return 0
+            ids = [new_uuid() for _ in rows]
+            # asyncpg returns the jsonb bindings as str on un-coded connections
+            # (the estate's _json seam parses; the stdlib import is banned).
+            bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
+            await conn.execute(
+                wsql.outbox_drain_consumers,
+                ids,
+                [b.get("actor", "workflow") for b in bindings],
+                [b.get("queue", "default") for b in bindings],
+                # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
+                # the DECLARED payload, never the transport envelope it rode
+                # in on (the envelope's actor/queue are the placement columns
+                # above; the payload key is the body's own contract).
+                [_jsonb(b.get("payload")) for b in bindings],
+                [default_max_attempts] * len(rows),
+                [default_retry_kind] * len(rows),
+                [r["join_job_id"] for r in rows],
+                [r["map_index"] for r in rows],
+                [r["consumer_step_key"] for r in rows],
+                # THE TRACE (§18.2's stamp-at-enqueue): the fire wrote the
+                # join's trace — or the fire's own id — into the bindings;
+                # the consumer row carries it, never a NULL.
+                [b.get("trace_id") for b in bindings],
+                # The consumer row's metadata: the flow link, no blocking
+                # reason (a normal step, dispatchable like any other).
+                [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
+                [f"workflow:{r['flow_id']}" for r in rows],
+                [
+                    # THE ARBITER'S KEY — the STATIC ROW's own convention
+                    # (``step_idempotency_key``): the map-join's downstream is
+                    # a static row since create (the consumption cure), so the
+                    # drain's consumer insert for it is the arbiter's CONFLICT
+                    # (the belt, never a second dispatch). The fired-join
+                    # consumer rows that DO insert fresh (a fork's own
+                    # item-shape consumer) keep the map-index leg.
+                    f"wf:{r['consumer_step_key']}"
+                    + (f":{r['map_index']}" if r["map_index"] is not None else "")
+                    for r in rows
+                ],
+            )
+            await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
+            # THE SPAWN'S EDGE ROW (attack4's direct-consumer cure): the
+            # spawned consumer's parent edge joins the EDGE LEDGER in the
+            # drain's own transaction — the parent-result resolution READS
+            # the ledger (``_PARENT_RESULTS_BY_KEY_SQL``), so a spawned
+            # consumer without its edge row could never resolve its parent's
+            # result (the dispatch-bug assert; the probe file:
+            # tests/attack4_wf_map_grandchild.py). The policy is the
+            # consumer's declared on_failure (the binding carried it).
+            edge_rows = [
+                (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+                for spawn_id, r, b in zip(ids, rows, bindings, strict=True)
+            ]
+            await conn.executemany(
+>               f"INSERT INTO {schema_of(wsql)}.wf_edge "  # noqa: S608  # Why: only the validated schema identifier interpolates; every value is $-bound.
+                               ^^^^^^^^^
+                "(child_id, flow_id, parent_id, failure_policy) "
+                "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                edge_rows,
+            )
+E           NameError: name 'schema_of' is not defined
+
+src/taskq/workflows/_sweep.py:312: NameError
+___________ test_hold_inside_a_loop_pauses_the_budget_and_completes ____________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f40981cbc50>
+wf_schema = 'tq_f19fb2d56a'
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b156c0>
+
+    async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Spike1's subject at the composition (T19 x T10): a loop iteration
+        that HOLDS — the loop node's budget PAUSES (the wall is blind), the
+        operator's approval RESUMES (the pause lifts, the remaining is the
+        on-wake read), the loop COMPLETES — zero budget_exhausted events,
+        zero ladder burns. The P3 1a GREEN matrix, 6 checks."""
+        from taskq.workflows.api._hitl import deliver_payload
+        from taskq.workflows.api._sql_loop import (
+            ITERATION_STATE_BUDGET_EXHAUSTED,
+            LOOP_REMAINING_SQL,
+            render_loop_sql,
+        )
+    
+        async def hold_then_done(ctx: Any, carry: object) -> object:
+            if ctx.attempt == 1:
+                # THE HOLD (attempt 1 only — the re-execution doctrine: the
+                # answer replays from the ledger on the resume).
+                await ctx.wait_signal(Approval, timeout_s=120.0)
+                return Done({"acc": 1})
+            return Done({"acc": 1})
+    
+        app2 = WorkflowApp()
+    
+        @app2.workflow("hold_loop_flow")
+        def hold_loop_flow() -> object:
+            return build(loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0))
+    
+        runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # (1) the loop RUNS and HOLDS.
+>       verdict = await runner.drive(flow_id, until="held")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_loop_pins.py:537: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:848: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:864: in tick
+    await drain_outbox(self.pool, self.wsql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pool = <asyncpg.pool.Pool object at 0x7f4098b156c0>
+wsql = WorkflowSql(schema='tq_f19fb2d56a', terminal_mark='UPDATE tq_f19fb2d56a.jobs\nSET status = $2::"tq_f19fb2d56a".job_sta...status, result\nFROM tq_f19fb2d56a.jobs\nWHERE parent_id = $1::uuid AND status = 'succeeded' AND result IS NOT NULL\n")
+batch_size = 200, default_max_attempts = 3, default_retry_kind = 'transient'
+
+    async def drain_outbox(
+        pool: asyncpg.Pool,
+        wsql: WorkflowSql,
+        *,
+        batch_size: int = 200,
+        default_max_attempts: int = 3,
+        default_retry_kind: str = "transient",
+    ) -> int:
+        """The delivery half of the exactly-once fire (re-red-team F6).
+    
+        Read undelivered outbox rows (lock-first), insert the consumer rows
+        IDEMPOTENTLY on the consumer step key (the composite
+        ``(idempotency_scope, idempotency_key)`` arbiter — ``ON CONFLICT DO
+        NOTHING``), flip the undelivered flag IN THE INSERT'S TRANSACTION. A
+        crash between fire-commit and consumer-insert re-drains: the drain
+        completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
+        (actor/queue/payload) rides the outbox row's ``bindings`` — declared
+        on the JoinSpec, stamped at fork, resolved at fire.
+        """
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
+            if not rows:
+                return 0
+            ids = [new_uuid() for _ in rows]
+            # asyncpg returns the jsonb bindings as str on un-coded connections
+            # (the estate's _json seam parses; the stdlib import is banned).
+            bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
+            await conn.execute(
+                wsql.outbox_drain_consumers,
+                ids,
+                [b.get("actor", "workflow") for b in bindings],
+                [b.get("queue", "default") for b in bindings],
+                # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
+                # the DECLARED payload, never the transport envelope it rode
+                # in on (the envelope's actor/queue are the placement columns
+                # above; the payload key is the body's own contract).
+                [_jsonb(b.get("payload")) for b in bindings],
+                [default_max_attempts] * len(rows),
+                [default_retry_kind] * len(rows),
+                [r["join_job_id"] for r in rows],
+                [r["map_index"] for r in rows],
+                [r["consumer_step_key"] for r in rows],
+                # THE TRACE (§18.2's stamp-at-enqueue): the fire wrote the
+                # join's trace — or the fire's own id — into the bindings;
+                # the consumer row carries it, never a NULL.
+                [b.get("trace_id") for b in bindings],
+                # The consumer row's metadata: the flow link, no blocking
+                # reason (a normal step, dispatchable like any other).
+                [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
+                [f"workflow:{r['flow_id']}" for r in rows],
+                [
+                    # THE ARBITER'S KEY — the STATIC ROW's own convention
+                    # (``step_idempotency_key``): the map-join's downstream is
+                    # a static row since create (the consumption cure), so the
+                    # drain's consumer insert for it is the arbiter's CONFLICT
+                    # (the belt, never a second dispatch). The fired-join
+                    # consumer rows that DO insert fresh (a fork's own
+                    # item-shape consumer) keep the map-index leg.
+                    f"wf:{r['consumer_step_key']}"
+                    + (f":{r['map_index']}" if r["map_index"] is not None else "")
+                    for r in rows
+                ],
+            )
+            await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
+            # THE SPAWN'S EDGE ROW (attack4's direct-consumer cure): the
+            # spawned consumer's parent edge joins the EDGE LEDGER in the
+            # drain's own transaction — the parent-result resolution READS
+            # the ledger (``_PARENT_RESULTS_BY_KEY_SQL``), so a spawned
+            # consumer without its edge row could never resolve its parent's
+            # result (the dispatch-bug assert; the probe file:
+            # tests/attack4_wf_map_grandchild.py). The policy is the
+            # consumer's declared on_failure (the binding carried it).
+            edge_rows = [
+                (spawn_id, JobId(r["flow_id"]), r["join_job_id"], b.get("on_failure", "fail_closed"))
+                for spawn_id, r, b in zip(ids, rows, bindings, strict=True)
+            ]
+            await conn.executemany(
+>               f"INSERT INTO {schema_of(wsql)}.wf_edge "  # noqa: S608  # Why: only the validated schema identifier interpolates; every value is $-bound.
+                               ^^^^^^^^^
+                "(child_id, flow_id, parent_id, failure_policy) "
+                "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                edge_rows,
+            )
+E           NameError: name 'schema_of' is not defined
+
+src/taskq/workflows/_sweep.py:312: NameError
+________________ test_drive_until_held_sees_a_no_deadline_hold _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f4098b17400>
+wf_schema = 'tq_fd6efb5bd9'
+
+    async def test_drive_until_held_sees_a_no_deadline_hold(
+        wf_pool: object, wf_schema: str
+    ) -> None:
+        """THE LIVELock PIN, GREEN: the cure landed IN PHASE 4 (the held
+        marker is the question — `metadata ? 'hold'` replaced
+        `scheduled_at > now()` in the driver's held-count). The RED
+        evidence (the pre-cure spin, 126.82 s / 5000 ticks) is captured in
+        ``.measurements/p4-attack-held-drive-null-deadline.md``; this test
+        was strict-xfail until the cure flipped it — it stays a REGULAR pin
+        so a regression re-reds the suite."""
+        app = WorkflowApp()
+    
+        @app.workflow("attack4_held_no_deadline")
+        def attack4_held_no_deadline() -> object:
+            async def body(ctx: object, params: Ingest) -> str:
+                await ctx.wait_signal(Approval, reason="the legal eternal wait")  # type: ignore[attr-defined]  # Why: ctx is the runner's StepContext; the attribute is real.
+                return "published"
+    
+            return build(step(body, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("attack4_held_no_deadline"), wf_pool, wf_schema)  # type: ignore[arg-type]
+        flow_id = await runner.create_flow()
+        # The drive is BOUNDED (its own max_ticks pin) — the livelock class
+        # this pin convicts is the WRONG ANSWER, not a hang.
+        outcome = await runner.drive(flow_id, until="held", max_ticks=50)
+>       assert outcome == "held", f"the driver said {outcome!r} for a held run"
+E       AssertionError: the driver said 'terminal' for a held run
+E       assert 'terminal' == 'held'
+E         
+E         - held
+E         + terminal
+
+tests/attack4_wf_held_drive_livelock.py:57: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+FAILED tests/test_wf_fork_pins.py::test_pin_20_outbox_drain_exactly_once - At...
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_hold_to_resume_latency_band - Asserti...
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+FAILED tests/test_wf_hitl_pins.py::test_pubsub_knock_is_a_pointer_and_the_consumer_converges
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+FAILED tests/test_wf_hitl_pins.py::test_double_send_is_a_defined_no_op_one_resume
+FAILED tests/test_wf_hitl_pins.py::test_cancel_workflow_one_transaction_idempotent
+FAILED tests/test_wf_hitl_pins.py::test_signal_timeout_fires_on_db_clock - as...
+FAILED tests/attack4_stuck_probes.py::test_the_resolve_racing_the_cancel_lands_in_a_named_state
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+FAILED tests/test_wf_loop_pins.py::test_iteration_cap_terminated_by_the_advance_guard_named_state
+FAILED tests/test_wf_loop_pins.py::test_infra_fault_routes_to_reclaim_never_the_ladder
+FAILED tests/test_wf_loop_pins.py::test_hold_inside_a_loop_pauses_the_budget_and_completes
+FAILED tests/attack4_wf_held_drive_livelock.py::test_drive_until_held_sees_a_no_deadline_hold
+19 failed, 136 passed in 56.96s

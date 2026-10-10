@@ -1,0 +1,6 @@
+# THE HEAD-STAMP LAW'S VERDICT at the push head
+THE HEAD-STAMP LAW REDS (head 64a2cc435073):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261009T164848.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+verify rc=1
+head: 64a2cc435073a3b083f36167494eb2a288411556
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt

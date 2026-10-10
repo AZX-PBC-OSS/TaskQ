@@ -1,0 +1,35 @@
+F.......                                                                 [100%]
+=================================== FAILURES ===================================
+________ test_iteration_cap_terminated_by_the_advance_guard_named_state ________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7face31d0f50>
+wf_schema = 'tq_972163182e'
+wf_pool = <asyncpg.pool.Pool object at 0x7face32a6380>
+loop_redlog = <tests._wf_fixtures.RedLog object at 0x7face3166660>
+
+    async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
+    ) -> None:
+        """An always-Refine body terminates at max_iterations — the named
+        ``iteration_cap_exhausted`` state on the loop node, the FLOW
+        TERMINAL in the same tx (never wedged running)."""
+        spawns: list[int] = []
+    
+        async def refine_forever(ctx: Any, carry: object) -> Refine[dict[str, int]]:
+            spawns.append(1)
+            return Refine({"acc": len(spawns)})
+    
+        app, name = _loop_app(refine_forever, max_iterations=5)
+        runner = await _runner_of(app, name, wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        assert await runner.drive(flow_id) == "terminal"
+        # EXACTLY max_iterations spawns (the cap bounds total spawns).
+>       assert len(spawns) == 5, len(spawns)
+E       AssertionError: 6
+E       assert 6 == 5
+E        +  where 6 = len([1, 1, 1, 1, 1, 1])
+
+tests/test_wf_loop_pins.py:143: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_loop_pins.py::test_iteration_cap_terminated_by_the_advance_guard_named_state
+1 failed, 7 passed in 6.78s

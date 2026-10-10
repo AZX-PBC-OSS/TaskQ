@@ -374,11 +374,98 @@ async def delete_tagged(conn: asyncpg.Connection, schema: str, tag: str) -> None
     await conn.execute(f'DELETE FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]', tag)
 
 
-async def assert_balanced(conn: asyncpg.Connection, schema: str, tag: str) -> dict[str, int]:
+#: The client-side bound on ONE cleanup attempt (the two deletes). A
+#: healthy pair lands in milliseconds; the bound exists for the weather
+#: classes, so a hung attempt cannot consume the scenario's own budget.
+_DELETE_ATTEMPT_BOUND_S = 30.0
+
+
+async def delete_tagged_resilient(
+    conn: asyncpg.Connection, pg_dsn: str, schema: str, tag: str
+) -> None:
+    """Teardown that survives the ledger connection's own death.
+
+    The system-e2e (17) leg's conviction (run 38053606389 at f7155214):
+    a silently-dead PG socket turned ONE infrastructure event into
+    THREE legs — the scenario hung past its pytest-timeout, the test's
+    ``finally`` hung on the SAME dead socket (the test task was left
+    pending at call end — the teardown error), and the never-deleted
+    tagged population (same module schema, same per-scenario tag)
+    contaminated the SIBLING scenario's own population read. The law
+    this helper lands: a scenario's population must be deleted EVEN
+    WHEN the ledger connection it ran on died — the rows are the
+    scenario's own residue, and a fresh connection is one the dead
+    socket cannot veto.
+
+    Two attempts, each bounded (``_DELETE_ATTEMPT_BOUND_S``): the
+    ledger connection first (the healthy path, byte-identical to
+    :func:`delete_tagged`), then — on ANY failure (a dead socket's
+    hang, its fast ``ConnectionDoesNotExistError``, the server-side
+    statement timeout) — ONE fresh connection off the DSN and the same
+    delete. The fresh attempt's failure is logged and swallowed: the
+    cleanup runs in a test's ``finally`` and must never mask the
+    scenario's own verdict; a persisting residue surfaces through the
+    sibling scenarios' population asserts, the same loudness the
+    conviction's failure carried.
+    """
+    import contextlib
+
+    from taskq.obs import get_logger
+
+    logger = get_logger(__name__)
+    try:
+        async with asyncio.timeout(_DELETE_ATTEMPT_BOUND_S):
+            await delete_tagged(conn, schema, tag)
+        return
+    except Exception as first:  # Why: the cleanup's own law - a dead ledger connection may surface as a hang, a driver error, or a server timeout; every shape takes the same fresh-connection retry.
+        logger.warning(
+            "tagged-delete-ledger-failed",
+            kind="tagged_delete_ledger_failed",
+            schema=schema,
+            tag=tag,
+            error=repr(first),
+        )
+    try:
+        async with asyncio.timeout(_DELETE_ATTEMPT_BOUND_S):
+            fresh = await asyncpg.connect(pg_dsn)
+    except Exception as connect_exc:  # Why: same law - the connect itself is the dead weather's next victim; the residue surfaces downstream, the finally never masks the test.
+        logger.error(
+            "tagged-delete-reconnect-failed",
+            kind="tagged_delete_reconnect_failed",
+            schema=schema,
+            tag=tag,
+            error=repr(connect_exc),
+        )
+        return
+    try:
+        async with asyncio.timeout(_DELETE_ATTEMPT_BOUND_S):
+            await delete_tagged(fresh, schema, tag)
+    except Exception as retry_exc:
+        logger.error(
+            "tagged-delete-retry-failed",
+            kind="tagged_delete_retry_failed",
+            schema=schema,
+            tag=tag,
+            error=repr(retry_exc),
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await fresh.close()
+
+
+async def assert_balanced(
+    conn: asyncpg.Connection, schema: str, tag: str, *, settle: bool = True
+) -> dict[str, int]:
     """Run the shared invariants over the tagged population and return the
     live status counts. Every scenario ends here; a violation names its
-    own defect in the failure message."""
-    counts = await settle_terminal(conn, schema, tag, cap_secs=120.0 * TIER_LOAD_STRETCH)
+    own defect in the failure message. ``settle=False`` is the LIVE-run
+    variant (a scenario whose run STAYS live by design — the config-drift
+    cell's unserved node never resolves): the conservation and the audit
+    trail still close, the terminal settle does not."""
+    if settle:
+        counts = await settle_terminal(conn, schema, tag, cap_secs=120.0 * TIER_LOAD_STRETCH)
+    else:
+        counts = {}
     violations = await conservation_violations(conn, schema, tag)
     violations += await audit_violations(conn, schema, tag)
     assert not violations, "the system invariants do not balance after settle:\n" + "\n".join(

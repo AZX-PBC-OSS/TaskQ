@@ -1,0 +1,35 @@
+    
+        monkeypatch.setattr(audit_mod, "record_admin_action", exploding_record)
+        try:
+            with pytest.raises(RuntimeError):
+                await cancel_workflow_run(module_pg_pool, schema=schema, flow_id=JobId(run_id))
+        finally:
+            monkeypatch.setattr(audit_mod, "record_admin_action", real_record)
+    
+        # THE TORN STATE: what did the rows land in?
+        root = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', run_id
+        )
+        signal = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold.hold_id
+        )
+        # THE INVARIANT (the atomic cancel's contract): the run flip and the
+        # signal leg land TOGETHER or NOT AT ALL. The second connection breaks
+        # it: expect the signal 'cancelled' while the root is NOT cancelled.
+        if signal == "cancelled" and root != "cancelled":
+>           pytest.fail(
+                "THE TORN CANCEL, OBSERVED: the signal leg ran on its own "
+                f"connection and SURVIVED the outer rollback (signal={signal!r}, "
+                f"root={root!r}) — a held operator's decision is gone on a run "
+                "that never cancelled"
+            )
+E           Failed: THE TORN CANCEL, OBSERVED: the signal leg ran on its own connection and SURVIVED the outer rollback (signal='cancelled', root='running') — a held operator's decision is gone on a run that never cancelled
+
+tests/attack4-cli-races.py:525: Failed
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 02:34:37 [info     ] node.held                      hold_id=01a11add-5c99-73d0-bc2f-394e4657c69f node=review run_id=01a11add-5c7f-7333-975f-cf262a6037e7 signals=['Approval']
+=========================== short test summary info ============================
+XFAIL tests/attack4-cli-races.py::test_the_why_stuck_arm_names_the_TRUE_blocker - F-P4-WHYSTUCK-LADDER-LIE: the status read drops the attempt counters — every failed row reads 'ladder headroom 3 attempt(s) left'
+FAILED tests/attack4-nothing-stuck-probes.py::test_a_hold_without_payload_schema_meets_the_typed_door
+FAILED tests/attack4-cli-races.py::test_the_torn_cancel_the_signal_leg_rides_a_second_connection
+2 failed, 1 xfailed in 3.05s

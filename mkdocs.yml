@@ -102,6 +102,11 @@ nav:
       - Workers: guides/workers.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
+      - Workflows (DAG Engine): guides/workflows.md
+      - Agent Fleets (LLM-gated): guides/agent-fleet.md
+      - Event-Intel Pipelines: guides/event-pipeline.md
+      - Task Stacks: guides/task-stacks.md
+      - Pattern Catalog: guides/patterns.md
       - Cancellation: guides/cancellation.md
       - Progress Tracking: guides/progress.md
       - Workgroups: guides/workgroups.md
@@ -118,6 +123,7 @@ nav:
       - Managed Identities & BYO Connections: guides/managed-identities.md
       - CLI: guides/cli.md
       - Troubleshooting: guides/troubleshooting.md
+      - Migrating Graph-Checkpoint Workflows: guides/migrating-graph-checkpoints.md
       - Upgrading: guides/upgrading.md
       - Production Deployment: guides/deployment.md
       - Scaling: guides/scaling.md
@@ -127,6 +133,7 @@ nav:
       - Package Overview: api-reference/taskq.md
       - Actor: api-reference/actor.md
       - Client: api-reference/client.md
+      - Workflows (Flow API): api-reference/workflows.md
       - Exceptions: api-reference/exceptions.md
       - Retry: api-reference/retry.md
       - Worker: api-reference/worker.md

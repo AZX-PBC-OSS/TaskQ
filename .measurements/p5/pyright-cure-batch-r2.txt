@@ -1,0 +1,13 @@
+/tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py
+  /tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py:8:29 - error: Import "AsyncIterator" is not accessed (reportUnusedImport)
+  /tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py:1108:19 - error: Return type is unknown (reportUnknownParameterType)
+  /tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py:1108:32 - error: "AsyncGenerator" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p5/src/taskq/web/admin/jobs.py:1118:27 - error: Argument of type "CoroutineType[Any, Any, Unknown]" cannot be assigned to parameter "gen" of type "AsyncGenerator[GenT@release_after, None]" in function "release_after"
+    "CoroutineType[Any, Any, Unknown]" is incompatible with protocol "AsyncGenerator[GenT@release_after, None]"
+      "__anext__" is not present
+      "asend" is not present
+      "athrow" is not present
+      "aclose" is not present
+      "__aiter__" is not present (reportArgumentType)
+4 errors, 0 warnings, 0 informations
+0 errors, 0 warnings, 0 informations

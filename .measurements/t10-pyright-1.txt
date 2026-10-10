@@ -1,0 +1,41 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:482:31 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_hitl.py:483:27 - error: Argument of type "str" cannot be assigned to parameter "_x" of type "UUID" in function "__init__"
+    "str" is not assignable to "UUID" (reportArgumentType)
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:146:9 - error: Type of "names" is partially unknown
+    Type of "names" is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:147:19 - error: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__new__"
+    Argument type is "Generator[Unknown, None, None]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:147:34 - error: Type of "m" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:151:9 - error: Type of "models" is partially unknown
+    Type of "models" is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:164:22 - error: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:176:73 - error: Argument type is partially unknown
+    Argument corresponds to parameter "signal_names" in function "__init__"
+    Argument type is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:186:55 - error: Type of "m" is partially unknown
+    Type of "m" is "Unknown | Any" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:189:17 - error: Argument of type "PoolConnectionProxy[Record]" cannot be assigned to parameter "conn" of type "Connection[Record]" in function "register_hold"
+    "PoolConnectionProxy[Record]" is not assignable to "Connection[Record]" (reportArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:194:29 - error: Argument type is partially unknown
+    Argument corresponds to parameter "signal_name" in function "register_hold"
+    Argument type is "Unknown | Any | LiteralString" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:194:45 - error: Argument type is partially unknown
+    Argument corresponds to parameter "obj" in function "len"
+    Argument type is "tuple[Unknown, ...] | tuple[Any]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:194:71 - error: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "join"
+    Argument type is "tuple[Unknown, ...]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:206:21 - error: "dumps_jsonb_str" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:206:21 - error: Argument type is unknown
+    Argument corresponds to parameter "args" in function "execute" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:208:60 - error: Argument type is partially unknown
+    Argument corresponds to parameter "signal_names" in function "__init__"
+    Argument type is "tuple[Unknown] | tuple[Any] | tuple[Unknown, ...]" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:219:16 - error: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+17 errors, 0 warnings, 0 informations

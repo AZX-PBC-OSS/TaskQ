@@ -835,6 +835,52 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 
 ---
 
+## TaskQWorkflowBlockedStuck
+
+**What fired.** `taskq_wf_progress_nodes_total{state="blocked"} > 0` for 30 minutes: workflow node rows are sitting in a BLOCKED representation — join-wait (`pending` + `deps_pending > 0`), a blocked-with-reason stamp (`metadata.blocking_reason` set), or held (a future `scheduled_at` deadline + an unresolved signal row) — with no transition for half an hour. The gauge is sampled by the maintenance leader on the admin's surface, dimensioned by the DECLARED workflow (`_other_` carries the unregistered collapse; never per-node labels).
+
+**How to confirm.**
+
+- Metric: `taskq_wf_progress_nodes_total{state="blocked"}` per workflow. A healthy fleet reads 0 or a number that moves; a pinned count with the run's other states frozen is a wedged run.
+- SQL: the blocked nodes and their reasons (the run id from the workflow's run key / the admin's runs page):
+
+  ```sql
+  SELECT id, step_key, status, deps_pending,
+         metadata->>'blocking_reason' AS blocking_reason,
+         metadata->>'failed_parent'   AS failed_parent
+  FROM taskq.jobs
+  WHERE (metadata->>'flow_id')::uuid = $1
+  ORDER BY id;
+  ```
+
+- Read `metadata.blocking_reason`:
+  - `'join'` — the join is waiting on its parents: check the parents' states (the per-node rollup query, `docs/guides/insights.md`'s blocked-by recipe). A parent stuck mid-ladder is normal; a parent gone (pruned, never inserted) wedges the join — the sweep stamps it `'orphan_parent'`.
+  - `'orphan_parent'` — an edge points at a parent row that does not exist (a misnamed child): the join can never fire; fix the definition and re-run.
+  - `'failed_parent'` — the fail-closed cascade resolved this join because a parent TERMINALLY failed (the record names the parent). The workflow is failed; this is the record, not a wedge.
+  - `'body_unavailable'` — the join FIRED but its reducer body resolved NOWHERE: the delivery continued, the record is loud. **This is a deployment defect**: the workflow's definitions are not imported in every worker process — the fire arm resolves bodies from the REGISTERED definition (D1); make every worker carry the same definitions.
+- If a run's rows are blocked but its flow root is `running` with NO live nodes, the sweep's maintenance leg will resolve the root at its next tick; a root still `running` past a tick or two is the sweep's own health (see [TaskQPromotionStalled](#taskqpromotionstalled) — the same signature, different sweep).
+
+**What not to do.** Do not hand-flip `deps_pending` to 0: the counter is a CACHE of the edge ledger's truth, and a hand-zeroed join fires over a partial record. Resolve the parents (or cancel the run) and let the re-derivation do the write.
+
+**The stuck-run drill** (the run-level face of the same alert — a run whose nodes are blocked is what this alert measures):
+
+- CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the ladder headroom).
+- CLI: `taskq flows holds <run_id>` — the pending HITL holds. A hold past its `expires_at` is the expiry sweep's input (the sweep resolves it `expired` per the gate's `on_timeout`).
+- Admin: the run page (`/taskq/workflows/<id>`) renders the same derivation + the audit trail (who resolved what, when).
+
+**How to remediate.**
+
+1. The run holds on a human: `taskq flows resolve <hold_id> '<decision json>' --app myapp.workflows:app` (the typed door — a wrong payload is refused with the named error and the hold survives).
+2. A node failed with ladder headroom: `taskq flows retry <run_id> <node>` (the ledger is kept; the ceiling raises; the blocked closure re-opens).
+3. A join waiting on the fence's record (`failed_parent`/`orphan_parent`/`flow_dead`): the parent's retry re-opens it; a `flow_dead` join is the flow's own death — the run is terminal, start a new run.
+4. The run should never finish: `taskq flows cancel <run_id> --reason ...` (the cascade resolves the held signals in the same snapshot; the audit row carries the reason).
+
+**The hold-expiry face** (a resolved-loud `expired` under the same alert's held arm): the signals' expiry sweep resolved hold rows past their deadline — a human did not answer in the gate's window, and the gate's `on_timeout` policy took over (`fail` → the node fails through the ladder; the sweep-enforced cap). Confirm with `taskq flows holds <run_id>` (the pending set) vs the run's `wf_signals` rows with `status='expired'`; the node panel's attempt ledger shows the expiry's terminal. Remediate by re-running the node (`taskq flows retry <run_id> <node>`) — the re-run registers a NEW hold (a NEW epoch; the stale payload cannot answer it — the epoch is the fence). If the deadline was too tight for the humans, declare a longer `timeout_s=` at the gate (or accept the W1 warning and wait forever — deliberately, with the warning read).
+
+Nothing is lost by waiting: a held run's budget is PAUSED (the hold counts for nothing on wake), and the rows are the truth — the driver picks the work up when the resolve lands.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md): the metrics these alerts evaluate,
@@ -842,3 +888,16 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 - [Configuration](configuration.md): `TASKQ_EVENT_WRITER_*`,
   `TASKQ_SWEEP_*` and `TASKQ_CRON_TICK_LIMIT` knobs referenced above.
 - [Troubleshooting](troubleshooting.md): symptom-first diagnosis paths.
+
+---
+
+*The workflow rows' alert anchoring (the F-R3 discipline): every
+`## TaskQ…` heading in this file's alert rows names a rule SHIPPED in
+BOTH `src/taskq/contrib/prometheus/rules.yaml` and
+`src/taskq/contrib/kubernetes/prometheus_rule.yaml` — a runbook row an
+alert cannot fire is a page that lies (the pinned cross-check:
+`tests/test_prometheus_metrics_review.py`'s runbook-anchor pin). The
+former `TaskQWfRunStuck` / `TaskQWfHoldExpired` rows had no shipped
+rule to fire — their operational content (the stuck-run drill, the
+hold-expiry face) lives in `TaskQWorkflowBlockedStuck`'s row, the alert
+that actually measures the blocked/held shape.*

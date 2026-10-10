@@ -1,0 +1,6 @@
+# the CI's exact lint steps (ruff check . / ruff format --check .)
+All checks passed!
+ruff-check rc=0
+1659 files already formatted
+format rc=0
+head: 64a2cc435073a3b083f36167494eb2a288411556

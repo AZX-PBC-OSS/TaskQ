@@ -1,0 +1,41 @@
+=== THE FINAL PROOF at 87a77a905332076940c62aaa6df6e985a9244b8e — 2026-10-10T07:31:47Z
+
+[1/9] ruff:
+[*] 2 fixable with the `--fix` option.
+[2/9] format:
+1676 files already formatted
+[3/9] pyright FULL:
+0 errors, 0 warnings, 0 informations
+[4/9] the type gate:
+the type gate holds: every MUST_ERROR marker (36) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+[5/9] the pin families:
+1 failed, 86 passed in 12.01s
+[6/9] the wf battery x2:
+1 failed, 551 passed, 1 skipped, 3 warnings in 125.15s (0:02:05)
+1 failed, 551 passed, 1 skipped, 3 warnings in 123.41s (0:02:03)
+[7/9] mkdocs strict:
+INFO    -  Documentation built in 15.72 seconds
+[8/9] the head-stamp verifier:
+  wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261009T235847.json is stale — recorded on 4879c13a995e, the head is 87a77a905332. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+VERIFIER-RC=0
+[9/9] THE FAST TIER AT -n 8:
+  | ExceptionGroup: errors while tearing down <Module test_ratelimit_peek_reset.py> (2 sub-exceptions)
+    |     raise error[0]
+    |     raise last_error or exceptions.TargetServerAttributeNotMatched(
+    raise error[0]
+    raise last_error or exceptions.TargetServerAttributeNotMatched(
+    raise error[0]
+    raise last_error or exceptions.TargetServerAttributeNotMatched(
+happy_eyeballs_delay = None, interleave = None, all_errors = False
+            all_errors=False):
+            # Use host as default for server_hostname.  It is an error
+            # already-connected socket was passed or when only a port
+            # is given.  To avoid this error, you can pass
+                    if all_errors:
+                        raise ExceptionGroup("create_connection failed", exceptions)
+                        # the various error messages.
+E                           OSError: Multiple exceptions: [Errno 111] Connect call failed ('::1', 5756, 0, 0), [Errno 111] Connect call failed ('127.0.0.1', 5756)
+    raise error[0]
+    raise last_error or exceptions.TargetServerAttributeNotMatched(
+happy_eyeballs_delay = None, interleave = None, all_errors = False
+            all_errors=False):

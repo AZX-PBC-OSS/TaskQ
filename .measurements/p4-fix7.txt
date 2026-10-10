@@ -1,0 +1,450 @@
+........F....................F.......................                    [100%]
+=================================== FAILURES ===================================
+__________________ test_the_loop_ctx_carries_the_budget_wall ___________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f664e409780>
+wf_schema = 'tq_6c596ca853'
+
+    async def test_the_loop_ctx_carries_the_budget_wall(
+        wf_pool: Any, wf_schema: str
+    ) -> None:
+        """The loop ctx's budget_remaining_ms: the wall's on-wake read (a
+        number, not None — the wall EXISTS when budget_s is set)."""
+        from taskq.workflows import Done
+    
+        seen: dict[str, Any] = {}
+    
+        app = WorkflowApp()
+    
+        async def loop_body(ctx: Any, carry: int) -> Done[str]:
+            seen["budget_ms"] = ctx.budget_remaining_ms
+            seen["flow_name"] = ctx.flow_name
+            return Done("finished")
+    
+        @app.workflow("ctx_budget")
+        def ctx_budget() -> object:
+            return build(loop("the_loop", loop_body, carry=0, budget_s=3600.0))
+    
+        runner = FlowRunner(app.get("ctx_budget"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()  # no input — ctx.input is None (the honest zero)
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_context_contract.py:122: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:299: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:311: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:361: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+src/taskq/workflows/api/_runner.py:474: in _execute_claimed
+    await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+src/taskq/workflows/api/_runner_loop.py:102: in _run_loop_node
+    return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id, emitter)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f664da5fd10>
+flow_id = UUID('01a11a26-5550-7763-a48e-bf598d62d6da')
+row = {'id': UUID('01a11a26-5558-7c02-9bc2-726875b0aa24'), 'step_key': 'the_loop', 'map_index': None, 'attempt': 0, ...}
+attempt = 1
+node = NodeDecl(key='the_loop', actor='wf', queue='default', body=None, parents=(), args=(), on_failure='fail_closed', max_at...<function test_the_loop_ctx_carries_the_budget_wall.<locals>.loop_body at 0x7f664e433ce0>, loop_until=None, chain=None)
+spec = LoopSpec(loop_key='the_loop', max_iterations=None, budget_s=3600.0, on_exhausted='escalate', carry_type=0, escalation_body=None)
+ledger_id = UUID('01a11a26-556f-7413-939e-9514f95cbc64')
+emitter = <taskq.workflows._progress.ProgressEmitter object at 0x7f664da875c0>
+
+    async def _drive_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+        spec: Any,
+        ledger_id: JobId | None,
+        emitter: ProgressEmitter | None = None,
+    ) -> None:
+        """The loop driver's own drive (the machinery side of the
+        escape-point contract — attack-3 H5's cure): every exception
+        raised by THIS method's own statements (the state reads, the
+        ledger claims, the advance, the exhaust) is a TRANSPORT/INFRA
+        fault of the machinery — the caller's reclaim owns it, the
+        ladder untouched. The BODY's exceptions never reach here: the
+        body boundary routes them (the failure-class rules) before
+        returning — a body CANNOT forge an infra fault by raising
+        ConnectionError (its exceptions exhaust the loop as the body
+        failure they are)."""
+        from taskq._json import loads as _loads
+        from taskq.workflows.api._loop import Done, Refine
+        from taskq.workflows.api._sql_loop import (
+            LOOP_ADVANCE_SQL,
+            LOOP_ERROR_BODY,
+            LOOP_INIT_SQL,
+            LOOP_NODE_STATE_SQL,
+            LOOP_REMAINING_SQL,
+            render_loop_sql,
+        )
+        from taskq.workflows.ledger import claim_step_ledger, memoized_step_result
+    
+        async with self.pool.acquire() as conn:
+            state = await conn.fetchrow(
+                render_loop_sql(LOOP_NODE_STATE_SQL, self.schema), row["id"]
+            )
+            assert state is not None
+        meta_raw = state["metadata"]
+        meta = _loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        assert isinstance(meta, dict)  # the Any-contract walk (the seed wrote the shape)
+        meta_doc = cast(dict[str, object], meta)  # the walk's boundary
+        # THE INIT (first claim): the budget wall starts HERE (PG's
+        # clock); the iteration counter + the initial carry are set.
+        initial_carry: object
+        if isinstance(spec.carry_type, dict | list | str | int | float | bool):
+            initial_carry = jsonable(cast(object, spec.carry_type))
+        else:
+            initial_carry = None
+        if "iteration" not in meta_doc:
+            init_meta: dict[str, object] = {
+                **meta_doc,
+                "kind": "loop",
+                "iteration": 0,
+                "carry": initial_carry,
+                "max_iterations": spec.max_iterations,
+            }
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    render_loop_sql(LOOP_INIT_SQL, self.schema),
+                    row["id"],
+                    spec.budget_s or 0.0,
+                    dumps_jsonb_str(init_meta),
+                )
+            meta_doc = init_meta
+        # THE ON-WAKE REMAINING (holds are free — a PG-clock read): the
+        # number the loop ctx carries (the context contract's
+        # budget_remaining_ms). The FIRST claim's init (above) just set
+        # the deadline — the remaining is the budget's own value (the
+        # clock hasn't spent anything).
+        remaining: int | None = None
+        if "iteration" not in meta and spec.budget_s is not None:
+            remaining = int(spec.budget_s * 1000)
+        elif state["budget_deadline"] is not None:
+            async with self.pool.acquire() as conn:
+                remaining = await conn.fetchval(
+                    render_loop_sql(LOOP_REMAINING_SQL, self.schema), row["id"]
+                )
+            logger.debug("loop.wake", loop=row["step_key"], remaining_ms=remaining)
+    
+        iteration = int(str(meta_doc.get("iteration", 0)))
+        carry: object = meta_doc.get("carry")
+    
+        max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
+        for _ in range(max_wall):
+            # THE UNTIL PREDICATE — awaited (a sync closure returning a
+            # coroutine object is the convicted dragon).
+            if node.loop_until is not None and await node.loop_until():
+                await self._finalize_success(
+                    flow_id, row, attempt, node, encode_result(carry), emitter=emitter
+                )
+                return
+    
+            # THE CAP CHECK (the driver's top-of-loop face — the advance
+            # guard now lets the FINAL iteration run and the counter
+            # REACH the cap, so the live path exhausts HERE, at the top
+            # of the next pass; the crash window — a worker death after
+            # the final advance — leaves exactly this state on the row
+            # for the SWEEP's arm to own: the sweep's cap predicate is
+            # REACHABLE in production, never vacuous). The named state +
+            # the flow terminalized in the same tx: STRANDED-FLOW.
+            if spec.max_iterations is not None and iteration >= spec.max_iterations:
+                await self._exhaust_loop(flow_id, row, None, None)
+                return
+    
+            iter_key = f"{row['step_key']}.iter{iteration}"
+            # FRESH JOBS: the iteration-scoped ledger claim (the
+            # idempotency ledger per-iteration — T05's contract
+            # unchanged); the MEMO: a terminal iteration replays (the
+            # crash recovery reads the row — never a re-run body).
+            async with self.pool.acquire() as memo_conn:
+                memo = await memoized_step_result(
+                    memo_conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    step_key=iter_key,
+                    map_index=None,
+                )
+            if memo is not None and memo.status == "succeeded":
+                # the memo replay's decoded face (the ledger's jsonb)
+                memo_doc = cast(dict[str, object], memo.result)
+                if memo_doc.get("done"):
+                    payload: object = memo_doc.get("payload")
+                    await self._finalize_success(
+                        flow_id, row, attempt, node, encode_result(payload), emitter=emitter
+                    )
+                    return
+                carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+            else:
+                async with self.pool.acquire() as conn:
+                    await claim_step_ledger(
+                        conn,
+                        self.wsql,
+                        flow_id=flow_id,
+                        job_id=JobId(row["id"]),
+                        step_key=iter_key,
+                        map_index=None,
+                        attempt=attempt,
+                    )
+                loop_ctx = build_step_context(
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    node_key=row["step_key"],
+                    attempt=attempt,
+                    pool=self.pool,
+                    wsql=self.wsql,
+                    input=await self._flow_input(flow_id),
+                    is_loop=True,
+                    ledger_id=ledger_id,
+                    workflow_name=self.compiled.name,
+                    redact=self._redact_hook(),
+                    progress=emitter,
+                    # THE RUNTIME INFO: the loop ctx carries the wall's
+                    # remaining read (the budget PAUSES while held — the
+                    # number is the on-wake read).
+                    flow_name=self.compiled.name,
+                    queue=node.queue,
+>                   claimed_at=datetime.now(UTC),
+                               ^^^^^^^^
+                    budget_remaining_ms=remaining,
+                )
+E               NameError: name 'datetime' is not defined. Did you forget to import 'datetime'?
+
+src/taskq/workflows/api/_runner_loop.py:264: NameError
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_c2402a07e1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_c2402a07e12e')
+wf_pool = <asyncpg.pool.Pool object at 0x7f664f278b80>
+wf_conn = <asyncpg.connection.Connection object at 0x7f664f2b32f0>
+example_ns = {'__name__': 'doc_ingest_example', '__builtins__': {'__name__': 'builtins', '__doc__': "Built-in functions, types, exc...io' from '/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/__init__.py'>, ...}
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_ns: dict[str, Any],
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+        app_obj = example_ns["app"]
+    
+        for round_no in range(3):
+            compiled = app_obj.get("doc_ingest")
+            runner = FlowRunner(compiled, wf_pool, schema)
+            run_id = await runner.create_flow()
+>           held = await runner.drive(run_id, until="held")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_doc_ingest_example.py:184: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:299: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:311: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:361: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+src/taskq/workflows/api/_runner.py:474: in _execute_claimed
+    await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+src/taskq/workflows/api/_runner_loop.py:102: in _run_loop_node
+    return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id, emitter)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7f664f2f0870>
+flow_id = UUID('01a11a26-6843-7dc2-b28b-4f1c63932681')
+row = {'id': UUID('01a11a26-6868-79e0-ac74-217f03374889'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1
+node = NodeDecl(key='review', actor='wf', queue='default', body=None, parents=(), args=(), on_failure='fail_closed', max_atte...ry_type=0, escalation_body=None), loop_body=<function review_iteration at 0x7f664e3fb6a0>, loop_until=None, chain=None)
+spec = LoopSpec(loop_key='review', max_iterations=3, budget_s=3600.0, on_exhausted='escalate', carry_type=0, escalation_body=None)
+ledger_id = UUID('01a11a26-68fc-7012-acf3-804f21625a80')
+emitter = <taskq.workflows._progress.ProgressEmitter object at 0x7f664f2ee430>
+
+    async def _drive_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+        spec: Any,
+        ledger_id: JobId | None,
+        emitter: ProgressEmitter | None = None,
+    ) -> None:
+        """The loop driver's own drive (the machinery side of the
+        escape-point contract — attack-3 H5's cure): every exception
+        raised by THIS method's own statements (the state reads, the
+        ledger claims, the advance, the exhaust) is a TRANSPORT/INFRA
+        fault of the machinery — the caller's reclaim owns it, the
+        ladder untouched. The BODY's exceptions never reach here: the
+        body boundary routes them (the failure-class rules) before
+        returning — a body CANNOT forge an infra fault by raising
+        ConnectionError (its exceptions exhaust the loop as the body
+        failure they are)."""
+        from taskq._json import loads as _loads
+        from taskq.workflows.api._loop import Done, Refine
+        from taskq.workflows.api._sql_loop import (
+            LOOP_ADVANCE_SQL,
+            LOOP_ERROR_BODY,
+            LOOP_INIT_SQL,
+            LOOP_NODE_STATE_SQL,
+            LOOP_REMAINING_SQL,
+            render_loop_sql,
+        )
+        from taskq.workflows.ledger import claim_step_ledger, memoized_step_result
+    
+        async with self.pool.acquire() as conn:
+            state = await conn.fetchrow(
+                render_loop_sql(LOOP_NODE_STATE_SQL, self.schema), row["id"]
+            )
+            assert state is not None
+        meta_raw = state["metadata"]
+        meta = _loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        assert isinstance(meta, dict)  # the Any-contract walk (the seed wrote the shape)
+        meta_doc = cast(dict[str, object], meta)  # the walk's boundary
+        # THE INIT (first claim): the budget wall starts HERE (PG's
+        # clock); the iteration counter + the initial carry are set.
+        initial_carry: object
+        if isinstance(spec.carry_type, dict | list | str | int | float | bool):
+            initial_carry = jsonable(cast(object, spec.carry_type))
+        else:
+            initial_carry = None
+        if "iteration" not in meta_doc:
+            init_meta: dict[str, object] = {
+                **meta_doc,
+                "kind": "loop",
+                "iteration": 0,
+                "carry": initial_carry,
+                "max_iterations": spec.max_iterations,
+            }
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    render_loop_sql(LOOP_INIT_SQL, self.schema),
+                    row["id"],
+                    spec.budget_s or 0.0,
+                    dumps_jsonb_str(init_meta),
+                )
+            meta_doc = init_meta
+        # THE ON-WAKE REMAINING (holds are free — a PG-clock read): the
+        # number the loop ctx carries (the context contract's
+        # budget_remaining_ms). The FIRST claim's init (above) just set
+        # the deadline — the remaining is the budget's own value (the
+        # clock hasn't spent anything).
+        remaining: int | None = None
+        if "iteration" not in meta and spec.budget_s is not None:
+            remaining = int(spec.budget_s * 1000)
+        elif state["budget_deadline"] is not None:
+            async with self.pool.acquire() as conn:
+                remaining = await conn.fetchval(
+                    render_loop_sql(LOOP_REMAINING_SQL, self.schema), row["id"]
+                )
+            logger.debug("loop.wake", loop=row["step_key"], remaining_ms=remaining)
+    
+        iteration = int(str(meta_doc.get("iteration", 0)))
+        carry: object = meta_doc.get("carry")
+    
+        max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
+        for _ in range(max_wall):
+            # THE UNTIL PREDICATE — awaited (a sync closure returning a
+            # coroutine object is the convicted dragon).
+            if node.loop_until is not None and await node.loop_until():
+                await self._finalize_success(
+                    flow_id, row, attempt, node, encode_result(carry), emitter=emitter
+                )
+                return
+    
+            # THE CAP CHECK (the driver's top-of-loop face — the advance
+            # guard now lets the FINAL iteration run and the counter
+            # REACH the cap, so the live path exhausts HERE, at the top
+            # of the next pass; the crash window — a worker death after
+            # the final advance — leaves exactly this state on the row
+            # for the SWEEP's arm to own: the sweep's cap predicate is
+            # REACHABLE in production, never vacuous). The named state +
+            # the flow terminalized in the same tx: STRANDED-FLOW.
+            if spec.max_iterations is not None and iteration >= spec.max_iterations:
+                await self._exhaust_loop(flow_id, row, None, None)
+                return
+    
+            iter_key = f"{row['step_key']}.iter{iteration}"
+            # FRESH JOBS: the iteration-scoped ledger claim (the
+            # idempotency ledger per-iteration — T05's contract
+            # unchanged); the MEMO: a terminal iteration replays (the
+            # crash recovery reads the row — never a re-run body).
+            async with self.pool.acquire() as memo_conn:
+                memo = await memoized_step_result(
+                    memo_conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    step_key=iter_key,
+                    map_index=None,
+                )
+            if memo is not None and memo.status == "succeeded":
+                # the memo replay's decoded face (the ledger's jsonb)
+                memo_doc = cast(dict[str, object], memo.result)
+                if memo_doc.get("done"):
+                    payload: object = memo_doc.get("payload")
+                    await self._finalize_success(
+                        flow_id, row, attempt, node, encode_result(payload), emitter=emitter
+                    )
+                    return
+                carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+            else:
+                async with self.pool.acquire() as conn:
+                    await claim_step_ledger(
+                        conn,
+                        self.wsql,
+                        flow_id=flow_id,
+                        job_id=JobId(row["id"]),
+                        step_key=iter_key,
+                        map_index=None,
+                        attempt=attempt,
+                    )
+                loop_ctx = build_step_context(
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    node_key=row["step_key"],
+                    attempt=attempt,
+                    pool=self.pool,
+                    wsql=self.wsql,
+                    input=await self._flow_input(flow_id),
+                    is_loop=True,
+                    ledger_id=ledger_id,
+                    workflow_name=self.compiled.name,
+                    redact=self._redact_hook(),
+                    progress=emitter,
+                    # THE RUNTIME INFO: the loop ctx carries the wall's
+                    # remaining read (the budget PAUSES while held — the
+                    # number is the on-wake read).
+                    flow_name=self.compiled.name,
+                    queue=node.queue,
+>                   claimed_at=datetime.now(UTC),
+                               ^^^^^^^^
+                    budget_remaining_ms=remaining,
+                )
+E               NameError: name 'datetime' is not defined. Did you forget to import 'datetime'?
+
+src/taskq/workflows/api/_runner_loop.py:264: NameError
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_loop_ctx_carries_the_budget_wall
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+2 failed, 51 passed in 19.55s

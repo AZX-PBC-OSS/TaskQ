@@ -1,0 +1,20 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:645:9 - error: Type of "meta_doc" is partially unknown
+    Type of "meta_doc" is "dict[Unknown, Unknown]" (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:653:36 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "dict[Unknown, Unknown] | list[Unknown] | str | int | float | bool" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:682:65 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_encode_result"
+    Argument type is "object | Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:776:69 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_encode_result" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:784:17 - error: Type of "carry" is unknown (reportUnknownVariableType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:792:53 - error: Argument type is partially unknown
+    Argument corresponds to parameter "value" in function "_jsonable"
+    Argument type is "object | Unknown | None" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:822:49 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/api/_runner.py:824:56 - error: Argument type is unknown
+    Argument corresponds to parameter "value" in function "_jsonable" (reportUnknownArgumentType)
+8 errors, 0 warnings, 0 informations

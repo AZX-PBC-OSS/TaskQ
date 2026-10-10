@@ -1,0 +1,114 @@
+head=a78b02d0541b5d41129b06e6668f47e64788df3f date=20261009-135851
+Resolved 160 packages in 1ms
+   Building taskq-py @ file:///tmp/opencode/wt-land
+      Built taskq-py @ file:///tmp/opencode/wt-land
+Prepared 1 package in 404ms
+Uninstalled 1 package in 0.16ms
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 0.38ms
+ ~ taskq-py==0.2.2 (from file:///tmp/opencode/wt-land)
+uv run --no-sync pytest \
+	tests/test_wf_api_surface_pins.py tests/test_wf_attack_cancel.py \
+	tests/test_wf_cli_pins.py tests/test_wf_context_contract.py \
+	tests/test_wf_coverage_closing.py tests/test_wf_coverage_closing2.py \
+	tests/test_wf_ctx_annotation_pins.py tests/test_wf_engine_units.py \
+	tests/test_wf_ergonomics_contract.py tests/test_wf_fanin_bound_pins.py \
+	tests/test_wf_finalize_pins.py tests/test_wf_fork_pins.py \
+	tests/test_wf_hitl_pins.py tests/test_wf_loop_pins.py \
+	tests/test_wf_phase3_cure_pins.py tests/test_wf_pre_workflow_tolerance_pins.py \
+	tests/test_wf_progress_emission.py tests/test_wf_progress_faces.py \
+	tests/test_wf_progress_persistence.py tests/test_wf_propagation_pins.py \
+	tests/test_wf_pruner_pins.py tests/test_wf_runner_pins.py \
+	tests/test_wf_scenario_pins.py tests/test_wf_schema_migration.py \
+	tests/test_wf_state_event_totality.py tests/test_wf_status_pins.py \
+	tests/test_wf_status_property.py tests/test_wf_sweep_pins.py \
+	tests/test_wf_t20_emit_pins.py tests/test_wf_t20_fence_probe.py \
+	tests/test_wf_t20_maintain_liveness.py tests/test_wf_t20_router_pins.py \
+	tests/test_wf_validate_pins.py tests/test_fv_redlog_guard.py \
+	tests/test_worker_execution_seam.py tests/attack3-validate.py \
+	tests/attack4-coverage-closers.py \
+	-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=3890985559
+rootdir: /tmp/opencode/wt-land
+configfile: pyproject.toml
+plugins: hypothesis-6.168.3, gremlins-1.9.0, respx-0.23.1, xdist-3.8.0, asyncio-1.4.0, cov-7.1.0, timeout-2.4.0, randomly-5.0.0, anyio-4.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 300.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [301 items]
+
+........................................................................ [ 23%]
+........................................................................ [ 47%]
+........................................................................ [ 71%]
+........................................................................ [ 95%]
+.............                                                            [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-land/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.15-final-0 _______________
+
+Name                                        Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                 9      0      0      0   100%
+src/taskq/workflows/_capture.py                75      6     36      5    88%
+src/taskq/workflows/_cli.py                   116      8     36      4    91%
+src/taskq/workflows/_emit.py                   45      1     10      0    98%
+src/taskq/workflows/_fork.py                   31      1     10      1    95%
+src/taskq/workflows/_progress.py              138     13     30      2    91%
+src/taskq/workflows/_progress_read.py         127      4     44      8    93%
+src/taskq/workflows/_reducers.py               21      0      4      0   100%
+src/taskq/workflows/_sql.py                    82      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py           24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py              9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py           12      0      0      0   100%
+src/taskq/workflows/_sql_status.py              8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py              11      0      0      0   100%
+src/taskq/workflows/_status.py                 54      0     16      0   100%
+src/taskq/workflows/_sweep.py                 107     16     22      4    83%
+src/taskq/workflows/_types.py                 107      3      6      2    96%
+src/taskq/workflows/_version.py                10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py      108      8     30      5    89%
+src/taskq/workflows/api/__init__.py             4      0      0      0   100%
+src/taskq/workflows/api/_app.py               138      2     36      3    97%
+src/taskq/workflows/api/_ctx.py                66      3      4      1    94%
+src/taskq/workflows/api/_ctx_wait.py           82      9     18      3    84%
+src/taskq/workflows/api/_graph.py             119      6     18      6    91%
+src/taskq/workflows/api/_hints.py               4      0      0      0   100%
+src/taskq/workflows/api/_hitl.py              232     52     80     21    71%
+src/taskq/workflows/api/_loop.py               56      0      8      0   100%
+src/taskq/workflows/api/_mermaid.py            42      1     22      1    97%
+src/taskq/workflows/api/_run.py                28     10      2      0    60%
+src/taskq/workflows/api/_runner.py            299     21     78     16    90%
+src/taskq/workflows/api/_runner_chain.py       26      2      0      0    92%
+src/taskq/workflows/api/_runner_codec.py       83     14     36      5    77%
+src/taskq/workflows/api/_runner_errors.py       3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py        85      5     24      7    89%
+src/taskq/workflows/api/_runner_ladder.py      41      0      6      1    98%
+src/taskq/workflows/api/_runner_loop.py       154     17     42     10    85%
+src/taskq/workflows/api/_sql_loop.py           26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py         34      0      0      0   100%
+src/taskq/workflows/api/_validate.py          214     11    120     11    93%
+src/taskq/workflows/chain.py                   63      5     20      4    87%
+src/taskq/workflows/context.py                 42      2     10      2    92%
+src/taskq/workflows/definitions.py             66      2     14      1    96%
+src/taskq/workflows/engine.py                 109      0     34      1    99%
+src/taskq/workflows/ledger.py                  78      9     14      3    83%
+-----------------------------------------------------------------------------
+TOTAL                                        3188    231    832    127    90%
+================== 301 passed, 1 warning in 125.98s (0:02:05) ==================
+uv run --no-sync python scripts/check_wf_coverage.py
+[gate] REFUSED: the working tree is dirty — a coverage number measured now is not a78b02d0541b's number. Commit (or pass --allow-dirty and wear the stain).
+make: *** [Makefile:89: test-wf-cov] Error 2
+rc=2

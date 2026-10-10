@@ -1,0 +1,183 @@
+UP046 Generic class `Promise` uses `Generic` subclass instead of type parameters
+  --> src/taskq/workflows/api/_graph.py:96:15
+   |
+96 | class Promise(Generic[T_co]):
+   |               ^^^^^^^^^^^^^
+97 |     """The wiring handle to one node's future result.
+   |
+help: Use type parameters
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:223:21
+    |
+221 |               for parent_key in node.parents:
+222 |                   parent_row = await conn.fetchval(
+223 | /                     f'SELECT id FROM "{self.schema}".jobs WHERE step_key = $1 '
+224 | |                     "AND (metadata->>'flow_id')::uuid = $2",
+    | |___________________________________________________________^
+225 |                       parent_key,
+226 |                       flow_id,
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:229:21
+    |
+227 |                   )
+228 |                   child_row = await conn.fetchval(
+229 | /                     f'SELECT id FROM "{self.schema}".jobs WHERE step_key = $1 '
+230 | |                     "AND (metadata->>'flow_id')::uuid = $2",
+    | |___________________________________________________________^
+231 |                       key,
+232 |                       flow_id,
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:238:25
+    |
+236 |                   if child_row is not None:
+237 |                       await conn.execute(
+238 | /                         f'UPDATE "{self.schema}".jobs SET deps_pending = deps_pending + 1 '
+239 | |                         "WHERE id = $1",
+    | |_______________________________________^
+240 |                           child_row,
+241 |                       )
+    |
+
+F841 Local variable `conn` is assigned to but never used
+   --> src/taskq/workflows/api/_runner.py:287:43
+    |
+285 |             ran = True
+286 |             await self._run_node(flow_id, row)
+287 |         async with self.pool.acquire() as conn:
+    |                                           ^^^^
+288 |             from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
+    |
+help: Remove assignment to unused variable `conn`
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:297:17
+    |
+295 |           async with self.pool.acquire() as conn:
+296 |               rows = await conn.fetch(
+297 | /                 f'SELECT id, step_key, map_index, attempt, payload FROM "{self.schema}".jobs '
+298 | |                 "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'pending' "
+299 | |                 "AND deps_pending = 0 ORDER BY id",
+    | |__________________________________________________^
+300 |                   flow_id,
+301 |               )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:538:17
+    |
+536 |           async with self.pool.acquire() as conn:
+537 |               raw = await conn.fetchval(
+538 | /                 f'SELECT result FROM "{self.schema}".jobs WHERE step_key = $1 '
+539 | |                 "AND (metadata->>'flow_id')::uuid = $2",
+    | |_______________________________________________________^
+540 |                   terminal,
+541 |                   flow_id,
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:548:17
+    |
+546 |         async with self.pool.acquire() as conn:
+547 |             status = await conn.fetchval(
+548 |                 f'SELECT status FROM "{self.schema}".jobs WHERE id = $1', flow_id
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+549 |             )
+550 |         return status or "missing"
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:555:17
+    |
+553 |         async with self.pool.acquire() as conn:
+554 |             raw = await conn.fetchval(
+555 |                 f'SELECT payload FROM "{self.schema}".jobs WHERE id = $1', flow_id
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+556 |             )
+557 |         decoded = _decode_result(raw)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:568:17
+    |
+566 |           async with self.pool.acquire() as conn:
+567 |               rows = await conn.fetch(
+568 | /                 f'SELECT step_key, result FROM "{self.schema}".jobs '
+569 | |                 "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'",
+    | |__________________________________________________________________________________^
+570 |                   flow_id,
+571 |               )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> src/taskq/workflows/api/_runner.py:580:17
+    |
+578 |           async with self.pool.acquire() as conn:
+579 |               count = await conn.fetchval(
+580 | /                 f'SELECT count(*) FROM "{self.schema}".jobs '
+581 | |                 "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'pending' "
+582 | |                 "AND scheduled_at > now()",
+    | |__________________________________________^
+583 |                   flow_id,
+584 |               )
+    |
+
+N818 Exception name `ValidateDiagnostic` should be named with an Error suffix
+  --> src/taskq/workflows/api/_validate.py:48:7
+   |
+48 | class ValidateDiagnostic(Exception):
+   |       ^^^^^^^^^^^^^^^^^^
+49 |     """One validation refusal (the tsc-style one-pass report's item — the
+50 |     report carries every rule's verdict, not the first failure alone)."""
+   |
+
+N806 Variable `WHITE` in function should be lowercase
+  --> src/taskq/workflows/api/_validate.py:86:5
+   |
+84 |     """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+85 |     every join wait forever; no sweep can heal a topological lie)."""
+86 |     WHITE, GRAY, BLACK = 0, 1, 2
+   |     ^^^^^
+87 |     color = dict.fromkeys(compiled.nodes, WHITE)
+   |
+
+N806 Variable `GRAY` in function should be lowercase
+  --> src/taskq/workflows/api/_validate.py:86:12
+   |
+84 |     """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+85 |     every join wait forever; no sweep can heal a topological lie)."""
+86 |     WHITE, GRAY, BLACK = 0, 1, 2
+   |            ^^^^
+87 |     color = dict.fromkeys(compiled.nodes, WHITE)
+   |
+
+N806 Variable `BLACK` in function should be lowercase
+  --> src/taskq/workflows/api/_validate.py:86:18
+   |
+84 |     """E1: a cycle in the wiring (the unconditional owner — a cycle makes
+85 |     every join wait forever; no sweep can heal a topological lie)."""
+86 |     WHITE, GRAY, BLACK = 0, 1, 2
+   |                  ^^^^^
+87 |     color = dict.fromkeys(compiled.nodes, WHITE)
+   |
+
+SIM102 Use a single `if` statement instead of nested `if` statements
+   --> src/taskq/workflows/api/_validate.py:200:17
+    |
+198 |                   continue
+199 |               for param in params:
+200 | /                 if isinstance(param, type) and issubclass(param, BaseModel):
+201 | |                     if produced is not param and not issubclass(produced, param):
+    | |_________________________________________________________________________________^
+202 |                           diagnostics.append(
+203 |                               ValidateDiagnostic(
+    |
+help: Combine `if` statements using `and`
+
+Found 23 errors (7 fixed, 16 remaining).
+No fixes available (2 hidden fixes can be enabled with the `--unsafe-fixes` option).
+5 files reformatted, 18 files left unchanged

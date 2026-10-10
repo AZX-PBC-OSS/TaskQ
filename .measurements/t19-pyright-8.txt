@@ -1,0 +1,5 @@
+/tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/_sweep.py
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/_sweep.py:353:17 - error: "LOOP_NODE_WALL_SQL" is not defined (reportUndefinedVariable)
+  /tmp/opencode/wt-taskqflow-p3/src/taskq/workflows/_sweep.py:353:17 - error: Argument type is unknown
+    Argument corresponds to parameter "query" in function "fetchrow" (reportUnknownArgumentType)
+2 errors, 0 warnings, 0 informations

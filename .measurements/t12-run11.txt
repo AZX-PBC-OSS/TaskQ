@@ -1,0 +1,65 @@
+..........F...F.                                                         [100%]
+=================================== FAILURES ===================================
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_72f5ef4afe', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_72f5ef4afe3d')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc14f321a80>
+wf_schema = 'tq_72f5ef4afe', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+        hold_id = _hold_id_of(holds.output)
+        result = await to_thread(
+            runner.invoke,
+            app,
+            ["flows", "resolve", hold_id, '{"verdict": 42}', "--app", f"{MODULE_NAME}:app"],
+        )
+        assert result.exit_code == 1
+>       assert "pydantic refused the payload" in plain_cli_output(result.output)
+E       assert 'pydantic refused the payload' in "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it"
+E        +  where "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it" = plain_cli_output("node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it\n")
+E        +    where "node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it\n" = <Result SystemExit(1)>.output
+
+tests/test_wf_cli_pins.py:227: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:11:52 [info     ] node.held                      hold_id=01a11948-0494-7da0-8618-7baac4268ee1 node=review run_id=01a11948-042b-72c2-924f-e46dabbe5da1 signals=['Approval']
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_72f5ef4afe', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_72f5ef4afe3d')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc14f323280>
+wf_schema = 'tq_72f5ef4afe'
+wf_conn = <asyncpg.connection.Connection object at 0x7fc136f068a0>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        run_id = await _held_run(wf_pool, wf_schema)
+        holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+        hold_id = _hold_id_of(holds.output)
+        result = await to_thread(
+            runner.invoke,
+            app,
+            [
+                "flows", "resolve", hold_id, '{"verdict":"approve","note":"ship it"}',
+                "--app", f"{MODULE_NAME}:app", "--reason", "editor approved",
+            ],
+        )
+>       assert result.exit_code == 0, result.output
+E       AssertionError: node 'review' of workflow 'hold_flow' declares no gate — signal 'Approval' cannot be delivered through it
+E         
+E       assert 1 == 0
+E        +  where 1 = <Result SystemExit(1)>.exit_code
+
+tests/test_wf_cli_pins.py:194: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 19:11:53 [info     ] node.held                      hold_id=01a11948-0932-7eb1-adb4-11220c5e99c4 node=review run_id=01a11948-08d1-7e92-8a47-dda43a419e67 signals=['Approval']
+=========================== short test summary info ============================
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+2 failed, 14 passed in 5.25s

@@ -1,0 +1,4 @@
+# pyright FULL (the CI's own command: pyright src/taskq tests) at the measurement head 734300e22855d20402f97ed179024bcec0502789 (M1 — the source-final R=2d993a83's tree is content-identical: diff R..M1 = pure .measurements)
+0 errors, 0 warnings, 0 informations
+pyright rc=0
+head: 734300e22855d20402f97ed179024bcec0502789

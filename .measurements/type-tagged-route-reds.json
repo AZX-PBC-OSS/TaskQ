@@ -1,0 +1,6 @@
+{
+  "pin": "type-tagged-route",
+  "head": "84e954a809ccc898ae2281bdf37f90683912f753",
+  "verdict": "RED — the surface cannot express per-element type-tagged dispatch: the union declaration itself dies in Route.bind (the enum-only walk: TypeError: 'types.UnionType' object is not iterable), the Route key is the literal enum tag, never the payload type",
+  "observed": ["                                ^^^^^^^^^^^^", "E   TypeError: 'types.UnionType' object is not iterable", "=========================== short test summary info ============================", "ERROR tests/test_wf_type_tagged_route_refutation.py - TypeError: 'types.Union...", "!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!", "1 error in 0.17s"]
+}

@@ -1,0 +1,5 @@
+# the attack rounds — round 2 of 2 (the cures' second count)
+FAILED tests/attack4-cli-races.py::test_the_resolve_racing_the_cancel_one_outcome_honest_codes
+================== 1 failed, 133 passed, 1 skipped in 16.27s ===================
+head: f92cd7e83378b68b21b6e92ee2f2400ef9be017f
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt

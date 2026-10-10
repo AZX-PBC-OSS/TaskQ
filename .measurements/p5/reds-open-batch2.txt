@@ -1,0 +1,200 @@
+........F..F....F                                                        [100%]
+=================================== FAILURES ===================================
+____________________ test_no_uncapped_sse_endpoint_remains _____________________
+
+    def test_no_uncapped_sse_endpoint_remains() -> None:
+        """Inventory guard over every streaming response in the web package."""
+        from pathlib import Path
+    
+        web = Path(__file__).resolve().parent.parent / "src" / "taskq" / "web"
+        offenders: list[str] = []
+        for path in web.rglob("*.py"):
+            text = path.read_text()
+            streams = "EventSourceResponse(" in text or "StreamingResponse(" in text
+            if not streams or path.name == "_sse_limit.py":
+                continue
+            capped = "acquire_sse_slot" in text or "_get_semaphore" in text
+            if not capped:
+                offenders.append(path.relative_to(web).as_posix())
+>       assert offenders == [], f"uncapped SSE endpoints: {offenders}"
+E       AssertionError: uncapped SSE endpoints: ['admin/jobs.py', 'admin/_wf_actions.py']
+E       assert ['admin/jobs....f_actions.py'] == []
+E         
+E         Left contains 2 more items, first extra item: 'admin/jobs.py'
+E         Use -v to get more diff
+
+tests/test_sse_connection_caps.py:239: AssertionError
+___________________________ test_trigger_app_enqueue ___________________________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_fbabc280fd21'
+redis_url = 'redis://localhost:44947/1'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f76823747c0>
+
+    @pytest.mark.integration
+    @pytest.mark.redis
+    def test_trigger_app_enqueue(
+        pg_dsn: str,
+        redis_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """TestClient(app) from examples.app: GET / returns 200 with
+        actor names; POST /enqueue/counter answers the ONE success envelope
+        (201 {"job_id","url"}, F3) whose url keys at the admin job page."""
+        monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
+        monkeypatch.setenv("TASKQ_REDIS_URL", redis_url)
+        schema = f"tes_trigger_{new_base62()}".lower()
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+        monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+        monkeypatch.setenv("TASKQ_ADMIN_URL", "http://localhost:9999")
+        monkeypatch.setenv("TASKQ_QUEUES", "examples")
+    
+        asyncio.run(_migrate(pg_dsn, schema))
+    
+        trigger_app = _fresh_trigger_app()
+        app = trigger_app.app
+    
+        # The drift pin: the app's import-time settings resolved THIS test's
+        # DSN - the container's mapped port - never the hardcoded
+        # ``localhost:5432`` field default (see ``_fresh_trigger_app`` for the
+        # incident). Both sides derive from the same fixture value, so exact
+        # equality is the invariant; a future regression that lets a stale
+        # module (default DSN) reach the lifespan fails HERE, naming the
+        # resolved DSN, instead of as a connection refused on 5432.
+        assert str(trigger_app.settings.pg_dsn) == pg_dsn, (
+            f"examples.app resolved settings for {trigger_app.settings.pg_dsn}, "
+            f"not this test's DSN {pg_dsn} - the import-time settings freeze "
+            "regressed (see _fresh_trigger_app)"
+        )
+    
+        from fastapi.testclient import TestClient
+    
+>       with TestClient(app, follow_redirects=False) as client:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_examples_smoke.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/starlette/testclient.py:528: in __exit__
+    self.exit_stack.close()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:627: in close
+    self.__exit__(None, None, None)
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:619: in __exit__
+    raise exc
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:604: in __exit__
+    if cb(*exc_details):
+       ^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:482: in _exit_wrapper
+    callback(*args, **kwds)
+.venv/lib/python3.13/site-packages/starlette/testclient.py:521: in wait_shutdown
+    portal.call(self.wait_shutdown)
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:340: in call
+    return cast(T_Retval, self.start_task_soon(func, *args).result())
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:460: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:402: in __get_result
+    raise self._exception
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:265: in _call_func
+    retval = await retval_or_awaitable
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/starlette/testclient.py:568: in wait_shutdown
+    await receive()
+.venv/lib/python3.13/site-packages/starlette/testclient.py:558: in receive
+    self.task.result()
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:453: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/concurrent/futures/_base.py:402: in __get_result
+    raise self._exception
+.venv/lib/python3.13/site-packages/anyio/from_thread.py:265: in _call_func
+    retval = await retval_or_awaitable
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/starlette/testclient.py:533: in lifespan
+    await self.app(scope, self.stream_receive.receive, self.stream_send.send)
+.venv/lib/python3.13/site-packages/fastapi/applications.py:1163: in __call__
+    await super().__call__(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/applications.py:96: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/errors.py:151: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/middleware/exceptions.py:49: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/middleware/asyncexitstack.py:18: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:676: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.13/site-packages/fastapi/routing.py:2726: in app
+    await self.lifespan(scope, receive, send)
+.venv/lib/python3.13/site-packages/starlette/routing.py:654: in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:221: in __aexit__
+    await anext(self.gen)
+examples/app.py:169: in lifespan
+    async with AsyncExitStack() as stack:
+               ^^^^^^^^^^^^^^^^
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:768: in __aexit__
+    raise exc
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:751: in __aexit__
+    cb_suppress = await cb(*exc_details)
+                  ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+exc_type = None, exc = None, tb = None
+
+    async def _exit_wrapper(exc_type, exc, tb):
+>       await callback(*args, **kwds)
+E       TypeError: object bool can't be used in 'await' expression
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py:651: TypeError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=b52c94d74e90 redis=d05025ad5c73 state_dir=/tmp/pytest-of-rich/pytest-18550
+----------------------------- Captured stdout call -----------------------------
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_window
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_token
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_inmemory
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=reservation name=example_concurrency
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_window
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_token
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=rate_limit name=example_inmemory
+2026-10-08 06:40:50 [debug    ] registry-registered            kind=reservation name=example_concurrency
+2026-10-08 06:40:50 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-08 06:40:50 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-08 06:40:50 [info     ] workflow-drive-loop-started    schema=tes_trigger_on8bmmoa
+2026-10-08 06:40:50 [warning  ] enqueue-unserved-queue         actor=counter kind=enqueue_unserved_queue queue=examples reason='no registered actor_config row routes this queue to any actor; unless a worker consumes this queue via --queues/TASKQ_QUEUES, the job stays unserved until an actor whose queue is this name is registered on a worker (snapshot is TTL-bounded, a worker registered seconds ago may not be in it yet)'
+2026-10-08 06:40:50 [debug    ] enqueue                        actor=counter idempotency_key=None job_id=01a11bbe-c725-77f3-8366-a18d4d36ff20 kind=enqueue queue=examples
+2026-10-08 06:40:50 [debug    ] job_enqueued                   actor=counter idempotency_key=None job_id=01a11bbe-c725-77f3-8366-a18d4d36ff20 kind=job_enqueued queue=examples
+________________ test_no_handler_takes_the_raw_pool_dependency _________________
+
+    def test_no_handler_takes_the_raw_pool_dependency() -> None:
+        """``Depends(get_pg_pool)`` on a handler parameter hands it the raw pool;
+        only the stream resolvers (which take a Request) may use it."""
+        offenders: list[str] = []
+        for path in _HANDLER_MODULES:
+            if path.name == "_factory.py":
+                continue
+            tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for arg, default in zip(
+                    reversed(fn.args.args), reversed(fn.args.defaults), strict=False
+                ):
+                    if "get_pg_pool" in ast.unparse(default):
+                        offenders.append(f"{path.name}:{fn.lineno} {fn.name}({arg.arg})")
+>       assert offenders == [], offenders
+E       AssertionError: ['jobs.py:1038 flow_progress_stream(pg_pool)']
+E       assert ['jobs.py:103...eam(pg_pool)'] == []
+E         
+E         Left contains one more item: 'jobs.py:1038 flow_progress_stream(pg_pool)'
+E         Use -v to get more diff
+
+tests/web_admin/test_bounded_pool.py:114: AssertionError
+--------------------------- Captured stdout teardown ---------------------------
+[TaskQ] event=pair-stopped pg=b52c94d74e90 redis=d05025ad5c73
+=========================== short test summary info ============================
+FAILED tests/test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains
+FAILED tests/test_examples_smoke.py::test_trigger_app_enqueue - TypeError: ob...
+FAILED tests/web_admin/test_bounded_pool.py::test_no_handler_takes_the_raw_pool_dependency
+3 failed, 14 passed in 3.45s

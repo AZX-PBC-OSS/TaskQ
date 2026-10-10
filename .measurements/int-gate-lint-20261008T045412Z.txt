@@ -1,0 +1,93 @@
+# the integration battery: ruff + format (head 8f423116, pg :5706)
+All checks passed!
+ruff-format:
+unformatted: File would be reformatted
+  --> docs/api-reference/workflows.md:17:1
+   |
+16 |
+   - class Ingest(BaseModel):        # plain types for DATA
+17 +
+18 + class Ingest(BaseModel):  # plain types for DATA
+19 |     doc_id: str
+20 |
+21 +
+22 | class Report(BaseModel):
+23 |     ref: str
+24 |
+   - @app.actor(queue="cpu")          # the workflow decorator — NOT taskq.actor
+25 +
+26 + @app.actor(queue="cpu")  # the workflow decorator — NOT taskq.actor
+27 | async def fetch(ctx, params: Ingest) -> Report:
+28 |     return Report(ref=f"r-{params.doc_id}")
+29 |
+   - @app.workflow("doc_ingest")      # the per-workflow declaration
+   - def doc_ingest() -> object:      # SYNC and PURE — the compile-time wiring
+   -     fetched = step(fetch, Ingest(doc_id="d1"))   # Promise[Report]
+   -     both = gather([fetched])                      # the ALL-upstream join
+   -     return build(step(summarize, both))           # the completeness point
+30 |
+31 + @app.workflow("doc_ingest")  # the per-workflow declaration
+32 + def doc_ingest() -> object:  # SYNC and PURE — the compile-time wiring
+33 +     fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
+34 +     both = gather([fetched])  # the ALL-upstream join
+35 +     return build(step(summarize, both))  # the completeness point
+36 +
+37 +
+38 | compiled = app.get("doc_ingest")
+   - compiled.validate()              # the checker-independent validator
+   - print(compiled.mermaid())        # the compile-time Mermaid emission
+39 + compiled.validate()  # the checker-independent validator
+40 + print(compiled.mermaid())  # the compile-time Mermaid emission
+41 | ```
+   |
+
+unformatted: File would be reformatted
+   --> docs/guides/workflows.md:609:24
+    |
+608 |     steps={
+    -         "screen": Step(body=screen_app, outcomes=ScreenOutcome,
+    -                        route=Route({ScreenOutcome.CLEAN: "enrich",
+    -                                     ScreenOutcome.FLAGGED: "manual_review"})),
+    -         "enrich": Step(body=enrich_app, outcomes=EnrichOutcome,
+    -                        route=Route({EnrichOutcome.OK: "score",
+    -                                     EnrichOutcome.SPARSE: DONE})),
+    -         "score": Step(body=score_app, outcomes=ScoreOutcome,
+    -                       route=Route({ScoreOutcome.OK: DONE})),
+    -         "manual_review": Step(body=manual_review, outcomes=ReviewOutcome,
+    -                               route=Route({ReviewOutcome.APPROVE: DONE,
+    -                                            ReviewOutcome.REJECT: DONE})),
+609 +         "screen": Step(
+610 +             body=screen_app,
+611 +             outcomes=ScreenOutcome,
+612 +             route=Route({ScreenOutcome.CLEAN: "enrich", ScreenOutcome.FLAGGED: "manual_review"}),
+613 +         ),
+614 +         "enrich": Step(
+615 +             body=enrich_app,
+616 +             outcomes=EnrichOutcome,
+617 +             route=Route({EnrichOutcome.OK: "score", EnrichOutcome.SPARSE: DONE}),
+618 +         ),
+619 +         "score": Step(body=score_app, outcomes=ScoreOutcome, route=Route({ScoreOutcome.OK: DONE})),
+620 +         "manual_review": Step(
+621 +             body=manual_review,
+622 +             outcomes=ReviewOutcome,
+623 +             route=Route({ReviewOutcome.APPROVE: DONE, ReviewOutcome.REJECT: DONE}),
+624 +         ),
+625 |     },
+626 | )
+627 |
+628 +
+629 | # the SOURCE is the paged generator — each yield = ONE emit tx:
+    |
+
+unformatted: File would be reformatted
+    --> src/taskq/workflows/api/_runner.py:1408:43
+     |
+1407 |         try:
+     -             return await self._drive_loop(
+     -                 flow_id, row, attempt, node, spec, ledger_id, emitter
+     -             )
+1408 +             return await self._drive_loop(flow_id, row, attempt, node, spec, ledger_id, emitter)
+1409 |         except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
+     |
+
+3 files would be reformatted, 1570 files already formatted

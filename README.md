@@ -218,6 +218,16 @@ The worker elects a leader via Postgres advisory locks and consumes jobs with
 warns if you set it. Run migrations from a pre-deploy job or init container
 (`taskq migrate up`) so replicas cannot race.
 
+### The flagship demo
+
+**The fleet demo** (`examples/fleet_demo/`) is the end-to-end showcase —
+seven acts (enqueue, rate limiting, operator cancel, cron catch-up,
+SIGTERM, `taskq doctor`, `taskq insights`) on real containers, one
+command: `uv run python -m examples.fleet_demo.run_demo`. It manages its
+OWN isolated stack (compose project `taskq-fleet-demo`, Postgres on
+:5433, Redis on :6380) — **none of the quick-start steps above are
+prerequisites for it**. See `examples/fleet_demo/README.md`.
+
 ## Layout
 
 ```

@@ -1,3 +1,73 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* ── the workflow-run page's state fills (T11) ─────────────────────────
+   The graph node's fill keys off the node's status class
+   (workflows.js paints data-node-key groups). THE BARE-<path> RULE
+   (P2's pin): the collapsed map node renders its shape as a BARE
+   <path> — every fill targets path as well as rect/polygon, or the
+   hexagon stays theme-grey while rects turn green. */
+#wf-graph svg .node rect,
+#wf-graph svg .node polygon,
+#wf-graph svg .node path {
+  transition: fill 0.2s ease, stroke 0.2s ease;
+}
+#wf-graph svg .node.wf-st-succeeded rect,
+#wf-graph svg .node.wf-st-succeeded polygon,
+#wf-graph svg .node.wf-st-succeeded path {
+  fill: #dcfce7; stroke: #16a34a;
+}
+#wf-graph svg .node.wf-st-running rect,
+#wf-graph svg .node.wf-st-running polygon,
+#wf-graph svg .node.wf-st-running path {
+  fill: #dbeafe; stroke: #2563eb;
+}
+#wf-graph svg .node.wf-st-failed rect,
+#wf-graph svg .node.wf-st-failed polygon,
+#wf-graph svg .node.wf-st-failed path {
+  fill: #fee2e2; stroke: #dc2626;
+}
+#wf-graph svg .node.wf-st-pending rect,
+#wf-graph svg .node.wf-st-pending polygon,
+#wf-graph svg .node.wf-st-pending path,
+#wf-graph svg .node.wf-st-scheduled rect,
+#wf-graph svg .node.wf-st-scheduled polygon,
+#wf-graph svg .node.wf-st-scheduled path,
+#wf-graph svg .node.wf-st-crashed rect,
+#wf-graph svg .node.wf-st-crashed polygon,
+#wf-graph svg .node.wf-st-crashed path,
+#wf-graph svg .node.wf-st-abandoned rect,
+#wf-graph svg .node.wf-st-abandoned polygon,
+#wf-graph svg .node.wf-st-abandoned path,
+#wf-graph svg .node.wf-st-skipped rect,
+#wf-graph svg .node.wf-st-skipped polygon,
+#wf-graph svg .node.wf-st-skipped path {
+  fill: #f1f5f9; stroke: #94a3b8;
+}
+/* THE HELD NODE IS AMBER (the state-matrix pin: the held node reads at
+   a glance — a human is waiting). */
+/* THE HELD NODE IS AMBER (the state-matrix pin: a human is waiting —
+   it reads at a glance). The held state is NOT a job status: it is the
+   pending row + the signal row, so the JS paints a dedicated class. */
+#wf-graph svg .node.wf-st-held rect,
+#wf-graph svg .node.wf-st-held polygon,
+#wf-graph svg .node.wf-st-held path {
+  fill: #fef3c7; stroke: #d97706;
+}
+#wf-graph svg .node.wf-st-cancelled rect,
+#wf-graph svg .node.wf-st-cancelled polygon,
+#wf-graph svg .node.wf-st-cancelled path {
+  fill: #e2e8f0; stroke: #64748b;
+}
+#wf-graph svg .node[class*="wf-st-"] .wf-counter {
+  font: 600 11px var(--font-mono, monospace);
+  fill: #334155;
+}
+#wf-graph svg .node[data-node-key]:focus { outline: 2px solid #2563eb; }
+#wf-graph svg .node[data-node-key] { cursor: pointer; }
+/* The legend's chips (the page's own legend markup). */
+.wf-st-succeeded-fill { background: #dcfce7; border: 1px solid #16a34a; }
+.wf-st-running-fill { background: #dbeafe; border: 1px solid #2563eb; }
+.wf-st-failed-fill { background: #fee2e2; border: 1px solid #dc2626; }
+.wf-st-pending-fill { background: #f1f5f9; border: 1px solid #94a3b8; }

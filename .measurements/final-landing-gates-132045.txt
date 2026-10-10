@@ -1,0 +1,7 @@
+pyright FULL start 13:20:45
+/tmp/opencode/wt-land/tests/web_progress/test_unit.py
+  /tmp/opencode/wt-land/tests/web_progress/test_unit.py:247:5 - error: Return type, "tuple[Unknown, Unknown]", is partially unknown (reportUnknownParameterType)
+  /tmp/opencode/wt-land/tests/web_progress/test_unit.py:270:11 - error: Return type, "list[Unknown]", is partially unknown (reportUnknownParameterType)
+  /tmp/opencode/wt-land/tests/web_progress/test_unit.py:326:13 - error: Type of parameter "sse" is unknown (reportUnknownParameterType)
+808 errors, 1 warning, 0 informations
+pyright rc=0

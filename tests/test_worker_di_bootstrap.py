@@ -218,7 +218,9 @@ async def _run_main_with_mocked_deps(
     worker_id_val = new_uuid()
     deps = _stub_deps(settings)
 
-    async def _fake_register(pool: object, s: WorkerSettings) -> object:
+    async def _fake_register(pool: object, s: WorkerSettings, **kwargs: object) -> object:
+        # **kwargs: the boot's capability stamp (workflow_execution=…) —
+        # the fake registers, the stamp's value is not this test's subject.
         return worker_id_val
 
     def _fake_install(

@@ -1,0 +1,11 @@
+=== THE CONSOLIDATED PROOF, PHASE F at 75b78c5fe7beb2929ad46ba9346536d861d36496 — 2026-10-10T04:26:20Z
+=== the container = the repo's FULL contract (password taskq, the taskq role+db, max_connections=1000, fsync=off)
+
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+13189 passed, 8 skipped, 150 warnings in 623.09s (0:10:23)
+PYTEST-RC=0

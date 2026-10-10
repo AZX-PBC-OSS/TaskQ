@@ -1,0 +1,6 @@
+=== THE T21 OPTIONAL-SUBSCRIPT CURE — 20261008T045835Z ===
+--- pyright FULL tree ---
+0 errors, 0 warnings, 0 informations
+--- the numbers run x2 (the file's own green) ---
+run1: occurrences 10000 | state_rows 2 | verdicts True True True
+run2: occurrences 10000 | state_rows 2 | verdicts True True True

@@ -1,0 +1,7 @@
+# the fast tier x1 at -n 8 (non-integration; box: loadavg ~16/32, the co-tenant lanes' ambient)
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_twenty_wedged_runs_all_land_named_terminal_or_resumed
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_live_hold_is_left_standing
+= 10 failed, 9538 passed, 3 skipped, 121 warnings, 16 errors in 148.95s (0:02:28) =
+rc=0
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

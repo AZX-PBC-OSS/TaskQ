@@ -1,0 +1,8 @@
+# lint-format at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane)
+== ruff check .
+All checks passed!
+ruff rc=0
+== ruff format --check .
+1678 files already formatted
+format rc=0
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814

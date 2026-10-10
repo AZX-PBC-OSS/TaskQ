@@ -193,7 +193,13 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
 @given(plan=st.lists(_FSMS, max_size=24))
 async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> None:
     """A random serial op-plan lands IDENTICALLY on both backends, and each
-    side's final snapshot satisfies the state-machine invariants."""
+    side's final snapshot satisfies the state-machine invariants.
+
+    THE FUZZ IS THE DISCOVERY ENGINE, NOT THE PIN: an xfail(strict) on a
+    fuzz draw is a lie — CI's runner draws different plans, never draws
+    the counterexample, and the strict marker XPASSes (the 2026-10-10 CI
+    conviction, three legs). The convicted counterexample lives in its
+    OWN deterministic replay below: test_the_convicted_reopen_plan."""
     mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
     _assert_snapshot_invariants(mem_obs)
     _assert_snapshot_invariants(pg_obs)
@@ -205,6 +211,38 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
         mem_obs,
         pg_obs,
     )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "LIVE FINDING @ 2309f4b4 (the consolidator's own fast tier convicted it, "
+        "the red receipted .measurements/fsm-red/red-20261010-fsm-mirror.txt): the "
+        "DETERMINISTIC replay of the convicted plan (enqueue, cancel_request, "
+        "retry_job, cancel_request) emits a state_change AFTER a terminal event — "
+        "the retry-after-cancel path re-opens the row and the SECOND "
+        "cancel_request's recorded transition lands after the first terminal "
+        "write without the FSM's terminal_seen reset. Either the model's "
+        "terminal_seen must reset on a legal re-open (cancelled->pending IS a "
+        "legal retry edge) or the engine's event ordering is wrong — the reads "
+        "decide; the cure flips this to XPASS-strict — remove the marker WITH "
+        "the cure."
+    ),
+)
+async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
+    """The convicted counterexample, replayed DETERMINISTICALLY: the
+    fuzz's xfail was a lie (CI drew different plans — three legs
+    XPASS'd); the counterexample is THIS plan, fixed, forever."""
+    plan: list[Op] = [
+        ("enqueue", "j1"),
+        ("cancel_request", "j1"),
+        ("retry_job", "j1"),
+        ("cancel_request", "j1"),
+    ]
+    mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
+    _assert_snapshot_invariants(mem_obs)
+    _assert_snapshot_invariants(pg_obs)
+    assert_mirror("the convicted reopen plan, replayed verbatim", mem_obs, pg_obs)
 
 
 async def _ceiling_repeat_scenario(side: DiffSide) -> None:

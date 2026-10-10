@@ -1,0 +1,57 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=693343338
+rootdir: /tmp/opencode/wt-taskqflow
+configfile: pyproject.toml
+plugins: anyio-4.15.1, cov-7.1.0, hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, respx-0.23.1, randomly-5.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+collected 1 item
+
+tests/attack2-probe-pin6.py [TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=097c3569a859 redis=86787cf08034 state_dir=/tmp/pytest-of-rich/pytest-17067
+2026-10-07 15:01:59 [warning  ] sweep_join_body_unavailable    flow_id=01a11863-3bdb-7d81-9ee3-c016573f1115 join_job_id=01a11863-3be5-7873-9b02-228e953522e9 kind=sweep_join_body_unavailable step_key=col_join workflow_name=None
+{
+  "g7_probe": "g7 RED: the reported status drifted from the rows: flow 01a11863-3bdb-7d81-9ee3-c016573f1115 reports 'running' but the rows reconstruct 'failed' (expected the root 'failed') \u2014 the status cache has arrived (G7)",
+  "summary": "SweepResult(blocked=0, reconciled=1, firable=1, blocked_required=1, fired=(FiredJoin(join_job_id=UUID('01a11863-3be5-7873-9b02-228e953522e9'), step_key='col_join', consumers=()),))",
+  "root": "running",
+  "reconstructed": "failed",
+  "nodes": [
+    {
+      "step_key": "fc_join",
+      "status": "pending",
+      "deps": 1,
+      "blocking": "failed_parent",
+      "absorbed": false
+    },
+    {
+      "step_key": "c0",
+      "status": "failed",
+      "deps": 0,
+      "blocking": null,
+      "absorbed": false
+    },
+    {
+      "step_key": "col_join",
+      "status": "pending",
+      "deps": 0,
+      "blocking": "body_unavailable",
+      "absorbed": false
+    },
+    {
+      "step_key": "c0",
+      "status": "succeeded",
+      "deps": 0,
+      "blocking": null,
+      "absorbed": true
+    }
+  ],
+  "fc_fires": 0,
+  "col_fires": 1
+}
+.[TaskQ] event=pair-stopped pg=097c3569a859 redis=86787cf08034
+
+
+============================== 1 passed in 3.12s ===============================

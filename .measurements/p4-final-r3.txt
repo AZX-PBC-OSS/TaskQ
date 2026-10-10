@@ -1,0 +1,114 @@
+........................................................................ [ 41%]
+.........................F.............................................. [ 82%]
+..............................                                           [100%]
+=================================== FAILURES ===================================
+___________ test_the_context_contract_every_field_a_body_asserts_on ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f095fa57a00>
+wf_schema = 'tq_678d1c8754'
+wf_conn = <asyncpg.connection.Connection object at 0x7f095c1b9400>
+
+    async def test_the_context_contract_every_field_a_body_asserts_on(
+        wf_pool: Any, wf_schema: str, wf_conn: Any
+    ) -> None:
+        app = WorkflowApp()
+    
+        async def asserting_body(ctx: Any, params: Ingest) -> str:
+            # THE BODY IS THE PIN: every field the contract names, asserted
+            # on the LIVE surface. The failures are RECORDED (the body's
+            # exception feeds the ladder; the record is what the test
+            # asserts on — the body's own verdict is the pin).
+            fields = {
+                "flow_id": str(ctx.flow_id),
+                "node_key": ctx.node_key,
+                "attempt": ctx.attempt,
+                "input": ctx.input,
+                "flow_name": ctx.flow_name,
+                "queue": ctx.queue,
+                "claimed_at": str(ctx.claimed_at),
+            }
+            SEEN["fields"] = fields
+            assert ctx.node_key == "asserting", fields
+            assert ctx.attempt >= 1, fields
+            assert ctx.input == {"doc_id": "d1"}, fields  # the FLOW input (create_flow's)
+            assert ctx.flow_name == "context_contract", fields
+            assert ctx.queue == "contract-q", fields
+            assert isinstance(ctx.claimed_at, datetime), fields
+            SEEN["step"] = True
+            return "a|b|c"
+    
+        async def map_item(ctx: Any, doc_id: str) -> str:
+            assert ctx.map_index is not None, "the map item's index"
+            # THE CHILD'S OWN KEY: the fork's children run under
+            # ``<source>.item`` (the per-item ledger identity), not the
+            # wiring node's key.
+            if ctx.node_key != "asserting.item":
+                SEEN.setdefault("child_keys", []).append(ctx.node_key)
+                SEEN["child_failed"] = ctx.node_key
+            else:
+                SEEN.setdefault("map_indexes", []).append(ctx.map_index)
+            return doc_id
+        # (the asserting body returns the LIST the map fans over)
+    
+        app_obj = app
+    
+        @app_obj.workflow("context_contract")
+        def context_contract() -> object:
+            first = step(asserting_body, Ingest(doc_id="d1"), key="asserting", queue="contract-q")
+            async def tail(ctx: Any, items: list[str]) -> int:
+                return len(items)
+    
+            mapped = map_source(first, map_item, key="enrich")
+            return build(step(tail, mapped, key="tail"))
+    
+        runner = FlowRunner(app_obj.get("context_contract"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow(input=Ingest(doc_id="d1"))
+>       await runner.drive(flow_id)
+
+tests/test_wf_context_contract.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:299: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:311: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:361: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+src/taskq/workflows/api/_runner.py:571: in _execute_claimed
+    await self._finalize_success(flow_id, row, attempt, node, result)
+src/taskq/workflows/api/_runner.py:757: in _finalize_success
+    final = await finalize_node(
+src/taskq/workflows/engine.py:691: in finalize_node
+    applied = await _deadlock_retry(_tx1)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:203: in _deadlock_retry
+    return await coro_factory()
+           ^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/engine.py:671: in _tx1
+    return await _run_tx1(
+src/taskq/workflows/engine.py:309: in _run_tx1
+    await insert_fork(
+src/taskq/workflows/_fork.py:48: in insert_fork
+    validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
+    ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+fork = ForkSpec(children=(), join=JoinSpec(step_key='asserting.join', actor='wf', queue='default', payload=None, consumers=(C...l_closed'),), failure_policy='fail_closed', child_driven=False), trace_id=None, max_attempts=3, retry_kind='transient')
+
+    def validate_fork(fork: ForkSpec) -> None:
+        """Refuse a malformed fork at build time: an EMPTY fork (zero children)
+        owes a join that can never fire, and a join declared over them counts
+        edges that will never exist — both the 'record healthy, work wrong'
+        class, convicted before any row is written."""
+        if not fork.children:
+>           raise ValueError(
+                "an empty fork (zero children) is refused at build time: a join "
+                "declared over zero children waits on edges that never exist — "
+                "the stranded invisible join"
+            )
+E           ValueError: an empty fork (zero children) is refused at build time: a join declared over zero children waits on edges that never exist — the stranded invisible join
+
+src/taskq/workflows/definitions.py:181: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_wf_context_contract.py::test_the_context_contract_every_field_a_body_asserts_on
+1 failed, 173 passed in 42.33s

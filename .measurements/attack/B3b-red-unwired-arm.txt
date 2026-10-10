@@ -1,0 +1,2 @@
+FAILED tests/test_wf_sweep_pins.py::test_pin_21_sweep_arms_wired_into_the_maintenance_loop
+1 failed in 0.27s

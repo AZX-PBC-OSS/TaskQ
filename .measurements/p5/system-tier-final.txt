@@ -1,0 +1,215 @@
+..........................................FF..F......                    [100%]
+=================================== FAILURES ===================================
+________ test_rolling_release_sequential_drains_keep_the_fleet_serving _________
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f'
+module_pg_schema = ModulePgSchema(schema_name='tq_7d70214c09', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f')
+sys_client = <taskq.client._taskq.TaskQ object at 0x7f6dd89ee650>
+sys_ledger = <asyncpg.connection.Connection object at 0x7f6dd84b2f30>
+roll_capped_queue = None
+
+    @pytest.mark.timeout(400)
+    async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
+        pg_dsn: str,
+        module_pg_schema: ModulePgSchema,
+        sys_client: TaskQ,
+        sys_ledger: asyncpg.Connection,
+        roll_capped_queue: None,
+    ) -> None:
+        """Pods SIGTERM one at a time, each awaited; survivors keep
+        dispatching through every drain; each corpse's rows and capacity
+        come back clean on exit.
+    
+        The mid-drain probe's bound is DERIVED, not raw: the drain window
+        the run itself measured plus a co-tenancy margin of one claim cycle
+        stretched by the runners' 20x stall-band factor (the poll floor
+        1.0s x 20 = 20s; the arithmetic is pinned on _PROBE_STALL_MARGIN
+        above). Demanding an effect inside the raw ~3s window bets on the
+        probe chain threading runner weather the repo has measured at 2.5-5
+        minutes end to end (dd4572ff) - runner starvation misread as fleet
+        stall. The teeth stay: a fleet whose probes are absent for window +
+        margin reds, and one that never settles inside 30s reds first.
+    
+        The grace pin below is derived the same way: the drain's seconds
+        are read on THIS starved test process's clock (the SIGTERM ->
+        graceful-stop round trip), so the comparison budgets the operator
+        grace PLUS the same co-tenancy margin. The comparison IS the bound:
+        this tier's workers boot with the in-worker shutdown watchdog
+        DISABLED (the harness's TASKQ_WATCHDOG_ENABLED=false - at this
+        cadence it cannot arm: watchdog_loop_lag_budget 30 + heartbeat 0.5
+        must be < lock_lease 8, a settings-validation error), so a drain
+        that overruns the configured grace is NOT force-exited by the
+        worker (drilled: a 25s wind-down body held w0's drain at 28.22s,
+        188% of the 15s grace, and the pod exited rc=0). The harness's
+        graceful_stop SIGKILLs only at its own timeout (_GRACE + 30), so
+        the rc == 0 pin reds a grace-overrun only past THAT window; inside
+        it, this comparison is the only bound the scenario has.
+        """
+        conn = sys_ledger
+        schema = module_pg_schema.schema_name
+        fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS)
+        sampler = CapSampler(pg_dsn, schema)
+        sampler.start()
+        drained: set[str] = set()
+        measurements: list[tuple[str, float, float]] = []
+        try:
+>           ids = await _worker_ids(conn, schema, fleet)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_rolling_release_fleet.py:848: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <asyncpg.connection.Connection object at 0x7f6dd84b2f30>
+schema = 'tq_7d70214c09'
+fleet = {'w0': WorkerProc(proc=<Popen: returncode: -9 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/t...ode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/tmp/tq-syse2e-roll-w3-1191069-AhtRzpYB.sock', log_path=None), ...}
+
+    async def _worker_ids(
+        conn: asyncpg.Connection, schema: str, fleet: dict[str, WorkerProc]
+    ) -> dict[str, str]:
+        """Map pod name -> worker row id, via the process's own pid.
+    
+        Registration lands after the pools open, which can be after the
+        health socket answers, so this waits (briefly) for every pod's row.
+        The cap is the harness's own boot-readiness bound: registration is
+        the boot's last DB step past the socket bind, so the same window
+        that bounds readiness bounds the row.
+        """
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        out: dict[str, str] = {}
+        while time.monotonic() < deadline:
+            mapping = await _pid_to_worker_id(conn, schema)
+            out = {name: mapping.get(worker.proc.pid, "") for name, worker in fleet.items()}
+            if all(out.values()):
+                return out
+            await asyncio.sleep(0.2)
+        missing = [name for name, wid in out.items() if not wid]
+>       raise AssertionError(f"pods {missing} never registered a worker row within 30s")
+E       AssertionError: pods ['w1', 'w2', 'w3', 'w4'] never registered a worker row within 30s
+
+tests/system_e2e/test_rolling_release_fleet.py:288: AssertionError
+____ test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn ____
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f'
+module_pg_schema = ModulePgSchema(schema_name='tq_7d70214c09', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f')
+sys_client = <taskq.client._taskq.TaskQ object at 0x7f6dd89eef50>
+sys_ledger = <asyncpg.connection.Connection object at 0x7f6dd885ea80>
+roll_capped_queue = None
+
+    @pytest.mark.timeout(400)
+    async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn(
+        pg_dsn: str,
+        module_pg_schema: ModulePgSchema,
+        sys_client: TaskQ,
+        sys_ledger: asyncpg.Connection,
+        roll_capped_queue: None,
+    ) -> None:
+        """Two pods drain at once, a second pair overlaps the first, the
+        last pod carries the load alone; the cap sampler watches every
+        running row for the whole release."""
+        conn = sys_ledger
+        schema = module_pg_schema.schema_name
+        fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS)
+        sampler = CapSampler(pg_dsn, schema)
+        sampler.start()
+        drained: set[str] = set()
+        try:
+>           ids = await _worker_ids(conn, schema, fleet)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_rolling_release_fleet.py:1003: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <asyncpg.connection.Connection object at 0x7f6dd885ea80>
+schema = 'tq_7d70214c09'
+fleet = {'w0': WorkerProc(proc=<Popen: returncode: -9 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/t...ode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/tmp/tq-syse2e-roll-w3-1191069-LB1O8e7J.sock', log_path=None), ...}
+
+    async def _worker_ids(
+        conn: asyncpg.Connection, schema: str, fleet: dict[str, WorkerProc]
+    ) -> dict[str, str]:
+        """Map pod name -> worker row id, via the process's own pid.
+    
+        Registration lands after the pools open, which can be after the
+        health socket answers, so this waits (briefly) for every pod's row.
+        The cap is the harness's own boot-readiness bound: registration is
+        the boot's last DB step past the socket bind, so the same window
+        that bounds readiness bounds the row.
+        """
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        out: dict[str, str] = {}
+        while time.monotonic() < deadline:
+            mapping = await _pid_to_worker_id(conn, schema)
+            out = {name: mapping.get(worker.proc.pid, "") for name, worker in fleet.items()}
+            if all(out.values()):
+                return out
+            await asyncio.sleep(0.2)
+        missing = [name for name, wid in out.items() if not wid]
+>       raise AssertionError(f"pods {missing} never registered a worker row within 30s")
+E       AssertionError: pods ['w0', 'w1', 'w3', 'w4'] never registered a worker row within 30s
+
+tests/system_e2e/test_rolling_release_fleet.py:288: AssertionError
+___ test_rolling_release_cap_churn_releases_departing_capacity_within_bounds ___
+
+pg_dsn = 'postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f'
+module_pg_schema = ModulePgSchema(schema_name='tq_7d70214c09', pg_dsn='postgresql://rich@127.0.0.1:5714/tq_db_7d70214c090f')
+sys_client = <taskq.client._taskq.TaskQ object at 0x7f6dd8622d50>
+sys_ledger = <asyncpg.connection.Connection object at 0x7f6dd84b08c0>
+roll_capped_queue = None
+
+    @pytest.mark.timeout(400)
+    async def test_rolling_release_cap_churn_releases_departing_capacity_within_bounds(
+        pg_dsn: str,
+        module_pg_schema: ModulePgSchema,
+        sys_client: TaskQ,
+        sys_ledger: asyncpg.Connection,
+        roll_capped_queue: None,
+    ) -> None:
+        """The departing pod's distributed capacity is released and
+        re-admissible: graceful (the drain hands the slots back) and killed
+        (the capacity-leak construct: lease expiry + the slot sweep free
+        what the SIGKILL stranded) - each within its derived bound."""
+        conn = sys_ledger
+        schema = module_pg_schema.schema_name
+        fleet = await _spawn_joined_fleet(conn, pg_dsn, schema, _PODS[:4])
+        sampler = CapSampler(pg_dsn, schema)
+        sampler.start()
+        drained: set[str] = set()
+        try:
+>           ids = await _worker_ids(conn, schema, fleet)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/system_e2e/test_rolling_release_fleet.py:1244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <asyncpg.connection.Connection object at 0x7f6dd84b08c0>
+schema = 'tq_7d70214c09'
+fleet = {'w0': WorkerProc(proc=<Popen: returncode: -9 args: ['/tmp/opencode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/t...opencode/wt-taskqflow-p5/.venv/bin/pytho...>, sock_path='/tmp/tq-syse2e-roll-w3-1191069-dUZNmQ5b.sock', log_path=None)}
+
+    async def _worker_ids(
+        conn: asyncpg.Connection, schema: str, fleet: dict[str, WorkerProc]
+    ) -> dict[str, str]:
+        """Map pod name -> worker row id, via the process's own pid.
+    
+        Registration lands after the pools open, which can be after the
+        health socket answers, so this waits (briefly) for every pod's row.
+        The cap is the harness's own boot-readiness bound: registration is
+        the boot's last DB step past the socket bind, so the same window
+        that bounds readiness bounds the row.
+        """
+        deadline = time.monotonic() + BOOT_READY_BOUND_S
+        out: dict[str, str] = {}
+        while time.monotonic() < deadline:
+            mapping = await _pid_to_worker_id(conn, schema)
+            out = {name: mapping.get(worker.proc.pid, "") for name, worker in fleet.items()}
+            if all(out.values()):
+                return out
+            await asyncio.sleep(0.2)
+        missing = [name for name, wid in out.items() if not wid]
+>       raise AssertionError(f"pods {missing} never registered a worker row within 30s")
+E       AssertionError: pods ['w1', 'w2', 'w3'] never registered a worker row within 30s
+
+tests/system_e2e/test_rolling_release_fleet.py:288: AssertionError
+=========================== short test summary info ============================
+FAILED tests/system_e2e/test_rolling_release_fleet.py::test_rolling_release_sequential_drains_keep_the_fleet_serving
+FAILED tests/system_e2e/test_rolling_release_fleet.py::test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
+FAILED tests/system_e2e/test_rolling_release_fleet.py::test_rolling_release_cap_churn_releases_departing_capacity_within_bounds
+3 failed, 50 passed in 2592.44s (0:43:12)

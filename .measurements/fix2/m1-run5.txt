@@ -1,0 +1,42 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+__________________ test_wf_pre_workflow_actor_prune_tolerance __________________
+
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f813913c140>
+module_pg_schema = ModulePgSchema(schema_name='tq_9874bba275', pg_dsn='postgresql://taskq:taskq@localhost:42577/tq_db_9874bba27574')
+
+    @pytest.mark.integration
+    async def test_wf_pre_workflow_actor_prune_tolerance(
+        clean_pg_conn: asyncpg.Connection, module_pg_schema: pytest.FixtureRequest
+    ) -> None:
+        """The per-actor prune arm on a schema with NO workflow tables and an
+        actor_overrides entry: the arm survives (the per-batch unguarded
+        fallback — the pre-tolerance shape was the leader's death) and prunes
+        the actor's aged rows; the convicted variant (the guarded actor
+        candidate raw) raises the miss."""
+        pre = module_pg_schema.schema_name + "_prewf2"
+        schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
+        await _seed_expired_result(clean_pg_conn, schema_name, actor="override_me", key="tol-2")
+    
+        result = await prune_terminal_jobs(
+            clean_pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            batch_size=100,
+            schema=schema_name,
+            actor_overrides={"override_me": timedelta(days=1)},
+        )
+>       assert result.total_deleted >= 1, f"the actor arm must survive and prune: {result}"
+E       AssertionError: the actor arm must survive and prune: PruneResult(total_deleted=0, archived=0, by_actor={}, by_status={}, cutoffs={'cancelled': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc), 'crashed': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc), 'failed': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc), 'abandoned': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc), 'succeeded': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc)}, duration_ms=12)
+E       assert 0 >= 1
+E        +  where 0 = PruneResult(total_deleted=0, archived=0, by_actor={}, by_status={}, cutoffs={'cancelled': datetime.datetime(2026, 9, 7...one.utc), 'succeeded': datetime.datetime(2026, 9, 7, 23, 3, 58, 309436, tzinfo=datetime.timezone.utc)}, duration_ms=12).total_deleted
+
+tests/test_wf_pre_workflow_tolerance_pins.py:115: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+[TaskQ] event=swept containers=0 networks=0
+[TaskQ] event=pair-started pg=d83b0496bfb0 redis=f9ed7297fc0d state_dir=/tmp/pytest-of-rich/pytest-17136
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 16:03:58 [warning  ] prune-workflow-guard-fallback  kind=prune_workflow_guard_fallback reason='wf_edge does not exist (the workflow round has not applied) — the candidate runs unguarded'
+=========================== short test summary info ============================
+FAILED tests/test_wf_pre_workflow_tolerance_pins.py::test_wf_pre_workflow_actor_prune_tolerance
+1 failed, 1 passed in 4.39s

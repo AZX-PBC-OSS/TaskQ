@@ -1,0 +1,12 @@
+# the fast tier x1 at -n 8 (the CI's lane filter: not slow and not load_sensitive; the lane's contract-true container :5774) at the source-final head 2d993a83c7eb0af31aeefe8067091cd2bbd68b27; carried fresh by the measurement commits (the off-by-one rule)
+# FULL CAPTURE — the run's every FAILED/ERROR line (exactly one: the rv2_13 truthful red, named below with the count) + the tail; the raw log: .measurements/t27-fast-tier-n8.txt (the run's tail, captured live)
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 13258 passed, 8 skipped, 150 warnings in 749.66s (0:12:29)
+# the single FAILED = test_rv2_13 — the head-stamp law's pin, red TRUTHFULLY at the source head (the committed estate's claims predate the lane's source commits); its cure is the measurement estate landing this capture
+SKIPPED [3] tests/test_atk_upgrade_kill_mid_migration.py:154: boundary beyond this file's statement count
+SKIPPED [1] tests/test_backend_equivalence.py:670: connection-loss test requires PostgresBackend
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+head: 2d993a83c7eb0af31aeefe8067091cd2bbd68b27

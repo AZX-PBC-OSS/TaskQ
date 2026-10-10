@@ -1,0 +1,59 @@
+# THE E2E STRANGER SANITY — the composed doc_ingest run, end-to-end — head d130fca5, pg :5706, schema int_e2e
+== THE MERMAID RENDER (the compile-time emission)
+flowchart TD
+    doc_source["doc_source"]
+
+== THE FLOW CREATED: 01a119ed-0441-7b32-b387-322c10757e49
+== THE DRAIN: 'terminal'
+Traceback (most recent call last):
+  File "/tmp/opencode/wt-taskqflow/.measurements/integration/e2e_doc_ingest.py", line 245, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 196, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/runners.py", line 119, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/tmp/opencode/wt-taskqflow/.measurements/integration/e2e_doc_ingest.py", line 168, in main
+    root = await conn.fetchrow(
+           ^^^^^^^^^^^^^^^^^^^^
+        f'SELECT job_status, error_class FROM "{SCHEMA}".jobs WHERE id = $1', flow_id
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 752, in fetchrow
+    data = await self._execute(
+           ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 1873, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 1970, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 2013, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/tmp/opencode/wt-taskqflow/.venv/lib/python3.13/site-packages/asyncpg/connection.py", line 443, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg/protocol/protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "job_status" does not exist

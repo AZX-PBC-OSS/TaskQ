@@ -5,6 +5,7 @@ to ensure route registration order (static paths before {job_id}).
 """
 
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -18,6 +19,7 @@ from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web._sse_limit import acquire_sse_slot, release_after
 from taskq.web.admin._audit import (
     ACTION_JOB_CANCEL,
     TARGET_TYPE_JOB,
@@ -1029,3 +1031,107 @@ def register(router: APIRouter) -> None:
         # root, under a host prefix it climbs out of the mount and 404s
         # (or lands in the host's own routes).
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
+
+    # ── THE WORKFLOW PROGRESS STREAM (T21 — the SSE face's HTTP mapping) ────
+
+    @router.get("/api/flow/{flow_id}/progress/stream")
+    async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
+        flow_id: uuid.UUID,
+        request: Request,
+        pool: BoundedPool = Depends(get_admin_pool),
+        schema: str = Depends(get_schema),
+        settings: TaskQSettings = Depends(get_settings),
+        last_event_id: int | None = Query(default=None),
+    ) -> Any:
+        """The run's progress stream (T21): the seq-cursor replay over the ONE
+        workflow stream, mapped onto SSE.
+
+        THE CONNECT SHAPE: a ``display`` frame first (the LEDGER + the state
+        channel — the node states are ledger-derived, never stream-derived:
+        the progress-lie fence), then ``progress`` frames in seq order
+        (``id:`` the seq — the browser ``EventSource``'s reconnect contract),
+        and — when the ring pruned past the reconnecting cursor — the NAMED
+        ``resync`` frame (the partial mode + the state payload) BEFORE the
+        tail, never a silent empty-success.
+
+        THE IMPORT LAW (§16.1): the workflows imports are lazy — this module
+        never imports ``taskq.workflows`` at module scope.
+        """
+        from sse_starlette.event import ServerSentEvent
+        from sse_starlette.sse import EventSourceResponse as _EventSourceResponse
+
+        from taskq.workflows._progress_read import progress_stream_generator
+        from taskq.workflows.engine import render_workflow_sql
+
+        # The cursor: the header wins (WHATWG SSE §9.2.1 — the browser sends
+        # it on reconnect); the query param is the curl/debugging convenience.
+        header_val = request.headers.get("Last-Event-ID")
+        cursor = 0
+        if header_val is not None:
+            try:
+                cursor = int(header_val)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative integer sequence number",
+                ) from None
+            if cursor < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative integer sequence number",
+                )
+        elif last_event_id is not None:
+            if last_event_id < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="last_event_id must be a non-negative integer sequence number",
+                )
+            cursor = last_event_id
+
+        wsql = render_workflow_sql(schema)
+
+        # THE CAP: each stream pins a poll loop + a socket for as long as
+        # the client holds it — the uncapped scan's guard (the SSE-cap
+        # law) refuses an endpoint without this, and a burst of open
+        # streams would exhaust exactly what the cap bounds. The slot is
+        # taken here (after the cheap 400 guards) and ownership transfers
+        # to the wrapped generator on the success path only; release_after
+        # releases exactly once, in the generator's own finally.
+        sse_slot = await acquire_sse_slot(
+            "flow-progress-stream", settings.admin_max_sse_connections, surface="admin"
+        )
+
+        # The long-lived stream manages its OWN checkouts (bounded polls —
+        # the guard's stream-resolver exception), so the generator takes
+        # the raw pool the BoundedPool wraps: the bound stays on every
+        # handler-side checkout, the stream's own poll acquire is its own.
+        #
+        # THE PUSH PRIMARY, THE POLL BELT (the consumer-face lane's CURE
+        # 3): the ProgressListener (the HitlListener's sibling) rides the
+        # SAME LISTEN/NOTIFY transport — the write's own knock wakes the
+        # replay, sub-poll latency; the 1s poll stays as the fallback
+        # belt. THE CAPACITY TAX (the listener's own docstring): this
+        # stream now holds TWO connections for its life — the poll/belt
+        # checkouts + the listener's dedicated LISTEN connection; the SSE
+        # cap above bounds both faces.
+        async def _frames() -> AsyncGenerator[ServerSentEvent, None]:
+            from taskq.workflows.api._progress_listen import ProgressListener
+
+            listener = ProgressListener(pool.pool, schema, flow_id=JobId(flow_id))
+            await listener.start()
+            try:
+                async for frame in progress_stream_generator(
+                    pool.pool,
+                    wsql,
+                    flow_id=JobId(flow_id),
+                    last_event_id=cursor,
+                    listener=listener,
+                ):
+                    yield ServerSentEvent(event=frame["event"], id=frame["id"], data=frame["data"])
+            finally:
+                await listener.stop()
+
+        return _EventSourceResponse(
+            release_after(sse_slot, _frames(), "flow-progress-stream", surface="admin"),
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )

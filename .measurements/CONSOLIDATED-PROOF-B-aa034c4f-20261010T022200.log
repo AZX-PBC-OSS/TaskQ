@@ -1,0 +1,13 @@
+=== THE CONSOLIDATED PROOF, PHASE B at aa034c4f98763cafa0fdce1bc0c626ca2fac1e4b — 2026-10-10T02:22:00Z
+
+=== the type gate (the CI's own invocation):
+the type gate holds: every MUST_ERROR marker (34) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate-rc=0
+
+=== the wf battery (the full family) x2:
+3 failed, 499 passed, 1 skipped, 3 warnings in 164.56s (0:02:44)
+1 failed, 501 passed, 1 skipped, 3 warnings in 183.71s (0:03:03)
+
+=== the fast tier at -n 8 (the loaded bar):
+FAILED tests/test_wf_api_fixround_pins.py::test_e10_the_message_counts_the_wiring_actually_provided
+12 failed, 13158 passed, 8 skipped, 150 warnings, 19 errors in 1258.77s (0:20:58)

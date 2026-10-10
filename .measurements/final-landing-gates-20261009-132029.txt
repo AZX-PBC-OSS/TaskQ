@@ -1,0 +1,37 @@
+head=977be7c223ba7f5a7616edb29a89b06a519959f5 date=20261009-132029
+RUF022 [*] `__all__` is not sorted
+  --> src/taskq/workflows/_sweep.py:60:11
+   |
+58 |   from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
+59 |
+60 |   __all__ = [
+   |  ___________^
+61 | |     "NODELESS_ROOT_REAP_GRACE_S",
+62 | |     "SweepResult",
+63 | |     "drain_outbox",
+64 | |     "reap_nodeless_roots",
+65 | |     "prune_delivered_outbox",
+66 | |     "reap_phantom_ledger",
+67 | |     "sweep_hold_stamps",
+68 | |     "sweep_join_rederive",
+69 | |     "sweep_progress_ring_prune",
+70 | | ]
+   | |_^
+71 |
+72 |   #: The reap belt's grace (seconds): a nodeless root younger than this is
+   |
+help: Apply an isort-style sorting to `__all__`
+   |
+63 |     "drain_outbox",
+64 +     "prune_delivered_outbox",
+65 |     "reap_nodeless_roots",
+   -     "prune_delivered_outbox",
+66 |     "reap_phantom_ledger",
+   |
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+ruff rc=1
+1659 files already formatted
+format rc=0
+ruff+format GREEN (after RUF022 sort fix)

@@ -1,0 +1,16 @@
+{
+  "pin": "row-width",
+  "vanilla": {
+    "heap_per_row": 241.664,
+    "avg_tuple": "232.0000000000000000"
+  },
+  "extended": {
+    "heap_per_row": 249.0368,
+    "avg_tuple": "235.0000000000000000"
+  },
+  "heap_delta_bytes": 7.372800000000012,
+  "tuple_delta_bytes": "3.0000000000000000",
+  "bound_bytes": 8,
+  "seed_rows": 10000,
+  "head_sha": "b4534d29edc132aca4e6501a8c5a0146576679cb"
+}

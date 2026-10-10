@@ -1,0 +1,168 @@
+{% extends "_base.html" %}
+{% set active_page = "workflow_detail" %}
+
+{% block title %}Workflow Run {{ run.run_id[:8] if run else '' }} — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold tracking-tight mb-4">Workflow Run
+    <span class="font-mono text-sm text-slate-500 dark:text-slate-400">{{ run.run_id if run }}</span>
+</h2>
+
+{% if not installed %}
+<div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">{{ notice_text }}</div>
+{% elif run %}
+{% if refusal_banner %}
+{# THE REFUSED-OP BANNER (the defined state the redirect lands on — never a 400 wall). #}
+<div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-300 mb-4" role="alert" data-wf="refusal-banner">{{ refusal_banner }}</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4">
+        <div class="text-xs uppercase text-slate-500 dark:text-slate-400">Workflow</div>
+        <div class="text-sm mt-1">{{ run.workflow }}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-2">Root row status: {{ run.root_status }}
+            · derived: <strong data-wf="derived-status">{{ derived }}</strong>
+            <span class="text-slate-400">(the §17.5 derivation; the root row is a cache)</span></div>
+        {% if run.root_map_children %}
+        {# THE ROOT'S MAP COUNTER (the collapse's run-level face): the SUM across the run's map sources — the SSE snapshot patches it. #}
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-2">Map fan-out: <span class="font-mono" data-wf="map-counter">{{ run.root_map_done }}/{{ run.root_map_children }}</span> done (collapsed per source; the child detail lives in the drill-down)</div>
+        {% endif %}
+        {% if run.cancel_requested_at %}
+        <div class="text-xs text-red-600 dark:text-red-400 mt-2">Cancel in flight (cancel_requested_at is set).</div>
+        {% endif %}
+    </div>
+    <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4">
+        <div class="text-xs uppercase text-slate-500 dark:text-slate-400">Created / Finished</div>
+        <div class="text-sm mt-1">{{ run.created_at or '—' }}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-2">{{ run.finished_at or 'not finished' }}</div>
+    </div>
+    <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4">
+        <div class="text-xs uppercase text-slate-500 dark:text-slate-400">Live state</div>
+        <div class="text-sm mt-1" data-wf="stream-state" data-stream-state="connecting" role="status">connecting…</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-2">The live transport is SSE (the no-JS surface is this server-rendered snapshot, taken at page load).</div>
+    </div>
+</div>
+
+{# THE GRAPH: rendered ONCE by the vendored mermaid from the boot JSON's
+   rows-alone emission; every later update is a classList/text patch on
+   data-node-key — zero re-renders. Keyboard operability: each node is
+   tab-focusable and Enter opens the panel. #}
+<div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">Run graph</h3>
+        <div class="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded-sm wf-st-succeeded-fill"></span> succeeded</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded-sm wf-st-running-fill"></span> running</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded-sm wf-st-failed-fill"></span> failed</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded-sm wf-st-pending-fill"></span> pending/blocked</span>
+        </div>
+    </div>
+    <div class="overflow-x-auto" id="wf-graph" data-graph-empty="{{ 'true' if not nodes else 'false' }}">
+        {% if not nodes %}
+        {# THE EMPTY STATE: a run whose nodes are not inserted (or a run
+           id that names a root row only) renders the DEFINED state, not
+           a blank region. #}
+        <p class="text-sm text-slate-500 dark:text-slate-400 p-4">No node rows yet — the run was created but its nodes are not inserted (source: jobs rows by metadata.flow_id).</p>
+        {% else %}
+        <div id="wf-graph-host" class="min-h-[80px]"></div>
+        {% endif %}
+    </div>
+</div>
+
+{# THE HELDS: the WAITING-ON state + the deadline + the DECLARED payload
+   schema + a prefilled valid example — the operator knows WHAT to
+   deliver without reading code. Zero holds renders the DEFINED
+   healthy-zero state. #}
+<div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
+    <h3 class="text-sm font-semibold mb-2">Holds &amp; decisions</h3>
+    {% if not holds %}
+    <p class="text-sm text-slate-500 dark:text-slate-400">No holds on this run (source: wf_signals rows by workflow_id) — nothing waits on a human.</p>
+    {% else %}
+    <ul class="space-y-3">
+        {% for h in holds %}
+        <li class="border border-slate-200 dark:border-slate-800 rounded p-3 text-sm" data-hold-id="{{ h.hold_id }}">
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-xs">{{ h.hold_id }}</span>
+                {% if h.status == 'held' %}
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">held</span>
+                {% else %}
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">{{ h.status }}</span>
+                {% endif %}
+                <span>gate {{ h.signal }} · node {{ h.node }} · epoch {{ h.epoch }}</span>
+            </div>
+            {% if h.reason or h.tool or h.args %}
+            <div class="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                {% if h.reason %}<div>reason: {{ h.reason }}</div>{% endif %}
+                {% if h.tool %}<div>tool: {{ h.tool }}</div>{% endif %}
+                {% if h.args %}<div>args: <code>{{ h.args | tojson }}</code></div>{% endif %}
+            </div>
+            {% endif %}
+            <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                deadline: {{ h.expires_at or 'none (the W1 warning: a workflow that waits forever on a human)' }}
+            </div>
+            {% if h.payload_schema %}
+            <details class="mt-1">
+                <summary class="text-xs cursor-pointer text-blue-600 dark:text-blue-400">declared payload schema</summary>
+                <pre class="text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded overflow-x-auto mt-1">{{ h.payload_schema | tojson }}</pre>
+            </details>
+            {% endif %}
+            {% if h.status == 'held' and actions_enabled %}
+            <form class="mt-2 flex flex-wrap gap-2 items-start" data-wf-form="resolve" data-hold-id="{{ h.hold_id }}"
+                  data-example="{{ {'verdict': 'approve', 'note': ''} | tojson }}">
+                <label class="sr-only" for="decision-{{ h.hold_id[:8] }}">Decision (JSON)</label>
+                <textarea id="decision-{{ h.hold_id[:8] }}" name="decision" rows="2" required
+                    class="font-mono text-xs flex-1 min-w-[240px] border rounded p-2 dark:bg-slate-800"
+                    placeholder='{"verdict": "approve", "note": ""}'>{{ {'verdict': 'approve', 'note': ''} | tojson }}</textarea>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                    class="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">Resolve</button>
+            </form>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</div>
+
+{# THE AUDIT TRAIL: every operator action on this run is a ROW here. #}
+<div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
+    <h3 class="text-sm font-semibold mb-2">Audit trail</h3>
+    {% if not events %}
+    <p class="text-sm text-slate-500 dark:text-slate-400">No operator actions recorded on this run (source: admin_audit rows by target). Reads are never audited; every Resolve/cancel/deliver is.</p>
+    {% else %}
+    <table class="min-w-full text-sm">
+        <thead><tr class="text-xs uppercase text-slate-500 dark:text-slate-400">
+            <th class="text-left py-1 pr-4">When</th><th class="text-left py-1 pr-4">Principal</th>
+            <th class="text-left py-1 pr-4">Action</th><th class="text-left py-1 pr-4">Reason</th>
+        </tr></thead>
+        <tbody>
+            {% for e in events %}
+            <tr class="border-t border-slate-100 dark:border-slate-800">
+                <td class="py-1.5 pr-4 text-xs">{{ e.occurred_at }}</td>
+                <td class="py-1.5 pr-4 font-mono text-xs">{{ e.principal_subject }}</td>
+                <td class="py-1.5 pr-4">{{ e.action }}</td>
+                <td class="py-1.5 pr-4 text-xs">{{ e.reason or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+{# THE PANEL: the node drill-down (the delegated click listener's host;
+   the loading/empty/error states are the JS contract). #}
+<div id="wf-panel" class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6 hidden" role="region" aria-label="Node detail">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">Node detail <span class="font-mono text-xs text-slate-500" data-panel="key"></span></h3>
+        <button type="button" data-panel="close" class="text-xs text-slate-500 hover:text-slate-700" aria-label="Close panel">close</button>
+    </div>
+    <div data-panel="loading" class="text-sm text-slate-500 dark:text-slate-400">loading…</div>
+    <div data-panel="error" class="hidden text-sm text-red-600 dark:text-red-400"></div>
+    <div data-panel="body" class="hidden text-sm space-y-2"></div>
+</div>
+
+<script id="wf-boot" type="application/json">{{ boot | tojson }}</script>
+<script src="{{ base_path }}/static/mermaid.min.js"></script>
+<script src="{{ base_path }}/static/workflows.js"></script>
+{% endif %}
+{% endblock %}

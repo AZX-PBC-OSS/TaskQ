@@ -1,0 +1,4 @@
+# the pin packs at the docs-currency head 6e2297fe87ae2b1ad273c537f30fe7d82aa7019a (the redlog packs, serial)
+266 passed in 102.26s (0:01:42)
+packs rc=0
+head: 6e2297fe87ae2b1ad273c537f30fe7d82aa7019a

@@ -1,0 +1,7 @@
+== the cron slot idempotency (the same slot twice):
+-- the first:
+{"run_id":"01a11ad1-568a-7283-a1d0-3382c03d8059","url":"/taskq/workflows/01a11ad1-568a-7283-a1d0-3382c03d8059"} [202]
+-- the second (the same slot):
+{"run_id":"01a11ad1-568a-7283-a1d0-3382c03d8059","url":"/taskq/workflows/01a11ad1-568a-7283-a1d0-3382c03d8059"} [202]
+-- the third (a NEW slot):
+{"run_id":"01a11ad1-572b-7af1-afc2-7c58f097c6f0","url":"/taskq/workflows/01a11ad1-572b-7af1-afc2-7c58f097c6f0"} [202]

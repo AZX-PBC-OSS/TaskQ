@@ -1,0 +1,3338 @@
+FFFFFFFFFF....F......F.FFFFFFF.FFFFF                                     [100%]
+=================================== FAILURES ===================================
+_______________________ test_hold_to_resume_latency_band _______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f5505310>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f549e2c0>
+
+    async def test_hold_to_resume_latency_band(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """G11c (the third unpinned workflow band — the band is SET from this
+        measurement, then pinned in perf-evidence-workflows.md): send_signal
+        commit → the row claimable."""
+        import time
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="band_flow"
+        )
+
+tests/test_wf_hitl_pins.py:522: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f558d010>
+flow_id = UUID('01a11a19-706d-7f30-9eae-0d5111815bfa')
+row = {'id': UUID('01a11a19-7076-71c1-84ea-ff2918cbce34'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-708f-7693-871e-74f51db20675')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_hold_to_resume_latency_band.<locals>.hold_body...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_hold_to_resume_latency_band.<locals>.hold_body at 0x7fc9f55c45e0>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+________________ test_double_send_is_a_defined_no_op_one_resume ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f557da90>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f549e500>
+
+    async def test_double_send_is_a_defined_no_op_one_resume(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 2: two concurrent delivers → exactly ONE 'delivered' result,
+        exactly one resume (the 'held' → 'delivered' CAS is the fence)."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="double_send_flow"
+        )
+
+tests/test_wf_hitl_pins.py:135: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f5416c10>
+flow_id = UUID('01a11a19-71b9-7220-8a44-250d361f4d9c')
+row = {'id': UUID('01a11a19-71c2-7873-8324-bf71a99af680'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-71db-7853-89b8-beadb9d4f848')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_double_send_is_a_defined_no_op_one_resume.<loc...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_double_send_is_a_defined_no_op_one_resume.<locals>.hold_body at 0x7fc9f533f100>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f537d220>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f549ff40>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+    
+        async def hold_twice(ctx: StepContext, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT: the two wait sites are
+            # UNCONDITIONAL (the same sequence re-runs from the top on every
+            # resume; each attempt's cursor consumes the delivered answers in
+            # epoch order); the SECOND site's hold is a NEW EPOCH on the SAME
+            # signal name — the multi-hold.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            return {"verdict": second.verdict or first.verdict}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+>       await runner.drive(flow_id, until="held")
+
+tests/test_wf_hitl_pins.py:264: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f536d310>
+flow_id = UUID('01a11a19-72ec-7022-8ebf-9ed362ecbc8f')
+row = {'id': UUID('01a11a19-72f5-7f70-84e4-85f05824d10b'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-730e-7941-90b6-d60f32df0345')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_second_hold_new_epoch_clean_and_stale_payload_...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_second_hold_new_epoch_clean_and_stale_payload_refused.<locals>.hold_twice at 0x7fc9f55fd080>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+___________ test_late_deliver_after_cancel_is_refused_no_zombie_wake ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f5399040>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532d600>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7fc9f558e270>
+
+    async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 1 (P3 2b): a deliver against a CANCELLED signal returns the
+        typed refusal — no zombie wake, no resume event. The deliver CAS
+        requires the unresolved-signal + held-representation predicate."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, node_id = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="late_deliver_flow"
+        )
+
+tests/test_wf_hitl_pins.py:90: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f559e2c0>
+flow_id = UUID('01a11a19-741c-7c20-80c5-8aaa41181092')
+row = {'id': UUID('01a11a19-7424-7ad0-a1a5-1329cc0502ff'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-743d-7272-a672-a8d91732903f')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_late_deliver_after_cancel_is_refused_no_zombie...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_late_deliver_after_cancel_is_refused_no_zombie_wake.<locals>.hold_body at 0x7fc9f5374ea0>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________________ test_resume_does_not_burn_the_retry_ladder __________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f53d87d0>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532da80>
+hitl_redlog = <tests._wf_fixtures.RedLog object at 0x7fc9f536ead0>
+
+    async def test_resume_does_not_burn_the_retry_ladder(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, hitl_redlog: Any
+    ) -> None:
+        """Pin 7 (A-CRITICAL-3, cut #5): holds ledger as 'awaited' and never
+        advance the ladder — a node that held twice then failed KEEPS its
+        retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
+        incrementing the ladder on every claim → terminal failure with ZERO
+        retries) is red forever (the mutation drill)."""
+        failures = {"n": 0}
+    
+        async def hold_twice_then_fail(ctx: StepContext, params: Ingest) -> Any:
+            # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
+            # unconditional — the answers replay per attempt; the operator
+            # never re-answers): after both gates, the body fails ONCE (the
+            # ladder) then succeeds — the holds never touched the ladder.
+            first = await ctx.wait_signal(Approval, timeout_s=120.0)
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            failures["n"] += 1
+            if failures["n"] == 1:
+                raise ValueError("transient after the holds")
+            return {"verdict": second.verdict or first.verdict, "note": "done"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("resume_flow")
+        def resume_flow() -> object:
+            return build(step(hold_twice_then_fail, Ingest(doc_id="d1"), key="review", max_attempts=3))
+    
+        runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
+        # is ALIVE) → succeed.
+        for _ in range(6):
+>           await runner.drive(flow_id, until="held", max_ticks=50)
+
+tests/test_wf_hitl_pins.py:195: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f559efd0>
+flow_id = UUID('01a11a19-754b-7c53-9962-caee9108225a')
+row = {'id': UUID('01a11a19-7554-76f1-bba7-fadb6f365c9c'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-7570-74a0-a545-051c1356f87d')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_resume_does_not_burn_the_retry_ladder.<locals>...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_resume_does_not_burn_the_retry_ladder.<locals>.hold_twice_then_fail at 0x7fc9f5377d80>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________ test_pubsub_knock_is_a_pointer_and_the_consumer_converges ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f56b0230>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532cac0>
+module_pg_schema = ModulePgSchema(schema_name='tq_5ec84616da', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_5ec84616daa9')
+
+    async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
+        wf_conn: asyncpg.Connection,
+        wf_schema: str,
+        wf_pool: asyncpg.Pool,
+        module_pg_schema: Any,
+    ) -> None:
+        """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
+        + event) — NEVER the sole copy of the payload; a consumer that
+        MISSES the knock still converges by polling ``client.hitl.list()``
+        (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's
+        cure — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
+        nothing): a raw pg_notify consumer on the MODULE's database
+        (pg_notify is per-database — the env DSN's db is not the module's)
+        observes the resolved knock's SHAPE."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="knock_flow"
+        )
+
+tests/test_wf_hitl_pins.py:384: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f5671fd0>
+flow_id = UUID('01a11a19-7694-71e0-b07c-a285dbe1d2e8')
+row = {'id': UUID('01a11a19-769d-7d11-b1e1-c34eab7d4187'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-76b4-7fd2-aa98-bc88d800ef12')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_pubsub_knock_is_a_pointer_and_the_consumer_con...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_pubsub_knock_is_a_pointer_and_the_consumer_converges.<locals>.hold_body at 0x7fc9f53e9f80>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_______________ test_cancel_workflow_one_transaction_idempotent ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f56b3e30>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532dd80>
+
+    async def test_cancel_workflow_one_transaction_idempotent(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 4 through the public API: the flip is the linearization;
+        the held signals → cancelled; IDEMPOTENT (cancel twice = one
+        cancel); the audit row is a ROW (the principal + the reason)."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+    
+>       flow_id, runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="cancel_flow"
+        )
+
+tests/test_wf_hitl_pins.py:487: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f56d9150>
+flow_id = UUID('01a11a19-77c2-75a2-997a-aca38c45bb3c')
+row = {'id': UUID('01a11a19-77ca-7d43-bf33-51fa9b66ada6'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-77e0-75f3-8e0f-17475faa2b99')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_cancel_workflow_one_transaction_idempotent.<lo...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_cancel_workflow_one_transaction_idempotent.<locals>.hold_body at 0x7fc9f53ea340>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+____________________ test_signal_timeout_fires_on_db_clock _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f56b3020>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f4bf44c0>
+
+    async def test_signal_timeout_fires_on_db_clock(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 13 (G6): the expiry arm compares PG's clock — the expired
+        hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
+        REAL (the vacuous-audit's cure — the shipped pin's docstring claimed
+        the face it never exercised): the resume's wait site RAISES
+        :class:`taskq.exceptions.SignalTimeoutError` (the glossary
+        exception; the body's ladder/except owns it from there), the node
+        terminal-fails, and NO new epoch is ever minted — hold → expire →
+        re-hold → ∞ is the convicted dragon, kept red by the attack probe."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(Approval, timeout_s=1.0)
+    
+>       flow_id, runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="timeout_flow"
+        )
+
+tests/test_wf_hitl_pins.py:441: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f55e2690>
+flow_id = UUID('01a11a19-78de-7590-b9d9-cf7024a48875')
+row = {'id': UUID('01a11a19-78e6-7cc2-a1da-051663597c42'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-78fd-7413-a54d-9a0108637e44')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_signal_timeout_fires_on_db_clock.<locals>.hold...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_signal_timeout_fires_on_db_clock.<locals>.hold_body at 0x7fc9f5374f40>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f537cb90>
+wf_schema = 'tq_5ec84616da'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532d6c0>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+    
+        async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+>       flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+
+tests/test_wf_hitl_pins.py:321: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_hitl_pins.py:68: in _held_flow
+    await runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f55be950>
+flow_id = UUID('01a11a19-79f6-72b2-a088-7fa755956594')
+row = {'id': UUID('01a11a19-79ff-7dc0-870e-b34ff7797426'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-7a13-71d2-bbf0-da4d851d044b')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function test_hold_id_reply_handle_and_context_contract.<loc...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_hold_id_reply_handle_and_context_contract.<locals>.hold_body at 0x7fc9f53e8ea0>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________ test_resolve_refuses_a_wrong_payload_with_the_named_error ___________
+
+cli_settings = ModulePgSchema(schema_name='tq_1d07a1e1db', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1d07a1e1db41')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532df00>
+wf_schema = 'tq_1d07a1e1db', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+        exit 1, and the hold SURVIVES (nothing delivered)."""
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:221: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f55bd750>
+flow_id = UUID('01a11a19-7dc7-7cf0-b3b8-20ea769a9d65')
+row = {'id': UUID('01a11a19-7dcf-77c1-baa2-4e2ca0dc7eb8'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-7de5-77e1-a8b4-db32f4aeb18c')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7fc9f4b56200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7fc9f4b56200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+______________ test_resolve_replies_by_id_and_the_flow_completes _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_1d07a1e1db', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1d07a1e1db41')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532e380>
+wf_schema = 'tq_1d07a1e1db'
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f564b890>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_resolve_replies_by_id_and_the_flow_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f56cbd40>
+flow_id = UUID('01a11a19-7f90-7b72-9fd1-4107bb1e8dec')
+row = {'id': UUID('01a11a19-7f98-73f1-bcda-ce9c7430aa25'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-7faf-7f83-b839-658d9e7456f1')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7fc9f4b56200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7fc9f4b56200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_______________ test_holds_on_a_terminal_run_is_the_healthy_zero _______________
+
+cli_settings = ModulePgSchema(schema_name='tq_1d07a1e1db', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1d07a1e1db41')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532c4c0>
+wf_schema = 'tq_1d07a1e1db', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_holds_on_a_terminal_run_is_the_healthy_zero(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+        """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
+        defined healthy-zero state — the line SAYS the zero is state (a blank
+        section that reads as zero-holds reds)."""
+        compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+>       await flow_runner.drive(flow_id)
+
+tests/test_wf_cli_pins.py:157: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f564bc50>
+flow_id = UUID('01a11a19-816a-79f2-9277-07ba804c8591')
+row = {'id': UUID('01a11a19-8171-79f2-89cb-a78ac5b6858a'), 'step_key': 'doomed', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-818b-7db3-b481-bbff8fade21d')
+node = NodeDecl(key='doomed', actor='wf', queue='default', body=<function _explode_once at 0x7fc9f4b562a0>, parents=(), args=...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _explode_once at 0x7fc9f4b562a0>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_________ test_retry_reopens_the_failed_closure_and_the_run_completes __________
+
+cli_settings = ModulePgSchema(schema_name='tq_1d07a1e1db', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1d07a1e1db41')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532f700>
+wf_schema = 'tq_1d07a1e1db'
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f56c8d70>
+demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_retry_reopens_the_failed_closure_and_the_run_completes(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+    ) -> None:
+        """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
+        completes after the operator's retry (§22.6's manual leg)."""
+        compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+        flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = await flow_runner.create_flow()
+>       await flow_runner.drive(flow_id)
+
+tests/test_wf_cli_pins.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f4bd3070>
+flow_id = UUID('01a11a19-82a1-7f60-bba6-d8e8fa26fc9f')
+row = {'id': UUID('01a11a19-82a9-71a2-846b-91d85ce131be'), 'step_key': 'doomed', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-82c5-7ca3-acad-e5dbd4f4094a')
+node = NodeDecl(key='doomed', actor='wf', queue='default', body=<function _explode_once at 0x7fc9f4b562a0>, parents=(), args=...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _explode_once at 0x7fc9f4b562a0>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+______________ test_status_reports_the_blocked_run_and_the_remedy ______________
+
+cli_settings = ModulePgSchema(schema_name='tq_1d07a1e1db', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_1d07a1e1db41')
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532c1c0>
+wf_schema = 'tq_1d07a1e1db', demo_app_module = <module 'p4_cli_demo_flows'>
+
+    async def test_status_reports_the_blocked_run_and_the_remedy(
+        cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
+    ) -> None:
+>       run_id = await _held_run(wf_pool, wf_schema)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_cli_pins.py:171: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_wf_cli_pins.py:106: in _held_run
+    await flow_runner.drive(flow_id, until="held")
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f53d5c50>
+flow_id = UUID('01a11a19-83d6-70a3-8784-32249aa4cc9d')
+row = {'id': UUID('01a11a19-83de-7381-83d1-203024620712'), 'step_key': 'review', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-83f9-7f72-b1dc-b0f016c4eb1e')
+node = NodeDecl(key='review', actor='wf', queue='default', body=<function _wait at 0x7fc9f4b56200>, parents=(), args=(('d', I...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _wait at 0x7fc9f4b56200>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+___________________ test_skip_predicate_decided_at_dispatch ____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f53d8c80>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532c040>
+
+    async def test_skip_predicate_decided_at_dispatch(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #4's cure: the guard reads the flow's state AT DISPATCH — the
+        sibling's COMPLETED result decides it (inexpressible in the spike;
+        the dependency is SPELLED: the guarded node consumes the chooser's
+        promise, so its dispatch strictly follows the chooser's terminal)."""
+        app = WorkflowApp()
+    
+        async def chooser(ctx: StepContext, params: Ingest) -> dict[str, str]:
+            return {"pick": "skip_me"}
+    
+        async def guarded(ctx: StepContext, choice: dict[str, str]) -> dict[str, int]:
+            return {"n": 1}
+    
+        @app.workflow("guard_flow")
+        def guard_flow() -> object:
+            pick = step(chooser, Ingest(doc_id="d"), key="pick")
+            return build(
+                step(
+                    guarded,
+                    pick,
+                    key="guarded",
+                    # THE DISPATCH-TIME PREDICATE: reads the sibling's result.
+                    skip=lambda state: (
+                        (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
+                        == "skip_me"
+                    ),
+                )
+            )
+    
+        runner = FlowRunner(app.get("guard_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:206: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f3025090>
+flow_id = UUID('01a11a19-87c2-7192-b54c-9773f63d6546')
+row = {'id': UUID('01a11a19-87d1-7752-a520-13f6fb294a13'), 'step_key': 'pick', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-87f6-7b42-857f-611fce04891f')
+node = NodeDecl(key='pick', actor='wf', queue='default', body=<function test_skip_predicate_decided_at_dispatch.<locals>.choo...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_skip_predicate_decided_at_dispatch.<locals>.chooser at 0x7fc9f53eba60>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+______________ test_map_children_ledger_identity_and_max_attempts ______________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f2f6af30>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532d180>
+
+    async def test_map_children_ledger_identity_and_max_attempts(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+        jobs with per-child ledger identity (map_index distinct) and their
+        own max_attempts — the retry ladder never collapses them onto one
+        row."""
+        app = WorkflowApp()
+    
+        async def flaky_child(ctx: StepContext, item: Item) -> dict[str, int]:
+            if item.n == 2 and ctx.attempt == 1:
+                raise ValueError("child 2 first try")
+            return {"n": item.n}
+    
+        @app.workflow("map_children_flow")
+        def map_children_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d"), key="src")
+            mapped = map_source(source, flaky_child, key="child", max_attempts=3)
+            return build(mapped)
+    
+        runner = FlowRunner(app.get("map_children_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:366: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f2ffcd10>
+flow_id = UUID('01a11a19-8907-7400-84c0-199c8457a2ad')
+row = {'id': UUID('01a11a19-8911-7ef0-aaba-73a5c3d90eb8'), 'step_key': 'src', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-892f-7102-83b2-2ad30fba55e1')
+node = NodeDecl(key='src', actor='wf', queue='default', body=<function _items_source at 0x7fc9f4b57880>, parents=(), args=(('...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _items_source at 0x7fc9f4b57880>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+___________ test_transient_ladder_emits_no_terminal_until_exhaustion ___________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f2fca8a0>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f2ffc7c0>
+
+    async def test_transient_ladder_emits_no_terminal_until_exhaustion(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """P3 rule 7 through the public API: the transient ladder's attempt
+        failures emit NO terminal — the node re-pends until max_attempts."""
+        app = WorkflowApp()
+    
+        async def always_fails_transient(ctx: StepContext, params: Ingest) -> dict[str, int]:
+            raise ValueError("transient boom")
+    
+        @app.workflow("ladder_flow")
+        def ladder_flow() -> object:
+            node = step(always_fails_transient, Ingest(doc_id="d"), key="lad", max_attempts=3)
+            return build(node)
+    
+        runner = FlowRunner(app.get("ladder_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:274: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f2ffdf10>
+flow_id = UUID('01a11a19-8a64-7fe2-8318-43d63578647d')
+row = {'id': UUID('01a11a19-8a6f-7e42-a796-99aca409422a'), 'step_key': 'lad', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-8a83-7e53-a392-b13c0158d8c6')
+node = NodeDecl(key='lad', actor='wf', queue='default', body=<function test_transient_ladder_emits_no_terminal_until_exhausti...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_transient_ladder_emits_no_terminal_until_exhaustion.<locals>.always_fails_transient at 0x7fc9f53745e0>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+______________________ test_flow_result_read_decodes_once ______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f2fe2210>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f2ffea40>
+
+    async def test_flow_result_read_decodes_once(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cuts #14/#19's cures: the result read DECODES (never a raw jsonb
+        string) and reads the terminal by id; the un-named terminal is the
+        LOUD refusal."""
+        app = WorkflowApp()
+    
+        @app.workflow("result_flow")
+        def result_flow() -> object:
+            return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
+    
+        runner = FlowRunner(app.get("result_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       await runner.drive(flow_id)
+
+tests/test_wf_runner_pins.py:301: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f56efcd0>
+flow_id = UUID('01a11a19-8bbc-7b20-b9cc-4c98bc34c781')
+row = {'id': UUID('01a11a19-8bcb-7190-8e37-838fd5dbc5d0'), 'step_key': 'only', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-8be4-7281-9c43-79f38f7f31f0')
+node = NodeDecl(key='only', actor='wf', queue='default', body=<function _prepare at 0x7fc9f4b57b00>, parents=(), args=(('d', ...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _prepare at 0x7fc9f4b57b00>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________________ test_create_flow_carries_input_and_drives ___________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f2fe19a0>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532e800>
+
+    async def test_create_flow_carries_input_and_drives(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #7's cure + the happy path: create_flow(spec, INPUT) → the
+        input rides the ROOT ROW (a restart reads it back) → drive to
+        terminal → the result decodes."""
+        app = WorkflowApp()
+    
+        @app.workflow("input_flow")
+        def input_flow() -> object:
+            a = step(_prepare, Ingest(doc_id="d1"), key="a")
+            return build(a)
+    
+        runner = FlowRunner(app.get("input_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow(input={"doc_id": "d1"})
+        # THE INPUT IS ON THE ROW (cut #7: never a closure).
+        raw = await wf_conn.fetchval(
+            f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1',
+            flow_id,  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
+        )
+        assert raw is not None and "wf_input" in raw
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:119: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f56ef330>
+flow_id = UUID('01a11a19-8dd7-7d83-8b70-147a9f644566')
+row = {'id': UUID('01a11a19-8de2-7003-912b-9d243cce07af'), 'step_key': 'a', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-8e43-76c1-8efb-b760adda05c0')
+node = NodeDecl(key='a', actor='wf', queue='default', body=<function _prepare at 0x7fc9f4b57b00>, parents=(), args=(('d', Ing...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _prepare at 0x7fc9f4b57b00>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+___________________ test_join_user_body_cascades_downstream ____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f537c8c0>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532eb00>
+
+    async def test_join_user_body_cascades_downstream(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #1's cure (the BLOCKER): the fan-in's USER body receives the
+        decoded parents, and its result cascades — the downstream node
+        dispatches as a NORMAL step with the reducer's OUTPUT as its parent
+        result. No out-of-engine decode, no multi-flow glue."""
+        app = WorkflowApp()
+    
+        @app.workflow("cascade_flow")
+        def cascade_flow() -> object:
+            a = step(_double, step(_prepare, Ingest(doc_id="d1"), key="p"), key="a")
+            b = step(_double, step(_prepare, Ingest(doc_id="22"), key="q"), key="b")
+            reducer = step(_total, a, b, key="reducer")
+            return build(step(_tail, reducer, key="tail"))
+    
+        runner = FlowRunner(app.get("cascade_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:141: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f3023610>
+flow_id = UUID('01a11a19-939c-7d80-b27f-f84be351dce1')
+row = {'id': UUID('01a11a19-93c4-7270-b23a-21fe96d3558c'), 'step_key': 'p', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-95e1-79a1-b750-4d9fa28521cf')
+node = NodeDecl(key='p', actor='wf', queue='default', body=<function _prepare at 0x7fc9f4b57b00>, parents=(), args=(('d', Ing...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _prepare at 0x7fc9f4b57b00>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_____________________ test_sequenced_maps_depth3_one_flow ______________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f2f7d6d0>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532d6c0>
+
+    async def test_sequenced_maps_depth3_one_flow(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #2's cure (the BLOCKER): sequencing — a map whose source is a
+        step's promise, in ONE flow (the spike needed three flows + glue)."""
+        app = WorkflowApp()
+    
+        @app.workflow("seq_flow")
+        def seq_flow() -> object:
+            source = step(_items_source, Ingest(doc_id="d1"), key="src")
+            mapped = map_source(source, _per_item, key="map1")  # THE MAP: per-item fresh jobs
+            del mapped
+            return build(step(_map_tail, source, key="tail"))
+    
+        runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:162: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f30225d0>
+flow_id = UUID('01a11a19-98fa-7133-b59a-3c685700875a')
+row = {'id': UUID('01a11a19-990a-7503-ad84-eb15513e7be3'), 'step_key': 'src', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-99f7-7b30-8645-65c540d2684b')
+node = NodeDecl(key='src', actor='wf', queue='default', body=<function _items_source at 0x7fc9f4b57880>, parents=(), args=(('...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _items_source at 0x7fc9f4b57880>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_____________________ test_retry_classifier_routes_by_kind _____________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f1e64f50>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f532ebc0>
+
+    async def test_retry_classifier_routes_by_kind(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #12's cure: the retry knob routes by kind — a ``permanent``
+        body failure takes NO ladder (one terminal, immediately)."""
+        app = WorkflowApp()
+    
+        async def always_fails(ctx: StepContext, params: Ingest) -> dict[str, int]:
+            raise ValueError("boom")
+    
+        @app.workflow("retry_flow")
+        def retry_flow() -> object:
+            node = step(
+                always_fails,
+                Ingest(doc_id="d"),
+                key="perm",
+                retry_kind="permanent",
+                max_attempts=3,
+            )
+            return build(node)
+    
+        runner = FlowRunner(app.get("retry_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:240: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f301aa80>
+flow_id = UUID('01a11a19-9e34-7723-8eb7-29baa517957a')
+row = {'id': UUID('01a11a19-9e48-7ce3-af00-f23893867964'), 'step_key': 'perm', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-9f0d-7ab3-b5e0-aa4d35aeb9cc')
+node = NodeDecl(key='perm', actor='wf', queue='default', body=<function test_retry_classifier_routes_by_kind.<locals>.always_...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function test_retry_classifier_routes_by_kind.<locals>.always_fails at 0x7fc9f1e40220>
+claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+__________ test_dispatch_resolves_bodies_from_the_definition_registry __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f1ec47d0>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f2ffd300>
+
+    async def test_dispatch_resolves_bodies_from_the_definition_registry(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """D1's dispatch wiring (the pin the round-1 fixer deferred): the
+        runner resolves EVERY body from the REGISTERED DEFINITION — a
+        definition unregistered from the registry is unrunnable (loud), and
+        a per-call body map cannot exist."""
+        from taskq.workflows.definitions import get_registry
+    
+        app = WorkflowApp()
+    
+        @app.workflow("d1_flow")
+        def d1_flow() -> object:
+            return build(step(_prepare, Ingest(doc_id="d1"), key="only"))
+    
+        runner = FlowRunner(app.get("d1_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # THE REGISTRY IS THE TRUTH: the compile registered the bodies.
+        definition = get_registry().get("d1_flow")
+        assert "only" in definition.bodies
+        # The D1 conviction: resolve from an UNREGISTERED name → the KeyError
+        # (dispatch resolves by the ROOT's stamped workflow name — the
+        # durable leg the sweep's healer uses).
+        with pytest.raises(KeyError, match="not registered"):
+            get_registry().body("never-declared", "only")
+>       assert await runner.drive(flow_id) == "terminal"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:341: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f754bcd0>
+flow_id = UUID('01a11a19-a287-72e3-a189-b44890fa3afd')
+row = {'id': UUID('01a11a19-a2b1-7662-b41c-9aad765f9bf0'), 'step_key': 'only', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-a322-7003-8c3f-5cf7a32bafeb')
+node = NodeDecl(key='only', actor='wf', queue='default', body=<function _prepare at 0x7fc9f4b57b00>, parents=(), args=(('d', ...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _prepare at 0x7fc9f4b57b00>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+_________________________ test_drive_until_held_bound __________________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7fc9f1ec7e30>
+wf_schema = 'tq_873bda0a8e'
+wf_pool = <asyncpg.pool.Pool object at 0x7fc9f2fff1c0>
+
+    async def test_drive_until_held_bound(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Cut #10's contract (the shape; the loop/HITL compositions land in
+        T19/T10): the driver's ``until`` knob is bound and BOUNDED — a flow
+        that never terminalizes ends at ``max_ticks``, never a hang."""
+        app = WorkflowApp()
+    
+        @app.workflow("bound_flow")
+        def bound_flow() -> object:
+            # A HELD row: the join-wait representation with a future
+            # scheduled_at — the driver's "held" arm returns, the loop stops.
+            a = step(_prepare, Ingest(doc_id="d1"), key="a")
+            return build(a)
+    
+        runner = FlowRunner(app.get("bound_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # THE BOUND: max_ticks=2 ends the drive — never a hang (the cap is
+        # the pin; a driver that spins forever is the defect with no stack).
+>       verdict = await runner.drive(flow_id, until="held", max_ticks=2, tick=0.0)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_wf_runner_pins.py:433: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/workflows/api/_runner.py:296: in drive
+    ran = await self.tick(flow_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+src/taskq/workflows/api/_runner.py:308: in tick
+    await self._run_node(flow_id, row)
+src/taskq/workflows/api/_runner.py:358: in _run_node
+    await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <taskq.workflows.api._runner.FlowRunner object at 0x7fc9f754ab50>
+flow_id = UUID('01a11a19-a656-7903-a6e1-e54dfde3de52')
+row = {'id': UUID('01a11a19-a664-7a32-afaf-48a70d350db6'), 'step_key': 'a', 'map_index': None, 'attempt': 0, ...}
+attempt = 1, ledger_id = UUID('01a11a19-a6e5-7101-8534-3dedc4b32cdd')
+node = NodeDecl(key='a', actor='wf', queue='default', body=<function _prepare at 0x7fc9f4b57b00>, parents=(), args=(('d', Ing...empts=3, map_on_failure='fail_closed', map_aggregate=None, loop_spec=None, loop_body=None, loop_until=None, chain=None)
+body = <function _prepare at 0x7fc9f4b57b00>, claim_epoch = 0
+
+    async def _execute_claimed(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+    ) -> None:
+        """The shared execution tail, from the ledger claim to the
+        terminal: the in-process driver (:meth:`_run_node`) and the
+        worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
+        both land here — ONE execution semantics, the machinery never
+        forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
+        is the fence epoch the finalize/emit fences carry: the runner's
+        own claim stamps 0; a fleet-claimed row carries its dispatch
+        claim's epoch."""
+    
+        node_key = row["step_key"]
+        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # additive write, class='auto', the ONE stream. Best-effort: a
+        # lost projection is a logged freshness loss, never a node
+        # failure (the asymmetry — the projection never runs inside the
+        # claim's statements).
+        await self._project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_STARTED,
+            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
+        )
+    
+        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # flow's state — never at create time.
+        if (
+            node is not None
+            and node.skip is not None
+            and node.skip(await self._flow_state(flow_id))
+        ):
+            await self._finalize_skipped(flow_id, row, node)
+            return
+    
+        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # declared progress schema rides the node's decl (a MAP CHILD
+        # inherits its source's: the fork-spawned keys have no decl of
+        # their own).
+        emitter = ProgressEmitter(
+            self.pool,
+            self.wsql,
+            flow_id=flow_id,
+            node_id=JobId(row["id"]),
+            schema_decl=self._progress_schema(node_key, node),
+        )
+    
+        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # (the iterations, the walls) — the caller's body path never
+        # runs for it. The emitter rides in; the driver's ctx gets it,
+        # and the close is THIS call's finally (bounded, best-effort —
+        # the driver's internal finalizes never wait on the buffer).
+        if node is not None and node.loop_spec is not None:
+            try:
+                await self._run_loop_node(flow_id, row, attempt, node, ledger_id, emitter)
+            finally:
+                await emitter.aclose()
+            return
+    
+        parents_ordered, parents_by_key = await self._parent_results(row["id"])
+        payload_raw = row["payload"]
+        payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
+        payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
+        args = self._resolve_args(node, body, parents_by_key, payload_doc)
+    
+>       ctx = build_step_context(
+            flow_id=flow_id,
+            job_id=JobId(row["id"]),
+            node_key=node_key,
+            attempt=attempt,
+            pool=self.pool,
+            wsql=self.wsql,
+            input=await self._flow_input(flow_id),
+            map_index=row["map_index"],
+            ledger_id=ledger_id,
+            worker_id=self._worker_id,
+            workflow_name=self.compiled.name,
+            redact=self._redact_hook(),
+            progress=emitter,
+            claim_epoch=claim_epoch,
+        )
+E       TypeError: build_step_context() got an unexpected keyword argument 'claim_epoch'
+
+src/taskq/workflows/api/_runner.py:483: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_hold_to_resume_latency_band - TypeErr...
+FAILED tests/test_wf_hitl_pins.py::test_double_send_is_a_defined_no_op_one_resume
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+FAILED tests/test_wf_hitl_pins.py::test_late_deliver_after_cancel_is_refused_no_zombie_wake
+FAILED tests/test_wf_hitl_pins.py::test_resume_does_not_burn_the_retry_ladder
+FAILED tests/test_wf_hitl_pins.py::test_pubsub_knock_is_a_pointer_and_the_consumer_converges
+FAILED tests/test_wf_hitl_pins.py::test_cancel_workflow_one_transaction_idempotent
+FAILED tests/test_wf_hitl_pins.py::test_signal_timeout_fires_on_db_clock - Ty...
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+FAILED tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+FAILED tests/test_wf_cli_pins.py::test_resolve_replies_by_id_and_the_flow_completes
+FAILED tests/test_wf_cli_pins.py::test_holds_on_a_terminal_run_is_the_healthy_zero
+FAILED tests/test_wf_cli_pins.py::test_retry_reopens_the_failed_closure_and_the_run_completes
+FAILED tests/test_wf_cli_pins.py::test_status_reports_the_blocked_run_and_the_remedy
+FAILED tests/test_wf_runner_pins.py::test_skip_predicate_decided_at_dispatch
+FAILED tests/test_wf_runner_pins.py::test_map_children_ledger_identity_and_max_attempts
+FAILED tests/test_wf_runner_pins.py::test_transient_ladder_emits_no_terminal_until_exhaustion
+FAILED tests/test_wf_runner_pins.py::test_flow_result_read_decodes_once - Typ...
+FAILED tests/test_wf_runner_pins.py::test_create_flow_carries_input_and_drives
+FAILED tests/test_wf_runner_pins.py::test_join_user_body_cascades_downstream
+FAILED tests/test_wf_runner_pins.py::test_sequenced_maps_depth3_one_flow - Ty...
+FAILED tests/test_wf_runner_pins.py::test_retry_classifier_routes_by_kind - T...
+FAILED tests/test_wf_runner_pins.py::test_dispatch_resolves_bodies_from_the_definition_registry
+FAILED tests/test_wf_runner_pins.py::test_drive_until_held_bound - TypeError:...
+24 failed, 12 passed in 15.79s

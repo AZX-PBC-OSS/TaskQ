@@ -78,6 +78,34 @@ test: env
 test-cov: env
 	$(UVRUN) pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html --cov-fail-under=90
 
+# THE WORKFLOWS-SCOPED COVERAGE GATE (the evidence-integrity round's cure
+# 1): the scoped branch floor as an honest CI-leg-shaped gate. The wf pin
+# suite + the attack probes run UNDER the scoped tracer, then the gate
+# checks the number — and REFUSES a stale tree (the data predating the
+# head, or a dirty source tree): the recorded artifact carries the HEAD
+# SHA the number was measured on, and a mismatch fails the gate.
+#
+# THE LIST IS THE WALK (the de-slop round's cure 1): the wf pin files are
+# DIRECTORY-DERIVED (`ls tests/test_wf_*.py`), never a hand-maintained
+# list — a hand list drifts (a new pin file unwired = its executions
+# invisible to the coverage number, the gate reporting 90% of a partially
+# seen suite). With the derivation, the drift class is structurally
+# impossible: a pin file that exists is IN the run, by construction.
+# (The former walk-guard pin, tests/test_wf_coverage_gate_wiring.py, is
+# DELETED — it sniffed the Makefile's file list against a second list,
+# the exact structure-coupling this cure removes; its behavioral residue
+# — the scoped run EXECUTES the pin files — lives on as the measured
+# assert in tests/test_wf_coverage_gate.py. The four explicit tests/
+# paths below are the deliberate NON-wf-named additions.)
+test-wf-cov: env
+	$(UVRUN) pytest \
+		$(shell ls tests/test_wf_*.py 2>/dev/null) \
+		tests/test_fv_redlog_guard.py \
+		tests/test_worker_execution_seam.py tests/attack3-validate.py \
+		tests/attack4-coverage-closers.py \
+		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
+	$(UVRUN) python scripts/check_wf_coverage.py
+
 test-fast: env
 	$(UVRUN) pytest -n 4 -m "not integration"
 

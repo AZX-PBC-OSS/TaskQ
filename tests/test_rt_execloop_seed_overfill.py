@@ -156,7 +156,7 @@ def _fake_main_harness(
         # this harness discards - only the park-until-shutdown shape matters.
         await captured_shutdown["event"].wait()
 
-    async def _fake_register(pool: object, s: object) -> UUID:
+    async def _fake_register(pool: object, s: object, **kwargs: object) -> UUID:
         return worker_id
 
     async def _fake_dereg(pool: object, s: object, wid: object) -> None:

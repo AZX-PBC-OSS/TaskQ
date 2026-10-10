@@ -176,7 +176,11 @@ async def test_failed_unlock_leaks_prune_lock_on_live_pooled_session(
         )
 
         async def _immediate_sleep(
-            shutdown: asyncio.Event, next_fire: datetime, retry_backoff: float | None
+            shutdown: asyncio.Event,
+            next_fire: datetime,
+            retry_backoff: float | None,
+            *,
+            tick_period_secs: float | None = None,
         ) -> bool:
             await asyncio.sleep(0.05)
             return False

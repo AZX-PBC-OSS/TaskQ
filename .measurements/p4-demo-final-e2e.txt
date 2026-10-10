@@ -1,0 +1,11 @@
+demo run: 01a119fe-f66b-72f1-bfc8-e74c85d19a4b / 01a11998-18cb-7a20-9c2c-8375a90d933d
+THE DEMO'S FINAL E2E ON THE REBASED CONSOLIDATED HEAD:
+- trigger:  202 {run_id, url} (the F3 envelope)
+- pipeline: ingest → enrich (7 items; the doomed child healed by the
+  ladder at attempt 2) → the join → route/summarize/entities/classify →
+  the barrier gathers → the review HOLD
+- the stranger's resolve: the admin's typed door → {"status":"delivered"}
+- publish: the typed PublishReport → the root SUCCEEDED
+- the page: 200 + the boot JSON (the rows-alone graph) + the audit trail
+- the CLI: flows status/list/holds against the live run — exit 0, the
+  derived status 'complete', the honest healthy-zero holds line

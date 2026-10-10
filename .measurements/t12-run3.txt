@@ -1,0 +1,23 @@
+E
+==================================== ERRORS ====================================
+_ ERROR at setup of test_resolve_refuses_a_wrong_payload_with_the_named_error __
+
+module_pg_schema = ModulePgSchema(schema_name='tq_afb5270ceb', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_afb5270cebe6')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff8675c6b0>
+
+    @pytest.fixture
+    def cli_settings(module_pg_schema: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """The CLI's settings read THIS module's migrated schema (the tests'
+        own env — never a hardcoded DSN; the #668 smoke law)."""
+        from taskq.settings import TaskQSettings
+    
+>       settings = TaskQSettings(
+            pg_dsn=module_pg_schema.pg_dsn, schema_name=module_pg_schema.schema_name
+        )
+E       TypeError: TaskQSettings() takes no arguments
+
+tests/test_wf_cli_pins.py:57: TypeError
+=========================== short test summary info ============================
+ERROR tests/test_wf_cli_pins.py::test_resolve_refuses_a_wrong_payload_with_the_named_error
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 error in 0.75s

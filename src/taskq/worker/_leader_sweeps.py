@@ -54,6 +54,7 @@ from taskq.obs import (
     update_scheduled_count_cache,
     update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
+    update_wf_progress_cache,
 )
 from taskq.ratelimit.decision import RateLimitState
 from taskq.ratelimit.registry import (
@@ -73,6 +74,7 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     _QUERY_SCHEDULED_HORIZON_SQL_TEMPLATE,
+    _QUERY_WF_PROGRESS_SQL_TEMPLATE,
     SweepContext,
     _build_retention_per_status,
     _dbg,
@@ -162,10 +164,24 @@ async def _sleep_until_next_attempt(
     shutdown: asyncio.Event,
     next_fire: datetime,
     retry_backoff: float | None,
+    *,
+    tick_period_secs: float | None = None,
 ) -> bool:
     """Sleep until the next scheduled cron fire, or, after a failed
     attempt, the next backoff retry, whichever is earlier; interruptible
     by shutdown.
+
+    ``tick_period_secs`` (the RETENTION-CHECK LANE's cadence, the
+    cron-granularity coupling's cure): when set, a SCHEDULED wake (no
+    retry pending) sleeps no longer than the tick period, so a sub-daily
+    retention policy is CHECKED every leader tick instead of waiting for
+    the next cron fire — the D2 soak's conviction (a ``*/5`` cron with a
+    180 s retention sat on its hands between fires while the hot table
+    grew unbounded under a LIVE-LOOKING policy). The retry ladder is
+    untouched: a pending retry still governs the wake, and the
+    retry-vs-scheduled classification reads the TRUE fire horizon, never
+    the tick-bounded wake, so the ladder's semantics are identical on
+    both lanes.
 
     Returns True when the wake was a backoff retry (the failure sequence
     continues from its current rung); False when the scheduled fire
@@ -173,10 +189,41 @@ async def _sleep_until_next_attempt(
     carry into today's attempt).
     """
     until_fire = max(0.0, (next_fire - datetime.now(UTC)).total_seconds())
-    secs = until_fire if retry_backoff is None else min(retry_backoff, until_fire)
+    if retry_backoff is not None:
+        secs = min(retry_backoff, until_fire)
+    elif tick_period_secs is not None:
+        secs = min(until_fire, tick_period_secs)
+    else:
+        secs = until_fire
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(shutdown.wait(), timeout=secs)
     return retry_backoff is not None and retry_backoff < until_fire
+
+
+def _sub_daily(cron_expr: str) -> bool:
+    """Whether *cron_expr* fires more than once per UTC day — the
+    RETENTION-CHECK LANE's predicate.
+
+    The day-latch (``last_pruned_date``) exists for the genuinely-daily
+    lane: a day that pruned is done. On a SUB-DAILY schedule the latch
+    was a silent at-most-daily conversion (the D2 soak's P1: 80+ minutes
+    with ``*/5`` + a 180 s retention produced zero prunes and zero log
+    lines — the hot table grew unbounded under a policy that said 180 s).
+    The cure decouples the two: a sub-daily schedule is a RETENTION
+    POLICY (the thresholds live in the per-status retention fields), so
+    the arm checks EVERY tick and the latch does not gate it; a daily-or-
+    slower schedule keeps the once-per-day policy untouched.
+
+    A croniter parse that fails (the loop's own fire computation raises
+    on the same expression moments later) conservatively answers False —
+    the daily lane's behavior, never an unvalidated fast lane."""
+    try:
+        it = cr.croniter(cron_expr, datetime.now(UTC))
+        first: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        second: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+    except (ValueError, KeyError):  # pragma: no cover - the loop's own parse fires first
+        return False
+    return (second - first) < timedelta(hours=24)
 
 
 def _batch_drain_gate(
@@ -506,6 +553,143 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 batch_size=ctx.deps.settings.event_writer_batch_size,
             )
 
+    async def wf_join_rederive_call() -> int:
+        # THE WORKFLOW HEALING ARMS (T04) — wired here, not in the
+        # backend: THE IMPORT LAW (§16.1) keeps every workflows import out
+        # of module scope outside the package (the arms live in
+        # taskq.workflows._sweep; this is their REGISTRATION), so each
+        # call imports lazily. The arms take the dispatcher pool and
+        # manage their own bounded transactions; each returns a count.
+        from taskq.workflows._sweep import sweep_join_rederive
+        from taskq.workflows.engine import render_workflow_sql
+
+        wsql = render_workflow_sql(ctx.deps.settings.schema_name)
+        summary = await sweep_join_rederive(
+            ctx.deps.dispatcher_pool,
+            wsql,
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+        return (
+            summary.blocked
+            + summary.blocked_required
+            + summary.flow_fenced
+            + summary.reconciled
+            + len(summary.fired)
+        )
+
+    async def wf_outbox_drain_call() -> int:
+        from taskq.workflows._sweep import drain_outbox
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await drain_outbox(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
+    async def wf_signal_sweep_call() -> int:
+        # THE SIGNAL SWEEP'S EXPIRY ARM (T10): the ONLY live timer on a
+        # held row — the deadline is DB-CLOCK compared; the expired hold
+        # → the DEFINED 'abandoned' state (never a silent orphan). The
+        # lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_expired_signals
+
+        return await sweep_expired_signals(
+            ctx.deps.dispatcher_pool,
+            schema=ctx.deps.settings.schema_name,
+        )
+
+    async def wf_hold_stamp_reconcile_call() -> int:
+        # THE HOLD-STAMP RECONCILE ARM (the D2 soak's P1: the
+        # SIGKILL-during-a-held-loop wedge — a pending node whose
+        # metadata.hold stamp survived its hold's resolution is
+        # UNCLAIMABLE FOREVER under the claimable fence; the soak
+        # measured 20 runs wedged this way, undetected, unnamed). The
+        # arm's law: THE HOLD'S STATE DECIDES — still 'held' → the held
+        # representation stands (the resume re-dispatches);
+        # delivered/abandoned/cancelled/absent → the stamp cleared + the
+        # row re-claims (the body's re-execution lands the next named
+        # state). The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import sweep_hold_stamps
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_hold_stamps(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
+    async def wf_outbox_retention_call() -> int:
+        # THE DELIVERED OUTBOX'S TTL ARM (the D2 soak's P3: delivered
+        # outbox rows retained forever — 5.9k at close, monotone, no
+        # pruner). The retention policy's own row: the delivered rows
+        # past the TTL delete, one bounded batch per pass; undelivered
+        # rows are the drain's. The period gate is the settings-level
+        # disable sentinel (timedelta(0) → the spec's period gate skips
+        # the arm — a brand-new deletion loop's safe misconfiguration is
+        # off). The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import prune_delivered_outbox
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await prune_delivered_outbox(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_outbox_retention_period,
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+        )
+
+    async def wf_loop_budget_call() -> int:
+        # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
+        # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
+        # held-loop inertness); the exhaustion is the NAMED state and the
+        # flow terminalizes in the same tx. The lazy import keeps the
+        # §16.1 import law.
+        from taskq.workflows._sweep import sweep_loop_budget
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_loop_budget(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
+    async def wf_phantom_reap_call() -> int:
+        from taskq.workflows._sweep import reap_phantom_ledger
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await reap_phantom_ledger(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
+    async def wf_nodeless_root_reap_call() -> int:
+        # THE NODELESS-ROOT REAP (the create-seam's belt, the SECOND
+        # fence): a root row with zero node rows — the orphan shape a
+        # future statement-order regression could commit — past the
+        # grace is reaped 'failed' LOUDLY (the maintenance derivation
+        # can never develop it: its rollup INNER-JOINS the node rows).
+        # The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import reap_nodeless_roots
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await reap_nodeless_roots(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
+    async def wf_progress_ring_prune_call() -> int:
+        # THE PROGRESS RING'S PRUNE ARM (T21): the STREAM channel's
+        # backstop — leaked rings (emissions that stopped before the
+        # append-trim could hold, any future writer bug's unpruned shape)
+        # are trimmed back to the ring bound, rank-based per node. The
+        # lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import sweep_progress_ring_prune
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_progress_ring_prune(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     def _dbg_tick(event: str) -> Callable[[int, float], None]:
         """The standard success-path debug line: the sweep's tick event."""
 
@@ -662,6 +846,171 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             drain_in_try=True,
             warn_without_worker_id=True,
             on_rows=_log_stale_batches_completed,
+        ),
+        _SweepSpec(
+            # THE WORKFLOW HEALING ARMS (T04) — the three sweep arms
+            # registered into the tick's table (the registration WAS the
+            # gap: the arms existed, nothing outside taskq.workflows called
+            # them). Gated on THIS backend's own workflow capability
+            # marker — the same hasattr seam every other sweep is admitted
+            # through, each capability its own marker (the arms never
+            # borrow another sweep's method name, so a backend that
+            # implements only the legacy maintenance surface — and every
+            # audit double standing in for it — keeps the arms off, and
+            # the legacy sweep loop's observable behavior is unchanged by
+            # their registration: the arms are pure appends); the lazy
+            # imports keep the §16.1 import law (nothing outside the
+            # package imports taskq.workflows at module scope).
+            #
+            # * wf_join_rederive — the lock-first re-derive + fire: heals
+            #   the tx1→tx2 crash window (the parent terminalized, the
+            #   decrement/fire never ran) by reconciling the counter cache
+            #   from the edge ledger, firing the firable joins and running
+            #   their reducer bodies (at-least-once, tx-scoped, resolved
+            #   DURABLY from the registered definition — the flow root's
+            #   stamped workflow name — not from the finalizing process's
+            #   memory).
+            # * wf_outbox_drain — the delivery half: inserts the fired
+            #   joins' consumer rows idempotently (the composite arbiter)
+            #   and flips the undelivered flag in the same tx.
+            # * wf_phantom_reap — fences 'running' ledger rows on terminal
+            #   flows (the rows-alone reconstruction reconciles, pin 15)
+            #   and drops the terminal flows' reducer-cache entries (the
+            #   memo's bound).
+            #
+            # UndefinedTableError tolerance: a rolling deploy may run this
+            # code against a schema the 01.00.24 round has not landed on
+            # yet — a per-tick warn until the migration applies, never the
+            # deliberately-fatal streak (the keyed-row sweep's pattern).
+            name="wf_join_rederive",
+            call=wf_join_rederive_call,
+            warn_event="sweep-wf-join-rederive-failed",
+            warn_kind="sweep_wf_join_rederive_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_join_rederive_tick"),
+        ),
+        _SweepSpec(
+            name="wf_outbox_drain",
+            call=wf_outbox_drain_call,
+            warn_event="sweep-wf-outbox-drain-failed",
+            warn_kind="sweep_wf_outbox_drain_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
+        ),
+        _SweepSpec(
+            # wf_signal_sweep — THE HELD ROWS' TIMER (T10): the expiry
+            # arm (the only live timer on a held row; the DB-clock
+            # comparison).
+            name="wf_signal_sweep",
+            call=wf_signal_sweep_call,
+            warn_event="sweep-wf-signal-sweep-failed",
+            warn_kind="sweep_wf_signal_sweep_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
+        ),
+        _SweepSpec(
+            # wf_hold_stamp_reconcile — THE HOLD-STAMP WEDGE'S CURE (the
+            # D2 soak's P1): the hold's state decides — still 'held' →
+            # the held representation stands; delivered/abandoned/
+            # cancelled/absent → the stamp cleared + the row re-claims.
+            # NOT a drain: the predicate self-consumes (a cleared row
+            # loses the stamp), a second pass returns zero, and the
+            # statement is batch-bounded by LIMIT.
+            name="wf_hold_stamp_reconcile",
+            call=wf_hold_stamp_reconcile_call,
+            warn_event="sweep-wf-hold-stamp-reconcile-failed",
+            warn_kind="sweep_wf_hold_stamp_reconcile_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
+        ),
+        _SweepSpec(
+            # wf_outbox_retention — THE DELIVERED OUTBOX'S TTL (the D2
+            # soak's P3): delivered rows are narration; past the period
+            # they delete (one bounded batch per pass, undelivered rows
+            # never). The period gate is the settings-level disable
+            # sentinel: timedelta(0) disables the arm — a brand-new
+            # deletion loop's safe misconfiguration is off (the
+            # event-retention sweep's polarity).
+            name="wf_outbox_retention",
+            call=wf_outbox_retention_call,
+            warn_event="sweep-wf-outbox-retention-failed",
+            warn_kind="sweep_wf_outbox_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_outbox_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_outbox_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
+            # the iteration-cap wall, one arm, `AND NOT budget_paused`
+            # (the held-loop inertness — the CONSUME-BUDGET dragon's
+            # cure); the exhaustion is the NAMED state and the flow
+            # terminalizes in the same tx (STRANDED-FLOW). NOT a drain:
+            # the exhaustion is idempotent (a terminal loop row updates
+            # nothing), a second pass returns zero.
+            name="wf_loop_budget",
+            call=wf_loop_budget_call,
+            warn_event="sweep-wf-loop-budget-failed",
+            warn_kind="sweep_wf_loop_budget_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedColumnError,),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_loop_budget_tick"),
+        ),
+        _SweepSpec(
+            # ONE full-table-scoped pass per tick, deliberately NOT a
+            # drain: the reap's UPDATE is statement-bounded by the
+            # phantom population itself (every reaped row leaves the
+            # predicate), so a second pass returns zero and a drain loop
+            # would only re-run the empty statement.
+            name="wf_phantom_reap",
+            call=wf_phantom_reap_call,
+            warn_event="sweep-wf-phantom-reap-failed",
+            warn_kind="sweep_wf_phantom_reap_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
+        ),
+        _SweepSpec(
+            # wf_nodeless_root_reap — THE ORPHAN ROOT'S BELT (the
+            # create-seam's second fence): a nodeless flow root (pending
+            # or running, past the grace — the create's atomicity makes
+            # it unrepresentable on the shipped path; the belt reaps any
+            # future statement-order regression's debris) reaped 'failed'
+            # LOUDLY. NOT a drain either: every reaped root leaves the
+            # predicate; the batch bound is the debris population's own
+            # cap.
+            name="wf_nodeless_root_reap",
+            call=wf_nodeless_root_reap_call,
+            warn_event="sweep-wf-nodeless-root-reap-failed",
+            warn_kind="sweep_wf_nodeless_root_reap_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_nodeless_root_reap_tick"),
+        ),
+        _SweepSpec(
+            # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP (T21):
+            # leaked rings trimmed back to the bound, rank-based per
+            # node. A drain: a leak deeper than one pass's owner batch
+            # drains over passes (the PoC's 801-row leak pruned in one,
+            # but the arm never assumes it).
+            name="wf_progress_ring_prune",
+            call=wf_progress_ring_prune_call,
+            warn_event="sweep-wf-progress-ring-prune-failed",
+            warn_kind="sweep_wf_progress_ring_prune_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_progress_ring_prune_tick"),
         ),
     )
 
@@ -1015,13 +1364,32 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Daily prune with intra-day retry on failure.
+    """Retention prune: TWO lanes, one policy scaffold.
 
-    The once-per-SUCCESSFUL-prune-per-day guard (``last_pruned_date``) is
-    deliberate policy: a day that pruned is done. The failure half
-    retries with backoff (60 s doubling, capped) until success or the
-    next scheduled fire, so a prune that keeps failing under load does
-    not wait for tomorrow, see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
+    THE RETENTION-CHECK LANE (sub-daily schedules): a ``prune_cron_expr``
+    that fires more than once per UTC day is a RETENTION POLICY, not a
+    daily appointment — the arm wakes EVERY leader tick
+    (``sweep_interval``) with its own interval/threshold pair (the tick is
+    the interval, the per-status retention fields are the threshold) and
+    checks, so a 180 s retention is honored on a 180 s horizon, never
+    converted to at-most-daily by the day-latch (the D2 soak's P1: a
+    ``*/5`` cron + 180 s retention + 88k eligible rows pruned NOTHING for
+    80+ minutes, silently — the hot table grew unbounded under a
+    live-looking policy; the direct call purged 89,383 rows in seconds,
+    so the defect was the ARM). The day-latch does not gate this lane,
+    and the check is cheap when idle: the candidate statement returns
+    nothing, no batch runs.
+
+    THE DAILY LANE (daily-or-slower schedules): the once-per-SUCCESSFUL-
+    prune-per-day guard (``last_pruned_date``) is deliberate policy: a
+    day that pruned is done — and the latch's truth is SURFACED (the
+    ``prune-skipped-day-latch`` event names every deferral; silence read
+    as "nothing to prune" is the convicted operator signal).
+
+    The failure half of BOTH lanes retries with backoff (60 s doubling,
+    capped) until success or the next scheduled fire, so a prune that
+    keeps failing under load does not wait for tomorrow, see
+    ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
     Every batch is a committed, server-side-bounded statement
     (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
     drain stops between batches on shutdown or once ``leading()`` is
@@ -1072,8 +1440,20 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        # THE RETENTION-CHECK LANE (the cron-granularity coupling's cure):
+        # a sub-daily schedule is a RETENTION POLICY, not a daily
+        # appointment — the arm checks every leader tick (the sweep
+        # interval, well under any sane sub-daily retention) instead of
+        # sleeping to the next cron fire. The day-latch below does not
+        # gate this lane.
+        check_lane = _sub_daily(cron_expr)
 
-        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
+        woke_for_retry = await _sleep_until_next_attempt(
+            shutdown,
+            next_fire,
+            retry_backoff,
+            tick_period_secs=ctx.deps.settings.sweep_interval if check_lane else None,
+        )
         if shutdown.is_set():
             break
         if not woke_for_retry:
@@ -1101,10 +1481,23 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
             continue
         today_utc = datetime.now(UTC).date()
-        if last_pruned_date == today_utc:
-            # The day's prune is done, so a ladder armed by an earlier miss
-            # or failure has nothing left to retry; clearing it here keeps
-            # the loop from waking at the rung cadence until the next fire.
+        if not check_lane and last_pruned_date == today_utc:
+            # THE DAY-LATCH'S TRUTH, SURFACED: the deferral is a NAMED
+            # event, never silence (the D2 soak's conviction — the latch
+            # deferred every sub-daily fire for 80+ minutes with ZERO log
+            # lines, so silence read as "nothing to prune"). The record
+            # states WHEN the latch defers and WHAT it defers to.
+            log.info(
+                "prune-skipped-day-latch",
+                kind="prune",
+                worker_id=str(ctx.worker_id),
+                pruned_date=today_utc.isoformat(),
+                next_fire=next_fire.isoformat(),
+            )
+            # The day's prune is done, so a ladder armed by an earlier
+            # miss or failure has nothing left to retry; clearing it
+            # keeps the loop from waking at the rung cadence until the
+            # next fire.
             retry_backoff = None
             continue
 
@@ -1299,8 +1692,17 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
+        # THE RETENTION-CHECK LANE (the same sub-daily rule as
+        # _prune_loop): a sub-daily archive-expiry schedule checks every
+        # leader tick; the day-latch below does not gate this lane.
+        check_lane = _sub_daily(cron_expr)
 
-        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
+        woke_for_retry = await _sleep_until_next_attempt(
+            shutdown,
+            next_fire,
+            retry_backoff,
+            tick_period_secs=ctx.deps.settings.sweep_interval if check_lane else None,
+        )
         if shutdown.is_set():
             break
         if not woke_for_retry:
@@ -1322,7 +1724,17 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             )
             continue
         today_utc = datetime.now(UTC).date()
-        if last_expiry_date == today_utc:
+        if not check_lane and last_expiry_date == today_utc:
+            # THE DAY-LATCH'S TRUTH, SURFACED (the same named-deferral
+            # event as _prune_loop's): the record states WHEN the latch
+            # defers and WHAT it defers to — never silence.
+            log.info(
+                "archive-expiry-skipped-day-latch",
+                kind="archive_expiry",
+                worker_id=str(ctx.worker_id),
+                expired_date=today_utc.isoformat(),
+                next_fire=next_fire.isoformat(),
+            )
             # The day's expiry is done, same ladder-clearing rule as
             # _prune_loop's date gate.
             retry_backoff = None
@@ -1537,6 +1949,38 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         _sampler_read_failed(
                             ctx, "cancel_pending", "cancel-pending-sampling-failed", exc
                         )
+                    # THE WORKFLOW PROGRESS ROLLUP (T08): sampled at THIS
+                    # tick — the maintenance leader is the PG-rollup reader,
+                    # the admin's health/metrics surface the reading plane
+                    # (never a worker scrape, never the worker metrics
+                    # port). One grouped read (the same read class the
+                    # admin's status panel uses — one query per status
+                    # read), index-driven (jobs_wf_flow_nodes_idx,
+                    # 01.00.26_02 — the uuid-cast expression, the
+                    # workflow-rows-only partial). The DECLARED-WORKFLOW dimension: the
+                    # registered names keep their series; every other
+                    # workflow's runs collapse onto `_other_` (summed) —
+                    # never per-node labels (the cardinality doctrine).
+                    # The registry read is the arms' lazy-import pattern
+                    # (THE IMPORT LAW: nothing outside taskq.workflows
+                    # imports it at module scope).
+                    try:
+                        from taskq.workflows.definitions import get_registry
+
+                        wf_rows = await conn.fetch(
+                            _QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema)
+                        )
+                        registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the SAME registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
+                        collapsed: dict[tuple[str, str], int] = {}
+                        for row in wf_rows:
+                            name = str(row["workflow"])
+                            if name not in registered:
+                                name = "_other_"
+                            key = (name, str(row["state"]))
+                            collapsed[key] = collapsed.get(key, 0) + int(row["count"])
+                        update_wf_progress_cache(collapsed)
+                    except Exception as exc:
+                        _sampler_read_failed(ctx, "wf_progress", "wf-progress-sampling-failed", exc)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 live_workers = {str(row["queue"]): int(row["count"]) for row in worker_rows}
                 capacity = {str(row["queue"]): int(row["actor_capacity"]) for row in capacity_rows}

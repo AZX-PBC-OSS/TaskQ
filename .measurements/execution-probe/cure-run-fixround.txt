@@ -1,0 +1,43 @@
+========================================================================
+PHASE A — the mixed fleet: capable worker + vanilla co-tenant
+========================================================================
+== flow created: 01a11f63-b0c6-7f71-8cbd-0f8a21f78989
+    __flow__: actor=wf queue=default status=running
+    doc_source: actor=wf queue=default status=pending
+== capable worker (default+gpu) + vanilla co-tenant launched — waiting 40 s
+== flow root status: succeeded
+    __flow__ (map=None) q=default: succeeded
+    doc_source (map=None) q=default: succeeded
+    screen (map=1) q=gpu: succeeded
+    screen (map=2) q=gpu: succeeded
+== bodies in the CAPABLE worker's process: 3
+== bodies in the VANILLA co-tenant's process: 0
+== bodies in ANY OTHER process (the probe's own pid et al): 0
+== bodies that ran MORE THAN ONCE (the snooze-loop red): none
+== the vanilla co-tenant's flow-row claim/snooze lines: 0
+== PHASE A VERDICT: GREEN — the pending row was claimed + EXECUTED on the worker, ONCE, and the co-tenant never touched it
+========================================================================
+PHASE B — drive() while the capable worker runs: who executes?
+========================================================================
+== flow created: 01a11f64-7694-79a0-bbf2-83ae6837d4ca
+== capable worker launched — driving (orchestration-only: execute=False)
+== drive verdict: 'terminal'
+== bodies in the WORKER process: 3
+== bodies in the DRIVING process: 0
+== flow root status: succeeded
+== PHASE B VERDICT: GREEN — the flow succeeded with the bodies in the worker process, the driving process only orchestrating
+========================================================================
+PHASE S — the split placement, both pools live: each node on ITS pool
+========================================================================
+== flow created: 01a11f64-9ff2-74c2-a166-0ab41406ffda
+== capable workers: default-only + gpu-only — waiting for the flow
+    __flow__ (map=None) q=default: succeeded
+    doc_source (map=None) q=default: succeeded
+    screen (map=1) q=gpu: succeeded
+    screen (map=2) q=gpu: succeeded
+== source bodies: 1 — pids: [3805134]
+== screen bodies: 2 — pids: [3805135, 3805135]
+== flow root status: succeeded
+== PHASE S VERDICT: GREEN — the source executed on the default pool, the chain on the gpu pool: each node on ITS pool
+========================================================================
+CURE PROBE COMPLETE

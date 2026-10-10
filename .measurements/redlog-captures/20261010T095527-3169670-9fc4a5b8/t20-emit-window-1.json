@@ -1,0 +1,10 @@
+{
+  "mutation": "the emit tx NOT atomic at this statement window \u2014 a kill lands a partial page or advances the cursor alone: the resume re-emits (duplicates) or skips (lost children)",
+  "observed": {
+    "committed_children_after_kill": 6,
+    "distinct_keys": 6
+  },
+  "pin": "t20-emit-window-1",
+  "run": "20261010T095527-3169670-9fc4a5b8",
+  "ts": "2026-10-10T09:55:33"
+}

@@ -1,0 +1,144 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_second_hold_new_epoch_clean_and_stale_payload_refused __________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f860af35220>
+wf_schema = 'tq_eecbb1d21b'
+wf_pool = <asyncpg.pool.Pool object at 0x7f861005e440>
+
+    async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+        signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
+        variant UniqueViolations — and wedges the run — that variant is red
+        forever); the stale payload (the wait site answering a call it never
+        made) is refused by the epoch + call_id."""
+        holds = {"n": 0}
+    
+        async def hold_twice(ctx: Any, params: Ingest) -> Any:
+            holds["n"] += 1
+            decision = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if holds["n"] == 1:
+                # the SECOND hold (the same signal name — the new epoch)
+                second = await ctx.wait_signal(Approval, timeout_s=120.0)
+                return {"verdict": second.verdict, "note": "second"}
+            return {"verdict": decision.verdict, "note": "first"}
+    
+        app = WorkflowApp()
+    
+        @app.workflow("multihold_flow")
+        def multihold_flow() -> object:
+            return build(step(hold_twice, Ingest(doc_id="d1"), key="review"))
+    
+        runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
+        flow_id = await runner.create_flow()
+        # HOLD 1.
+        await runner.drive(flow_id, until="held")
+        rows = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+        assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
+        # DELIVER → the resume re-executes → HOLD 2 (a NEW epoch, the same
+        # name — the (flow,name) PK variant would UniqueViolation HERE and
+        # wedge the iteration).
+        await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(rows[0]["id"]),
+            payload={"verdict": "approve"},
+            payload_json=json.dumps({"verdict": "approve"}),
+        )
+        await runner.drive(flow_id, until="held", max_ticks=100)
+        rows2 = await wf_conn.fetch(
+            f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+            "WHERE workflow_id = $1 ORDER BY hold_epoch",
+            flow_id,
+        )
+>       assert len(rows2) == 2, "the second hold did not register (multi-hold broken)"
+E       AssertionError: the second hold did not register (multi-hold broken)
+E       assert 1 == 2
+E        +  where 1 = len([<Record id=UUID('01a11919-f81f-77c3-ba73-8ef3e38d026c') hold_epoch=1 status='delivered'>])
+
+tests/test_wf_hitl_pins.py:297: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:21:34 [info     ] node.held                      hold_id=01a11919-f81f-77c3-ba73-8ef3e38d026c node=review run_id=01a11919-f7fd-7e93-ae5e-8d99f54f1b72 signals=['Approval']
+2026-10-07 18:21:34 [info     ] signal.delivered               hold_id=01a11919-f81f-77c3-ba73-8ef3e38d026c run_id=01a11919-f7fd-7e93-ae5e-8d99f54f1b72 signal=Approval
+2026-10-07 18:21:34 [info     ] signal.consumed                attempt=2 cursor=1 hold=01a11919-f81f-77c3-ba73-8ef3e38d026c node=review
+________________ test_hold_id_reply_handle_and_context_contract ________________
+
+wf_conn = <asyncpg.connection.Connection object at 0x7f860afc5040>
+wf_schema = 'tq_eecbb1d21b'
+wf_pool = <asyncpg.pool.Pool object at 0x7f861005e5c0>
+
+    async def test_hold_id_reply_handle_and_context_contract(
+        wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    ) -> None:
+        """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+        time-ordered, the id appears in the row and the client's surface);
+        the context contract carries the payload + the schema reference +
+        the provenance; the resolve is IDEMPOTENT (already-resolved = the
+        DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+        context reaches NEITHER the list NOR... the list."""
+        async def hold_body(ctx: Any, params: Ingest) -> Any:
+            return await ctx.wait_signal(
+                (Approval, Escalate),
+                timeout_s=120.0,
+                tool="redact",
+                args={"doc": "d1", "canary_secret": "sk-canary-never-leak"},
+                reason="irreversible redaction",
+            )
+    
+        flow_id, _runner, _node = await _held_flow(
+            wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reply_handle_flow"
+        )
+        client = HitlClient(wf_pool, schema=wf_schema)
+        holds = await client.list(run=flow_id)
+        assert len(holds) == 1
+        hold = holds[0]
+        # THE ID IS THE REPLY HANDLE (uuid7 — time-ordered, NOT random).
+        parsed = uuid_module.UUID(hold.hold_id)
+        assert parsed.version == 7, parsed
+        # THE CONTEXT CONTRACT: the schema reference + the provenance.
+        assert hold.payload_schema is not None
+        assert "Approval" in hold.payload_schema
+        assert hold.signal_name == "Approval|Escalate"  # the tuple form's joined spelling — the canonical row name
+        assert hold.node_key == "review"
+        assert hold.status == "held"
+        # THE REDACT LAW EXTENDS (pin 11): the canary secret in the wait
+        # context must not reach the ENUMERATION surface — the client's
+        # redact hook (the chain-then-hook composition) scrubs it.
+        client_redacted = HitlClient(
+            wf_pool,
+            schema=wf_schema,
+            redact=lambda ctx: {
+                k: ("***" if "canary" in str(v) else v) for k, v in (ctx or {}).items()
+            }
+            if isinstance(ctx, dict)
+            else ctx,
+        )
+        holds_redacted = await client_redacted.list(run=flow_id)
+        assert all(
+            "sk-canary-never-leak" not in str(h.payload) for h in holds_redacted
+        ), "the canary reached the enumeration surface — the redact law is violated"
+        # THE RESOLVE (by id) + THE IDEMPOTENCE (the defined no-op).
+        first = await client.resolve(
+            hold.hold_id, {"verdict": "approve"}, reason="the operator's click", principal="op-1"
+        )
+>       assert first.status == "delivered", first
+E       AssertionError: DeliveryResult(status='no-op', reason='already delivered')
+E       assert 'no-op' == 'delivered'
+E         
+E         - delivered
+E         + no-op
+
+tests/test_wf_hitl_pins.py:365: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 18:21:35 [info     ] node.held                      hold_id=01a11919-f925-7d00-a546-634a2784879c node=review run_id=01a11919-f90b-75f1-95c2-0278b3238480 signals=['Approval', 'Escalate']
+=========================== short test summary info ============================
+FAILED tests/test_wf_hitl_pins.py::test_second_hold_new_epoch_clean_and_stale_payload_refused
+FAILED tests/test_wf_hitl_pins.py::test_hold_id_reply_handle_and_context_contract
+2 failed in 1.82s

@@ -1,0 +1,4 @@
+=========================== short test summary info ============================
+FAILED tests/test_sql_templates_smoke_pg.py::test_every_shipped_statement_parses_and_plans_against_a_live_schema
+FAILED tests/test_sql_templates_smoke_pg.py::test_the_guard_has_no_silent_gaps
+2 failed, 1 passed in 3.44s

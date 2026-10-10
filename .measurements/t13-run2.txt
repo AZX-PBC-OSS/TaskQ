@@ -1,0 +1,136 @@
+FFFFF                                                                    [100%]
+=================================== FAILURES ===================================
+___________ test_full_run_the_cron_slot_key_is_run_level_idempotent ____________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_dd9a61d1e1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_dd9a61d1e140')
+wf_pool = <asyncpg.pool.Pool object at 0x7f754b5c6d40>
+example_fence = 'import asyncio\nfrom typing import assert_never\n\nfrom pydantic import BaseModel\n\nfrom taskq.workflows import (\n ... key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())'
+
+    async def test_full_run_the_cron_slot_key_is_run_level_idempotent(
+        module_pg_schema: Any, wf_pool: Any, example_fence: str
+    ) -> None:
+        """SHAPE 9, LIVE: the same cron slot twice → ONE run (the run-key's
+        arbiter); the second call returns the FIRST run's id."""
+        import asyncpg
+    
+        from taskq.migrate import apply_pending
+        from taskq.workflows import FlowRunner
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+>       app_obj = example_ns["app"]
+                  ^^^^^^^^^^^^^^^^^
+E       TypeError: 'FixtureFunctionDefinition' object is not subscriptable
+
+tests/test_doc_ingest_example.py:203: TypeError
+_______________ test_fast_tier_the_mermaid_golden_is_byte_stable _______________
+
+example_fence = 'import asyncio\nfrom typing import assert_never\n\nfrom pydantic import BaseModel\n\nfrom taskq.workflows import (\n ... key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())'
+
+    def test_fast_tier_the_mermaid_golden_is_byte_stable(
+        example_fence: str,
+    ) -> None:
+        """THE GOLDEN: the example's compiled Mermaid is byte-stable — a
+        wiring change that alters the graph reds until the golden is
+        updated (the docs-truth discipline; the golden IS the reviewable
+        diff of the graph's shape)."""
+>       rendered = example_ns["app"].get("doc_ingest").mermaid()
+                   ^^^^^^^^^^^^^^^^^
+E       TypeError: 'FixtureFunctionDefinition' object is not subscriptable
+
+tests/test_doc_ingest_example.py:125: TypeError
+____________ test_fast_tier_the_graph_compiles_and_validates_clean _____________
+
+example_fence = 'import asyncio\nfrom typing import assert_never\n\nfrom pydantic import BaseModel\n\nfrom taskq.workflows import (\n ... key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())'
+
+    def test_fast_tier_the_graph_compiles_and_validates_clean(
+        example_fence: str,
+    ) -> None:
+        """THE FAST-TIER SMOKE: the fence's DEFINITIONS exec without
+        containers; the app compiles the flow; validate() reports zero
+        findings (the zero-warning budget). The main() driver is stripped —
+        the smoke tests the WIRING, the full run is the other lane."""
+>       compiled = example_ns["app"].get("doc_ingest")
+                   ^^^^^^^^^^^^^^^^^
+E       TypeError: 'FixtureFunctionDefinition' object is not subscriptable
+
+tests/test_doc_ingest_example.py:105: TypeError
+___________________ test_the_abstraction_contract_grep_gate ____________________
+
+    def test_the_abstraction_contract_grep_gate() -> None:
+        """THE GREP GATE: zero case-study strings in the shipped tree. The
+        same check the CI runs repo-wide (cited identically by 13/14/16/17);
+        a hit reds."""
+        hits: list[str] = []
+        # The scan EXCLUDES the gate's own definition sites (the forbidden
+        # list must live in the test tree; these two files are that
+        # somewhere — the shipped surfaces proper are the scan's subject).
+        excluded = str(REPO_ROOT / "tests" / "test_doc_ingest_example.py")
+        ergonomics = str(REPO_ROOT / "tests" / "test_wf_ergonomics_contract.py")
+        for root in ("docs", "examples", "src/taskq/workflows", "tests"):
+            proc = subprocess.run(
+                [
+                    "grep", "-riE",
+                    "|".join(_FORBIDDEN),
+                    str(REPO_ROOT / root),
+                    f"--exclude={Path(excluded).name}",
+                    f"--exclude={Path(ergonomics).name}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            # grep exits 1 on NO matches — that is the GREEN outcome.
+            if proc.returncode == 0:
+                hits.extend(proc.stdout.splitlines())
+>       assert not hits, (
+            "the abstraction contract is BROKEN — case-study strings in the "
+            f"shipped tree: {hits[:10]}"
+        )
+E       AssertionError: the abstraction contract is BROKEN — case-study strings in the shipped tree: ['/tmp/opencode/wt-taskqflow-p4/tests/test_postgres_enqueue_max_pending_lock.py:class TestMaxPendingCapExactness:', '/tmp/opencode/wt-taskqflow-p4/tests/test_pinned_invariants.py:  TestCapExactnessPg::test_cap_exact_under_concurrent_enqueue``. Not', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:class _PortfolioClient:', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:    def make_portfolio(graph: _AsyncGraphClient, settings: _Settings) -> _PortfolioClient:', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:        return _PortfolioClient(graph, settings)', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:    portfolio_entry = ProviderEntry(', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:        type_=_PortfolioClient,', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:        impl=make_portfolio,', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:            _PortfolioClient: portfolio_entry,', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:    async def actor(client: _PortfolioClient) -> None:']
+E       assert not ['/tmp/opencode/wt-taskqflow-p4/tests/test_postgres_enqueue_max_pending_lock.py:class TestMaxPendingCapExactness:', '/...t(graph, settings)', '/tmp/opencode/wt-taskqflow-p4/tests/test_di_solver.py:    portfolio_entry = ProviderEntry(', ...]
+
+tests/test_doc_ingest_example.py:92: AssertionError
+______ test_full_run_the_example_executes_and_the_join_fires_exactly_once ______
+
+module_pg_schema = ModulePgSchema(schema_name='tq_dd9a61d1e1', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_dd9a61d1e140')
+wf_pool = <asyncpg.pool.Pool object at 0x7f754b5c6e00>
+wf_conn = <asyncpg.connection.Connection object at 0x7f754b22e7b0>
+example_fence = 'import asyncio\nfrom typing import assert_never\n\nfrom pydantic import BaseModel\n\nfrom taskq.workflows import (\n ... key\'s idempotency broke"\n\n    await pool.close()\n    print("done:", flow_id)\n\n\nmain_task = asyncio.run(main())'
+
+    async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
+        module_pg_schema: Any,
+        wf_pool: Any,
+        wf_conn: Any,
+        example_fence: str,
+    ) -> None:
+        """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+        engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+        rounds; the hold resumes the loop toward publish; the terminal is
+        the TYPED verdict."""
+        import asyncpg
+    
+        from taskq.workflows import FlowRunner
+        from taskq.workflows.api._hitl import HitlClient
+    
+        schema = module_pg_schema.schema_name
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        from taskq.migrate import apply_pending
+    
+        await apply_pending(conn, schema=schema)
+        await conn.close()
+    
+>       app_obj = example_ns["app"]
+                  ^^^^^^^^^^^^^^^^^
+E       TypeError: 'FixtureFunctionDefinition' object is not subscriptable
+
+tests/test_doc_ingest_example.py:159: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_cron_slot_key_is_run_level_idempotent
+FAILED tests/test_doc_ingest_example.py::test_fast_tier_the_mermaid_golden_is_byte_stable
+FAILED tests/test_doc_ingest_example.py::test_fast_tier_the_graph_compiles_and_validates_clean
+FAILED tests/test_doc_ingest_example.py::test_the_abstraction_contract_grep_gate
+FAILED tests/test_doc_ingest_example.py::test_full_run_the_example_executes_and_the_join_fires_exactly_once
+5 failed in 1.35s

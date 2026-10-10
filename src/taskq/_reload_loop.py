@@ -12,11 +12,11 @@ means one thing everywhere.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from taskq._reaper import reap_cancelled_child
 from taskq.auth import ReloadSchedule
 from taskq.obs import get_logger
 
@@ -62,11 +62,31 @@ async def run_reload_schedule(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            for task in waiters:
-                if not task.done():
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+            # THE TEARDOWN'S OWN ORDER (the leaked-_wait cure, found by the
+            # leaked-task guard's own teeth): CANCEL ALL the pending
+            # waiters first, THEN reap each. The previous shape cancelled
+            # and reaped one waiter per lap — the reaper's own concurrent
+            # cancellation (this loop's shutdown cut arriving mid-reap)
+            # re-raised out of the FIRST reap and orphaned the remaining
+            # waiters: a cancelled-not-awaited trigger.wait and a STILL-
+            # RUNNING _wait, leaking the parked sleeper into later tests
+            # (the leaked-task guard's conviction, 3 errors on the fast
+            # tier). The reaper's law is untouched: our OWN cancellation
+            # still propagates — after the bounded reap completes, never
+            # swallowed, only not allowed to orphan the children.
+            pending = [t for t in waiters if not t.done()]
+            for task in pending:
+                task.cancel()
+            own: asyncio.CancelledError | None = None
+            for task in pending:
+                try:
+                    await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    # the reaper re-raised OUR cancel (me.cancelling()):
+                    # noted — the remaining children are reaped first.
+                    own = exc
+            if own is not None:
+                raise own
 
         cause = "trigger" if trigger.is_set() else "schedule"
         trigger.clear()

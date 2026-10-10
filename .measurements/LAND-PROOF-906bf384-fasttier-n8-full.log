@@ -1,0 +1,780 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  0%]
+........................................................................ [  1%]
+........................................................................ [  1%]
+........................................................................ [  2%]
+........................................................................ [  2%]
+F....................................................................... [  3%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 11%]
+.........................................s.............................. [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 23%]
+..............................................................s......... [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................ss.........s.... [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 92%]
+...........................................s............................ [ 93%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+.............................s.......................................... [ 98%]
+........................................................................ [ 99%]
+........................................................................ [ 99%]
+.....................................                                    [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+[gw5] linux -- Python 3.13.15 /tmp/opencode/wt-land/.venv/bin/python
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-21462/popen-gw5/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verifier's live-claim pick per stem is mtime-ordered; a git
+        checkout's mtimes are extraction-order, not the captures' order —
+        so the pin restores each file's mtime from its own run-scoped
+        filename timestamp (the semantic order the stamp law names), making
+        the verdict the TREE'S, never the checkout's."""
+        import os
+        import subprocess
+        import sys
+        from datetime import datetime
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        ts_re = re.compile(r"-(\d{8})T(\d{6})")
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            match = ts_re.search(dest.name)
+            if match:
+                stamp = datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S").timestamp()
+                os.utime(dest, (stamp, stamp))
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 33c05d5c2548):
+E           attack-rounds: the LIVE CLAIM attack-rounds-20261009T164331.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           battery-final-wf-attacks: battery-final-wf-attacks-20261008T223824.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           battery-wf-suite: battery-wf-suite-20261008T223701.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261009T195331-591a.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           estate-slice: the LIVE CLAIM estate-slice-20261009T164353.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261009T164856.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261009T195341-cf74.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fast-tier-n8: the LIVE CLAIM fast-tier-n8-20261009T164426.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           fixround-final-pins: fixround-final-pins-20261009T054418.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           fixround-migration-chain: fixround-migration-chain-20261009T054350.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           fixround-touched-pins-x2: fixround-touched-pins-x2-20261009T054327.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261009T195331-27e0.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           lint-format: the LIVE CLAIM lint-format-20261009T164056.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261009T164056.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261009T213503-0bd7.json is stale — recorded on 75b78c5fe7be, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261009T213505-8a95.json is stale — recorded on 75b78c5fe7be, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261009T213512-40c6.json is stale — recorded on 75b78c5fe7be, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261009T195328-55c7.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261009T195341-d4b6.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           pyright-full: the LIVE CLAIM pyright-full-20261009T164056.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           stealth-mutant-shipped-drill: stealth-mutant-shipped-drill-20261008T224212.txt is marked SUPERSEDED-BY runs/wf-battery-cov-20261010T013533.txt but the target does not exist — the link is dead
+E           typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261009T164056.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-battery-cov: the LIVE CLAIM wf-battery-cov-20261009T164157.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-battery-leg2: the LIVE CLAIM wf-battery-leg2-20261009T164239.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-perf-bands: the LIVE CLAIM wf-perf-bands-20261009T164405.txt is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261009T195448-6602.json is stale — recorded on 5402a4b8c25a, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261009T164232.json is stale — recorded on 64a2cc435073, the head is 33c05d5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-land/.venv/bin/python', '/tmp/opencode/wt-land/scripts/verify_evidence_heads....5c2548. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/wt-land/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+tests/test_job_handle.py::TestClientOnlyConstruction::test_client_only_wait_works
+  /tmp/opencode/wt-land/tests/test_job_handle.py:436: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestStatus::test_status_changes_after_run
+  /tmp/opencode/wt-land/tests/test_job_handle.py:226: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestAttempts::test_attempts_returns_attempt_rows
+  /tmp/opencode/wt-land/tests/test_job_handle.py:140: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestBackendOnlyConstruction::test_backend_only_wait_resolves
+  /tmp/opencode/wt-land/tests/test_job_handle.py:353: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestWait::test_wait_timeout_raises
+  /tmp/opencode/wt-land/tests/test_job_handle.py:90: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", _hang)
+
+tests/test_job_handle.py::TestWait::test_wait_no_timeout_on_terminal_job
+  /tmp/opencode/wt-land/tests/test_job_handle.py:117: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestWait::test_wait_returns_when_terminal
+  /tmp/opencode/wt-land/tests/test_job_handle.py:64: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_sub_job_tags.py::TestSubJobMissingFields::test_schedule_to_close
+  /tmp/opencode/wt-land/tests/test_sub_job_tags.py:237: DeprecationWarning: schedule_to_close (absolute datetime) is deprecated; declare retry.time_budget on the actor (interval form) instead, absolute datetimes cross clock domains (the app clock that produced them vs the database clock that evaluates them) and can misbehave under skew; see docs/architecture.md
+    handle = await enqueuer.enqueue(
+
+tests/compat/test_retry_exhausted_idempotency_dedup.py::test_retry_exhausted_with_idempotency_dedup
+  /tmp/opencode/wt-land/tests/compat/test_retry_exhausted_idempotency_dedup.py:46: StubPayloadTypeWarning: register_stub('failing_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("failing_actor", failing_stub)
+
+tests/test_rt_payload_surrogate_guards.py::test_unencodable_result_is_non_retryable_like_result_too_large
+  /tmp/opencode/wt-land/tests/test_rt_payload_surrogate_guards.py:184: StubPayloadTypeWarning: register_stub('rt_result_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_result_actor", stub)
+
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+  /tmp/opencode/wt-land/tests/test_rt_payload_surrogate_guards.py:221: StubPayloadTypeWarning: register_stub('rt_exc_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_exc_actor", stub)
+
+tests/test_web_health.py::test_fastapi_is_a_hard_dependency_of_the_health_router
+  tests/test_web_health.py:212: PytestWarning: The test <Function test_fastapi_is_a_hard_dependency_of_the_health_router> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_fastapi_is_a_hard_dependency_of_the_health_router() -> None:
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_is_refused_on_the_live_copy_wire
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit_pg.py:241: DeprecationWarning: This process (pid=661787) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_inherits_the_pools_sockets_and_is_refused
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit_pg.py:166: DeprecationWarning: This process (pid=661787) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_fork_in_a_job_body_refuses_reports_and_keeps_consuming
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit_pg.py:101: DeprecationWarning: This process (pid=661787) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_in_memory_time_travel.py::test_tt4_cron_pattern_completes_under_one_second
+  /tmp/opencode/wt-land/tests/test_in_memory_time_travel.py:119: StubPayloadTypeWarning: register_stub('cron_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    memory_jobs.register_stub("cron_actor", succeed)
+
+tests/test_in_memory_dispatch.py::test_run_until_drained_stops_when_admission_never_recovers
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:628: StubPayloadTypeWarning: register_stub('res_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("res_actor", deny_stub)
+
+tests/test_in_memory_dispatch.py::test_run_until_drained_handles_reservation_unavailable
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:588: StubPayloadTypeWarning: register_stub('res_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("res_actor", res_stub)
+
+tests/test_in_memory_dispatch.py::TestStateMachineReachability::test_succeeding_stub
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:98: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_dispatch.py::TestPerpetualSnooze::test_snooze_advances_clock_and_reschedules
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:243: StubPayloadTypeWarning: register_stub('snoozy', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("snoozy", snoozy_stub)
+
+tests/test_in_memory_dispatch.py::TestNoClockAdvanceReturns::test_returns_with_scheduled_job_when_no_move_to
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:274: StubPayloadTypeWarning: register_stub('snoozy', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("snoozy", lambda p, c: {"done": True})
+
+tests/test_in_memory_dispatch.py::TestClockTimeTravel::test_scheduled_job_dispatchable_after_advance
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:198: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda p, c: None)
+
+tests/test_in_memory_dispatch.py::TestDeterminism::test_identical_backends_produce_equal_state
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:164: StubPayloadTypeWarning: register_stub('a1', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("a1", lambda p, c: {"v": 1})
+
+tests/test_in_memory_dispatch.py::TestDeterminism::test_identical_backends_produce_equal_state
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:165: StubPayloadTypeWarning: register_stub('a2', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("a2", lambda p, c: {"v": 2})
+
+tests/test_in_memory_dispatch.py::TestAsyncStub::test_async_stub_awaited
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:463: StubPayloadTypeWarning: register_stub('async_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("async_actor", async_stub)
+
+tests/test_in_memory_dispatch.py::TestRetryReachability::test_fails_twice_succeeds_third
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:137: StubPayloadTypeWarning: register_stub('flaky_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("flaky_actor", flaky_stub)
+
+tests/test_in_memory_dispatch.py::TestRunningRowLeaseInvariant::test_dispatched_rows_keep_their_own_lease
+  /tmp/opencode/wt-land/tests/test_in_memory_dispatch.py:1080: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_backend.py::TestRegisterStub::test_register_and_overwrite
+  /tmp/opencode/wt-land/tests/test_in_memory_backend.py:1574: StubPayloadTypeWarning: register_stub('actor_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("actor_a", stub_a)
+
+tests/test_in_memory_backend.py::TestRegisterStub::test_register_and_overwrite
+  /tmp/opencode/wt-land/tests/test_in_memory_backend.py:1577: StubPayloadTypeWarning: register_stub('actor_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("actor_a", stub_b)
+
+tests/test_state_transitions_round_trip.py::test_retry_after_round_trip
+  /tmp/opencode/wt-land/tests/test_state_transitions_round_trip.py:155: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", retry_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_indefinite_retry_polling_pattern
+  /tmp/opencode/wt-land/tests/test_state_transitions_round_trip.py:205: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_30_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_full_snooze_round_trip
+  /tmp/opencode/wt-land/tests/test_state_transitions_round_trip.py:61: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_multiple_snooze_cycles
+  /tmp/opencode/wt-land/tests/test_state_transitions_round_trip.py:113: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_three_then_succeed)
+
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-land/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_uncaught_cooperative_cancel_drains_the_runner_and_serves_the_rest
+  /tmp/opencode/wt-land/tests/test_stub_context_cooperative_cancel_drain.py:59: StubPayloadTypeWarning: register_stub('cooperative', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("cooperative", cooperative)
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_uncaught_cooperative_cancel_drains_the_runner_and_serves_the_rest
+  /tmp/opencode/wt-land/tests/test_stub_context_cooperative_cancel_drain.py:60: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_external_cancellation_of_the_drain_task_propagates
+  /tmp/opencode/wt-land/tests/test_stub_context_cooperative_cancel_drain.py:142: StubPayloadTypeWarning: register_stub('hanging', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("hanging", hanging)
+
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+  /tmp/opencode/wt-land/tests/test_runner_cancel_origin_discriminator.py:71: StubPayloadTypeWarning: register_stub('self_cancelling', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("self_cancelling", self_cancelling)
+
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+  /tmp/opencode/wt-land/tests/test_runner_cancel_origin_discriminator.py:72: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_runner_cancel_origin_discriminator.py::test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_event
+  /tmp/opencode/wt-land/tests/test_runner_cancel_origin_discriminator.py:147: StubPayloadTypeWarning: register_stub('ignoring', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("ignoring", ignoring)
+
+tests/test_runner_cancel_origin_discriminator.py::test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_event
+  /tmp/opencode/wt-land/tests/test_runner_cancel_origin_discriminator.py:148: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_runner_cancel_polling.py::test_default_drain_still_never_ticks_cancel_polling
+  /tmp/opencode/wt-land/tests/test_runner_cancel_polling.py:90: StubPayloadTypeWarning: register_stub('parked', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("parked", parked)
+
+tests/test_runner_cancel_polling.py::test_cancel_polling_flag_ends_a_mid_drain_cancel_as_cancelled
+  /tmp/opencode/wt-land/tests/test_runner_cancel_polling.py:38: StubPayloadTypeWarning: register_stub('victim', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("victim", victim)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_log_is_a_usable_bound_logger
+  /tmp/opencode/wt-land/tests/test_stub_context_actor_surface.py:301: StubPayloadTypeWarning: register_stub('logger_user', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("logger_user", logger_user)
+
+tests/test_stub_context_actor_surface.py::test_documented_method_surface_is_exercisable_through_the_runner
+  /tmp/opencode/wt-land/tests/test_stub_context_actor_surface.py:108: StubPayloadTypeWarning: register_stub('reporter', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("reporter", reporter)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_cancellation_methods_observe_a_requested_cancel
+  /tmp/opencode/wt-land/tests/test_stub_context_actor_surface.py:154: StubPayloadTypeWarning: register_stub('probe', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("probe", probe)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_span_read_matches_the_documented_disabled_value
+  /tmp/opencode/wt-land/tests/test_stub_context_actor_surface.py:64: StubPayloadTypeWarning: register_stub('reader', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("reader", reader)
+
+tests/test_rt_execloop_runner_force_cancel.py::test_runner_terminates_noncooperative_attempt_after_force_grace
+  /tmp/opencode/wt-land/tests/test_rt_execloop_runner_force_cancel.py:47: StubPayloadTypeWarning: register_stub('rt_stubborn', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_stubborn", stubborn)
+
+tests/test_atk_rt_dispatch_integration.py::test_diff_bulk_cancel_rename_spellings_agree
+tests/test_atk_rt_dispatch_integration.py::test_diff_bulk_cancel_rename_spellings_agree
+  /tmp/opencode/wt-land/tests/test_atk_rt_dispatch_integration.py:1159: DeprecationWarning: JobFilter.active is a deprecated alias for JobFilter.unfinished; pass unfinished=True for non-terminal statuses, unfinished=False for terminal ones
+    JobFilter(queue=_QUEUE, **kwargs),  # type: ignore[arg-type]  # Why: the alias spelling is the surface under attack.
+
+tests/test_settings_tables_docs_contract.py::test_every_code_setting_is_documented_in_a_docs_table
+  /tmp/opencode/wt-land/tests/test_settings_tables_docs_contract.py:136: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    names = tuple(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_singleton.py::test_singleton_connection_failure_mid_preflight
+tests/test_postgres_unique_for.py::test_connection_loss_during_preflight
+  /tmp/opencode/wt-land/src/taskq/backend/_enqueue.py:867: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    owns_transaction = owns_transaction or not conn.is_in_transaction()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_retry_classifier_hook.py::test_end_to_end_hook_influences_real_dispatch_via_register_stub
+  /tmp/opencode/wt-land/tests/test_retry_classifier_hook.py:467: StubPayloadTypeWarning: register_stub('hooked_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_attack_fork_inherit.py: 11 warnings
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=661784) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_guarded_redis_class_refuses_in_the_child
+tests/test_attack_fork_inherit.py::test_guarded_redis_class_refuses_in_the_child
+tests/test_attack_fork_inherit.py::test_guarded_wire_refuses_in_the_child_before_the_socket
+tests/test_attack_fork_inherit.py::test_forked_child_pipeline_execute_is_refused
+tests/test_attack_fork_inherit.py::test_forked_child_is_refused_and_parent_is_not
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=661773) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_parent_stamp_is_set_by_the_fork_and_consumed_once
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit.py:216: DeprecationWarning: This process (pid=661773) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_forked_grandchild_is_refused
+  /tmp/opencode/wt-land/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=661768) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_di_redundant_override.py::test_redundant_clock_override_actor_still_resolves
+  /tmp/opencode/wt-land/tests/test_di_redundant_override.py:376: LifecycleDetectionWarning: redundant Scope override on my_actor.clock: Annotated[..., Scope.PROCESS] matches the registered default for taskq.backend.clock.Clock; the override has no effect.
+    registry.validate(actors=[ref])
+
+tests/test_di_redundant_override.py::test_solver_no_longer_emits_at_dispatch
+  /tmp/opencode/wt-land/tests/test_di_redundant_override.py:302: LifecycleDetectionWarning: redundant Scope override on my_actor.settings: Annotated[..., Scope.PROCESS] matches the registered default for tests.test_di_redundant_override._Settings; the override has no effect.
+    registry.validate(actors=[ref])
+
+tests/test_in_memory_terminal_writes.py::TestMarkSucceededResultExpiryFallback::test_run_until_drained_wires_stub_result_ttl_as_fallback
+  /tmp/opencode/wt-land/tests/test_in_memory_terminal_writes.py:1986: StubPayloadTypeWarning: register_stub('ttl_stub_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("ttl_stub_actor", stub, result_ttl=ttl)
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_result_present_before_expiry
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expired_read_does_not_revive_or_mutate_terminal_state
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expired_read_appends_no_events_and_never_touches_wake
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_row_without_ttl_is_never_expired_by_reads
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expiry_boundary_is_strictly_less_than
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_result_expired_after_clock_passes_expiry
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_wait_returns_value_before_expiry_and_raises_after
+  /tmp/opencode/wt-land/tests/test_in_memory_terminal_writes.py:2052: StubPayloadTypeWarning: register_stub('ttl_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+  /tmp/opencode/wt-land/tests/test_in_memory_terminal_writes.py:2252: StubPayloadTypeWarning: register_stub('null_result_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_stored_actor_config_ttl_drives_expiry
+  /tmp/opencode/wt-land/tests/test_in_memory_terminal_writes.py:2052: StubPayloadTypeWarning: register_stub('stored_ttl_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_enqueue_pinned_ttl_in_past_at_completion_reads_expired
+  /tmp/opencode/wt-land/tests/test_in_memory_terminal_writes.py:2180: StubPayloadTypeWarning: register_stub('enqueue_pinned_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("enqueue_pinned_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_stub_retry_budget.py::test_bare_name_stub_with_retry_does_not_move_the_row_budget
+  /tmp/opencode/wt-land/tests/test_stub_retry_budget.py:165: StubPayloadTypeWarning: register_stub('budget_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_retry_after_consume_budget_false_refunds_increment
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:210: StubPayloadTypeWarning: register_stub('b12_actor_false', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("b12_actor_false", counting_actor)
+
+tests/test_retry_inmemory.py::test_on_retry_exhausted_sees_post_write_row_on_retry_after_budget
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:830: StubPayloadTypeWarning: register_stub('retry_after_budget', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_admission_denial_never_consumes_budget_or_fails_the_job
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:711: StubPayloadTypeWarning: register_stub('denied_budget', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_retry_after_consume_budget_true_no_double_increment
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:171: StubPayloadTypeWarning: register_stub('b12_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("b12_actor", counting_actor)
+
+tests/test_retry_inmemory.py::test_indefinite_retry_exceeds_deadline
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:411: StubPayloadTypeWarning: register_stub('indef_u2', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_hook_fires_once_after_exhaustion
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:77: StubPayloadTypeWarning: register_stub('flaky', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_retry_attempt_unchanged
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:342: StubPayloadTypeWarning: register_stub('indef_u1', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_on_retry_exhausted_sees_post_write_row_on_snooze_deadline
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:772: StubPayloadTypeWarning: register_stub('snooze_deadline', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_ignores_max_attempts_five_failures
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:489: StubPayloadTypeWarning: register_stub('indef_u3', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_run_until_drained_retry_after_consume_budget_false_refunds_attempt
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:125: StubPayloadTypeWarning: register_stub('retry_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("retry_actor", retry_stub)
+
+tests/test_retry_inmemory.py::test_caller_override_schedule_to_close_wins
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:318: DeprecationWarning: schedule_to_close (absolute datetime) is deprecated; declare retry.time_budget on the actor (interval form) instead, absolute datetimes cross clock domains (the app clock that produced them vs the database clock that evaluates them) and can misbehave under skew; see docs/architecture.md
+    handle = await client.enqueue(
+
+tests/test_retry_inmemory.py::test_indefinite_retry_after_consume_budget_increments_attempt
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:639: StubPayloadTypeWarning: register_stub('indef_u16', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_snooze_refunds_attempt
+  /tmp/opencode/wt-land/tests/test_retry_inmemory.py:586: StubPayloadTypeWarning: register_stub('indef_u9', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_rt_payload_json_fidelity.py::test_nan_result_succeeds_and_stores_null_mirror
+  /tmp/opencode/wt-land/tests/test_rt_payload_json_fidelity.py:148: StubPayloadTypeWarning: register_stub('nan_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("nan_actor", stub)
+
+tests/test_rt_payload_json_fidelity.py::test_overdeep_payload_is_refused_at_enqueue_boundary_mirror
+  /tmp/opencode/wt-land/tests/test_rt_payload_json_fidelity.py:189: StubPayloadTypeWarning: register_stub('deep_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_di_validate.py::test_actor_annotated_scope_override_in_plan
+  /tmp/opencode/wt-land/tests/test_di_validate.py:515: LifecycleDetectionWarning: redundant Scope override on my_actor.dep: Annotated[..., Scope.LOOP] matches the registered default for tests.test_di_validate.test_actor_annotated_scope_override_in_plan.<locals>.A; the override has no effect.
+    registry.validate(actors=[actor])
+
+tests/test_leader_sweeps_coverage.py::test_sweep_loop_acquire_calls_pass_timeout_ast
+  tests/test_leader_sweeps_coverage.py:1432: PytestWarning: The test <Function test_sweep_loop_acquire_calls_pass_timeout_ast> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_sweep_loop_acquire_calls_pass_timeout_ast() -> None:
+
+tests/test_leader_sweeps_coverage.py::test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast
+  tests/test_leader_sweeps_coverage.py:1471: PytestWarning: The test <Function test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast() -> None:
+
+tests/test_stub_context_snooze_count.py::test_stub_context_carries_snooze_count_like_the_pg_worker
+  /tmp/opencode/wt-land/tests/test_stub_context_snooze_count.py:47: StubPayloadTypeWarning: register_stub('cycler', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_postgres_unique_for.py::test_connection_loss_during_preflight
+  /tmp/opencode/wt-land/src/taskq/backend/_enqueue.py:889: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    ) and not conn.is_in_transaction():
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_the_write_reserve_stays_unspent
+  tests/test_cron_loop.py:1621: PytestWarning: The test <Function test_the_write_reserve_stays_unspent> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_the_write_reserve_stays_unspent(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_tiny_tick_still_funds_its_first_factory
+  tests/test_cron_loop.py:1680: PytestWarning: The test <Function test_a_tiny_tick_still_funds_its_first_factory> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_tiny_tick_still_funds_its_first_factory(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_tight_factory_budget_needs_only_its_full_declared_grant
+  tests/test_cron_loop.py:1662: PytestWarning: The test <Function test_a_tight_factory_budget_needs_only_its_full_declared_grant> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_tight_factory_budget_needs_only_its_full_declared_grant(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait
+  tests/test_cron_loop.py:1642: PytestWarning: The test <Function test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_configured_budget_applies_when_the_tick_has_room
+  tests/test_cron_loop.py:1615: PytestWarning: The test <Function test_configured_budget_applies_when_the_tick_has_room> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_budget_applies_when_the_tick_has_room(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_spent_tick_funds_no_factory_wait
+  tests/test_cron_loop.py:1631: PytestWarning: The test <Function test_a_spent_tick_funds_no_factory_wait> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_spent_tick_funds_no_factory_wait(self) -> None:
+
+tests/test_batch_abort_integration.py::TestBatchAbortProperty::test_batch_abort_property
+tests/test_batch_abort_integration.py::TestBatchMarkedCompleteOnAllTerminal::test_batch_marked_complete
+tests/test_batch_abort_integration.py::TestSuccessResetsCounter::test_success_resets_counter
+tests/test_batch_abort_integration.py::TestAbortAfterThreshold::test_abort_after_threshold
+tests/test_batch_abort_integration.py::TestNoAbortWithoutPolicy::test_no_abort_without_policy
+tests/test_batch_abort_integration.py::TestHookFailureGuard::test_hook_failure_does_not_affect_job_terminal_state
+  /home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/events.py:89: StubPayloadTypeWarning: register_stub('batch_abort_test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_jobs_client.py::TestGet::test_wait_advances_row_to_the_terminal_row
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:304: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: None)
+
+tests/test_jobs_client.py::TestGet::test_status_advances_row
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:286: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_jobs_client.py::TestGet::test_refresh_advances_row_to_the_fetched_row
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:266: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_jobs_client.py::TestEnqueueHandleWaitRegression::test_enqueue_handle_wait_works
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:1173: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_jobs_client.py::TestCancel::test_cancel_succeeded_job
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:102: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_jobs_client.py::TestList::test_list_pages_the_whole_set_under_a_non_default_ordering[JobSortField.CREATED_AT_DESC]
+tests/test_jobs_client.py::TestList::test_list_pages_the_whole_set_under_a_non_default_ordering[JobSortField.FINISHED_AT_DESC]
+  /tmp/opencode/wt-land/tests/test_jobs_client.py:473: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+tests/test_batch_abort_finalizer.py::TestClockSkewResilience::test_clock_jump_does_not_fail_in_memory_finalizer
+  /home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/events.py:89: StubPayloadTypeWarning: register_stub('abort_finalizer_test_child', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+tests/test_batch_abort_finalizer.py::TestClockSkewResilience::test_clock_jump_does_not_fail_in_memory_finalizer
+  /home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/events.py:89: StubPayloadTypeWarning: register_stub('abort_finalizer_test_finalizer', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_runner_escape_batch_hook_parity.py::test_force_cancelled_member_completes_the_batch_and_the_drain_continues
+  /tmp/opencode/wt-land/tests/test_runner_escape_batch_hook_parity.py:173: StubPayloadTypeWarning: register_stub('stubborn_member', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_member", stubborn)
+
+tests/test_runner_escape_batch_hook_parity.py::test_force_cancelled_member_completes_the_batch_and_the_drain_continues
+  /tmp/opencode/wt-land/tests/test_runner_escape_batch_hook_parity.py:174: StubPayloadTypeWarning: register_stub('follower_member', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower_member", follower)
+
+tests/test_runner_escape_batch_hook_parity.py::test_cooperative_cancel_escape_completes_the_batch
+  /tmp/opencode/wt-land/tests/test_runner_escape_batch_hook_parity.py:59: StubPayloadTypeWarning: register_stub('cooperative', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("cooperative", cooperative)
+
+tests/test_runner_force_cancel_absorption.py::test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:445: StubPayloadTypeWarning: register_stub('stubborn_first', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_first", stubborn)
+
+tests/test_runner_force_cancel_absorption.py::test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:446: StubPayloadTypeWarning: register_stub('gated_second', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("gated_second", gated)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:302: StubPayloadTypeWarning: register_stub('stubborn_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_a", stubborn_a)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:303: StubPayloadTypeWarning: register_stub('stubborn_b', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_b", stubborn_b)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:304: StubPayloadTypeWarning: register_stub('follower_after_two', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower_after_two", follower)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_leaves_callers_cancel_count_unchanged_after_absorbing_force_cancel
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:80: StubPayloadTypeWarning: register_stub('stubborn_uncancel', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_uncancel", stubborn)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_awaited_inline_still_runs_the_job_queued_behind_a_forced_one
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:195: StubPayloadTypeWarning: register_stub('absorb_stubborn', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("absorb_stubborn", stubborn)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_awaited_inline_still_runs_the_job_queued_behind_a_forced_one
+  /tmp/opencode/wt-land/tests/test_runner_force_cancel_absorption.py:196: StubPayloadTypeWarning: register_stub('absorb_follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("absorb_follower", follower)
+
+tests/test_actor_config_retry_contract_pg.py::test_cron_fire_uses_declared_retry_contract
+  /tmp/opencode/wt-land/.venv/lib/python3.13/site-packages/asyncpg/connection.py:1779: InterfaceWarning: <taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection object at 0x7f97e21e8320> is being released to the pool but has 1 active notification listener
+    warnings.warn(w)
+
+tests/test_actor_config_retry_contract_pg.py::test_contract_downgrade_leaves_created_jobs_at_their_creation_time_contract
+  /tmp/opencode/wt-land/.venv/lib/python3.13/site-packages/asyncpg/connection.py:1779: InterfaceWarning: <taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection object at 0x7f216aaa49b0> is being released to the pool but has 1 active notification listener
+    warnings.warn(w)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+SKIPPED [3] tests/test_atk_upgrade_kill_mid_migration.py:154: boundary beyond this file's statement count
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+SKIPPED [1] tests/test_backend_equivalence.py:670: connection-loss test requires PostgresBackend
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 13205 passed, 8 skipped, 150 warnings in 698.13s (0:11:38)

@@ -1,0 +1,16 @@
+=== THE CLOSE-OUT at afda1030f4f9ef6bbc632388121924889247162c — 2026-10-10T10:11:32Z
+
+[1/3] THE FAST TIER AT -n 8:
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 13242 passed, 8 skipped, 1 xfailed, 150 warnings in 716.51s (0:11:56)
+
+[2/3] THE VERIFIER (unmasked rc):
+VERIFIER-RC=1
+  wf-perf-bands: the LIVE CLAIM wf-perf-bands-20261010T091005.txt is stale — recorded on 0ec0ca46eb7f, the head is afda1030f4f9. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+  wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T023625-a1ff.json is stale — recorded on 2309f4b41a80, the head is afda1030f4f9. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+  wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T013941.json is stale — recorded on eeba3ef6b33c, the head is afda1030f4f9. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+
+[3/3] mkdocs strict:
+INFO    -  Documentation built in 16.10 seconds

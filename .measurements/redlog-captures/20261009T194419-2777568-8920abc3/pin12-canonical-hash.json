@@ -1,0 +1,10 @@
+{
+  "mutation": "the version hash's serializer swapped for json.dumps (insertion-ordered, non-canonical)",
+  "observed": {
+    "left": "cc1f304b2acb29841239533baa435298e34f67e69c9528bb712346a09d379ebe",
+    "right": "215f0e8d2c0a98fe38a0c645a3ab58959d7687be43429b04a9babd238585d085"
+  },
+  "pin": "pin12-canonical-hash",
+  "run": "20261009T194419-2777568-8920abc3",
+  "ts": "2026-10-09T19:44:19"
+}

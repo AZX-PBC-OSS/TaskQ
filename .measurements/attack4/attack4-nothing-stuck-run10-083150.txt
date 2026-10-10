@@ -1,0 +1,85 @@
+.2026-10-08 01:31:54 [info     ] node.held                      hold_id=01a11aa3-f3b7-78e1-b0c3-617b32dabfdb node=review run_id=01a11aa3-f383-7432-9b78-a1c563af12da signals=['Approval']
+2026-10-08 01:31:54 [info     ] signal.resolved                hold_id=01a11aa3-f3b7-78e1-b0c3-617b32dabfdb run_id=01a11aa3-f383-7432-9b78-a1c563af12da signal=Approval
+.2026-10-08 01:31:54 [info     ] node.held                      hold_id=01a11aa3-f46e-7f20-9d90-886361fa8dfa node=review run_id=01a11aa3-f44d-7792-8727-242c80bcee35 signals=['Approval']
+
+[attack4 cold-gate] rc=0 out='RESULT: delivered | None'
+F2026-10-08 01:31:56 [info     ] node.held                      hold_id=01a11aa3-f860-7c31-b049-77259d1a2957 node=review run_id=01a11aa3-f83d-78a2-8022-21c161b9d9b4 signals=['Approval']
+..
+=================================== FAILURES ===================================
+___________ test_a_hold_without_payload_schema_meets_the_typed_door ____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7ffad830b4c0>
+module_pg_schema = ModulePgSchema(schema_name='tq_29d10bad32', pg_dsn='postgresql://postgres@127.0.0.1:5711/tq_db_29d10bad3295')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7ffad68f1a90>
+
+    async def test_a_hold_without_payload_schema_meets_the_typed_door(
+        module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
+    ) -> None:
+        """THE UPGRADE WORLD, COLD PROCESS: a hold row written WITHOUT a
+        payload_schema (a row from before the typed door, or a hand-migrated
+        one) meets a resolve from a process that NEVER RAN THE WAIT SITE
+        (the real cold process — a subprocess; this process ran the drive,
+        so its model catalog cannot witness this probe). The cold fallback's
+        ``no declared models on the row`` arm must not fit ANYTHING."""
+        import subprocess as sp
+        import sys
+        import textwrap
+    
+        schema = module_pg_schema.schema_name
+        app = WorkflowApp()
+        gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
+    
+        async def holds(ctx: Any, params: Ingest) -> str:
+            await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the cold gate")
+            return "done"
+    
+        @app.workflow("attack4_cold_gate")
+        def cold_gate() -> object:
+            return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
+    
+        runner = FlowRunner(app.get("attack4_cold_gate"), module_pg_pool, schema)
+        flow_id = await runner.create_flow()
+        await runner.drive(flow_id, until="held")
+    
+        # THE REGISTRATION IS GONE: the row's payload_schema erased — the
+        # ROW is the cold process's only witness, and it now witnesses
+        # NOTHING.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".wf_signals SET payload_schema = NULL '
+            "WHERE workflow_id = $1 AND status = 'held'",
+            flow_id,
+        )
+        # THE COLD RESOLVER: a fresh process, the garbage payload, the raw
+        # HitlClient (no mounted definitions to lean on).
+        probe = textwrap.dedent(f"""
+            import asyncio, json, sys
+            import asyncpg
+            from taskq.workflows.api._hitl import HitlClient
+    
+            async def main() -> None:
+                pool = await asyncpg.create_pool({module_pg_schema.pg_dsn!r})
+                client = HitlClient(pool, schema={schema!r})
+                (hold,) = await client.list({str(flow_id)!r})
+                result = await client.resolve(
+                    hold.hold_id,
+                    {{"totally": "undeclared", "verdict": {{"nested": True}}}},
+                )
+                print("RESULT:", result.status, "|", result.reason)
+                await pool.close()
+    
+            asyncio.run(main())
+        """)
+        proc = sp.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
+        print(f"\n[attack4 cold-gate] rc={proc.returncode} out={proc.stdout.strip()!r}")
+        if "RESULT: delivered" in proc.stdout:
+>           pytest.fail(
+                "THE UNTYPED DOOR'S HOLE, OBSERVED (cold process): a hold with NO "
+                f"payload_schema accepted a payload nothing declared — {proc.stdout.strip()!r} "
+                "(the cold fallback's 'legacy hold' arm fits anything)"
+            )
+E           Failed: THE UNTYPED DOOR'S HOLE, OBSERVED (cold process): a hold with NO payload_schema accepted a payload nothing declared — 'RESULT: delivered | None' (the cold fallback's 'legacy hold' arm fits anything)
+
+tests/attack4-nothing-stuck-probes.py:237: Failed
+=========================== short test summary info ============================
+FAILED tests/attack4-nothing-stuck-probes.py::test_a_hold_without_payload_schema_meets_the_typed_door
+1 failed, 4 passed in 5.12s

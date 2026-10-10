@@ -1,0 +1,2 @@
+FAILED tests/attack_wf_engine_windows.py::test_attack_join_node_without_edges_is_invisible_to_the_sweep
+1 failed in 4.84s

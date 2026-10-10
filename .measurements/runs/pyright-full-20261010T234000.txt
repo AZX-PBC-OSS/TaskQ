@@ -1,0 +1,5 @@
+# pyright FULL (the CI's own command: pyright src/taskq tests) at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+0 errors, 0 warnings, 0 informations
+pyright rc=0
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/pyright-full-20261010T085747.txt

@@ -1,0 +1,4 @@
+THE HEAD-STAMP LAW REDS (head 13c6e49d82b1):
+  deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T134042.txt is stale — recorded on cd593a06929d, the head is 13c6e49d82b1. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+  mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T133838-deslop.txt is stale — recorded on 94a70d8986a5, the head is 13c6e49d82b1. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+  wf-battery-rv4: wf-battery-rv4-20261010T133838-deslop.txt is marked superseded_by 27b367bddf472e7d98334f75e60287c188bb74f9 but the target does not exist — the link is dead

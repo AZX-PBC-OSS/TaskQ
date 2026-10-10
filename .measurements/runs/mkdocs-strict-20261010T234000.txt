@@ -1,0 +1,5 @@
+# mkdocs build --strict at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+INFO    -  Documentation built in 15.93 seconds
+mkdocs rc=0
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/mkdocs-strict-20261010T091005.txt

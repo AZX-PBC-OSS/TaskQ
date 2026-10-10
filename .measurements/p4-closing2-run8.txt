@@ -1,0 +1,59 @@
+..........F...............                                               [100%]
+=================================== FAILURES ===================================
+____________ test_run_page_renders_the_audit_trail_after_a_resolve _____________
+
+module_pg_pool = <asyncpg.pool.Pool object at 0x7f68da4b6200>
+module_pg_schema = ModulePgSchema(schema_name='tq_5ffd982b7e', pg_dsn='postgresql://taskq:taskq@localhost:5697/tq_db_5ffd982b7e44')
+clean_pg_conn = <asyncpg.connection.Connection object at 0x7f68da833200>
+demo_app_module = <module 'p4_admin_demo_flows'>
+
+    async def test_run_page_renders_the_audit_trail_after_a_resolve(
+        module_pg_pool: asyncpg.Pool,
+        module_pg_schema: ModulePgSchema,
+        clean_pg_conn: asyncpg.Connection,
+        demo_app_module: Any,
+    ) -> None:
+        """THE AUDIT TRAIL VISIBLE PER OPERATOR ACTION (the G4 pin's page
+        face): after a resolve, the run page renders the trail's ROW (the
+        principal + the action + the reason); the empty trail renders the
+        defined line first."""
+        schema = module_pg_schema.schema_name
+        run_id = await _seed_run(module_pg_pool, schema)
+        app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            # THE EMPTY TRAIL (the defined state):
+            before = await http.get(f"/workflows/{run_id}")
+            assert "No operator actions recorded" in before.text
+            # The resolve (the action):
+            from taskq.workflows.api._hitl import HitlClient
+    
+            client = HitlClient(module_pg_pool, schema=schema)
+            (hold,) = await client.list(run_id)
+            await http.get("/queues")
+            good = await http.post(
+                f"/api/runs/{run_id}/resolve",
+                data={
+                    "hold_id": hold.hold_id,
+                    "decision": json.dumps({"verdict": "approve", "note": ""}),
+                    "reason": "the trail pin's resolve",
+                    "csrf_token": _csrf_of(http),
+                },
+            )
+            assert good.status_code == 200, good.text
+            # THE TRAIL RENDERS THE ROW:
+            after = await http.get(f"/workflows/{run_id}")
+            html = after.text
+>           assert "hitl.resolve" in html
+E           assert 'hitl.resolve' in '<!DOCTYPE html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createIcons();\n        });\n    </script>\n</body>\n</html>'
+
+tests/web_admin/test_workflows_page.py:452: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-07 21:10:33 [info     ] node.held                      hold_id=01a119b4-ad75-75f3-82ad-ed63adb60f25 node=review run_id=01a119b4-ad16-7b90-a934-e9c5b569f9a9 signals=['Approval']
+2026-10-07 21:10:33 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 21:10:33 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-07 21:10:33 [info     ] signal.delivered               hold_id=01a119b4-ad75-75f3-82ad-ed63adb60f25 run_id=01a119b4-ad16-7b90-a934-e9c5b569f9a9 signal=Approval
+=========================== short test summary info ============================
+FAILED tests/web_admin/test_workflows_page.py::test_run_page_renders_the_audit_trail_after_a_resolve
+1 failed, 25 passed in 9.27s

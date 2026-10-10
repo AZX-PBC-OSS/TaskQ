@@ -1,0 +1,53 @@
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/taskq/web/admin/_wf_actions.py:27:1
+   |
+25 |   """
+26 |
+27 | / from __future__ import annotations
+28 | |
+29 | | import asyncio
+30 | | import json
+31 | | import uuid
+32 | | from collections.abc import AsyncGenerator
+33 | | from datetime import datetime
+34 | | from typing import Annotated, Any, cast
+35 | |
+36 | | import asyncpg
+37 | | import structlog
+38 | | from fastapi import APIRouter, Depends, Header, HTTPException, Request
+39 | | from fastapi.responses import RedirectResponse, StreamingResponse
+40 | |
+41 | | from taskq.web._pool import BoundedPool
+42 | | from taskq.web.admin._factory import (
+43 | |     get_admin_pool,
+44 | |     get_base_path,
+45 | |     get_principal,
+46 | |     get_schema,
+47 | |     get_workflow_app,
+48 | |     require_actions_enabled,
+49 | |     validate_csrf,
+50 | | )
+51 | | from taskq.backend._protocol import JobId
+52 | | from taskq.web.admin._wf_rows import (
+53 | |     NOT_INSTALLED,
+54 | |     RunView,
+55 | |     fetch_run_view,
+56 | |     run_state_json,
+57 | | )
+   | |_^
+58 |
+59 |   logger = structlog.get_logger("taskq.web.admin.wf_actions")
+   |
+help: Organize imports
+   |
+40 |
+41 + from taskq.backend._protocol import JobId
+42 | from taskq.web._pool import BoundedPool
+--------------------------------------------------------------------------------
+51 | )
+   - from taskq.backend._protocol import JobId
+52 | from taskq.web.admin._wf_rows import (
+   |
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.

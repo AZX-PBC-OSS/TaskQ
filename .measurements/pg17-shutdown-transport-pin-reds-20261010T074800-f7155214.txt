@@ -1,0 +1,232 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+__ test_write_cancel_request_returns_when_the_notify_transport_never_answers ___
+
+self = <tests.test_cancel_notify_transport_bound._HangingConn object at 0x7fb291c3c590>
+args = ('SELECT pg_notify($1, $2), pg_notify($3, $4)', 'taskq_events_e3edc26a83', '{"type":"cancel","job_id":"01a12649-b520-7...'{"type":"cancel","job_id":"01a12649-b520-79a0-a8c1-22dd724cae2e","worker_id":"c3140bc2-0845-4458-bc8d-78630dee9097"}')
+kwargs = {}
+
+    async def execute(self, *args: object, **kwargs: object) -> str:
+>       await asyncio.Event().wait()  # never
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cancel_notify_transport_bound.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <asyncio.locks.Event object at 0x7fb291e374d0 [unset]>
+
+    async def wait(self):
+        """Block until the internal flag is true.
+    
+        If the internal flag is true on entry, return True
+        immediately.  Otherwise, block until another task calls
+        set() to set the flag to true, then return True.
+        """
+        if self._value:
+            return True
+    
+        fut = self._get_loop().create_future()
+        self._waiters.append(fut)
+        try:
+>           await fut
+E           asyncio.exceptions.CancelledError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/locks.py:213: CancelledError
+
+The above exception was the direct cause of the following exception:
+
+module_pg_schema = ModulePgSchema(schema_name='tq_d32f71e16e', pg_dsn='postgresql://postgres:taskq@localhost:5770/tq_db_d32f71e16ecb')
+clean_jobs_app = JobsApp(deps=WorkerDeps(settings=WorkerSettings(pg_dsn='postgresql://postgres:***@localhost:5770/tq_db_d32f71e16ecb', ...7fb291e08f50 [unlocked]>, drain_failures=0), backend=<taskq.backend.postgres.PostgresBackend object at 0x7fb291f23cb0>)
+
+    @pytest.mark.timeout(180)
+    async def test_write_cancel_request_returns_when_the_notify_transport_never_answers(
+        module_pg_schema: ModulePgSchema,
+        clean_jobs_app: Any,
+    ) -> None:
+        """The convicted await (leg F): the cancel request's row write
+        commits, then the NOTIFY transport's socket never answers — the
+        call must still RETURN (the row IS the request; the heartbeat poll
+        remains authoritative for signal delivery), inside its own bound,
+        with the transport failure swallowed-and-warned. UNCURED the call
+        hangs forever (the CI leg's 240s timeout); CURED the transport
+        bound fires and the call returns the committed truth."""
+        import asyncpg
+    
+        schema = module_pg_schema.schema_name
+        backend: PostgresBackend = clean_jobs_app.backend
+        conn: asyncpg.Connection = await asyncpg.connect(module_pg_schema.pg_dsn)
+        try:
+            job_id = await create_running_job(conn, schema, uuid4())
+    
+            # The row-write phase (acquire #1) runs against the REAL pool;
+            # the NOTIFY transport's checkout (acquire #2) never answers.
+            # The backend's pool accessor is a property over the deps' pool
+            # (the hot-reload seam), so the wrapper rides the deps.
+            real_pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage,reportAttributeAccessIssue]  # Why: the pin drives the production backend's documented pool seam; the underscore is the same private-access the _FakePool pins take.
+            clean_jobs_app.deps.worker_pool = _RealThenHangingPool(real_pool, real_acquires=1)  # type: ignore[reportAttributeAccessIssue]  # Why: WorkerDeps' pool field is the seam the backend's property reads; the test double replaces it per the _FakePool precedent.
+            started = time.monotonic()
+            try:
+>               committed = await asyncio.wait_for(
+                    backend.write_cancel_request(JobId(job_id), "offboard"),
+                    timeout=_PIN_WAIT_S,
+                )
+
+tests/test_cancel_notify_transport_bound.py:180: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:506: in wait_for
+    async with timeouts.timeout(timeout):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Timeout [expired]>
+exc_type = <class 'asyncio.exceptions.CancelledError'>
+exc_val = CancelledError(), exc_tb = <traceback object at 0x7fb291e234c0>
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
+        assert self._state in (_State.ENTERED, _State.EXPIRING)
+    
+        if self._timeout_handler is not None:
+            self._timeout_handler.cancel()
+            self._timeout_handler = None
+    
+        if self._state is _State.EXPIRING:
+            self._state = _State.EXPIRED
+    
+            if self._task.uncancel() <= self._cancelling and exc_type is not None:
+                # Since there are no new cancel requests, we're
+                # handling this.
+                if issubclass(exc_type, exceptions.CancelledError):
+>                   raise TimeoutError from exc_val
+E                   TimeoutError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/timeouts.py:117: TimeoutError
+---------------------------- Captured stdout setup -----------------------------
+2026-10-10 07:48:47 [info     ] worker-startup-budget          connections_overrides=False direct=12 host_direct=localhost host_pooled=localhost pgbouncer_recommended=False pooled=12 total_pg=24.0
+2026-10-10 07:48:47 [info     ] pool-opened                    host=localhost ownership=dsn pool=dispatcher
+2026-10-10 07:48:47 [info     ] pool-opened                    host=localhost ownership=dsn pool=heartbeat
+2026-10-10 07:48:47 [info     ] pool-opened                    host=localhost ownership=dsn pool=worker
+2026-10-10 07:48:47 [info     ] keepalive-applied              keepcnt=3 keepidle=30 keepintvl=5 label=notify
+2026-10-10 07:48:47 [info     ] dedicated-connection-opened    host=localhost keepalive=True label=notify
+2026-10-10 07:48:47 [info     ] notify-listen-issued           channel=taskq_wake_e3edc26a83 owns_notify=True
+2026-10-10 07:48:47 [info     ] keepalive-applied              keepcnt=3 keepidle=30 keepintvl=5 label=leader
+2026-10-10 07:48:47 [info     ] dedicated-connection-opened    host=localhost keepalive=True label=leader
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 07:48:47 [info     ] cancel_phase_change            from_phase=0 job_id=01a12649-b520-79a0-a8c1-22dd724cae2e kind=cancel_phase_change to_phase=1
+________ test_tagged_population_deleted_even_when_the_ledger_conn_died _________
+
+module_pg_schema = ModulePgSchema(schema_name='tq_d32f71e16e', pg_dsn='postgresql://postgres:taskq@localhost:5770/tq_db_d32f71e16ecb')
+
+    @pytest.mark.timeout(180)
+    async def test_tagged_population_deleted_even_when_the_ledger_conn_died(
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The contamination root (legs E + F2): the module's cleanup runs
+        on the ledger connection — when that socket dies mid-scenario, the
+        UNBOUNDED cleanup hangs the test's finally (the zombie task) or
+        dies with it, and the zombie population (same module schema, same
+        tag) contaminates the SIBLING scenario's own population. CURED the
+        cleanup is bounded and, on a dead ledger connection, retries ONCE
+        on a FRESH connection: the rows the scenario owns are deleted, and
+        the sibling's population stays clean."""
+        import asyncpg
+    
+>       from tests.system_e2e._invariants import delete_tagged_resilient
+E       ImportError: cannot import name 'delete_tagged_resilient' from 'tests.system_e2e._invariants' (/tmp/opencode/wt-pg17/tests/system_e2e/_invariants.py)
+
+tests/test_cancel_notify_transport_bound.py:237: ImportError
+________ test_wait_running_fails_designed_when_the_ledger_never_answers ________
+
+self = <tests.test_cancel_notify_transport_bound._HangingConn object at 0x7fb291e0a990>
+args = ('SELECT id::text FROM "tq_pin_schema".jobs WHERE tags @> ARRAY[$1::text] AND status = \'running\'', 'notify-bound')
+kwargs = {}
+
+    async def fetch(self, *args: object, **kwargs: object) -> list[Any]:
+>       await asyncio.Event().wait()  # never
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cancel_notify_transport_bound.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <asyncio.locks.Event object at 0x7fb291c79020 [unset]>
+
+    async def wait(self):
+        """Block until the internal flag is true.
+    
+        If the internal flag is true on entry, return True
+        immediately.  Otherwise, block until another task calls
+        set() to set the flag to true, then return True.
+        """
+        if self._value:
+            return True
+    
+        fut = self._get_loop().create_future()
+        self._waiters.append(fut)
+        try:
+>           await fut
+E           asyncio.exceptions.CancelledError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/locks.py:213: CancelledError
+
+The above exception was the direct cause of the following exception:
+
+    @pytest.mark.timeout(180)
+    async def test_wait_running_fails_designed_when_the_ledger_never_answers() -> None:
+        """The hang class under the tier's own settle reads (the front half
+        of leg F): a ledger connection that never answers must end at the
+        helper's OWN cap with the DESIGNED assertion ("fewer than N jobs
+        claimed"), never consume the scenario's 240s pytest-timeout budget
+        on a single unbounded fetch. UNCURED the read hangs forever; CURED
+        every fetch is bounded and the cap decides."""
+        from tests.system_e2e.test_shutdown_requeue_states import _wait_running
+    
+        started = time.monotonic()
+        with pytest.raises(AssertionError, match="fewer than 2 jobs claimed"):
+>           await asyncio.wait_for(
+                _wait_running(_HangingConn(), "tq_pin_schema", _TAG, want=2, cap_secs=30.0),
+                timeout=_PIN_WAIT_S,
+            )
+
+tests/test_cancel_notify_transport_bound.py:211: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/tasks.py:506: in wait_for
+    async with timeouts.timeout(timeout):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Timeout [expired]>
+exc_type = <class 'asyncio.exceptions.CancelledError'>
+exc_val = CancelledError(), exc_tb = <traceback object at 0x7fb291e20b00>
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
+        assert self._state in (_State.ENTERED, _State.EXPIRING)
+    
+        if self._timeout_handler is not None:
+            self._timeout_handler.cancel()
+            self._timeout_handler = None
+    
+        if self._state is _State.EXPIRING:
+            self._state = _State.EXPIRED
+    
+            if self._task.uncancel() <= self._cancelling and exc_type is not None:
+                # Since there are no new cancel requests, we're
+                # handling this.
+                if issubclass(exc_type, exceptions.CancelledError):
+>                   raise TimeoutError from exc_val
+E                   TimeoutError
+
+/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/asyncio/timeouts.py:117: TimeoutError
+=========================== short test summary info ============================
+FAILED tests/test_cancel_notify_transport_bound.py::test_write_cancel_request_returns_when_the_notify_transport_never_answers
+FAILED tests/test_cancel_notify_transport_bound.py::test_tagged_population_deleted_even_when_the_ledger_conn_died
+FAILED tests/test_cancel_notify_transport_bound.py::test_wait_running_fails_designed_when_the_ledger_never_answers
+3 failed in 120.91s (0:02:00)

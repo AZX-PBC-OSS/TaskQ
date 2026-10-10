@@ -1,0 +1,58 @@
+{
+  "chatty": {
+    "emissions": 10000,
+    "wall_s": 0.25,
+    "emissions_per_s": 39697,
+    "occurrences": 10000,
+    "state_rows": 2,
+    "ring_rows": 3,
+    "ring_bound": 64,
+    "dropped_on_the_record": 0,
+    "verdict_constant_rows": true,
+    "verdict_counter_honest": true,
+    "verdict_ring_bound": true
+  },
+  "quiet": {
+    "wall_s": 0.126
+  },
+  "map": {
+    "children": 200,
+    "drive_s": 29.89,
+    "line_rows": 2,
+    "line": [
+      {
+        "step_key": "fetch.item",
+        "total": 200,
+        "done": 200,
+        "running": 0,
+        "blocked": 0,
+        "failed": 0,
+        "avg_pct": 50,
+        "freshest": "2026-10-08 05:00:10.760217+00:00"
+      },
+      {
+        "step_key": "fetch.join",
+        "total": 1,
+        "done": 1,
+        "running": 0,
+        "blocked": 0,
+        "failed": 0,
+        "avg_pct": null,
+        "freshest": null
+      }
+    ],
+    "aggregate_children": 200,
+    "aggregate_value": 2.97,
+    "aggregate_fn_ms": 0.009,
+    "join_fires_dataflow": 1,
+    "aggregate_wrote_nothing": true
+  },
+  "red_counterfactual": {
+    "emissions": 2000,
+    "rows": 2000,
+    "write_s": 4.043,
+    "writes_per_s": 494,
+    "verdict": "the every-emission-a-row shape grows with emissions \u2014 kept red"
+  },
+  "captured_at": "20261008T050014Z"
+}

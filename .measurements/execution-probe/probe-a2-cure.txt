@@ -1,0 +1,20 @@
+{"actor":"wf","registered":"gpu","stored":"default","level":"warning","logger":"taskq.worker.startup","timestamp":"2026-10-08T06:41:18.885408Z","event":"actor-config-queue-override"}
+== actor_config rows stamped for the workflow actors
+== flow created: 01a11a3e-b226-7a20-b3d3-8b20d31ea797
+== vanilla worker launched — watching 30s
+   [23:41:18] __flow__ q=default -> status=running attempt=0 released=None
+   [23:41:18] doc_source q=default -> status=pending attempt=0 released=None
+== BODY EXECUTIONS OBSERVED (all schemas, cumulative): 9
+    cure-events.log: {'kind': 'body-ran', 'pid': 1327994, 'at': '2026-10-08T06:39:44.798634+00:00', 'body': 'screen', 'job_id': '01a11a3d-4286-7730-a583-46e0ee4b4bc2', 'item': {'doc_id': 'doc-1'}}
+    cure-events.log: {'kind': 'body-ran', 'pid': 1327994, 'at': '2026-10-08T06:39:44.799044+00:00', 'body': 'screen', 'job_id': '01a11a3d-4286-7730-a583-46f1b1c3f579', 'item': {'doc_id': 'doc-2'}}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'source', 'job_id': '01a11a03-fe67-7b23-a7cb-165ccf05f503'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a03-fe72-7ba0-aace-fe77d966359f'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a03-fe72-7ba0-aace-fe8e3270106b'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'source', 'job_id': '01a11a3e-a07b-7e63-a5a5-effc8f62160a'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a3e-a085-7fd1-9571-b656e20e5127'}
+    exec_b-events.log: {'kind': 'body-ran', 'body': 'screen', 'job_id': '01a11a3e-a085-7fd1-9571-b66a5acaa20c'}
+== the worker's actor-not-found lines: 0
+== the rows at the end:
+    {'id': UUID('01a11a3e-b226-7a20-b3d3-8b20d31ea797'), 'step_key': '__flow__', 'actor': 'wf', 'queue': 'default', 'status': 'running', 'attempt': 0, 'map_index': None, 'flow': '01a11a3e-b226-7a20-b3d3-8b20d31ea797', 'released': None, 'started_at': None, 'finished_at': None}
+    {'id': UUID('01a11a3e-b229-7990-b148-1fd4c124a10a'), 'step_key': 'doc_source', 'actor': 'wf', 'queue': 'default', 'status': 'pending', 'attempt': 0, 'map_index': None, 'flow': '01a11a3e-b226-7a20-b3d3-8b20d31ea797', 'released': None, 'started_at': None, 'finished_at': None}
+== flow root status: running

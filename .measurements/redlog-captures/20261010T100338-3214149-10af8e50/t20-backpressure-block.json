@@ -1,0 +1,10 @@
+{
+  "mutation": "the bound REMOVED (the unbounded variant \u2014 the convicted red, test_t20_unbounded_emit_is_the_convicted_red): the same fast source emits page 1 immediately and the outstanding count blows the bound \u2014 unbounded materialization",
+  "observed": {
+    "bound": 6,
+    "outstanding_after_blocked_emit": 4
+  },
+  "pin": "t20-backpressure-block",
+  "run": "20261010T100338-3214149-10af8e50",
+  "ts": "2026-10-10T10:03:39"
+}
