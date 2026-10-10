@@ -1,4 +1,0 @@
-# the head-stamp law's verification — every live claim on its recorded head
-the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-evidence-fix/.measurements/runs is recorded at THIS head (4bf53c869f87) or explicitly superseded
-exit=0
-head: 4bf53c869f87be86419056fb90795c383ef1633d
