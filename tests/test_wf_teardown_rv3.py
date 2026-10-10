@@ -255,8 +255,10 @@ def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
     )
     assert proc.returncode == 0, f"the -m help itself failed: {proc.stderr[-400:]}"
     group = get_command(cli_app)
-    assert group is not None and hasattr(group, "commands")
-    dead = [verb for verb in group.commands if verb not in proc.stdout]
+    assert group is not None
+    commands = getattr(group, "commands", None)
+    assert commands is not None, "the cli app's click command is not a group"
+    dead = [verb for verb in commands if verb not in proc.stdout]
     assert not dead, (
         f"verbs the imported app registers that the -m path's own help "
         f"does not serve: {dead} — the __main__ block runs main() "
@@ -359,7 +361,9 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
         return _Decision(ok=False)
 
     @app.workflow("rv3-8-inner-stamps")
-    def build_wf() -> Promise[_Decision]:
+    def build_wf() -> (
+        Promise[object]
+    ):  # the handle's call face erases R (the actor wrapper's __call__ returns object) — the STAMPS are the pin's subject, not the generic
         a = step(alpha_body, _Ingest(doc_id="1"))
         p = step(beta_body, _Ingest(doc_id="2"))
         sink(a)
