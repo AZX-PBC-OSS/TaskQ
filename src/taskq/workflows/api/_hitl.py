@@ -713,10 +713,17 @@ class HitlClient:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        *,
         schema: str,
+        *,
         redact: Any = None,
     ) -> None:
+        """The read face's constructor — ONE schema convention (the
+        teardown round's cure): POSITIONAL, the majority the siblings
+        carry (``FlowRunner(compiled, pool, schema)``,
+        ``run(flow, pool, schema)``). The class is unreleased — the
+        convention is fixed before it ships; keyword call sites
+        (``HitlClient(pool, schema=…)``) keep working, the
+        positional-tolerant seat accepts both."""
         self._pool = pool
         self._schema = schema
         self._redact = redact
@@ -867,6 +874,18 @@ class HitlClient:
             payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the row's jsonb — the isinstance guard above is the runtime shape check.
             chained = redact_hold_context(payload_doc)
             payload = chained if self._redact is None else self._redact(chained)
+        # THE ONE REASON HOME (the teardown round's cure): the field is
+        # the TYPED READ FACE fed from the row's payload — the context
+        # doc the INSERT wrote (reason/tool/args, the wait site's own
+        # words, through the redact chain). The hardcoded None was the
+        # second home: the reason lived in the payload and the field
+        # lied about it.
+        reason_value: str | None = None
+        if isinstance(payload, dict):
+            payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the jsonb walk's boundary — the isinstance guard above is the runtime shape check; the reason's value is the masked text the insert wrote.
+            reason = payload_doc.get("reason")
+            if isinstance(reason, str):
+                reason_value = reason
         return HoldContext(
             hold_id=str(row["id"]),
             run_id=str(row["workflow_id"]),
@@ -876,7 +895,7 @@ class HitlClient:
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,
-            reason=None,
+            reason=reason_value,
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             status=row["status"],

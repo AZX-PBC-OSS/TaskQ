@@ -267,10 +267,6 @@ def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
 # ── F-RV3-6: ONE schema convention ──────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-6: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_6_the_schema_param_carries_one_convention() -> None:
     """The read-face siblings carry the schema param under ONE
     convention — POSITIONAL (the majority: ``FlowRunner``,
@@ -293,10 +289,6 @@ def test_rv3_6_the_schema_param_carries_one_convention() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-2: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
     wf_pool: asyncpg.Pool, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -327,10 +319,6 @@ async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
 # ── F-RV3-3: apply_pending's Pool is the typed refusal ─────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-3: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
     """``apply_pending`` takes ONE ``asyncpg.Connection`` (the caller's
     transaction scope); a POOL is the typed refusal naming the
@@ -350,10 +338,6 @@ async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-8: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
@@ -421,10 +405,6 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-9: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:

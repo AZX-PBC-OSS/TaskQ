@@ -712,10 +712,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         the claim's own stamp — the body's canonical content hash onto
         the row. Best-effort (a record, never a gate): a body the hash
         cannot read (a builtin, a partial) records as NULL, the loss
-        logged; the row's claim never fails on its own audit."""
+        logged; the row's claim never fails on its own audit.
+
+        THE WRAPPER'S UNWRAP (the teardown round's cure): the
+        ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
+        into the node — the stamp read the WRAPPER's identity and
+        ``getsource`` refused the instance outright (every canonical
+        node recorded ``node.code-version-unstamped``, §22.1's
+        deploy-drift feature dead where the docs teach the path). The
+        stamp reads the INNER function through
+        :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
+        seam the validator's own walk shares."""
         import inspect
 
         from taskq.workflows._version import compute_code_version
+        from taskq.workflows.api._hints import inner_fn
 
         target = (
             body
@@ -724,11 +735,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         )
         if target is None:
             return  # the join/gather kinds: the identity packer is the engine's own code
+        target = inner_fn(target)
         try:
             version = compute_code_version(
                 getattr(target, "__module__", "") or "",
                 getattr(target, "__qualname__", getattr(target, "__name__", "")) or "",
-                inspect.getsource(target),
+                # The callable-shaped cast IS the stamp's boundary: the
+                # source reader refuses every non-sourceable shape —
+                # the TypeError IS the logged loss's face.
+                inspect.getsource(cast("Callable[..., object]", target)),
             )
         except (
             Exception
@@ -1131,9 +1146,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         (``UnabsorbedNodeFailure``) is the CASCADE's face, never the
         body's own failure."""
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                render_sql(FLOW_FAILURE_SQL_TEMPLATE, self.schema), flow_id
-            )
+            row = await conn.fetchrow(render_sql(FLOW_FAILURE_SQL_TEMPLATE, self.schema), flow_id)
         if row is None:
             return WorkflowRunError(
                 f"workflow run {flow_id} FAILED — no failing node row "
