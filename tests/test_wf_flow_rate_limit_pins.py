@@ -61,7 +61,15 @@ from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _dispatch_flow_job, _flow_rate_limit_gate
-from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
+from taskq.workflows import (
+    FlowRunner,
+    GateDecl,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
 from taskq.workflows.api._hitl import HitlClient
 from tests.conftest import unique_health_sock_path
 
@@ -302,7 +310,15 @@ async def test_the_door_releases_the_slot_while_the_flow_holds(
             RAN.append("woke")
             return Report(ref=params.doc_id)
 
-        return build(step(review, Ingest(doc_id="d1"), key="review", queue=_queue("hold")))
+        return build(
+            step(
+                review,
+                Ingest(doc_id="d1"),
+                key="review",
+                queue=_queue("hold"),
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get("rate_limit_hold_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id

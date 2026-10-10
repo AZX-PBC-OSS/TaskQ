@@ -129,10 +129,6 @@ def _compile_quietly(app: WorkflowApp, name: str) -> Any:
 # ── F-RV3-4: the gate wiring's E2-analog (THE HEADLINE) ────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-4a: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
     """E14 (the gate-wiring walk — E2's analog): a node declaring a
     ``GateDecl`` whose body carries NO ``wait_signal`` reference AT ALL
@@ -157,10 +153,6 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
         app.get("rv3-4a-gate-never-waited")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-4b: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
     """E14's other provable face: a body whose ``wait_signal`` has NO
     declared gate — the hold the admin's resolve/deliver doors cannot

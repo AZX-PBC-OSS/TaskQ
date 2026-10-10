@@ -260,7 +260,19 @@ def deep_research() -> Promise[object]:
             ),
         ),
     )
-    published = step(publish_body, triage, review, key="publish")
+    published = step(
+        publish_body,
+        triage,
+        review,
+        key="publish",
+        gates=(
+            GateDecl(
+                name="PublishApproval",
+                payload_models=(PublishApproval,),
+                timeout_s=5.0,
+            ),
+        ),
+    )
     return build(published)
 
 
@@ -482,7 +494,18 @@ async def drain_hold_body(ctx: Any, params: Kickoff) -> str:
 
 @matrix_app.workflow("drain_hold")
 def drain_hold() -> Promise[object]:
-    held = step(drain_hold_body, Kickoff(query="hold"), key="hold")
+    held = step(
+        drain_hold_body,
+        Kickoff(query="hold"),
+        key="hold",
+        gates=(
+            GateDecl(
+                name="ReviewDecision",
+                payload_models=(ReviewDecision,),
+                timeout_s=60.0,
+            ),
+        ),
+    )
     after = step(downstream_body, held, key="after")
     return build(after)
 

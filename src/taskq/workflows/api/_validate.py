@@ -51,6 +51,14 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   declaration seat is the build refusal (it used to crash the
   validator's own gate walk — a raw AttributeError — the rv2 round's
   conviction).
+* E14 gate-wiring (THE TEARDOWN ROUND'S E2-ANALOG) — the gate seat and
+  the bodies' waits are walked against each other, BOTH provable
+  directions: a DECLARED gate whose body carries NO ``wait_signal``
+  reference at all (the hold seat with no waiter), and a body's
+  ``wait_signal`` with NO declared gate (the hold the compile's
+  surfaces cannot see). The conditional-interior wait is NOT statically
+  provable — that face is the documented C9/W-rule (the loop-kind
+  mis-index, W5).
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
@@ -68,14 +76,16 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
 from taskq.workflows.api._graph import GateDecl
-from taskq.workflows.api._hints import body_hints
+from taskq.workflows.api._hints import body_hints, inner_fn
 from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
 if TYPE_CHECKING:
@@ -120,6 +130,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_arity(compiled)
     diagnostics += _rule_deps_contract(compiled)
     diagnostics += _rule_gate_door(compiled)
+    diagnostics += _rule_gate_wiring(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
     diagnostics += _rule_eternal_wait(compiled)
     diagnostics += _rule_cross_graph(compiled)
@@ -586,6 +597,181 @@ def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]
                     "Declare the hold with GateDecl(name=…, payload_models=(…), "
                     "timeout_s=…) — the declaration is what the compile's hold "
                     "nodes, the timeout warning and the delivery runtime read.",
+                )
+            )
+    return diagnostics
+
+
+#: The AST containers whose interior makes a wait CONDITIONAL — the
+#: static walk cannot prove a call inside one never fires (the
+#: zero-false-positive bound E14's rule text spells).
+_CONDITIONAL_CONTAINERS = (
+    ast.If,
+    ast.Try,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Match,
+    ast.ExceptHandler,
+)
+
+
+class _WaitSite:
+    """ONE statically-readable ``ctx.wait_signal`` call (the E14/W4/W5
+    walk's facts): the payload models' SOURCE names (``None`` = the
+    argument is not a statically-resolvable tuple/name — the dynamic
+    dispatch the compile never guesses at), the literal ``timeout_s=``
+    kwarg when the call declares one, and whether the call sits in a
+    conditional interior."""
+
+    __slots__ = ("conditional", "names", "timeout_s")
+
+    def __init__(
+        self, names: tuple[str, ...] | None, timeout_s: float | None, conditional: bool
+    ) -> None:
+        self.names = names
+        self.timeout_s = timeout_s
+        self.conditional = conditional
+
+
+def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
+    """The body's wait sites, STATICALLY read (the E4/E9 signature-read
+    machinery's source-level extension): an AST walk over the body's own
+    source, collecting every ``.wait_signal`` attribute call.
+
+    Returns ``None`` when the body's source is NOT readable (a builtin,
+    a partial, a syntax the walk cannot parse) — the caller SKIPS (the
+    zero-false-positive doctrine: a guess is never convicted). The
+    wrapper forms are unwrapped first (:func:`inner_fn` — the
+    ``@app.actor`` handle's source is the INNER function's)."""
+    fn = inner_fn(body)
+    try:
+        # The callable-shaped cast IS the walk's boundary: the source
+        # reader refuses every non-sourceable shape (builtin, partial,
+        # the wrapper) — the TypeError IS the skip's face.
+        source = inspect.getsource(cast("Callable[..., object]", fn))
+    except (OSError, TypeError):
+        return None
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except (SyntaxError, ValueError):
+        return None
+
+    sites: list[_WaitSite] = []
+
+    def walk(node: ast.AST, conditional: bool) -> None:
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "wait_signal":
+                names: tuple[str, ...] | None
+                first = node.args[0] if node.args else None
+                if isinstance(first, ast.Tuple):
+                    names = tuple(elt.id for elt in first.elts if isinstance(elt, ast.Name))
+                    if len(names) != len(first.elts):
+                        names = None  # a non-name element — the dispatch is not statically readable
+                elif isinstance(first, ast.Name):
+                    names = (first.id,)
+                else:
+                    names = None
+                timeout: float | None = None
+                for kw in node.keywords:
+                    if (
+                        kw.arg == "timeout_s"
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, (int, float))
+                    ):
+                        timeout = float(kw.value.value)
+                sites.append(_WaitSite(names, timeout, conditional))
+        for child in ast.iter_child_nodes(node):
+            walk(child, conditional or isinstance(node, _CONDITIONAL_CONTAINERS))
+
+    walk(tree, False)
+    return sites
+
+
+def _node_bodies(node: object) -> list[Callable[..., object]]:
+    """The node's OWN bodies (the walks' candidate set): the step body,
+    the loop driver's body, the map's item child — whichever exist."""
+    bodies: list[Callable[..., object]] = []
+    for candidate in (
+        getattr(node, "body", None),
+        getattr(node, "loop_body", None),
+        getattr(node, "map_item", None),
+    ):
+        if candidate is not None:
+            bodies.append(candidate)
+    return bodies
+
+
+def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E14 (THE GATE-WIRING WALK — the teardown round's E2-analog cure):
+    the gate seat and the bodies' waits, walked against each other in
+    BOTH provable directions. E2 walks the promise wiring (every
+    produced promise is consumed); the gate wiring had no walk — a
+    DECLARED gate the body never waits on, and a body's
+    ``ctx.wait_signal`` with NO declared gate, both validated CLEAN.
+
+    THE TWO PROVABLE FACES (the reviewer's own rule):
+
+    * declared-never-waited — a node's ``gates=`` carries a ``GateDecl``
+      and NO body of the node references ``wait_signal`` AT ALL: the
+      declared hold seat has no waiter. Provable, because the conviction
+      needs the ABSENCE of any reference (not the absence of a firing).
+    * waited-never-declared — a body calls ``ctx.wait_signal`` and the
+      node declares NO gate: the hold is invisible to every compile
+      surface (the Mermaid hold nodes, W1's timeout read, the admin's
+      resolve/deliver doors — the loop declaration's own docstring names
+      the invisibility).
+
+    THE CONDITIONAL-INTERIOR BOUND: a wait inside a branch cannot be
+    proven never-to-fire — that face is the documented C9 question, the
+    loop-kind mis-index W5 names (a conditional wait in a LOOP body
+    mis-indexes the answer cursor). The static walk never guesses: an
+    unreadable body (a builtin, a partial, an unparseable source) SKIPS
+    the node — a guess is never convicted."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        bodies = _node_bodies(node)
+        if not bodies:
+            continue
+        any_wait = False
+        any_unreadable = False
+        for body in bodies:
+            sites = _wait_signal_sites(body)
+            if sites is None:
+                any_unreadable = True
+                continue
+            if sites:
+                any_wait = True
+        if node.gates:
+            if any_wait or any_unreadable:
+                continue  # a reference exists (or the walk cannot prove the absence) — not the provable case
+            names = ", ".join(repr(gate.name) for gate in node.gates)
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E14-gate-wiring",
+                    "error",
+                    f"node {node.key!r} declares gate(s) {names} but its "
+                    "body NEVER waits — no wait_signal reference anywhere "
+                    "in the body: the declared hold seat has no waiter "
+                    "(work that waits for nobody). Wire the body's "
+                    "ctx.wait_signal to the declared payload models, or "
+                    "drop the gate declaration",
+                )
+            )
+        elif any_wait:
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E14-gate-wiring",
+                    "error",
+                    f"node {node.key!r}'s body calls ctx.wait_signal but "
+                    "declares NO gate — the hold is invisible to every "
+                    "compile surface (the Mermaid hold nodes, W1's "
+                    "timeout read, the admin's resolve/deliver doors). "
+                    "Declare it: step(body, …, gates=(GateDecl(name=…, "
+                    "payload_models=(…), timeout_s=…),))",
                 )
             )
     return diagnostics

@@ -35,6 +35,7 @@ from taskq.backend._protocol import JobId
 from taskq.workflows import (
     Done,
     FlowRunner,
+    GateDecl,
     Promise,
     Refine,
     StepContext,
@@ -613,7 +614,15 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
 
     @app2.workflow("hold_loop_flow")
     def hold_loop_flow() -> Promise[object]:
-        return build(loop("holdloop", hold_then_done, max_iterations=2, budget_s=600.0))
+        return build(
+            loop(
+                "holdloop",
+                hold_then_done,
+                max_iterations=2,
+                budget_s=600.0,
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id

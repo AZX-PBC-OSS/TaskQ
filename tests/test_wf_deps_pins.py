@@ -42,6 +42,7 @@ from pydantic import BaseModel
 from taskq.workflows import (
     Done,
     FlowRunner,
+    GateDecl,
     Promise,
     Refine,
     StepContext,
@@ -192,7 +193,14 @@ async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
                 return Report(ref=f"woke:{d.marker}")
             return await ctx.wait_signal(Approval, timeout_s=120.0)
 
-        return build(step(review, Ingest(doc_id="d1"), key="review"))
+        return build(
+            step(
+                review,
+                Ingest(doc_id="d1"),
+                key="review",
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
 
     runner = FlowRunner(app.get("deps_hold_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id

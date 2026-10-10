@@ -13,7 +13,26 @@ from __future__ import annotations
 import typing
 from collections.abc import Callable
 
-__all__ = ["body_hints"]
+__all__ = ["body_hints", "inner_fn"]
+
+
+def inner_fn(body: object) -> object:
+    """The body's INNER function: the ``@app.actor`` canonical path wires
+    the ``WorkflowActor`` HANDLE into the node (``node.body`` rides the
+    wrapper — the F3 carrier), and every read that needs the body's own
+    identity (the source text, the canonical hash) must unwrap it. The
+    wrapper delegates attribute reads (``__getattr__`` → the inner fn),
+    so the ANNOTATION reads (E4/E9's faces) work through it — but the
+    SOURCE reads (``inspect.getsource``) refuse an instance outright
+    ("code object was expected, got WorkflowActor" — the stamp loss the
+    rv3 teardown round convicted). This seam is the ONE unwrap: the
+    validator's static walk and the runner's code-version stamper read
+    through it, never around it."""
+    from taskq.workflows.api._app import WorkflowActor
+
+    if isinstance(body, WorkflowActor):
+        return body.fn
+    return body
 
 
 def body_hints(body: Callable[..., object]) -> dict[str, object]:

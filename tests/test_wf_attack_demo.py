@@ -351,8 +351,11 @@ class _WarnIn(BaseModel):
     doc_id: str
 
 
-async def _wait_body(ctx: StepContext, params: _WarnIn) -> str:
-    return "ok"
+async def _wait_body(ctx: StepContext, params: _WarnIn) -> object:
+    # E14's law: the declared gate's body WAITS on it (the W1 carrier's
+    # hold seat needs its waiter — a declared-never-waited gate is the
+    # E14 build refusal, not a warning carrier).
+    return await ctx.wait_signal((_Verdict,), timeout_s=None)
 
 
 async def _unannotated_body(ctx: Any, params: Any):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingReturnType, reportUnknownReturnType]  # Why: THE PROBE — the unannotated return IS the mutation under test (E4's carrier); the root pyproject's tests relaxation would mute it.
