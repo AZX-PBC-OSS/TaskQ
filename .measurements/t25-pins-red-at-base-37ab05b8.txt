@@ -1,0 +1,19 @@
+# T25 red-first receipt — the pins at the BASE head 37ab05b8 (pre-build)
+# 2026-10-10T21:59:46Z — 11/11 RED: the absence red (no cache= kwarg, no cache module, no sweep arm, no table)
+E       TypeError: step() got an unexpected keyword argument 'cache'
+
+tests/test_wf_step_cache_pins.py:427: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_wf_step_cache_pins.py::test_hit_delivers_the_declared_type
+FAILED tests/test_wf_step_cache_pins.py::test_code_change_is_a_new_address - ...
+FAILED tests/test_wf_step_cache_pins.py::test_ttl_without_cache_refuses_at_the_wiring
+FAILED tests/test_wf_step_cache_pins.py::test_non_positive_ttl_refuses - Type...
+FAILED tests/test_wf_step_cache_pins.py::test_expired_ttl_is_a_miss - TypeErr...
+FAILED tests/test_wf_step_cache_pins.py::test_success_only_a_failed_body_never_squats_the_key
+FAILED tests/test_wf_step_cache_pins.py::test_the_retention_arm_is_registered_with_the_disable_sentinel
+FAILED tests/test_wf_step_cache_pins.py::test_concurrent_miss_one_winner - Ty...
+FAILED tests/test_wf_step_cache_pins.py::test_the_sweep_prunes_expired_rows_only
+FAILED tests/test_wf_step_cache_pins.py::test_hit_the_body_runs_once_across_runs
+FAILED tests/test_wf_step_cache_pins.py::test_cache_on_a_gather_refuses - Typ...
+11 failed in 1.97s
+37ab05b8668b8366baae470c84e993329463a88e

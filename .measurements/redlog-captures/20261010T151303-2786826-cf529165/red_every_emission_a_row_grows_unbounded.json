@@ -1,0 +1,12 @@
+{
+  "mutation": "one row per emission (the 6.5M-row incident's shape)",
+  "observed": {
+    "emissions": 500,
+    "log_rows": 500,
+    "state_rows": 1,
+    "verdict": "the log grows with emissions; the state channel does not"
+  },
+  "pin": "red_every_emission_a_row_grows_unbounded",
+  "run": "20261010T151303-2786826-cf529165",
+  "ts": "2026-10-10T15:13:03"
+}
