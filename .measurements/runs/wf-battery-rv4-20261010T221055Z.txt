@@ -1,0 +1,51 @@
+# the wf battery (leg 2, plain) at the T25 lane head 11e3e187f5b8 — the single failure = test_rv2_13 (the head-stamp law's pin, red truthfully at the source head; its cure is the measurement commit landing this estate)
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 11e3e187f5b8):
+E           deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T214115Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T154135-c0cb.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T160235Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T154151-66c7.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T154135-829e.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           lint-format: the LIVE CLAIM lint-format-20261010T214220Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T214140Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T155718-8f1e.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T155727-e19e.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T155727-dc02.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T154131-6f46.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T154150-604b.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pyright-full: the LIVE CLAIM pyright-full-20261010T214200Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261010T214210Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261010T214100Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261010T213952Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T154047-e7e9.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T153936.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-cache/.venv/bin/python', '/tmp/opencode/wt-cache/scripts/verify_evidence_head...es a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-cache/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 580 passed, 1 warning in 143.36s (0:02:23)

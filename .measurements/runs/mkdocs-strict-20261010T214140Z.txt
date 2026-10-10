@@ -1,0 +1,4 @@
+# mkdocs build --strict at the T25 head b135ad0aa3c0 — green
+  - examples/doc-ingest.md
+  - guides/migrating-from-langgraph.md
+INFO    -  Documentation built in 28.68 seconds

@@ -1,0 +1,61 @@
+# the wf battery (leg 2, plain) at the T25 head d3a7361e2c11 — the single failure = test_rv2_13 (the head-stamp law's pin, red truthfully at the source head; its cure is the measurement commit landing this estate)
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head d3a7361e2c11):
+E           deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T210216.txt is stale — recorded on 13c6e49d82b1, the head is d3a7361e2c11. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T150947-8743.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T151001-fbcc.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T150947-261c.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T205937.txt is stale — recorded on 13c6e49d82b1, the head is d3a7361e2c11. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T151007-a266.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T151008-c5e3.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T151014-2e60.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T150943-e1fe.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T151000-cd0b.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261010T205804.txt is stale — recorded on 13c6e49d82b1, the head is d3a7361e2c11. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261010T205937.txt is stale — recorded on 13c6e49d82b1, the head is d3a7361e2c11. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T151000-2b87.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T135540.json is stale — recorded on 13c6e49d82b1, the head is d3a7361e2c11. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-cache/.venv/bin/python', '/tmp/opencode/wt-cache/scripts/verify_evidence_head... Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-cache/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 580 passed, 1 warning in 118.26s (0:01:58)
