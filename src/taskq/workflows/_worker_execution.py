@@ -53,6 +53,7 @@ from uuid import UUID
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
 from taskq.obs import get_logger
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
@@ -74,6 +75,7 @@ __all__ = [
     "FlowExecution",
     "WorkflowActorQueueConflictError",
     "WorkflowBodyUnresolvableError",
+    "collect_workflow_rate_limits",
     "execute_flow_job",
     "get_compiled_workflow",
     "iter_imported_apps",
@@ -330,6 +332,50 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
         )
         for actor, (queue, _seen) in sorted(totals.items())
     ]
+
+
+# ── the boot's rate-limit collection (CURE 2) ────────────────────────────
+
+
+def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str], list[str]]:
+    """THE BOOT'S COLLECT (the vanilla actors' collection pass's sibling
+    — the consumer-face lane's CURE 2): every imported app's compiled
+    graphs walk once; each workflow-declared rate-limit INSTANCE
+    (``TokenBucket``/``SlidingWindow`` — on a ``step``, a map_source, or
+    a ``RouteArm``) registers into the worker's resolved
+    ``RateLimitRegistry`` (``register()``'s own idempotency + the
+    ``_same_config`` conflict refusal — the bootstrap's law); every
+    plain-``str`` name that NO registry entry backs is REPORTED (the
+    caller's WARNING — W2's own register: probably a typo, may be
+    declared on another app the fleet serves, never a refusal). The
+    keyed-ref shape cannot reach here (the wiring verbs refuse it).
+
+    Returns ``(registered_names, unknown_names)`` — the registration
+    log's and the warning's inputs. Call AFTER
+    :func:`project_workflow_actor_configs` (the compiles are recorded)."""
+    from taskq.ratelimit.sliding_window import SlidingWindow
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    registered: list[str] = []
+    unknown: list[str] = []
+    for name in sorted(_compiled):
+        compiled = _compiled[name]
+        if not isinstance(compiled, CompiledWorkflow):
+            continue
+        decls: list[object] = []
+        for node in compiled.nodes.values():
+            decls.extend(node.rate_limits)
+            decls.extend(node.map_rate_limits)
+            if node.map_arms is not None:
+                for arm in node.map_arms.values():
+                    decls.extend(arm.rate_limits)
+        for entry in decls:
+            if isinstance(entry, TokenBucket | SlidingWindow):
+                registry.register(entry)
+                registered.append(entry.name)
+            elif isinstance(entry, str) and not registry.has_rate_limit(entry):
+                unknown.append(entry)
+    return registered, sorted(set(unknown))
 
 
 # ── the execution door ───────────────────────────────────────────────────

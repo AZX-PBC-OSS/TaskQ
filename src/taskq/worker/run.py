@@ -764,6 +764,17 @@ class _FlowSlotGate(NamedTuple):
     dependency_failure: BaseException | None
 
 
+class _UnknownFlowRateLimitError(RuntimeError):
+    """The row's metadata names a rate-limit bucket NO registry entry
+    backs (the consumer-face lane's CURE 2 claim-time teeth): the
+    fail-closed arm's carrier — the row parks budget-free, LOUD, never a
+    silent pass-through (the admitted-never-limited lie), never a crash.
+    The boot's collection pass WARNING is the primary face (W2's
+    register — probably a typo); this arm is the defense in depth for
+    the fleet the warning cannot reach (a version skew, a hand-crafted
+    row)."""
+
+
 async def _flow_rate_limit_gate(
     rl_registry: RateLimitRegistry | None,
     clock: Clock,
@@ -773,15 +784,18 @@ async def _flow_rate_limit_gate(
     *,
     job_log: structlog.stdlib.BoundLogger,
 ) -> _FlowSlotGate:
-    """THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the one-mechanism
-    law): a workflow row's claim honors the SAME queue rate limits the
-    vanilla actors honor — the queue-cap reservation the fleet's
-    dispatch already prepends for vanilla jobs
-    (:func:`taskq.worker.dispatch._effective_reservations`), acquired
-    from the SAME registry the vanilla pre-flight reads (passed in —
-    the caller's loop-scope read, the vanilla read's own pattern),
-    through the SAME acquire helper (the denial-retry budget included).
-    ONE mechanism, not a second one.
+    """THE QUEUE'S RATE LIMIT + THE ROW'S OWN BUCKETS ON THE WORKFLOW
+    PATH (the one-mechanism law): a workflow row's claim honors the SAME
+    queue rate limits the vanilla actors honor — the queue-cap
+    reservation the fleet's dispatch already prepends for vanilla jobs
+    (:func:`taskq.worker.dispatch._effective_reservations`) — AND the
+    row's OWN admission terms (CURE 2: the metadata the fork/static
+    insert stamped, the authoring face's ``rate_limits=``), acquired in
+    ONE call (the AND-composition: the registry acquires reservations
+    then rate limits, rollback on any denial) from the SAME registry the
+    vanilla pre-flight reads (passed in — the caller's loop-scope read,
+    the vanilla read's own pattern), through the SAME acquire helper
+    (the denial-retry budget included). ONE mechanism, not a second one.
 
     THE SLOT LAW (the holds' own): a denial HOLDS THE STEP'S CLAIM —
     the row is snoozed back to the pending pool by the caller (the
@@ -791,7 +805,8 @@ async def _flow_rate_limit_gate(
     denials counter, the postgres backend label). A registry/store
     dependency failure is the fail-closed denial (the vanilla
     pre-flight's own shape: an outage is not a job outcome; the snooze
-    is budget-free).
+    is budget-free). So is an UNKNOWN bucket name (the fail-closed arm —
+    the row parks, the WARNING names it; never admitted unprotected).
 
     The gate is a DAMPER at the intercept only where the vanilla damper
     cannot see: the dispatch SQL's headroom fold reads
@@ -802,17 +817,47 @@ async def _flow_rate_limit_gate(
     everything through, the vanilla path's own shape."""
     if rl_registry is None:
         return _FlowSlotGate([], None, None, None)  # no registry — no caps anywhere
+    # THE ROW'S OWN BUCKETS (CURE 2): the names the fork/static insert
+    # stamped. A non-list or non-str entry is the hand-crafted row's
+    # shape — the same fail-closed arm (the metadata lies, the row
+    # parks).
+    raw_names = job.metadata.get("rate_limits")
+    names: list[str] = []
+    if raw_names is not None:
+        if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
+            job_log.warning(
+                "dispatch-flow-rate-limit-metadata-malformed",
+                job_id=str(job.id),
+                queue=job.queue,
+            )
+            return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(str(job.id)))
+        names = list(raw_names)
+    unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
+    if unknown:
+        # THE FAIL-CLOSED ARM: the row names a bucket this worker's
+        # registry does not carry — admitting it unprotected is the lie
+        # the authoring face exists to refuse. Park budget-free, LOUD.
+        job_log.warning(
+            "dispatch-flow-rate-limit-unknown-bucket",
+            job_id=str(job.id),
+            queue=job.queue,
+            buckets=unknown,
+            remedy="the boot's collection pass warns on the declaration; "
+            "register the bucket or fix the name",
+        )
+        return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(", ".join(unknown)))
     queue_cap = queue_concurrency_reservation_name(job.queue)
-    if not rl_registry.has_reservation(queue_cap):
-        return _FlowSlotGate([], None, None, None)  # the common case: no cap on this queue
+    capped = rl_registry.has_reservation(queue_cap)
+    if not capped and not names:
+        return _FlowSlotGate([], None, None, None)  # the common case: no caps anywhere
     try:
         acquired = await _acquire_for_actor_with_denial_retry(
             rl_registry,
-            rate_limits=(),
-            reservations=[queue_cap],
+            rate_limits=names,
+            reservations=[queue_cap] if capped else [],
             job_id=job.id,
             worker_id=worker_id,
-            payload=None,  # the queue cap is a plain name — no keyed resolution
+            payload=None,  # plain names only — no keyed resolution on this path
             redis_client=None,
             pg_pool=deps.worker_pool,
             clock=clock,

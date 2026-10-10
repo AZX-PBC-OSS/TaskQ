@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata
+from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata, _row_metadata
 from taskq.workflows.definitions import validate_fork
 
 if TYPE_CHECKING:
@@ -64,7 +64,13 @@ async def insert_fork(
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
             [fork.trace_id] * len(chunk),
-            [_jsonb(_metadata(flow_id, blocking_reason=None))] * len(chunk),
+            # PER-CHILD metadata: a child declaring admission terms (CURE
+            # 2 — the arm's/map's bucket names) carries them on its OWN
+            # row; the no-bucket rows keep the base shape byte-identical.
+            [
+                _jsonb(_row_metadata(flow_id, rate_limits=c.rate_limits) if c.rate_limits else _metadata(flow_id, blocking_reason=None))
+                for c in chunk
+            ],
             [f"workflow:{flow_id}"] * len(chunk),
             # The key is PARENT-SCOPED (the wiring identity: parent node +
             # child key + map index) — a bare (flow, child step) key would

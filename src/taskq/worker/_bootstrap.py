@@ -2004,6 +2004,29 @@ async def _main(
             wf_execution_capable = _wf_execution.workflow_execution_capable()
             if wf_execution_capable:
                 _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
+                # THE WORKFLOW-DECLARED RATE LIMITS' COLLECTION (CURE 2):
+                # the authoring face's bucket instances register into the
+                # SAME resolved registry the vanilla actors' collection
+                # pass fills (ONE registry, ONE acquire path); a str name
+                # nothing registers is the WARNING (W2's register —
+                # probably a typo, never a refusal; the claim path's
+                # fail-closed arm is the teeth).
+                _wf_rl_registered, _wf_rl_unknown = (
+                    _wf_execution.collect_workflow_rate_limits(resolved_rl_registry)
+                )
+                if _wf_rl_registered:
+                    _startup_log.info(
+                        "ratelimit-workflow-primitives-registered",
+                        rate_limit_names=_wf_rl_registered,
+                    )
+                if _wf_rl_unknown:
+                    _startup_log.warning(
+                        "workflow-rate-limit-name-unregistered",
+                        names=_wf_rl_unknown,
+                        remedy="register the bucket on the worker's rate-limit "
+                        "registry or fix the declared name; until then the "
+                        "rows naming it park fail-closed at claim",
+                    )
 
         worker_id = await register_worker(
             deps.dispatcher_pool, settings, workflow_execution=wf_execution_capable
