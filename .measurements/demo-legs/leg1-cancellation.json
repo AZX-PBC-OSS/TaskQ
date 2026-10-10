@@ -1,10 +1,6 @@
 {
   "leg": "1 \u2014 the cancellation",
-<<<<<<< HEAD
-  "run_id": "01a127b3-d485-7de3-a2c1-38f950f655f4",
-=======
-  "run_id": "01a12812-a6cd-7973-ada9-eebc11b04080",
->>>>>>> 926277f2
+  "run_id": "01a12818-c6ab-74d1-a8ed-f0672e7230c1",
   "root_status": "cancelled",
   "derived_status": "cancelled",
   "nodes": {

@@ -1,10 +1,6 @@
 {
   "leg": "4 \u2014 the conditional router (the T20 chain)",
-<<<<<<< HEAD
-  "run_id": "01a127b4-79cc-76c0-a6e7-0157c3ac6099",
-=======
-  "run_id": "01a12812-a916-73c0-a5f3-ec3096249dbd",
->>>>>>> 926277f2
+  "run_id": "01a12819-585b-7db1-a97c-e8a836088bfa",
   "rows": {
     "__flow__": [
       "succeeded"
