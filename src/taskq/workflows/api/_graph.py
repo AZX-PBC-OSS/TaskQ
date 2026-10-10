@@ -80,6 +80,19 @@ BodyFn = Callable[..., Awaitable[object]]
 #: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated AT
 #: DISPATCH against the flow's state (A-CRITICAL-4, cut #4), never at
 #: create time.
+#:
+#: DEPRECATED FOR DISPATCH (T27 — the conviction, named honestly): this
+#: face is STRINGLY — the state it reads is decoded JSON dicts, and a
+#: tag-keyed predicate ("skip unless mime == video") can drop an element
+#: from EVERY downstream arm and still let the run terminalize SUCCEEDED
+#: having routed NOTHING (the routing-proof round's live conviction —
+#: the exact silent drop the totality fence exists to refuse). For
+#: dispatch-by-type the taught face is the TYPED ROUTE
+#: (:func:`route` — the union's members key the arms, a non-total route
+#: is a build refusal (E15), and the no-match element dies LOUDLY in
+#: ``RouterNotTotal``). The predicate stays for the sibling-conditional
+#: shapes it is honest for (an "only if X succeeded" dispatch) — never
+#: for routing an element by what it is.
 SkipPredicate = Callable[[dict[str, object]], bool]
 
 

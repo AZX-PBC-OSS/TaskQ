@@ -590,3 +590,310 @@ def test_map_source_dict_form_is_the_same_machinery() -> None:
     assert arm.body is process_image
     assert arm.queue == "gpu"
     assert "media.join" in compiled.nodes
+
+
+# ── THE WORKED EXAMPLE (the maintainer's use case): the document sync ───
+#
+#    ingest → the mime detection (the element's TYPE is the mime's tag)
+#    → the typed route (the per-arm placement) → THE FAN-IN AT THE CHUNK
+#    STEP (the sync barrier) → the enrich. The example:
+#    ``examples/doc_mime_route.py`` — the bodies used VERBATIM.
+
+
+def _demo():
+    """The example module (imported once per call — the registration
+    door's own app object comes with it)."""
+    import examples.doc_mime_route as demo
+
+    return demo
+
+
+@pytest.mark.integration
+async def test_mime_route_e2e_the_mixed_corpus(
+    wf_conn: object,
+    wf_schema: str,
+    module_pg_pool: object,
+    wf_sql: object,
+) -> None:
+    """THE MAINTAINER'S SCENARIO, LIVED: the mixed corpus (2 text docs +
+    2 image docs + ONE unsupported mime) → the typed route → the text
+    children on the cpu queue, the OCR children on the gpu queue, the
+    unsupported doc in the dead-letter arm (the envelope recorded — the
+    flow LIVES) → the chunk barrier's typed sum → the enrich's report ON
+    result(). The rows are the receipt."""
+    from taskq.workflows import FlowRunner
+
+    demo = _demo()
+    runner = FlowRunner(demo.mime_app.get("doc_mime_route"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures (the house convention).
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+
+    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
+        f'SELECT step_key, map_index, queue, status, result FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key LIKE 'docs.item%'",
+        flow_id,
+    )
+    # THE PLACEMENTS, ON THE ROWS: the text arms' children on cpu, the
+    # OCR's on gpu, the dead-letter on the route's default.
+    by_arm: dict[str, set[str]] = {}
+    for r in rows:
+        key = str(r["step_key"])
+        arm_name = (
+            "text"
+            if "TextDoc" in key
+            else "image"
+            if "ImageDoc" in key
+            else "dead"
+            if "UnsupportedDoc" in key
+            else "?"
+        )
+        by_arm.setdefault(arm_name, set()).add(str(r["queue"]))
+    assert by_arm.get("text") == {"cpu"}, by_arm
+    assert by_arm.get("image") == {"gpu"}, by_arm
+    assert by_arm.get("dead") == {"default"}, by_arm
+    assert len(rows) == 5, [dict(r) for r in rows]
+    assert all(r["status"] == "succeeded" for r in rows), [dict(r) for r in rows]
+    # THE TYPED SUM + THE REPORT: the enrich's result names the indexed
+    # chunk sets AND the dead letter (never silently dropped).
+    report = await runner.result(flow_id)
+    assert report == {
+        "indexed": 12,  # the 4 extracted docs x the chunker's seam
+        "dead": ["doc-5 (application/x-unknown: unsupported mime)"],
+    }, report
+
+
+@pytest.mark.integration
+async def test_barrier_chunk_fires_once_after_the_last_element(
+    wf_conn: object,
+    wf_schema: str,
+    module_pg_pool: object,
+    wf_sql: object,
+) -> None:
+    """THE BARRIER'S SYNC (the maintainer's amendment): the staggered
+    arms — the text extraction fast, the OCR slow — the chunk fires
+    EXACTLY ONCE, AFTER THE LAST element's text has landed. The event
+    order asserted FROM THE ROWS: every route child's finished_at ≤ the
+    chunk's started_at (the join's all-members semantics released the
+    barrier), and the chunk's own row carries ONE terminal with the FULL
+    batch."""
+    from taskq.workflows import FlowRunner
+
+    demo = _demo()
+    runner = FlowRunner(demo.mime_app.get("doc_mime_route"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+
+    rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
+        f'SELECT step_key, status, finished_at, result FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND (step_key LIKE 'docs.item%' "
+        "OR step_key = 'chunk')",
+        flow_id,
+    )
+    chunks = [r for r in rows if str(r["step_key"]) == "chunk"]
+    # EXACTLY ONE chunk row, terminal-succeeded exactly once.
+    assert len(chunks) == 1, [dict(r) for r in chunks]
+    assert chunks[0]["status"] == "succeeded", dict(chunks[0])
+    assert chunks[0]["finished_at"] is not None, dict(chunks[0])
+    # The FULL batch rode the join (the typed sum decoded at the
+    # boundary — the chunk's own row records the consumption).
+    assert "doc-1" in str(chunks[0]["result"]) and "doc-4" in str(chunks[0]["result"]), dict(
+        chunks[0]
+    )
+    # THE EVENT ORDER, FROM THE LEDGER (each claim is a row): the chunk's
+    # claim exists EXACTLY ONCE and starts AFTER the LAST child's
+    # terminal (the join's all-members semantics released the barrier —
+    # the OCR's stall cannot make the chunk fire early or twice).
+    ledger = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT step_key, status, created_at, updated_at FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND (step_key LIKE 'docs.item%' OR step_key = 'chunk') "
+        "ORDER BY updated_at",
+        flow_id,
+    )
+    child_claims = [r for r in ledger if str(r["step_key"]) != "chunk"]
+    chunk_claims = [r for r in ledger if str(r["step_key"]) == "chunk"]
+    assert len(chunk_claims) == 1, [dict(r) for r in chunk_claims]
+    last_child_terminal = max(r["updated_at"] for r in child_claims)
+    assert len(child_claims) == 5, [dict(r) for r in ledger]
+    assert all(str(r["status"]) == "succeeded" for r in child_claims), [dict(r) for r in ledger]
+    assert chunk_claims[0]["created_at"] >= last_child_terminal, (
+        f"the chunk's claim started BEFORE the last child's terminal "
+        f"({chunk_claims[0]['created_at']} < {last_child_terminal}) — the "
+        "barrier leaked: the join fired early"
+    )
+    # THE EXACTLY-ONCE FIRE: the join's fire ledger carries ONE row.
+    join_id = await wf_conn.fetchval(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT id FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'docs.join'",
+        flow_id,
+    )
+    fires = await wf_conn.fetchval(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT count(*) FROM "{wf_schema}".wf_join_fire WHERE join_job_id = $1', join_id
+    )
+    assert fires == 1, fires
+
+
+@pytest.mark.integration
+async def test_barrier_fail_closed_the_chunk_never_fires(
+    wf_conn: object,
+    wf_schema: str,
+    module_pg_pool: object,
+    wf_sql: object,
+) -> None:
+    """THE BARRIER'S FAILURE FACE (fail_closed — the route's default):
+    one arm's element fails → the join fails CLOSED → the chunk NEVER
+    fires (no finished_at, the blocked join naming the failed parent)
+    and the run FAILS — the partial result never silently masquerades as
+    the whole."""
+    from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, step
+
+    demo = _demo()
+    from examples.doc_mime_route import ExtractedText, ImageDoc
+
+    async def failing_ocr(ctx: object, item: ImageDoc) -> ExtractedText:
+        raise ValueError("the OCR's deterministic failure")
+
+    app = WorkflowApp()
+
+    @app.workflow("barrier_fail_closed")
+    def barrier_fail_closed() -> Promise[object]:
+        docs = step(demo.sync_source, key="docs")
+        routed = route(
+            docs,
+            {
+                demo.TextDoc: RouteArm(body=demo.extract_text, queue="cpu"),
+                demo.ImageDoc: RouteArm(body=failing_ocr, queue="gpu"),
+                demo.UnsupportedDoc: RouteArm(body=demo.dead_letter),
+            },
+            max_attempts=1,  # the deterministic failure: one attempt, terminal
+        )
+        return build(step(demo.chunk, routed, key="chunk"))
+
+    runner = FlowRunner(app.get("barrier_fail_closed"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id)
+
+    chunk_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
+        f'SELECT status, finished_at, metadata FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'chunk'",
+        flow_id,
+    )
+    assert chunk_row is not None
+    # THE CHUNK NEVER FIRED: not terminal — the failed-parent's join
+    # blocked it (the envelope surfaces the reason on the join's row).
+    assert chunk_row["finished_at"] is None, dict(chunk_row)
+    join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT status, metadata FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'docs.join'",
+        flow_id,
+    )
+    assert join_row is not None
+    metadata = _loads_metadata(join_row["metadata"])
+    # The envelope: the blocking reason AND the failed parent's id, both
+    # ON THE ROW (never inferred).
+    assert metadata.get("blocking_reason") == "failed_parent", metadata
+    assert "failed_parent" in metadata, metadata
+    # THE RUN FAILED — never succeeded-partial.
+    root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    assert root is not None and root["status"] == "failed", dict(root) if root else None
+
+
+@pytest.mark.integration
+async def test_barrier_maybe_the_chunk_fires_on_the_survivors(
+    wf_conn: object,
+    wf_schema: str,
+    module_pg_pool: object,
+    wf_sql: object,
+) -> None:
+    """THE BARRIER'S OTHER FACE (the maybe policy — the partial-success
+    law's fan-in face): the route's on_failure='maybe' absorbs the
+    failing arm's elements — the chunk fires ONCE on the survivors (the
+    2 text docs), the envelope names the absorbed children ON THE RECORD
+    (the join's failures array carries the policy that ran), the flow
+    lives."""
+    from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, step
+
+    demo = _demo()
+    from examples.doc_mime_route import ExtractedText, ImageDoc
+
+    async def failing_ocr(ctx: object, item: ImageDoc) -> ExtractedText:
+        raise ValueError("the OCR's deterministic failure")
+
+    app = WorkflowApp()
+
+    @app.workflow("barrier_maybe")
+    def barrier_maybe() -> Promise[object]:
+        docs = step(demo.sync_source, key="docs")
+        routed = route(
+            docs,
+            {
+                demo.TextDoc: RouteArm(body=demo.extract_text, queue="cpu"),
+                demo.ImageDoc: RouteArm(body=failing_ocr, queue="gpu"),
+                demo.UnsupportedDoc: RouteArm(body=demo.dead_letter),
+            },
+            on_failure="maybe",
+            max_attempts=1,
+        )
+        return build(step(demo.chunk, routed, key="chunk"))
+
+    runner = FlowRunner(app.get("barrier_maybe"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id)
+
+    chunk_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
+        f'SELECT status, finished_at, result, error_class, error_message FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'chunk'",
+        flow_id,
+    )
+    assert chunk_row is not None
+    assert chunk_row["status"] == "succeeded", (
+        dict(chunk_row),
+        [
+            dict(r)
+            for r in await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+                f'SELECT step_key, status, error_class, error_message FROM "{wf_schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1",
+                flow_id,
+            )
+        ],
+    )
+    assert chunk_row["finished_at"] is not None, dict(chunk_row)
+    # THE SURVIVORS: the chunk consumed the 2 text docs (the absorbed
+    # image elements are NOT in the sum — the envelope carries them).
+    result = str(chunk_row["result"])
+    assert "doc-1" in result and "doc-3" in result, dict(chunk_row)
+    assert "doc-2" not in result and "doc-4" not in result, dict(chunk_row)
+    # THE ENVELOPE ON THE RECORD: the join's failures array names BOTH
+    # absorbed children with the policy that ran.
+    join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT status, metadata FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'docs.join'",
+        flow_id,
+    )
+    assert join_row is not None
+    metadata_raw = join_row["metadata"]
+    metadata: dict[str, object] = (
+        metadata_raw if isinstance(metadata_raw, dict) else _loads_metadata(metadata_raw)
+    )
+    failures = metadata.get("failures") or []
+    assert isinstance(failures, list) and len(failures) == 2, metadata
+    assert all(f.get("policy") == "maybe" for f in failures if isinstance(f, dict)), metadata
+    # THE FLOW LIVES (the partial-success law's fan-in face).
+    root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    assert root is not None and root["status"] == "succeeded", dict(root) if root else None
+
+
+def _loads_metadata(raw: object) -> dict[str, object]:
+    """The jsonb metadata's decode for the pin's read (asyncpg returns
+    str on un-coded connections — the estate's seam parses)."""
+    import json
+
+    if isinstance(raw, dict):
+        return raw
+    assert isinstance(raw, str), raw
+    decoded = json.loads(raw)
+    assert isinstance(decoded, dict), type(decoded)
+    return decoded

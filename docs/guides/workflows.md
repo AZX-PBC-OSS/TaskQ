@@ -549,6 +549,22 @@ and PURE — that SPELLS the graph by dataflow:
   children (fresh jobs — per-item ledger identity), the join collects,
   and the promise is the FLAT `Promise[list[R]]` (never
   `Promise[list[Promise[R]]]` — the checker rejected the nested shape);
+- `route(source, arms)` is THE TYPED ROUTE (T27): the arms are a dict
+  keyed by the source's union MEMBERS' TYPES —
+  `route(docs, {TextDoc: RouteArm(body=extract_text, queue="cpu"),
+  ImageDoc: RouteArm(body=ocr_text, queue="gpu")})` — each element runs
+  ITS type's arm as a fresh job, the arm's `RouteArm` stamps its
+  children's queue/actor (the per-arm placement), the arm body's
+  declared param type is the decode's target (the element arrives AS
+  the declared model — never a dict), and the derived `<source>.join`
+  packs the arms' returns (the typed sum — the flat `Promise[list[R]]`,
+  R the union of the arms' returns). The children's rows are graph
+  nodes whose step keys NAME their arm
+  (`<source>.item:<module.qualname>`), and the join feeds the
+  downstream wiring like any node's — FORK, FAN BACK IN at the next
+  step (the barrier, §1's barrier section below).
+  `map_source(source, {A: fn_a, B: fn_b})` is the same verb's dict
+  form — one machinery, two spellings;
 - `sink(...)` is the explicit fire-and-forget (RECORDED in the compiled
   metadata — never silent); `build(result, *residuals)` is the terminal
   completeness point (the `Promise[Never]` residuals are the static
@@ -566,6 +582,69 @@ sibling's COMPLETED result decides it. A skipped child SUCCEEDS WITH
 THE RECORD (the result names the skip — the envelope never lies about
 what ran) and fans into its absorbing joins (collect | maybe) as a
 typed item — a skip is not an attempt (zero ledger rows).
+
+**DEPRECATED FOR DISPATCH — teach the typed route.** The predicate's
+face is STRINGLY: the state it reads is decoded JSON dicts, and a
+predicate keyed by a tag (`item["mime"] == "video"`) can skip EVERY
+downstream arm and still let the run terminalize SUCCEEDED having
+routed NOTHING — the exact silent drop the totality fence exists to
+refuse (the routing-proof round's live conviction). For
+"dispatch each element by what it IS", the typed route is the taught
+face: the union's members key the arms, a non-total route is a BUILD
+refusal (E15), and an element of a type with no arm dies LOUDLY
+(`RouterNotTotal`) — never succeeds-having-routed-nothing. The
+predicate stays for the sibling-conditional shapes it is honest for
+(an "only if X succeeded" dispatch), and its docstring names the
+conviction.
+
+### The sync barrier — fork, fan back in at the join (T27)
+
+The typed route's arms each emit per-element results; the next step
+consuming the route's promise is the FAN-IN — the worked shape (the
+document sync pipeline, `examples/doc_mime_route.py`, verbatim):
+
+```python no-exec — not executed: fragment, the author's bodies (sync_source, extract_text, ocr_text, dead_letter, chunk, enrich) are the example's own
+docs = step(sync_source, key="docs")
+routed = route(
+    docs,
+    {
+        TextDoc: RouteArm(body=extract_text, queue="cpu"),
+        ImageDoc: RouteArm(body=ocr_text, queue="gpu"),
+        UnsupportedDoc: RouteArm(body=dead_letter),
+    },
+)
+chunks = step(chunk, routed, key="chunk")  # the chunk consumes the join's collected list
+return build(step(enrich, chunks, key="enrich"))
+```
+
+The barrier's semantics, stated exactly:
+
+* **THE ALL-MEMBERS JOIN** — the chunk fires ONCE, only when ALL the
+  routed children have terminalized (the join's `deps_pending` count =
+  the elements). The staggered arms (the text fast, the OCR slow)
+  cannot make the chunk fire early or twice: the fire ledger
+  (`wf_join_fire`, `UNIQUE(join_job_id)`) carries at most one fire per
+  joined node, ever, and the chunk's claim starts strictly after the
+  LAST child's terminal.
+* **THE DECODE AT THE BARRIER** — the chunk body's list param is the
+  decode's target: the collected list re-validates into the DECLARED
+  models (the typed sum — `list[ExtractedText | DeadLettered]` here);
+  the body sees models with attribute access, never dicts. A foreign
+  item in the sum dies LOUDLY in the decode.
+* **THE FAILURE FACES** — the route's `on_failure=` declares the join's
+  incoming edges' policy (T06/T07's duality, at the route's fan-in):
+  - `fail_closed` (the default): a child's terminal failure → the join
+    blocks with `blocking_reason='failed_parent'` NAMING the failed
+    parent on the row, the chunk never fires, and the flow fails (the
+    cascade) — the partial result never masquerades as the whole.
+  - `collect` | `maybe`: the child's failure fans in as a typed
+    `FailureInfo` item on the join's `metadata.failures` (the policy
+    that ran is ON the item — the envelope must not lie) + the
+    decrement; the join fires when the last child terminalizes, with
+    the SURVIVORS ONLY packed (the absorbed parent contributes NO
+    result item to the sum — its absence is on the record, never a
+    junk slot the decode cannot honor), and the flow lives (the
+    derivation reads the absorption record, never a heuristic).
 
 The typed boundary (cut #8's cure): the body's param annotations are
 the payload codec — the runner re-validates the jsonb round-trip into
@@ -962,6 +1041,22 @@ certified fork-at-finalize machinery: each chain step's finalize forks
 AT MOST ONE child (the route's arm — no fan-in, no join), the record's
 payload, `map_index` and trace riding forward.
 
+### The typed route at the GRAPH level (T27)
+
+The chain's route is the per-record stream's router. The GRAPH DSL has
+its own face of the same machinery — `route(promise, arms)` (§1's
+typed route): the union MEMBERS key the arms, the per-arm placement
+rides `RouteArm`, the arm bodies receive the DECODED typed models, and
+the children's rows ARE graph nodes feeding the derived join (the
+fan-back-in the chain cannot spell). The totality fence is the same
+vocabulary at both levels, at THREE doors: the wiring verb's refusal
+(missing/unknown members, NAMED), the validator's
+`E15-route-totality` (the checker-independent re-proof from the
+compiled graph), and the runtime `RouterNotTotal` — the element of a
+type with no arm (the body that lied about its union) fails the source
+LOUDLY, nothing routes, the run FAILS. The skip-silent shape is dead
+at both levels.
+
 ### Chain or DAG? (the one-paragraph decision guide)
 
 **The chain is the per-record stream** — a route arm per outcome, at
@@ -970,7 +1065,12 @@ flows ALONG ONE PATH and the arms are the branching. **The DAG is the
 shared shape** — `step`/`gather`/`map_source` wiring (§3) with real
 fan-in joins: pick it when independent results CONVERGE (a reducer
 consuming two parents, a `gather`'s all-upstream join, a map's
-collected join). The wrong guess costs a restructuring, not a
+collected join). **The typed route (`route`, T27) is the
+converge-and-dispatch shape** — a map whose per-element arms DIFFER
+(the mime-type router: text to the chunker, images to the OCR) with
+the arms fanning back in at the next step; it is a MAP attachment (one
+fork per source), not a chain, and not a bare gather. The wrong guess
+costs a restructuring, not a
 migration: a fan-in spelled as a chain has NOWHERE to put the second
 parent (the chain's finalize forks at most one child — the convergence
 is unwritable), and a route spelled as a DAG arm drags the whole graph

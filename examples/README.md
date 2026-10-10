@@ -128,6 +128,15 @@ LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
 expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
 carrying the `finished_with_what_you_have` result.
 
+The typed route's worked example lives beside that:
+`examples/doc_mime_route.py` (T27) — the **document sync pipeline**: the
+mime-type router (the text formats to the chunker's arm on the cpu queue,
+the image formats to the OCR's arm on the gpu queue, the unsupported mime
+to the dead-letter's arm — the envelope recorded, the flow lives), and
+the arms FAN BACK IN at the chunk step (the sync barrier: the chunk fires
+once, after the last element's text lands). Run with
+`TASKQ_PG_DSN=… uv run python examples/doc_mime_route.py`.
+
 The **embedding demo's web half** lives beside that:
 `examples/deep_research_web.py` (C10) — the hosting app's OWN approval
 board: the FastAPI app-lifespan listener (ONE backend `HitlListener`),

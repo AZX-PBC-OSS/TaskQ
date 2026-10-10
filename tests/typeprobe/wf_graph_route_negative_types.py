@@ -107,3 +107,52 @@ def probe_the_route_promise_type(app: WorkflowApp) -> None:
         return routed  # the promise IS the join's — the route's return IS the terminal
 
     build_fn()
+
+
+class TextDoc(BaseModel):
+    doc_id: str
+
+
+class ImageDoc(BaseModel):
+    doc_id: str
+
+
+class ExtractedText(BaseModel):
+    text: str
+
+
+async def text_source(ctx: StepContext) -> list[TextDoc | ImageDoc]:
+    return [TextDoc(doc_id="d1"), ImageDoc(doc_id="d2")]
+
+
+async def extract_text(ctx: object, item: TextDoc) -> ExtractedText:
+    return ExtractedText(text=item.doc_id)
+
+
+async def ocr_text(ctx: object, item: ImageDoc) -> ExtractedText:
+    return ExtractedText(text=item.doc_id)
+
+
+def probe_the_homogeneous_barrier_type(app: WorkflowApp) -> None:
+    """THE FAN-IN'S EDITOR FACE (T27's barrier — fork, fan back in at the
+    chunking step): HOMOGENEOUS arms (both return ``ExtractedText``) —
+    the route's promise solves to the flat ``Promise[list[ExtractedText]]``
+    (the build fn's declared return pins the solve: a drifted ARM reds
+    the RETURN — the list's invariance cannot smuggle the wrong element
+    list past it, on pyright; ty's solving is looser here — the honest
+    boundary — and the RUNTIME decode (the arm's param, the barrier's
+    list param through the TypeAdapter) is the enforcement on every
+    checker)."""
+
+    def build_fn() -> Promise[list[ExtractedText]]:
+        docs = step(text_source, key="docs")
+        routed = route(
+            docs,
+            {
+                TextDoc: RouteArm(body=extract_text),
+                ImageDoc: RouteArm(body=ocr_text),
+            },
+        )
+        return routed  # the solve's pin: R must BE ExtractedText exactly
+
+    build_fn()
