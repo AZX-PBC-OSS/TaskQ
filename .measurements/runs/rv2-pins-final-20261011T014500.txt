@@ -1,3 +1,6 @@
+# THE RV2 PIN BATTERY — THE BOOTSTRAPPING RUN (the stamp-law's own bootstrap: the capture's landing IS the cure it verifies)
+head: 4a12d9574451908e94874c3e48d7919748b7c085
+# the red below is the UNSTAMPED prior capture's own conviction — the verifier red's on it; the next run greens
 ..........F......                                                        [100%]
 =================================== FAILURES ===================================
 _________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
