@@ -31,7 +31,13 @@ from typing import Literal, cast, overload
 from pydantic import BaseModel
 
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
-from taskq.workflows.api._graph import BuildGraph, NodeDecl, Promise, record_under
+from taskq.workflows.api._graph import (
+    BuildGraph,
+    NodeDecl,
+    Promise,
+    record_under,
+    route_child_key,
+)
 from taskq.workflows.definitions import DuplicateWorkflowError
 
 __all__ = [
@@ -503,6 +509,14 @@ def _register_bodies(
         # carry.
         if node.map_item is not None:
             bodies[f"{node.key}.item"] = node.map_item
+        # THE TYPED ROUTE'S ARMS (T27) resolve under their OWN derived
+        # keys (``<source>.item:<type-tag>`` — the row's step_key NAMES
+        # its arm): each arm's body registered under the key its child
+        # rows carry (the same D1 doctrine, one arm per key — the arms'
+        # bodies are distinct by the route's own totality).
+        if node.map_arms is not None:
+            for tag, arm in node.map_arms.items():
+                bodies[route_child_key(node.key, tag)] = arm.body
         if node.loop_spec is not None:
             # The loop attachment's declared type (the compile-visible
             # LoopSpec — the NodeDecl field IS typed).

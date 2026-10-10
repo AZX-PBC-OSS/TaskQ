@@ -52,18 +52,31 @@ from pydantic import BaseModel
 
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
 
-__all__ = ["DONE", "Chain", "Route", "RouterNotTotal", "Step", "chain_fork", "chain_start"]
+__all__ = [
+    "DONE",
+    "Chain",
+    "Route",
+    "RouterNotTotal",
+    "Step",
+    "chain_fork",
+    "chain_start",
+    "type_tag",
+]
 
 #: The chain's terminal route: a body outcome that ends the record's
 #: chain (the step's finalize carries NO fork — the chain ends here).
 DONE = "__done__"
 
 
-def _type_tag(cls: type) -> str:
+def type_tag(cls: type) -> str:
     """The TYPE-TAGGED route's dispatch key for one payload class: the
     canonical ``module.qualname`` — the tag the router matches a body's
     returned ELEMENT against (``type(element)``), and the tag the
-    declaration's totality check compares the route's keys to."""
+    declaration's totality check compares the route's keys to. PUBLIC
+    since T27: the graph-level typed route (``api/_graph.route``) shares
+    the tag — the dispatch key is ONE vocabulary at both levels (the
+    chain's steps and the graph's arms route the same union the same
+    way)."""
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
@@ -112,7 +125,7 @@ class Route:
         type_tags: set[str] = set()
         for k, v in routes.items():
             if isinstance(k, type):
-                tag = _type_tag(k)
+                tag = type_tag(k)
                 type_tags.add(tag)
             else:
                 tag = str(getattr(k, "value", k))
@@ -130,13 +143,13 @@ class Route:
         silently strand the record's chain."""
         if isinstance(outcomes, types.UnionType):
             arms = get_args(outcomes)
-            members = {_type_tag(m) for m in arms}
+            members = {type_tag(m) for m in arms}
             vocab = " | ".join(m.__name__ for m in arms)
         elif issubclass(outcomes, enum.Enum):  # pyright: ignore[reportArgumentType]  # Why: the union arm above narrowed the UnionType away; what remains is a class object, enum or not.
             members = {str(m.value) for m in outcomes}
             vocab = outcomes.__name__
         else:
-            members = {_type_tag(outcomes)}
+            members = {type_tag(outcomes)}
             vocab = outcomes.__name__
         declared = set(self._routes)
         if declared != members:
@@ -255,7 +268,7 @@ class Chain:
         else:
             # THE TYPE-TAGGED FACE: the body returned the union ELEMENT
             # itself — the element's runtime TYPE is the dispatch key.
-            outcome_str = _type_tag(type(outcome))
+            outcome_str = type_tag(type(outcome))
         nxt = step.route.next_step(outcome_str)
         if nxt is DONE or nxt is None:
             return None

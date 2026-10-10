@@ -143,7 +143,7 @@ def test_r1_a_non_total_route_refuses_at_the_wiring() -> None:
     """A route missing a union member is REFUSED at the wiring — the
     element it drops would route NOTHING (the silent drop the route
     exists to refuse); the refusal NAMES the member."""
-    from taskq.workflows import RouteArm, WorkflowBuildError, build, route, step
+    from taskq.workflows import RouteArm, WorkflowApp, WorkflowBuildError, build, route, step
 
     app = WorkflowApp()
 
@@ -159,7 +159,7 @@ def test_r1_a_non_total_route_refuses_at_the_wiring() -> None:
 def test_r1_an_unknown_arm_key_refuses_at_the_wiring() -> None:
     """A route keyed by a member OUTSIDE the union is the same refusal's
     other face — the unknown member is NAMED."""
-    from taskq.workflows import RouteArm, WorkflowBuildError, build, route, step
+    from taskq.workflows import RouteArm, WorkflowApp, WorkflowBuildError, build, route, step
 
     class Foreign(BaseModel):
         x: int = 0
@@ -193,7 +193,7 @@ def test_r1_e15_route_totality_reds_the_validator() -> None:
     COMPILED graph (public, mutable data — E3's precedent: the rule owns
     the shape injected into it). Both directions convict: a MISSING
     member and an UNKNOWN member, each named."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
+    from taskq.workflows import RouteArm, WorkflowApp, build, route, step
     from taskq.workflows.api._validate import WorkflowValidationError, validate_compiled
 
     app = WorkflowApp()
@@ -201,7 +201,12 @@ def test_r1_e15_route_totality_reds_the_validator() -> None:
     @app.workflow("r1_e15_probe")
     def r1_e15_probe() -> Promise[object]:
         src = step(media_source, key="media")
-        return build(route(src, {ImageItem: RouteArm(body=process_image), AudioItem: RouteArm(body=process_audio)}))
+        return build(
+            route(
+                src,
+                {ImageItem: RouteArm(body=process_image), AudioItem: RouteArm(body=process_audio)},
+            )
+        )
 
     class Foreign(BaseModel):
         x: int = 0
@@ -248,14 +253,19 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     ``error_class='RouterNotTotal'``, NO child routed (the skip-silent
     shape is dead), and the run FAILED — never succeeded-having-routed-
     nothing."""
-    from taskq.workflows import FlowRunner, WorkflowApp, RouteArm, build, route, step
+    from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, step
 
     app = WorkflowApp()
 
     @app.workflow("r1_video_ghost")
     def r1_video_ghost() -> Promise[object]:
         src = step(lying_media_source, key="media")
-        return build(route(src, {ImageItem: RouteArm(body=process_image), AudioItem: RouteArm(body=process_audio)}))
+        return build(
+            route(
+                src,
+                {ImageItem: RouteArm(body=process_image), AudioItem: RouteArm(body=process_audio)},
+            )
+        )
 
     runner = FlowRunner(app.get("r1_video_ghost"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the house fixtures are object-typed (the refutation pins' convention) — the runner's own params are the contract.
     flow_id = (await runner.create_flow()).flow_id
@@ -276,7 +286,9 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key LIKE 'media.item%'",
         flow_id,
     )
-    assert not children, f"the ghost routed {[str(r['step_key']) for r in children]} — a silent drop survived"
+    assert not children, (
+        f"the ghost routed {[str(r['step_key']) for r in children]} — a silent drop survived"
+    )
     # The run FAILED — never succeeded-having-routed-nothing.
     root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same fixture walk.
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
@@ -313,7 +325,9 @@ async def test_r2_the_routed_results_join_addressable(
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'media.join'",
         flow_id,
     )
-    assert join_row is not None, "the route's join-back is missing — the children are not graph nodes"
+    assert join_row is not None, (
+        "the route's join-back is missing — the children are not graph nodes"
+    )
     assert join_row["status"] == "succeeded", dict(join_row)
     result = await runner.result(flow_id)
     assert isinstance(result, list), result
@@ -370,7 +384,7 @@ def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
     consumes the element UNVALIDATED — the route is the typed boundary
     and the duck arm is the hole it exists to close. E15 refuses at
     build, naming the arm."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
+    from taskq.workflows import RouteArm, WorkflowApp, build, route, step
     from taskq.workflows.api._validate import WorkflowValidationError
 
     async def duck_arm(ctx: object, item: dict[str, object]) -> dict[str, object]:  # the duck
@@ -382,12 +396,16 @@ def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
     def r3_duck_arm() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
-            route(src, {ImageItem: RouteArm(body=duck_arm), AudioItem: RouteArm(body=process_audio)})
+            route(
+                src, {ImageItem: RouteArm(body=duck_arm), AudioItem: RouteArm(body=process_audio)}
+            )
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
         app.get("r3_duck_arm")
-    assert getattr(exc_info.value, "rule", "") == "E15-route-totality", str(exc_info.value)
+    # validate_compiled's raise is the AGGREGATED report — the rule NAME
+    # rides the message (the diagnostic's rule is E15).
+    assert "E15-route-totality" in str(exc_info.value), str(exc_info.value)
     assert "duck_arm" in str(exc_info.value), str(exc_info.value)
 
 
@@ -396,7 +414,7 @@ def test_r3_an_unrelated_arm_param_refuses_at_build() -> None:
     model (the image arm claiming the audio result's shape) is the
     wiring promising data the arm cannot accept — E15 refuses at build,
     both type names in the message."""
-    from taskq.workflows import RouteArm, WorkflowApp, route, step
+    from taskq.workflows import RouteArm, WorkflowApp, build, route, step
     from taskq.workflows.api._validate import WorkflowValidationError
 
     async def wrong_arm(ctx: object, item: AudioResult) -> dict[str, object]:
@@ -408,12 +426,14 @@ def test_r3_an_unrelated_arm_param_refuses_at_build() -> None:
     def r3_wrong_arm() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
-            route(src, {ImageItem: RouteArm(body=wrong_arm), AudioItem: RouteArm(body=process_audio)})
+            route(
+                src, {ImageItem: RouteArm(body=wrong_arm), AudioItem: RouteArm(body=process_audio)}
+            )
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
         app.get("r3_wrong_arm")
-    assert getattr(exc_info.value, "rule", "") == "E15-route-totality", str(exc_info.value)
+    assert "E15-route-totality" in str(exc_info.value), str(exc_info.value)
     assert "AudioResult" in str(exc_info.value), str(exc_info.value)
 
 
@@ -486,7 +506,7 @@ async def test_e2e_the_reviewers_scenario(
     (the union's members as keys) → the two placements (gpu/io) → the
     typed-sum join → the downstream consumer's summary ON result(). The
     rows are the receipt."""
-    from taskq.workflows import FlowRunner, WorkflowApp, RouteArm, build, route, sink, step
+    from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, sink, step
 
     async def summarize(ctx: object, items: list[ImageResult | AudioResult]) -> dict[str, int]:
         """The join's downstream consumer: the typed sum DECODED (the
@@ -508,7 +528,9 @@ async def test_e2e_the_reviewers_scenario(
             },
         )
         summary = step(summarize, routed, key="summary")
-        sink(routed)  # the summary's edge consumes the children; the join's own promise stays explicit
+        sink(
+            routed
+        )  # the summary's edge consumes the children; the join's own promise stays explicit
         return build(summary)
 
     runner = FlowRunner(app.get("r27_e2e_scenario"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
