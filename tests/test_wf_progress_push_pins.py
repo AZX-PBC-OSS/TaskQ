@@ -328,30 +328,34 @@ async def test_the_listener_fans_out_and_degrades_first(
         mp.setattr(_progress_listen, "_QUEUE_MAXSIZE", 2)
         listener2 = ProgressListener(wf_pool, wf_schema, flow_id=flow_id)
         async with listener2:
-            seen: list[Any] = []
-            t0 = time.monotonic()
-
-            async def _collect_all() -> None:
-                async for event in listener2.updates():
-                    seen.append(event)
-                    if len(seen) >= 2:
-                        return
-
-            # TEN knocks against queues bound at 2 — the producer must
-            # never await the consumer.
+            # TEN knocks against queues bound at 2, with the consumer
+            # NOT yet draining — the producer must never await it.
             conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+            t0 = time.monotonic()
             for seq in range(10):
                 await conn.execute(
                     _stale_knock_sql(wf_schema),
                     _stale_knock_payload(wf_schema, flow_id, node_id, 90000 + seq),
                 )
-            await asyncio.wait_for(_collect_all(), timeout=5.0)
-            elapsed = time.monotonic() - t0
+            produced = time.monotonic() - t0
             await conn.close()
-            assert elapsed < 5.0, "the producer blocked on the consumer — the law is broken"
+            assert produced < 5.0, "the producer blocked on the consumer — the law is broken"
+            # THE SETTLE: the pump decodes the raw queue into the bounded
+            # subscriber queues — the drop-oldest runs while nobody
+            # drains; the HEAD of the knock sequence is the casualty.
+            await asyncio.sleep(0.5)
+            seen: list[Any] = []
+
+            async def _collect_two() -> None:
+                async for event in listener2.updates():
+                    seen.append(event)
+                    if len(seen) >= 2:
+                        return
+
+            await asyncio.wait_for(_collect_two(), timeout=5.0)
             # THE ORDER: the delivered events are the knock sequence's
             # TAIL (the head was the drop-oldest's casualty) — the
-            # newest survive, the writer never blocked.
+            # newest survive.
             delivered = [e.last_seq for e in seen if isinstance(e, ProgressUpdated)]
             assert delivered and delivered[-1] >= 90005, (
                 f"the delivered seqs {delivered} are not the knock tail — "
