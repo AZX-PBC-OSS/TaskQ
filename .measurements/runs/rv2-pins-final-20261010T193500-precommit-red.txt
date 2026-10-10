@@ -1,3 +1,4 @@
+head: 1c17402d5d8480df09e214c90e5c16d1fee2c1b4
 ...........F.....                                                        [100%]
 =================================== FAILURES ===================================
 _________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________

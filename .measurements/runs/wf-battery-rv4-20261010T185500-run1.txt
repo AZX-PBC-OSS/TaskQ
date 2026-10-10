@@ -1,3 +1,4 @@
+head: 1c17402d5d8480df09e214c90e5c16d1fee2c1b4
 Resolved 160 packages in 1ms
    Building taskq-py @ file:///tmp/opencode/wt-rv4
       Built taskq-py @ file:///tmp/opencode/wt-rv4

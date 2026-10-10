@@ -1,3 +1,4 @@
+head: 1c17402d5d8480df09e214c90e5c16d1fee2c1b4
 ============================= test session starts ==============================
 platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
 Using --randomly-seed=802053748
