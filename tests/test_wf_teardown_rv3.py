@@ -81,8 +81,10 @@ from pydantic import BaseModel
 
 from taskq.exceptions import SchemaNotMigratedError
 from taskq.migrate import apply_pending
+from taskq.workflows.api._validate import validate_compiled
 from taskq.workflows import (
     Done,
+    Expired,
     GateDecl,
     HitlClient,
     Promise,
@@ -155,23 +157,35 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
 
 
 def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
-    """E14's other provable face: a body whose ``wait_signal`` has NO
-    declared gate — the hold the admin's resolve/deliver doors cannot
-    see (the declaration is the compile's visibility). Refused at
-    build, like E2."""
+    """E14's other face — RE-PARTITIONED BY THE MERGE'S RULING (the T26
+    evidence won it): a wait with NO declared gate is NOT the lie (the
+    wait site is SELF-DESCRIBING — the payload models + the timeout ride
+    the call; the hold row is real; the listener, the resolve door and
+    the broadcast all work). What is lost is the COMPILE visibility —
+    the Mermaid hold node, W1's timeout read — so this face is the
+    WARNING: validate() reports it, the build does NOT refuse. The
+    DANGEROUS face (declared-never-waited — 4a) stays the error: that
+    one ships 'we have an approval step' with no approval in it."""
     app = WorkflowApp()
 
     async def approver(ctx: StepContext, params: _Ingest) -> _Decision:
-        verdict = await ctx.wait_signal((_Approval,), timeout_s=60.0)
-        return _Decision(ok=verdict.verdict == "go")
+        outcome = await ctx.wait_signal((_Approval,), timeout_s=60.0)
+        match outcome:
+            case _Approval() as approval:
+                return _Decision(ok=approval.verdict == "go")
+            case Expired():
+                return _Decision(ok=False)  # the fail-close arm — the checker's own forcing
 
     @app.workflow("rv3-4b-wait-never-declared")
     def build_wf() -> Promise[_Decision]:
         p = step(approver, _Ingest(doc_id="d"))
         return build(p)
 
-    with pytest.raises(WorkflowValidationError, match="E14"):
-        app.get("rv3-4b-wait-never-declared")
+    compiled = app.get("rv3-4b-wait-never-declared")  # the build does NOT refuse
+    diagnostics = validate_compiled(compiled)
+    e14 = [d for d in diagnostics if d.rule == "E14-gate-wiring"]
+    assert e14, "the compile-invisible hold lost its warning — the face went dark"
+    assert all(d.severity == "warning" for d in e14), e14
 
 
 def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> None:
@@ -184,8 +198,12 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
 
     async def maybe_gated(ctx: StepContext, params: _Ingest) -> _Decision:
         if params.doc_id:
-            approval = await ctx.wait_signal((_Approval,), timeout_s=30.0)
-            return _Decision(ok=approval.verdict == "go")
+            outcome = await ctx.wait_signal((_Approval,), timeout_s=30.0)
+            match outcome:
+                case _Approval() as approval:
+                    return _Decision(ok=approval.verdict == "go")
+                case Expired():
+                    return _Decision(ok=False)
         return _Decision(ok=True)
 
     @app.workflow("rv3-4c-conditional-wait-declared")
@@ -423,10 +441,14 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
     app = WorkflowApp()
 
     async def gated(ctx: StepContext, params: _Ingest) -> _Decision:
-        approval = await ctx.wait_signal(
+        outcome = await ctx.wait_signal(
             (_Approval,), timeout_s=30.0, reason="awaiting compliance sign-off"
         )
-        return _Decision(ok=approval.verdict == "go")
+        match outcome:
+            case _Approval() as approval:
+                return _Decision(ok=approval.verdict == "go")
+            case Expired():
+                return _Decision(ok=False)
 
     @app.workflow("rv3-9-hold-reason")
     def build_wf() -> Promise[_Decision]:
@@ -441,7 +463,7 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
     outcome = await run(compiled, wf_pool, wf_schema, until="held")
     assert outcome.outcome == "held"
     client = HitlClient(wf_pool, wf_schema)
-    holds = await client.list(run=outcome.flow_id)
+    holds = await client.list(outcome.flow_id)
     assert holds, "the held run must carry its hold"
     reason = holds[0].reason
     assert reason is not None, (
@@ -464,8 +486,12 @@ def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
     app = WorkflowApp()
 
     async def gated(ctx: StepContext, params: _Ingest) -> _Decision:
-        approval = await ctx.wait_signal((_Approval,), timeout_s=45.0)
-        return _Decision(ok=approval.verdict == "go")
+        outcome = await ctx.wait_signal((_Approval,), timeout_s=45.0)
+        match outcome:
+            case _Approval() as approval:
+                return _Decision(ok=approval.verdict == "go")
+            case Expired():
+                return _Decision(ok=False)
 
     @app.workflow("rv3-10-timeout-drift")
     def build_wf() -> Promise[_Decision]:
@@ -527,9 +553,13 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
 
     async def looping(ctx: StepContext, carry: _Carry):
         if carry.n > 0:  # the conditional-interior wait — the mis-index shape
-            approval = await ctx.wait_signal((_Approval,), timeout_s=30.0)
-            if approval.verdict != "go":
-                return Done(_Carry(n=carry.n))
+            outcome = await ctx.wait_signal((_Approval,), timeout_s=30.0)
+            match outcome:
+                case _Approval() as approval:
+                    if approval.verdict != "go":
+                        return Done(_Carry(n=carry.n))
+                case Expired():
+                    return Done(_Carry(n=carry.n))  # the fail-close arm
         return Refine(_Carry(n=carry.n + 1))
 
     async def stop() -> bool:
@@ -563,9 +593,13 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
     app = WorkflowApp()
 
     async def looping(ctx: StepContext, carry: _Carry):
-        approval = await ctx.wait_signal((_Approval,), timeout_s=30.0)
-        if approval.verdict == "go":
-            return Done(_Carry(n=carry.n))
+        outcome = await ctx.wait_signal((_Approval,), timeout_s=30.0)
+        match outcome:
+            case _Approval() as approval:
+                if approval.verdict == "go":
+                    return Done(_Carry(n=carry.n))
+            case Expired():
+                return Done(_Carry(n=carry.n))  # the fail-close arm
         return Refine(_Carry(n=carry.n + 1))
 
     async def stop() -> bool:

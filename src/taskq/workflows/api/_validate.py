@@ -771,16 +771,26 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
                 )
             )
         elif any_wait:
+            # THE T26 RULING (the hostile-review merge's design call): the
+            # DANGEROUS face is declared-never-waited (the error above —
+            # "we have an approval step" shipping with no approval in it).
+            # A wait with NO declared gate is NOT a lie: the wait site is
+            # SELF-DESCRIBING (the payload models + the timeout ride the
+            # call; the hold row is real; the listener, the resolve door
+            # and the broadcast all work). What is lost is the COMPILE
+            # visibility — the Mermaid hold node, W1's timeout read — so
+            # this face is the WARNING, never the refusal.
             diagnostics.append(
                 WorkflowValidationError(
                     "E14-gate-wiring",
-                    "error",
+                    "warning",
                     f"node {node.key!r}'s body calls ctx.wait_signal but "
-                    "declares NO gate — the hold is invisible to every "
-                    "compile surface (the Mermaid hold nodes, W1's "
-                    "timeout read, the admin's resolve/deliver doors). "
-                    "Declare it: step(body, …, gates=(GateDecl(name=…, "
-                    "payload_models=(…), timeout_s=…),))",
+                    "declares NO gate — the hold is ROW-real (the wait site "
+                    "carries the payload models and the timeout) but "
+                    "COMPILE-invisible: no Mermaid hold node, no W1 timeout "
+                    "read. Declare it for the compile surfaces: step(body, …, "
+                    "gates=(GateDecl(name=…, payload_models=(…), "
+                    "timeout_s=…),))",
                 )
             )
     return diagnostics
