@@ -44,6 +44,7 @@ pytest.importorskip("opentelemetry.exporter.prometheus")
 
 from tests._prom_review import (
     Exposition,
+    _once_per_invocation,
     docker_available,
     parse_exposition,
     run_emitter_probe,
@@ -93,11 +94,28 @@ _PROMQL_KEYWORDS = frozenset(
 def worker_scrapes(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[str, str]:
     """Expositions from the real worker probe: keys ``LIVE``/``FINAL``
     (served by the bridge router) and ``LIVE.port``/``FINAL.port`` (served
-    by the worker's own TASKQ_METRICS_PORT pull listener)."""
-    return run_worker_probe(
-        pg_dsn,
-        module_pg_schema.schema_name,
-        tmp_path_factory.mktemp("prom_worker_probe"),
+    by the worker's own TASKQ_METRICS_PORT pull listener).
+
+    ONCE PER INVOCATION, not once per xdist worker: the probe is ~130s
+    of real worker + follower + migrations; module scope is per worker,
+    and at ``-n 8`` the concurrent fleets drowned the box (the
+    follower's boot outran every poll — the consolidated proof's
+    PROBE_TASK_FAILED wall). The invocation state dir is the container
+    pair's own sharing shape: the first worker's probe writes the
+    result there, the rest read the same files."""
+    from taskq.testing._shared_containers import invocation_state_dir
+
+    state_dir = invocation_state_dir(tmp_path_factory)
+    workdir = state_dir / "prom-worker-probe"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return _once_per_invocation(
+        "worker",
+        state_dir,
+        lambda: run_worker_probe(
+            pg_dsn,
+            module_pg_schema.schema_name,
+            workdir,
+        ),
     )
 
 
@@ -120,12 +138,22 @@ def follower(worker_scrapes: dict[str, str]) -> Exposition:
 
 @pytest.fixture(scope="module")
 def hostile(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) -> dict[str, str]:
-    mid, recovered = run_hostile_probe(
-        pg_dsn,
-        module_pg_schema.schema_name,
-        tmp_path_factory.mktemp("prom_hostile_probe"),
+    from taskq.testing._shared_containers import invocation_state_dir
+
+    state_dir = invocation_state_dir(tmp_path_factory)
+    workdir = state_dir / "prom-hostile-probe"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return _once_per_invocation(
+        "hostile",
+        state_dir,
+        lambda: (lambda mid, recovered: {"MID": mid, "RECOVERED": recovered})(
+            *run_hostile_probe(
+                pg_dsn,
+                module_pg_schema.schema_name,
+                workdir,
+            )
+        ),
     )
-    return {"MID": mid, "RECOVERED": recovered}
 
 
 @pytest.fixture(scope="module")
