@@ -587,6 +587,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    async def wf_child_join_wake_call() -> int:
+        # THE CHILD-JOIN WAKE ARM (T28): the child flow's terminal is
+        # the join hold's resolver — the terminal child CAS-delivers the
+        # held join, the parent node resumes, the T26 transport knocks.
+        # The lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_child_joins
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_child_joins(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
     async def wf_signal_sweep_call() -> int:
         # THE SIGNAL SWEEP'S EXPIRY ARM (T10): the ONLY live timer on a
         # held row — the deadline is DB-CLOCK compared; the expired hold
@@ -937,6 +950,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=False,
             dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
+        ),
+        _SweepSpec(
+            # wf_child_join_wake — THE CHILD-JOIN WAKE (T28): the child
+            # flow's terminal is the join hold's resolver; a lost resume
+            # is the hold-stamp reconcile arm's belt.
+            name="wf_child_join_wake",
+            call=wf_child_join_wake_call,
+            warn_event="sweep-wf-child-join-wake-failed",
+            warn_kind="sweep_wf_child_join_wake_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_child_join_wake_tick"),
         ),
         _SweepSpec(
             # wf_hold_stamp_reconcile — THE HOLD-STAMP WEDGE'S CURE (the
