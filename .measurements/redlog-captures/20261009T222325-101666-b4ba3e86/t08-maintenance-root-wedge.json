@@ -1,0 +1,12 @@
+{
+  "mutation": "the maintenance leg without the failed-root arm (the old gate: the finalize required EVERY row terminal, and the stamped join row is terminalizable by nothing) \u2014 the root wedges 'running' forever (unbounded retention, the dead-run rescan every pass)",
+  "observed": {
+    "error_class": "UnabsorbedNodeFailure",
+    "finished_at": "2026-10-10 05:23:25.653722+00:00",
+    "reconstructed": "failed",
+    "root_status": "failed"
+  },
+  "pin": "t08-maintenance-root-wedge",
+  "run": "20261009T222325-101666-b4ba3e86",
+  "ts": "2026-10-09T22:23:25"
+}
