@@ -4,6 +4,71 @@ Lane: `feat/taskqflow-hitl-pubsub` off `origin/feat/taskqflow` @ `c86f3990`.
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
 
+## AMENDMENT (the maintainer's DX audit — the two faces that failed)
+
+The first design taught the expiry as an EXCEPTION and the listener as
+`.events()` — the honest DX audit fails both faces: an exception cannot
+be FORCED (a body that never catches it compiles clean and hangs the
+operator), and ceremony hides the one-liner. The amended design:
+
+1. **THE EXPIRY IS A VALUE, NOT AN EXCEPTION.** `ctx.wait_signal`'s
+   timeout face returns a TYPED UNION — the declared decision models
+   joined with the house ``Expired`` member — so the CHECKER forces the
+   fail-close arm: a body that matches only the decision arm falls
+   through and reds (implicit-return-None against the body's declared
+   `Done | Refine` return); a body that bare-unwraps
+   (`outcome.verdict`) reds (`Expired` carries no verdict). The
+   `SignalTimeoutError` exception stays in the vocabulary for the
+   NON-HANDLED path — the escalation ladder's own use: a body that
+   WANTS the failure raises it itself off the ``Expired`` member (the
+   pin-e lane's body is exactly that shape). RED-FIRST: the
+   type-probe marker (the bare unwrap) ran against the PRE-UNION tree
+   and was SILENT — the checker could not force anything; the capture
+   is the receipt, the union's landing is the flip.
+2. **THE LISTENER'S FACE**: directly async-iterable
+   (`async for event in listener` — no `.events()` ceremony; the
+   keepalive form stays on `frames()` for the SSE face), the events a
+   CLOSED union (`match event:` works exhaustively), the filter a
+   parameter (`HitlListener(pool, schema).holds(run=flow_id)` — typed;
+   the unfiltered stream still flows for the raw tail), the
+   context-manager form for the scoped use.
+3. **THE DX TEST THE DESIGN MUST PASS**: the body author and the
+   backend author each write their full flow with ZERO doc lookups —
+   the example's snippets ARE the API tour:
+
+   THE BODY AUTHOR'S FLOW (verbatim from `examples/deep_research.py`):
+
+   ```python
+   outcome = await ctx.wait_signal(
+       (ContinueApproval,),
+       timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
+       reason="the research loop wants to continue past the free passes",
+   )
+   match outcome:
+       case ContinueApproval() as approval:
+           if not approval.approved:
+               return Done(ResearchState.finished_with_what_you_have(carry))
+           carry = carry.model_copy(update={"approved": True})
+       case Expired():
+           # THE FAIL-CLOSE: nobody watching — finish with what you have.
+           return Done(ResearchState.finished_with_what_you_have(carry))
+   ```
+
+   THE BACKEND AUTHOR'S FLOW (verbatim from the example's driver):
+
+   ```python
+   listener = HitlListener(wf_pool, schema)
+   async with listener:
+       async for event in listener.holds(run=flow_id):
+           match event:
+               case HoldCreated():
+                   print(f"approval owed: hold {event.hold_id}")
+               case HoldResolved():
+                   print(f"hold answered ({event.verdict_kind})")
+               case Expired() as e:
+                   print(f"hold expired: {e.hold_id}")
+   ```
+
 ## The read (what the tree actually says)
 
 1. **The hold-create leg is MISSING, not weak.** `register_hold`
@@ -98,6 +163,13 @@ was verified against the tree at the base head before a line of code.
 
 ## The pins (red-first where they convict)
 
+- **P0 (the checker forces the fail-close arm):** the type-probe
+  marker — a body that bare-unwraps the wait's outcome (`.verdict`
+  without the match) — RED against the pre-union tree (the exception
+  face cannot force anything: the capture shows the checker SILENT on
+  the exact shape that hangs an operator) and REDS on the union face
+  (`Expired` carries no verdict). The match-ignores arm reds through
+  the body's own declared return (the fall-through None).
 - **P1 (the transactional create):** a rolled-back hold-create emits NO
   notification. The red: the notify sent OUTSIDE the tx (autocommit)
   fires while the row rolls back — captured as the mutation drill; the
