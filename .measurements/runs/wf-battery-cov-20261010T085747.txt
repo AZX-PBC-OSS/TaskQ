@@ -1,0 +1,6 @@
+# the wf battery (tests/test_wf_*.py + tests/attack_wf_*.py + tests/attack4_wf_*.py, the CI's lane filter) + THE SCOPED COVERAGE GATE — leg 1 at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane)
+332 passed, 1 skipped, 1 warning in 139.19s (0:02:04)
+[gate] wf-scoped branch coverage 90.28% vs floor 90.0% — green
+[gate] recorded: .measurements/runs/wf-scoped-coverage-20261010T013941.json
+coverage-gate rc=0
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814
