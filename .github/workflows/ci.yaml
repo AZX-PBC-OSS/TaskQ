@@ -186,7 +186,14 @@ jobs:
     # -n 4 is a win only with a dedicated core per worker.
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # fail-fast off: the matrix exists to answer "which interpreters still
+    # pass" in one run — cancelling the surviving legs on the first red
+    # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
+    # orphan-terminated the 3.13/3.14 suites mid-run at 39m50, three
+    # "failures" none of which were interpreter defects). Same discipline
+    # as the PG deploy matrix below.
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
