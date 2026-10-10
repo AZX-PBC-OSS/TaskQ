@@ -146,7 +146,8 @@ apologies):
 1. **Replay = ROWS-ONLY RE-DERIVATION.** There is no orchestrator
    process to replay — the graph IS rows; recovery re-derives from rows
    alone (probe 1: mid-run + terminal reconstruction, Mermaid
-   byte-stable). *Costs* a migrating Temporal user: no arbitrary code
+   byte-stable). *Costs* a user migrating from a deterministic-replay
+   engine: no arbitrary code
    between steps at recovery; the wiring must be statically spellable.
    *Buys:* **non-deterministic bodies are LEGAL** (no determinism
    contract, no SDK sandbox, no history versioning — the rows version
@@ -160,13 +161,14 @@ apologies):
    crash-safe clock domain; the fleet's lived "a row `running` forever"
    pain is structurally impossible while the derivation re-derives.
 3. **THE HOLD ROW — the headline.** Five ecosystem mechanisms behind
-   ONE CAS'd, idempotent, slot-releasing row: the Temporal signal, the
-   Argo suspend, the Airflow deferrable, the Airflow sensor, the
-   LangGraph interrupt (probes 2+3: the slot RELEASES
+   ONE CAS'd, idempotent, slot-releasing row: signal-and-wait,
+   suspend-resume, deferrable-open-slot, poll-until-true,
+   checkpoint-interrupt (probes 2+3: the slot RELEASES
    (`locked_by_worker` NULL), the resume consumes no ladder attempt,
-   the memo replay is cheap, a re-delivered hold is a no-op). **No
-   competitor unifies these five into one row shape.**
-4. **Assets vs payloads** (Dagster's trade): the payload that ran IS the
+   the memo replay is cheap, a re-delivered hold is a no-op). **The
+   ecosystem expresses these as five separate mechanisms; here one row
+   carries all five.**
+4. **Assets vs payloads** (the asset-graph trade): the payload that ran IS the
    record — no double-bookkeeping, no asset catalog; redaction + the
    failure IO-capture apply uniformly (the G1 law: the record must not
    re-create the "looked healthy, was wrong" state; REDACT-BEFORE-

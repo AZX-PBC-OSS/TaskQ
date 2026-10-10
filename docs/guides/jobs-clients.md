@@ -1611,8 +1611,8 @@ failed retry; bounded by the TTL, default 5s; `None` when no snapshot
 exists, then every cap half reads `unknown` with its reason). The depth
 half was **exact at `as_of`** and advisory from it on; a caller surfacing
 the number to users can show the staleness story honestly instead of
-guessing (prefect's "Late" state taught this the hard way: a stale verdict
-presented as fresh).
+guessing (the stale-state lesson every cache-and-refresh design learns
+the hard way: a stale verdict presented as fresh).
 
 ### Dangling parents: first-class states, never errors
 
