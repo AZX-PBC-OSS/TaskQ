@@ -126,7 +126,11 @@ jobs:
 
       - uses: ./.github/actions/setup-uv-env
         with:
-          sync-args: --locked --group typeprobe
+          # --locked is NOT repeated here: the shared action always adds it
+          # itself (its documented contract), and passing it again dies on
+          # uv's "the argument '--locked' cannot be used multiple times"
+          # before a single probe runs (the d24f17b9 CI conviction).
+          sync-args: --group typeprobe
 
       - name: The MUST_ERROR corpus reds on both pinned checkers
         run: uv run --no-sync python tests/typeprobe/_gate.py

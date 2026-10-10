@@ -1,10 +1,11 @@
 -- The fan-out ledger's pending-children index (LIB-2, issue #670) —
--- SPLIT from 01.00.23_01_pre_jobs_parent_id.sql by the consolidation
--- (the single-lock-class law, family 1: the ALTERs and the CREATE
--- INDEX are different lock classes and may not share a file's one
--- write-block window). Idempotent: deployments that applied 23_01
--- when it still carried the index already have it (IF NOT EXISTS),
--- the ledger row records the no-op.
+-- the IF NOT EXISTS record beside its byte-frozen home: the shipped
+-- 01.00.23_01_pre_jobs_parent_id.sql carries the index and may never
+-- be rewritten (the upgrade-path gate's ledger checksum law — the
+-- d24f17b9 split attempt was convicted by exactly that). Idempotent
+-- everywhere: a fresh schema gets the index from 23_01 and no-ops
+-- here; a deployed schema that applied the shipped 23_01 has it and
+-- records the no-op's ledger row.
 
 -- The pending-children count's quals, repeated VERBATIM (the
 -- 01.00.12_06 doctrine: a partial index is only a candidate when the

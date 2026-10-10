@@ -1,0 +1,1611 @@
+warning: Using incompatible environment (`.venv`) due to `--no-sync` (The project environment's Python version does not satisfy the request: `Python 3.13`)
+bringing up nodes...
+bringing up nodes...
+
+..................................................................F..... [  0%]
+........................................................................ [  1%]
+........................................................................ [  1%]
+........................................................................ [  2%]
+........................................................................ [  2%]
+........................................................................ [  3%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  7%]
+...............................................................F........ [  8%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [  9%]
+.....................F.FF............................................... [ 10%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+...........................................................s............ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+................................................s...s.........s......... [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+........................s............................................... [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+................................s....................................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 86%]
+.............................................F..F....................... [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 89%]
+.................................s...................................... [ 90%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 98%]
+s....................................................................... [ 99%]
+...............................................................          [100%]
+=================================== FAILURES ===================================
+_________________________ test_ipv6_dsn_pool_connects __________________________
+[gw0] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_bf9b72abdf70'
+
+    @pytest.mark.integration
+    async def test_ipv6_dsn_pool_connects(pg_dsn: str) -> None:
+        """The bracketed [::1] form connects through a pool (the same host the
+        plain form resolves; only the spelling differs)."""
+        base = _single_host_dsn(pg_dsn)
+        port = base.split("@", 1)[1].split("/", 1)[0].split(":")[1]
+        dsn = f"postgresql://taskq:taskq@[::1]:{port}/taskq"
+>       pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=2)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_enterprise_dsn_surfaces.py:298: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1054: in _connect_addr
+    return await __connect_addr(params, True, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='taskq', password='taskq', database='taskq', ssl=<ssl.SSLContext object at 0x7f8c5ec4b950>, ...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = True, addr = ('::1', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=100, max_cached_statement_lifetime=300, max_cacheable_statement_size=15360)
+connection_class = <class 'asyncpg.connection.Connection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='taskq', password='taskq', database='taskq', ssl=<ssl.SSLContext object at 0x7f8c5ec4b950>, ...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "taskq"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+_________ test_init_hook_registers_codec_on_every_physical_connection __________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_73a4943d77d4'
+
+    async def test_init_hook_registers_codec_on_every_physical_connection(pg_dsn: str) -> None:
+        admin = await asyncpg.connect(pg_dsn)
+        try:
+            await admin.execute("DROP TYPE IF EXISTS init_hook_flavor CASCADE")
+            await admin.execute("CREATE TYPE init_hook_flavor AS ENUM ('vanilla', 'chocolate')")
+        finally:
+            await admin.close()
+    
+        initialized_pids: list[int] = []
+    
+        async def init(conn: asyncpg.Connection) -> None:
+            # The same mechanism pgvector.asyncpg.register_vector uses: a
+            # text-format codec registered by type name, per connection.
+            await conn.set_type_codec(
+                "init_hook_flavor",
+                encoder=lambda v: v,
+                decoder=lambda v: f"flavor:{v}",
+                format="text",
+            )
+            initialized_pids.append(await conn.fetchval("SELECT pg_backend_pid()"))
+    
+        provider = _StaticPgProvider(password="taskq")  # pg_container fixture's static credentials
+        # sslmode=disable: the factory injects sslmode=require only when the DSN
+        # carries no explicit sslmode, and the test container serves no TLS.
+        factory = make_pg_pool_factory(
+            f"{pg_dsn}?sslmode=disable",
+            provider,
+            min_size=1,
+            max_size=2,
+            max_inactive_connection_lifetime=0.5,
+            init=init,
+        )
+    
+>       pool = await factory()
+               ^^^^^^^^^^^^^^^
+
+tests/test_auth_pool_init_integration.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/auth.py:746: in factory
+    pool = await asyncpg.create_pool(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_73a4943d77d4', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=512, max_cached_statement_lifetime=3600, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+______________ test_dedicated_conn_factory_refreshes_on_each_open ______________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_809f22192e59'
+
+    async def test_dedicated_conn_factory_refreshes_on_each_open(pg_dsn: str) -> None:
+        """The LISTEN / advisory-lock connection path works end-to-end unchanged.
+    
+        Honest scope: this one does NOT discriminate the fix - it passes against
+        the old code too, because a dedicated connection is opened once per factory
+        invocation and the old code already re-fetched per invocation. It is here
+        as the end-to-end guard that handing asyncpg a *callable* ``password=``
+        still authenticates against a real server on this path (a callable asyncpg
+        mishandled would fail here). The discriminating proof that the callable is
+        re-consulted per physical connection is
+        ``test_dedicated_conn_password_is_callable_refetched_per_connection`` in
+        tests/test_auth.py.
+        """
+        provider = _RotatingPgProvider(_CORRECT_PASSWORD)
+        factory = make_dedicated_conn_factory(f"{pg_dsn}?sslmode=disable", provider)
+    
+>       conn = await factory()
+               ^^^^^^^^^^^^^^^
+
+tests/test_auth_credential_refresh_integration.py:162: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/auth.py:851: in factory
+    conn = await asyncpg.connect(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_809f22192e59', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=100, max_cached_statement_lifetime=300, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+____________ test_provider_is_called_for_every_physical_connection _____________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_809f22192e59'
+
+    async def test_provider_is_called_for_every_physical_connection(pg_dsn: str) -> None:
+        """Pool growth and idle recycling each re-fetch the credential.
+    
+        Against the old one-shot behaviour the provider was called exactly once
+        (``calls == 1``) no matter how many physical connections were opened.
+        """
+        provider = _RotatingPgProvider(_CORRECT_PASSWORD)
+        factory = make_pg_pool_factory(
+            f"{pg_dsn}?sslmode=disable",
+            provider,
+            min_size=1,
+            max_size=2,
+            max_inactive_connection_lifetime=0.5,
+        )
+    
+>       pool = await factory()
+               ^^^^^^^^^^^^^^^
+
+tests/test_auth_credential_refresh_integration.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/auth.py:746: in factory
+    pool = await asyncpg.create_pool(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_809f22192e59', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=512, max_cached_statement_lifetime=3600, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+______________ test_rotated_credential_is_used_by_new_connections ______________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_809f22192e59'
+
+    async def test_rotated_credential_is_used_by_new_connections(pg_dsn: str) -> None:
+        """A credential that changes while the pool is alive reaches new connections.
+    
+        This is the behavioural core of the fix, in three moves:
+    
+        1. the pool is built and works with the correct credential;
+        2. the provider starts handing out an INVALID credential (a token that has
+           expired and been replaced by a bad value) and, once the idle connection
+           is recycled, the next physical connection fails to authenticate. Under
+           the old code this step SUCCEEDED, because the good password captured at
+           construction was reused forever - that success is precisely the bug;
+        3. the provider is restored and the pool recovers on its own, with no
+           rebuild and no SIGHUP.
+        """
+        provider = _RotatingPgProvider(_CORRECT_PASSWORD)
+        factory = make_pg_pool_factory(
+            f"{pg_dsn}?sslmode=disable",
+            provider,
+            min_size=1,
+            max_size=1,
+            max_inactive_connection_lifetime=0.5,
+        )
+    
+>       pool = await factory()
+               ^^^^^^^^^^^^^^^
+
+tests/test_auth_credential_refresh_integration.py:121: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/auth.py:746: in factory
+    pool = await asyncpg.create_pool(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_809f22192e59', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=512, max_cached_statement_lifetime=3600, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+______________ test_reload_credentials_swaps_the_pool_everywhere _______________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_0a9c3678c991'
+
+    async def test_reload_credentials_swaps_the_pool_everywhere(pg_dsn: str) -> None:
+        """The headline proof: rotate the pool through the public API only.
+    
+        After ``reload_credentials()`` the client must keep working, the OLD pool
+        must be closed, and every subsystem that holds a pool reference (backend
+        deps for enqueue/list, ActorsClient) must be on the NEW one. No private
+        attribute is touched anywhere in this test - that is the point.
+        """
+        await _prepare_schema(pg_dsn)
+        stripped = _disable_ssl(pg_dsn).replace(f":{_CONTAINER_PASSWORD}@", "@")
+        provider = _StaticProvider(_CONTAINER_PASSWORD)
+        factory = make_pg_pool_factory(stripped, provider, min_size=1, max_size=2)
+    
+        built: list[asyncpg.Pool] = []
+    
+        async def _tracking_factory() -> asyncpg.Pool:
+            pool = await factory()
+            built.append(pool)
+            return pool
+    
+>       async with TaskQ(pool_factory=_tracking_factory, schema=_SCHEMA_LABEL) as tq:
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_client_credential_provider.py:189: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/client/_taskq.py:935: in __aenter__
+    await self.open()
+src/taskq/client/_taskq.py:745: in open
+    self._pool = await asyncio.wait_for(
+/home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py:520: in wait_for
+    return await fut
+           ^^^^^^^^^
+tests/test_client_credential_provider.py:185: in _tracking_factory
+    pool = await factory()
+           ^^^^^^^^^^^^^^^
+src/taskq/auth.py:746: in factory
+    pool = await asyncpg.create_pool(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_0a9c3678c991', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=None, statement_cache_size=512, max_cached_statement_lifetime=3600, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+__________ test_pg_provider_authenticates_through_the_credential_path __________
+[gw1] linux -- Python 3.12.14 /tmp/opencode/cifix-681/.venv/bin/python
+
+pg_dsn = 'postgresql://postgres:postgres@localhost:5756/tq_db_0a9c3678c991'
+
+    async def test_pg_provider_authenticates_through_the_credential_path(pg_dsn: str) -> None:
+        """``TaskQ(dsn=..., pg_provider=...)`` really authenticates with the provider.
+    
+        The DSN is stripped of its password, so the client can only connect if the
+        provider's credential reached asyncpg.
+        """
+        await _prepare_schema(pg_dsn)
+        stripped = _disable_ssl(pg_dsn).replace(f":{_CONTAINER_PASSWORD}@", "@")
+        provider = _StaticProvider(_CONTAINER_PASSWORD)
+    
+>       async with TaskQ(dsn=stripped, pg_provider=provider, schema=_SCHEMA_LABEL) as tq:
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_client_credential_provider.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/taskq/client/_taskq.py:935: in __aenter__
+    await self.open()
+src/taskq/client/_taskq.py:745: in open
+    self._pool = await asyncio.wait_for(
+/home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py:520: in wait_for
+    return await fut
+           ^^^^^^^^^
+src/taskq/auth.py:746: in factory
+    pool = await asyncpg.create_pool(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:439: in _async__init__
+    await self._initialize()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:466: in _initialize
+    await first_ch.connect()
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:153: in connect
+    self._con = await self._pool._get_new_connection()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/pool.py:538: in _get_new_connection
+    con = await self._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connection.py:2443: in connect
+    return await connect_utils._connect(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1218: in _connect
+    conn = await _connect_addr(
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1050: in _connect_addr
+    return await __connect_addr(params, False, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+params = ConnectionParameters(user='postgres', password='taskq', database='tq_db_0a9c3678c991', ssl=False, sslmode=<SSLMode.dis...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+retry = False, addr = ('localhost', 5756)
+loop = <_UnixSelectorEventLoop running=False closed=False debug=False>
+config = ConnectionConfiguration(command_timeout=10.0, statement_cache_size=512, max_cached_statement_lifetime=3600, max_cacheable_statement_size=15360)
+connection_class = <class 'taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection'>
+record_class = <class 'asyncpg.protocol.record.Record'>
+params_input = ConnectionParameters(user='postgres', password=<function _make_pg_password_callable.<locals>._fetch_password at 0x7f2f...postgres'>, server_settings=None, target_session_attrs=<SessionAttribute.any: 'any'>, krbsrvname=None, gsslib='gssapi')
+
+    async def __connect_addr(
+        params,
+        retry,
+        addr,
+        loop,
+        config,
+        connection_class,
+        record_class,
+        params_input,
+    ):
+        connected = _create_future(loop)
+    
+        proto_factory = lambda: protocol.Protocol(
+            addr, connected, params, record_class, loop)
+    
+        if isinstance(addr, str):
+            # UNIX socket
+            connector = loop.create_unix_connection(proto_factory, addr)
+    
+        elif params.ssl and params.ssl_negotiation is SSLNegotiation.direct:
+            # if ssl and ssl_negotiation is `direct`, skip STARTTLS and perform
+            # direct SSL connection
+            connector = loop.create_connection(
+                proto_factory, *addr, ssl=params.ssl
+            )
+    
+        elif params.ssl:
+            connector = _create_ssl_connection(
+                proto_factory, *addr, loop=loop, ssl_context=params.ssl,
+                ssl_is_advisory=params.sslmode == SSLMode.prefer)
+        else:
+            connector = loop.create_connection(proto_factory, *addr)
+    
+        tr, pr = await connector
+    
+        try:
+>           await connected
+E           asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "postgres"
+
+.venv/lib/python3.12/site-packages/asyncpg/connect_utils.py:1102: InvalidPasswordError
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/cifix-681/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+tests/test_stub_context_snooze_count.py::test_stub_context_carries_snooze_count_like_the_pg_worker
+  /tmp/opencode/cifix-681/tests/test_stub_context_snooze_count.py:47: StubPayloadTypeWarning: register_stub('cycler', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_web_health.py::test_fastapi_is_a_hard_dependency_of_the_health_router
+  tests/test_web_health.py:212: PytestWarning: The test <Function test_fastapi_is_a_hard_dependency_of_the_health_router> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_fastapi_is_a_hard_dependency_of_the_health_router() -> None:
+
+tests/test_retry_classifier_hook.py::test_end_to_end_hook_influences_real_dispatch_via_register_stub
+  /tmp/opencode/cifix-681/tests/test_retry_classifier_hook.py:467: StubPayloadTypeWarning: register_stub('hooked_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_is_refused_on_the_live_copy_wire
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit_pg.py:241: DeprecationWarning: This process (pid=1968023) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_job_handle.py::TestClientOnlyConstruction::test_client_only_wait_works
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:436: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestWait::test_wait_no_timeout_on_terminal_job
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:117: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestWait::test_wait_timeout_raises
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:90: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", _hang)
+
+tests/test_job_handle.py::TestWait::test_wait_returns_when_terminal
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:64: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestAttempts::test_attempts_returns_attempt_rows
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:140: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestBackendOnlyConstruction::test_backend_only_wait_resolves
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:353: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_job_handle.py::TestStatus::test_status_changes_after_run
+  /tmp/opencode/cifix-681/tests/test_job_handle.py:226: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_inherits_the_pools_sockets_and_is_refused
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit_pg.py:166: DeprecationWarning: This process (pid=1968019) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_fork_in_a_job_body_refuses_reports_and_keeps_consuming
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit_pg.py:101: DeprecationWarning: This process (pid=1968019) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_postgres_unique_for.py::test_connection_loss_during_preflight
+tests/test_singleton.py::test_singleton_connection_failure_mid_preflight
+  /tmp/opencode/cifix-681/src/taskq/backend/_enqueue.py:867: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    owns_transaction = owns_transaction or not conn.is_in_transaction()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_postgres_unique_for.py::test_connection_loss_during_preflight
+  /tmp/opencode/cifix-681/src/taskq/backend/_enqueue.py:889: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    ) and not conn.is_in_transaction():
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_di_redundant_override.py::test_solver_no_longer_emits_at_dispatch
+  /tmp/opencode/cifix-681/tests/test_di_redundant_override.py:302: LifecycleDetectionWarning: redundant Scope override on my_actor.settings: Annotated[..., Scope.PROCESS] matches the registered default for tests.test_di_redundant_override._Settings; the override has no effect.
+    registry.validate(actors=[ref])
+
+tests/test_di_redundant_override.py::test_redundant_clock_override_actor_still_resolves
+  /tmp/opencode/cifix-681/tests/test_di_redundant_override.py:376: LifecycleDetectionWarning: redundant Scope override on my_actor.clock: Annotated[..., Scope.PROCESS] matches the registered default for taskq.backend.clock.Clock; the override has no effect.
+    registry.validate(actors=[ref])
+
+tests/test_state_transitions_round_trip.py::test_multiple_snooze_cycles
+  /tmp/opencode/cifix-681/tests/test_state_transitions_round_trip.py:113: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_three_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_indefinite_retry_polling_pattern
+  /tmp/opencode/cifix-681/tests/test_state_transitions_round_trip.py:205: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_30_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_retry_after_round_trip
+  /tmp/opencode/cifix-681/tests/test_state_transitions_round_trip.py:155: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", retry_then_succeed)
+
+tests/test_state_transitions_round_trip.py::test_full_snooze_round_trip
+  /tmp/opencode/cifix-681/tests/test_state_transitions_round_trip.py:61: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", snooze_then_succeed)
+
+tests/test_rt_payload_json_fidelity.py::test_overdeep_payload_is_refused_at_enqueue_boundary_mirror
+  /tmp/opencode/cifix-681/tests/test_rt_payload_json_fidelity.py:189: StubPayloadTypeWarning: register_stub('deep_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_rt_payload_json_fidelity.py::test_nan_result_succeeds_and_stores_null_mirror
+  /tmp/opencode/cifix-681/tests/test_rt_payload_json_fidelity.py:148: StubPayloadTypeWarning: register_stub('nan_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("nan_actor", stub)
+
+tests/test_sub_job_tags.py::TestSubJobMissingFields::test_schedule_to_close
+  /tmp/opencode/cifix-681/tests/test_sub_job_tags.py:237: DeprecationWarning: schedule_to_close (absolute datetime) is deprecated; declare retry.time_budget on the actor (interval form) instead, absolute datetimes cross clock domains (the app clock that produced them vs the database clock that evaluates them) and can misbehave under skew; see docs/architecture.md
+    handle = await enqueuer.enqueue(
+
+tests/test_settings_tables_docs_contract.py::test_every_documented_default_matches_the_code_default
+  /home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/pathlib.py:358: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    def __init__(self, *args):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_rt_execloop_runner_force_cancel.py::test_runner_terminates_noncooperative_attempt_after_force_grace
+  /tmp/opencode/cifix-681/tests/test_rt_execloop_runner_force_cancel.py:47: StubPayloadTypeWarning: register_stub('rt_stubborn', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_stubborn", stubborn)
+
+tests/test_batch_abort_finalizer.py::TestClockSkewResilience::test_clock_jump_does_not_fail_in_memory_finalizer
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+  /home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/events.py:88: StubPayloadTypeWarning: register_stub('abort_finalizer_test_child', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_batch_abort_finalizer.py::TestClockSkewResilience::test_clock_jump_does_not_fail_in_memory_finalizer
+tests/test_batch_abort_finalizer.py::TestAbortFinalizerSucceeds::test_finalizer_catches_batch_aborted_error
+  /home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/events.py:88: StubPayloadTypeWarning: register_stub('abort_finalizer_test_finalizer', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_origin_discriminator.py:71: StubPayloadTypeWarning: register_stub('self_cancelling', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("self_cancelling", self_cancelling)
+
+tests/test_runner_cancel_origin_discriminator.py::test_actor_raised_cancelled_error_without_an_event_drains_the_runner
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_origin_discriminator.py:72: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_runner_cancel_origin_discriminator.py::test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_event
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_origin_discriminator.py:147: StubPayloadTypeWarning: register_stub('ignoring', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("ignoring", ignoring)
+
+tests/test_runner_cancel_origin_discriminator.py::test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_event
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_origin_discriminator.py:148: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_attack_fork_inherit.py: 16 warnings
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=1968019) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_parent_stamp_is_set_by_the_fork_and_consumed_once
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit.py:216: DeprecationWarning: This process (pid=1968019) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_forked_grandchild_is_refused
+  /tmp/opencode/cifix-681/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=1968023) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/compat/test_retry_exhausted_idempotency_dedup.py::test_retry_exhausted_with_idempotency_dedup
+  /tmp/opencode/cifix-681/tests/compat/test_retry_exhausted_idempotency_dedup.py:46: StubPayloadTypeWarning: register_stub('failing_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("failing_actor", failing_stub)
+
+tests/test_retry_inmemory.py::test_indefinite_snooze_refunds_attempt
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:586: StubPayloadTypeWarning: register_stub('indef_u9', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_caller_override_schedule_to_close_wins
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:318: DeprecationWarning: schedule_to_close (absolute datetime) is deprecated; declare retry.time_budget on the actor (interval form) instead, absolute datetimes cross clock domains (the app clock that produced them vs the database clock that evaluates them) and can misbehave under skew; see docs/architecture.md
+    handle = await client.enqueue(
+
+tests/test_retry_inmemory.py::test_retry_after_consume_budget_false_refunds_increment
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:210: StubPayloadTypeWarning: register_stub('b12_actor_false', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("b12_actor_false", counting_actor)
+
+tests/test_retry_inmemory.py::test_run_until_drained_retry_after_consume_budget_false_refunds_attempt
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:125: StubPayloadTypeWarning: register_stub('retry_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("retry_actor", retry_stub)
+
+tests/test_retry_inmemory.py::test_indefinite_retry_attempt_unchanged
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:342: StubPayloadTypeWarning: register_stub('indef_u1', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_ignores_max_attempts_five_failures
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:489: StubPayloadTypeWarning: register_stub('indef_u3', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_retry_after_consume_budget_true_no_double_increment
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:171: StubPayloadTypeWarning: register_stub('b12_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("b12_actor", counting_actor)
+
+tests/test_retry_inmemory.py::test_admission_denial_never_consumes_budget_or_fails_the_job
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:711: StubPayloadTypeWarning: register_stub('denied_budget', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_hook_fires_once_after_exhaustion
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:77: StubPayloadTypeWarning: register_stub('flaky', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_retry_after_consume_budget_increments_attempt
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:639: StubPayloadTypeWarning: register_stub('indef_u16', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_on_retry_exhausted_sees_post_write_row_on_retry_after_budget
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:830: StubPayloadTypeWarning: register_stub('retry_after_budget', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_indefinite_retry_exceeds_deadline
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:411: StubPayloadTypeWarning: register_stub('indef_u2', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_retry_inmemory.py::test_on_retry_exhausted_sees_post_write_row_on_snooze_deadline
+  /tmp/opencode/cifix-681/tests/test_retry_inmemory.py:772: StubPayloadTypeWarning: register_stub('snooze_deadline', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_stub_retry_budget.py::test_bare_name_stub_with_retry_does_not_move_the_row_budget
+  /tmp/opencode/cifix-681/tests/test_stub_retry_budget.py:165: StubPayloadTypeWarning: register_stub('budget_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_dispatch.py::TestAsyncStub::test_async_stub_awaited
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:463: StubPayloadTypeWarning: register_stub('async_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("async_actor", async_stub)
+
+tests/test_in_memory_dispatch.py::TestStateMachineReachability::test_succeeding_stub
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:98: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_dispatch.py::test_run_until_drained_stops_when_admission_never_recovers
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:628: StubPayloadTypeWarning: register_stub('res_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("res_actor", deny_stub)
+
+tests/test_in_memory_dispatch.py::test_run_until_drained_handles_reservation_unavailable
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:588: StubPayloadTypeWarning: register_stub('res_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("res_actor", res_stub)
+
+tests/test_in_memory_dispatch.py::TestNoClockAdvanceReturns::test_returns_with_scheduled_job_when_no_move_to
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:274: StubPayloadTypeWarning: register_stub('snoozy', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("snoozy", lambda p, c: {"done": True})
+
+tests/test_in_memory_dispatch.py::TestRetryReachability::test_fails_twice_succeeds_third
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:137: StubPayloadTypeWarning: register_stub('flaky_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("flaky_actor", flaky_stub)
+
+tests/test_in_memory_dispatch.py::TestClockTimeTravel::test_scheduled_job_dispatchable_after_advance
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:198: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda p, c: None)
+
+tests/test_in_memory_dispatch.py::TestRunningRowLeaseInvariant::test_dispatched_rows_keep_their_own_lease
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:1080: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_dispatch.py::TestDeterminism::test_identical_backends_produce_equal_state
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:164: StubPayloadTypeWarning: register_stub('a1', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("a1", lambda p, c: {"v": 1})
+
+tests/test_in_memory_dispatch.py::TestDeterminism::test_identical_backends_produce_equal_state
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:165: StubPayloadTypeWarning: register_stub('a2', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("a2", lambda p, c: {"v": 2})
+
+tests/test_in_memory_dispatch.py::TestPerpetualSnooze::test_snooze_advances_clock_and_reschedules
+  /tmp/opencode/cifix-681/tests/test_in_memory_dispatch.py:243: StubPayloadTypeWarning: register_stub('snoozy', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("snoozy", snoozy_stub)
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_uncaught_cooperative_cancel_drains_the_runner_and_serves_the_rest
+  /tmp/opencode/cifix-681/tests/test_stub_context_cooperative_cancel_drain.py:59: StubPayloadTypeWarning: register_stub('cooperative', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("cooperative", cooperative)
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_uncaught_cooperative_cancel_drains_the_runner_and_serves_the_rest
+  /tmp/opencode/cifix-681/tests/test_stub_context_cooperative_cancel_drain.py:60: StubPayloadTypeWarning: register_stub('follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower", follower)
+
+tests/test_stub_context_cooperative_cancel_drain.py::test_external_cancellation_of_the_drain_task_propagates
+  /tmp/opencode/cifix-681/tests/test_stub_context_cooperative_cancel_drain.py:142: StubPayloadTypeWarning: register_stub('hanging', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("hanging", hanging)
+
+tests/test_in_memory_terminal_writes.py::TestMarkSucceededResultExpiryFallback::test_run_until_drained_wires_stub_result_ttl_as_fallback
+  /tmp/opencode/cifix-681/tests/test_in_memory_terminal_writes.py:1986: StubPayloadTypeWarning: register_stub('ttl_stub_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("ttl_stub_actor", stub, result_ttl=ttl)
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_result_expired_after_clock_passes_expiry
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expired_read_appends_no_events_and_never_touches_wake
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expired_read_does_not_revive_or_mutate_terminal_state
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_result_present_before_expiry
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_row_without_ttl_is_never_expired_by_reads
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_expiry_boundary_is_strictly_less_than
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_wait_returns_value_before_expiry_and_raises_after
+  /tmp/opencode/cifix-681/tests/test_in_memory_terminal_writes.py:2052: StubPayloadTypeWarning: register_stub('ttl_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_stored_actor_config_ttl_drives_expiry
+  /tmp/opencode/cifix-681/tests/test_in_memory_terminal_writes.py:2052: StubPayloadTypeWarning: register_stub('stored_ttl_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_enqueue_pinned_ttl_in_past_at_completion_reads_expired
+  /tmp/opencode/cifix-681/tests/test_in_memory_terminal_writes.py:2180: StubPayloadTypeWarning: register_stub('enqueue_pinned_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("enqueue_pinned_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+  /tmp/opencode/cifix-681/tests/test_in_memory_terminal_writes.py:2252: StubPayloadTypeWarning: register_stub('null_result_read_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_batch_abort_integration.py::TestBatchAbortProperty::test_batch_abort_property
+tests/test_batch_abort_integration.py::TestAbortAfterThreshold::test_abort_after_threshold
+tests/test_batch_abort_integration.py::TestNoAbortWithoutPolicy::test_no_abort_without_policy
+tests/test_batch_abort_integration.py::TestSuccessResetsCounter::test_success_resets_counter
+tests/test_batch_abort_integration.py::TestHookFailureGuard::test_hook_failure_does_not_affect_job_terminal_state
+tests/test_batch_abort_integration.py::TestBatchMarkedCompleteOnAllTerminal::test_batch_marked_complete
+  /home/rich/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/events.py:88: StubPayloadTypeWarning: register_stub('batch_abort_test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    self._context.run(self._callback, *self._args)
+
+tests/test_atk_rt_dispatch_integration.py::test_diff_bulk_cancel_rename_spellings_agree
+tests/test_atk_rt_dispatch_integration.py::test_diff_bulk_cancel_rename_spellings_agree
+  /tmp/opencode/cifix-681/tests/test_atk_rt_dispatch_integration.py:1159: DeprecationWarning: JobFilter.active is a deprecated alias for JobFilter.unfinished; pass unfinished=True for non-terminal statuses, unfinished=False for terminal ones
+    JobFilter(queue=_QUEUE, **kwargs),  # type: ignore[arg-type]  # Why: the alias spelling is the surface under attack.
+
+tests/test_in_memory_time_travel.py::test_tt4_cron_pattern_completes_under_one_second
+  /tmp/opencode/cifix-681/tests/test_in_memory_time_travel.py:119: StubPayloadTypeWarning: register_stub('cron_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    memory_jobs.register_stub("cron_actor", succeed)
+
+tests/test_stub_context_actor_surface.py::test_documented_method_surface_is_exercisable_through_the_runner
+  /tmp/opencode/cifix-681/tests/test_stub_context_actor_surface.py:108: StubPayloadTypeWarning: register_stub('reporter', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("reporter", reporter)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_cancellation_methods_observe_a_requested_cancel
+  /tmp/opencode/cifix-681/tests/test_stub_context_actor_surface.py:154: StubPayloadTypeWarning: register_stub('probe', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("probe", probe)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_log_is_a_usable_bound_logger
+  /tmp/opencode/cifix-681/tests/test_stub_context_actor_surface.py:301: StubPayloadTypeWarning: register_stub('logger_user', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("logger_user", logger_user)
+
+tests/test_stub_context_actor_surface.py::test_stub_context_span_read_matches_the_documented_disabled_value
+  /tmp/opencode/cifix-681/tests/test_stub_context_actor_surface.py:64: StubPayloadTypeWarning: register_stub('reader', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("reader", reader)
+
+tests/test_runner_force_cancel_absorption.py::test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:445: StubPayloadTypeWarning: register_stub('stubborn_first', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_first", stubborn)
+
+tests/test_runner_force_cancel_absorption.py::test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:446: StubPayloadTypeWarning: register_stub('gated_second', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("gated_second", gated)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_awaited_inline_still_runs_the_job_queued_behind_a_forced_one
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:195: StubPayloadTypeWarning: register_stub('absorb_stubborn', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("absorb_stubborn", stubborn)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_awaited_inline_still_runs_the_job_queued_behind_a_forced_one
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:196: StubPayloadTypeWarning: register_stub('absorb_follower', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("absorb_follower", follower)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:302: StubPayloadTypeWarning: register_stub('stubborn_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_a", stubborn_a)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:303: StubPayloadTypeWarning: register_stub('stubborn_b', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_b", stubborn_b)
+
+tests/test_runner_force_cancel_absorption.py::test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:304: StubPayloadTypeWarning: register_stub('follower_after_two', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower_after_two", follower)
+
+tests/test_runner_force_cancel_absorption.py::test_drain_leaves_callers_cancel_count_unchanged_after_absorbing_force_cancel
+  /tmp/opencode/cifix-681/tests/test_runner_force_cancel_absorption.py:80: StubPayloadTypeWarning: register_stub('stubborn_uncancel', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_uncancel", stubborn)
+
+tests/test_runner_escape_batch_hook_parity.py::test_cooperative_cancel_escape_completes_the_batch
+  /tmp/opencode/cifix-681/tests/test_runner_escape_batch_hook_parity.py:59: StubPayloadTypeWarning: register_stub('cooperative', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("cooperative", cooperative)
+
+tests/test_runner_escape_batch_hook_parity.py::test_force_cancelled_member_completes_the_batch_and_the_drain_continues
+  /tmp/opencode/cifix-681/tests/test_runner_escape_batch_hook_parity.py:173: StubPayloadTypeWarning: register_stub('stubborn_member', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("stubborn_member", stubborn)
+
+tests/test_runner_escape_batch_hook_parity.py::test_force_cancelled_member_completes_the_batch_and_the_drain_continues
+  /tmp/opencode/cifix-681/tests/test_runner_escape_batch_hook_parity.py:174: StubPayloadTypeWarning: register_stub('follower_member', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("follower_member", follower)
+
+tests/test_actor_config_retry_contract_pg.py::test_cron_fire_uses_declared_retry_contract
+  /tmp/opencode/cifix-681/.venv/lib/python3.12/site-packages/asyncpg/connection.py:1779: InterfaceWarning: <taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection object at 0x7f8c4ec158b0> is being released to the pool but has 1 active notification listener
+    warnings.warn(w)
+
+tests/test_actor_config_retry_contract_pg.py::test_contract_downgrade_leaves_created_jobs_at_their_creation_time_contract
+  /tmp/opencode/cifix-681/.venv/lib/python3.12/site-packages/asyncpg/connection.py:1779: InterfaceWarning: <taskq._forkguard.guarded_connection_class.<locals>.GuardedConnection object at 0x7f2f4fde2c60> is being released to the pool but has 1 active notification listener
+    warnings.warn(w)
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_the_write_reserve_stays_unspent
+  tests/test_cron_loop.py:1621: PytestWarning: The test <Function test_the_write_reserve_stays_unspent> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_the_write_reserve_stays_unspent(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_spent_tick_funds_no_factory_wait
+  tests/test_cron_loop.py:1631: PytestWarning: The test <Function test_a_spent_tick_funds_no_factory_wait> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_spent_tick_funds_no_factory_wait(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_tiny_tick_still_funds_its_first_factory
+  tests/test_cron_loop.py:1680: PytestWarning: The test <Function test_a_tiny_tick_still_funds_its_first_factory> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_tiny_tick_still_funds_its_first_factory(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_tight_factory_budget_needs_only_its_full_declared_grant
+  tests/test_cron_loop.py:1662: PytestWarning: The test <Function test_a_tight_factory_budget_needs_only_its_full_declared_grant> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_tight_factory_budget_needs_only_its_full_declared_grant(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_configured_budget_applies_when_the_tick_has_room
+  tests/test_cron_loop.py:1615: PytestWarning: The test <Function test_configured_budget_applies_when_the_tick_has_room> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_budget_applies_when_the_tick_has_room(self) -> None:
+
+tests/test_cron_loop.py::TestFactoryDeadlineMath::test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait
+  tests/test_cron_loop.py:1642: PytestWarning: The test <Function test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait(self) -> None:
+
+tests/test_di_validate.py::test_actor_annotated_scope_override_in_plan
+  /tmp/opencode/cifix-681/tests/test_di_validate.py:515: LifecycleDetectionWarning: redundant Scope override on my_actor.dep: Annotated[..., Scope.LOOP] matches the registered default for tests.test_di_validate.test_actor_annotated_scope_override_in_plan.<locals>.A; the override has no effect.
+    registry.validate(actors=[actor])
+
+tests/test_leader_sweeps_coverage.py::test_sweep_loop_acquire_calls_pass_timeout_ast
+  tests/test_leader_sweeps_coverage.py:1432: PytestWarning: The test <Function test_sweep_loop_acquire_calls_pass_timeout_ast> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_sweep_loop_acquire_calls_pass_timeout_ast() -> None:
+
+tests/test_leader_sweeps_coverage.py::test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast
+  tests/test_leader_sweeps_coverage.py:1471: PytestWarning: The test <Function test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast() -> None:
+
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+  /tmp/opencode/cifix-681/tests/test_rt_payload_surrogate_guards.py:221: StubPayloadTypeWarning: register_stub('rt_exc_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_exc_actor", stub)
+
+tests/test_rt_payload_surrogate_guards.py::test_unencodable_result_is_non_retryable_like_result_too_large
+  /tmp/opencode/cifix-681/tests/test_rt_payload_surrogate_guards.py:184: StubPayloadTypeWarning: register_stub('rt_result_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("rt_result_actor", stub)
+
+tests/test_runner_cancel_polling.py::test_cancel_polling_flag_ends_a_mid_drain_cancel_as_cancelled
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_polling.py:38: StubPayloadTypeWarning: register_stub('victim', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("victim", victim)
+
+tests/test_runner_cancel_polling.py::test_default_drain_still_never_ticks_cancel_polling
+  /tmp/opencode/cifix-681/tests/test_runner_cancel_polling.py:90: StubPayloadTypeWarning: register_stub('parked', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("parked", parked)
+
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/cifix-681/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_jobs_client.py::TestEnqueueHandleWaitRegression::test_enqueue_handle_wait_works
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:1173: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_jobs_client.py::TestList::test_list_pages_the_whole_set_under_a_non_default_ordering[JobSortField.CREATED_AT_DESC]
+tests/test_jobs_client.py::TestList::test_list_pages_the_whole_set_under_a_non_default_ordering[JobSortField.FINISHED_AT_DESC]
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:473: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_jobs_client.py::TestCancel::test_cancel_succeeded_job
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:102: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub(
+
+tests/test_jobs_client.py::TestGet::test_refresh_advances_row_to_the_fetched_row
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:266: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_jobs_client.py::TestGet::test_wait_advances_row_to_the_terminal_row
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:304: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: None)
+
+tests/test_jobs_client.py::TestGet::test_status_advances_row
+  /tmp/opencode/cifix-681/tests/test_jobs_client.py:286: StubPayloadTypeWarning: register_stub('test_actor', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+
+tests/test_in_memory_backend.py::TestRegisterStub::test_register_and_overwrite
+  /tmp/opencode/cifix-681/tests/test_in_memory_backend.py:1574: StubPayloadTypeWarning: register_stub('actor_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("actor_a", stub_a)
+
+tests/test_in_memory_backend.py::TestRegisterStub::test_register_and_overwrite
+  /tmp/opencode/cifix-681/tests/test_in_memory_backend.py:1577: StubPayloadTypeWarning: register_stub('actor_a', ...) without payload_type= cannot resolve the actor's declared payload model from a bare name; falling back to PassthroughPayload, which accepts payload shapes the actor's real model would reject (a green in-memory test over code a production worker would refuse). Pass the ActorRef, register_stub(my_actor, ...) , or payload_type=MyPayload to validate against the declared model, or payload_type=PassthroughPayload to opt into the permissive default deliberately.
+    backend.register_stub("actor_a", stub_b)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.14-final-0 _______________
+
+Name                                           Stmts   Miss Branch BrPart  Cover   Missing
+------------------------------------------------------------------------------------------
+src/taskq/__init__.py                             29      2      0      0    93%   279-280
+src/taskq/__main__.py                              3      1      2      1    60%   12
+src/taskq/_advisory.py                            26      0      4      0   100%
+src/taskq/_close.py                               63      0     16      0   100%
+src/taskq/_di/__init__.py                          8      0      0      0   100%
+src/taskq/_di/_shadow.py                          46      2     22      3    93%   42, 73->87, 81
+src/taskq/_di/_utils.py                            7      0      2      0   100%
+src/taskq/_di/_validate.py                       239     17    154     24    90%   62-63, 70, 74, 85->87, 89->88, 92, 96->101, 98->101, 102, 122-123, 130, 134, 145, 149->154, 150->149, 155, 158, 247, 273, 277, 288->290, 290->297, 291->290, 294->297, 298, 349->348
+src/taskq/_di/lifecycle.py                        18      0     10      0   100%
+src/taskq/_di/registry.py                        143      7     68      8    93%   84, 143, 313, 317-319, 343->345, 347->346, 354->359, 356->359, 360
+src/taskq/_di/scope.py                             2      0      0      0   100%
+src/taskq/_di/scopes.py                          254     13     66      5    94%   174, 257-260, 301, 391-399, 662-663, 673
+src/taskq/_di/solver.py                           59      4     28      4    89%   45, 50->49, 136, 187-191
+src/taskq/_di/types.py                            37      0      0      0   100%
+src/taskq/_doctor.py                             168     12     74     12    88%   183, 186, 193-197, 419, 428->433, 433->438, 561->574, 593->604, 605-606, 655, 659->658, 662
+src/taskq/_dsn.py                                  8      0      0      0   100%
+src/taskq/_forkguard.py                          125      7     10      2    93%   170, 203, 220, 305-306, 384-385
+src/taskq/_humantime.py                           35      0     16      0   100%
+src/taskq/_ids.py                                 56      1     12      1    97%   54
+src/taskq/_json.py                                56      2     14      2    94%   72, 276
+src/taskq/_reaper.py                              12      0      2      0   100%
+src/taskq/_redis_client.py                        18      0      0      0   100%
+src/taskq/_reload_loop.py                         40      0      8      0   100%
+src/taskq/_scope.py                                8      0      0      0   100%
+src/taskq/_shield.py                              19      0      2      0   100%
+src/taskq/_validation.py                          10      0      0      0   100%
+src/taskq/aad.py                                 113      4     24      3    95%   151-152, 168, 170->exit, 213
+src/taskq/actor.py                                49      2     12      0    97%   359, 365
+src/taskq/actor_config.py                         35      0     10      0   100%
+src/taskq/actor_config_ops.py                    200      2     44      2    98%   410, 597
+src/taskq/audit.py                                93      1     20      3    96%   304, 447->465
+src/taskq/auth.py                                210      5     66      2    97%   501, 862-864, 1006
+src/taskq/aws.py                                  59      0     12      0   100%
+src/taskq/backend/__init__.py                      9      0      2      0   100%
+src/taskq/backend/_batch_sql.py                  233      9     44      4    95%   574, 585-588, 801->815, 805-808, 934, 1176->1200
+src/taskq/backend/_cancel_bulk.py                100      1     20      3    97%   180, 284->296, 308->282
+src/taskq/backend/_claim_cursor.py                45      1     12      0    98%   162
+src/taskq/backend/_cursor.py                     106      6     38      5    91%   169->exit, 193, 196-198, 396, 399
+src/taskq/backend/_dispatch.py                   156      0     38      1    99%   407->405
+src/taskq/backend/_dispatch_sql.py                63      1      4      1    97%   2096
+src/taskq/backend/_enqueue.py                    554     33    174     12    92%   361-370, 386, 427->434, 436-437, 487->490, 493-502, 1029->1031, 1302, 1398-1416, 1469, 1486-1500, 1880, 2204->2213, 2402, 2410
+src/taskq/backend/_filter_sql.py                  49      0     18      0   100%
+src/taskq/backend/_notify.py                      28      0     12      0   100%
+src/taskq/backend/_protocol.py                   546      9    116      9    97%   574, 610, 629, 952, 978, 1014, 1489, 1542, 1547
+src/taskq/backend/_reads.py                       89      0     14      0   100%
+src/taskq/backend/_records.py                     57      0     18      0   100%
+src/taskq/backend/_retention_floor.py             18      0      2      0   100%
+src/taskq/backend/_schedules.py                  110      7     34      4    92%   100->102, 221-223, 225-227, 234
+src/taskq/backend/_sql.py                         20      0      0      0   100%
+src/taskq/backend/_sql_fragments.py               11      0      0      0   100%
+src/taskq/backend/_sql_templates.py               61      0      0      0   100%
+src/taskq/backend/_sweeps.py                     290      0     64      1    99%   2078->2088
+src/taskq/backend/_terminal.py                   189      4     64      2    97%   264->266, 266->268, 283-286
+src/taskq/backend/clock.py                        13      0      0      0   100%
+src/taskq/backend/postgres.py                    350      3     36      4    98%   225, 917->951, 924->951, 1360, 1536
+src/taskq/backend/statemachine.py                 10      0      2      0   100%
+src/taskq/batch.py                               156      3     44      3    97%   288, 487, 566
+src/taskq/batch_policy.py                         18      0      2      0   100%
+src/taskq/cli.py                                1467    134    358     44    90%   807-809, 815-819, 872, 879-880, 895->899, 930-936, 962-975, 977->979, 1013-1014, 1037, 1412, 1561-1562, 1699-1700, 1702, 1763, 1827, 1878-1880, 2001-2019, 2135->2143, 2139-2142, 2157->2159, 2236, 2381, 2423-2425, 2453-2454, 2677, 2859-2860, 3192, 3195-3196, 3240, 3246-3247, 3274-3275, 3374-3375, 3427, 3477-3482, 3543, 3559-3561, 3790-3791, 3830-3832, 3834-3835, 3873, 3890, 3928-3929, 3938-3939, 3947-3949, 4049->4039, 4180->4185, 4242-4247, 4285-4298, 4300-4305, 4309-4314, 4345-4347, 4376-4378, 4397-4403, 4405-4411, 4429-4433, 4458-4460, 4463-4465, 4497-4509, 4545-4575, 4608-4610, 4617-4623
+src/taskq/client/__init__.py                       7      0      0      0   100%
+src/taskq/client/_actors.py                       19      0      0      0   100%
+src/taskq/client/_args.py                         82      1     24      1    98%   214
+src/taskq/client/_backpressure.py                 73      2     28      1    97%   293-294
+src/taskq/client/_capacity.py                    124      3     40      2    97%   133, 288->exit, 521-522
+src/taskq/client/_enqueuer.py                    164      2     54      2    98%   611, 620
+src/taskq/client/_handle.py                      154      5     52      5    95%   326, 329, 357, 498, 500
+src/taskq/client/_jobs.py                        419     29    124     11    92%   185, 237, 240->238, 244, 327, 435-436, 1000-1001, 1003-1005, 1221-1228, 1379, 1456-1462, 1507, 1519-1548, 1883-1887, 2175
+src/taskq/client/_taskq.py                       502     12    148      8    97%   552, 631, 929->exit, 1090, 1168, 1200, 1219, 1699->1704, 1757, 1822, 1906-1911, 1968->1972
+src/taskq/client/_transport.py                   102      6     26      2    94%   85-91, 122->128, 124->128, 140-146
+src/taskq/clock.py                                14      0      0      0   100%
+src/taskq/connections.py                         122      0     22      0   100%
+src/taskq/constants.py                           186      1     28      1    99%   1071
+src/taskq/context.py                             128      1     46      0    99%   140
+src/taskq/contrib/__init__.py                      0      0      0      0   100%
+src/taskq/contrib/kubernetes/__init__.py           0      0      0      0   100%
+src/taskq/contrib/prometheus/__init__.py           2      0      0      0   100%
+src/taskq/contrib/prometheus/_metrics.py          49      8      6      2    82%   58-59, 141-150, 172, 183-194
+src/taskq/cron.py                                287      7     94      5    97%   204-205, 547->563, 552, 628->633, 631-632, 710-711
+src/taskq/di.py                                    4      0      0      0   100%
+src/taskq/exceptions.py                          287      2     32      2    99%   35-36, 1078->1080, 1161->1166
+src/taskq/insights.py                             91      5     10      5    90%   365, 659, 749, 850, 1016
+src/taskq/migrate.py                             508      4    200      5    99%   144->157, 531-532, 582->608, 778, 1577
+src/taskq/migrations/__init__.py                   0      0      0      0   100%
+src/taskq/obs/__init__.py                          7      0      0      0   100%
+src/taskq/obs/_claim_health.py                   124      1     44      2    98%   189, 215->209
+src/taskq/obs/_exporter.py                       113     39     34      1    62%   221-225, 271-382
+src/taskq/obs/_otel.py                           677     44    184     28    92%   184-185, 265->exit, 267-268, 345-346, 386-387, 416-417, 485-486, 509-510, 548-549, 637, 720, 781, 884, 1270-1271, 1619, 1642, 1790, 1813, 1838, 1864, 1891, 1942, 1963, 1978, 2000, 2354, 2483->2480, 2610, 2641, 2786, 2858, 2912, 3062, 3448, 3466, 3520, 3667
+src/taskq/obs/_redact_exc.py                     144      2     40      3    97%   865->872, 875, 878
+src/taskq/obs/_structlog.py                      113      3     36      3    96%   549, 714, 866
+src/taskq/obs/error_reporter.py                   25      0      2      0   100%
+src/taskq/progress/__init__.py                     2      0      0      0   100%
+src/taskq/progress/_buffer.py                     45      0      8      0   100%
+src/taskq/progress/_events.py                     19      0      0      0   100%
+src/taskq/progress/_flush.py                     152      7     54      6    94%   143->145, 192, 209, 335, 393, 417, 521, 549
+src/taskq/progress/_publish.py                    82      0     16      0   100%
+src/taskq/ratelimit/__init__.py                   10      0      0      0   100%
+src/taskq/ratelimit/_decision_log.py              14      0      4      0   100%
+src/taskq/ratelimit/_dependency_guards.py         16      0      8      0   100%
+src/taskq/ratelimit/_lock_budget.py               12      0      4      0   100%
+src/taskq/ratelimit/_provider.py                  28      0      6      0   100%
+src/taskq/ratelimit/_redis_utils.py               72      0     20      0   100%
+src/taskq/ratelimit/_scripts.py                   10      0      0      0   100%
+src/taskq/ratelimit/_sliding_window_pg.py        181      4     40      2    97%   137-143, 701, 714
+src/taskq/ratelimit/_sliding_window_redis.py     187      2     46      0    99%   534-543
+src/taskq/ratelimit/composition.py                32      0      2      0   100%
+src/taskq/ratelimit/decision.py                   26      0      0      0   100%
+src/taskq/ratelimit/refs.py                       86      0     18      0   100%
+src/taskq/ratelimit/registry.py                  506      0    190      0   100%
+src/taskq/ratelimit/reservation.py               270      0     90      0   100%
+src/taskq/ratelimit/sliding_window.py            313      0    126      4    99%   150->154, 154->157, 301->305, 305->308
+src/taskq/ratelimit/token_bucket.py              380      0    112      1    99%   619->exit
+src/taskq/retry.py                               343      5    110      7    97%   358, 394, 759->763, 782->786, 787->793, 816->820, 818->816, 867-868, 1735
+src/taskq/scheduler.py                            21      0      4      0   100%
+src/taskq/settings.py                            392      6     70      3    98%   113, 261-262, 985, 2299, 2312
+src/taskq/testing/__init__.py                     11      0      0      0   100%
+src/taskq/testing/_batch.py                      158      5     70      6    95%   56, 63, 65, 67, 367, 382->380
+src/taskq/testing/_cancel_bulk.py                 28      0      8      0   100%
+src/taskq/testing/_dispatch.py                   172      4    106      5    97%   119, 325, 417, 422, 481->480
+src/taskq/testing/_enqueue.py                    269      4    136      5    98%   213->220, 301-309, 310->332, 700, 727->exit, 822
+src/taskq/testing/_reads.py                       88      3     36      3    95%   78, 219, 232
+src/taskq/testing/_runner.py                     299      2    102      7    98%   350, 636->638, 781->753, 802->753, 1047, 1078->1082, 1178->1185
+src/taskq/testing/_shared_containers.py          288     22     66      3    93%   105-106, 422-423, 431-432, 443-444, 455-456, 475-476, 496-497, 543-544, 548-549, 697, 743->745, 756, 830-831
+src/taskq/testing/_slots.py                       54      0     20      0   100%
+src/taskq/testing/_sweeps.py                      97      2     42      2    97%   114, 231
+src/taskq/testing/_terminal.py                   261      0     86      1    99%   803->807
+src/taskq/testing/actor.py                       112      1      2      0    99%   391
+src/taskq/testing/assertions.py                  163      1     80      1    99%   318
+src/taskq/testing/asyncpg_chaos.py                53     10      6      1    81%   49-50, 87, 101-102, 107-108, 119-120, 128
+src/taskq/testing/clock.py                         2      0      0      0   100%
+src/taskq/testing/fixtures.py                    294     14     10      0    95%   563-565, 579-582, 991-992, 1115-1116, 1149-1151
+src/taskq/testing/health.py                        7      0      2      0   100%
+src/taskq/testing/in_memory.py                   343      9     80     10    95%   222, 364-365, 377->379, 474->476, 893, 1038, 1178, 1197, 1206, 1208
+src/taskq/testing/job_context.py                  39      0      2      0   100%
+src/taskq/testing/jobs.py                         40      0      4      0   100%
+src/taskq/testing/otel.py                        184     13     58      5    90%   60, 80, 165-169, 176, 286, 332, 335-336, 376, 422->421
+src/taskq/testing/pg.py                          138     12     26      5    88%   68, 191, 209, 254, 326, 352-367
+src/taskq/testing/settings.py                     32      0     14      0   100%
+src/taskq/testing/spy.py                           7      0      0      0   100%
+src/taskq/timescale.py                           260     25     90     13    89%   570, 589-603, 609, 641-642, 667, 1081-1083, 1085, 1088-1089, 1132, 1359, 1463, 1569, 1885, 1894, 1896
+src/taskq/types.py                                45      0      0      0   100%
+src/taskq/vault.py                                28      0      2      0   100%
+src/taskq/web/__init__.py                          0      0      0      0   100%
+src/taskq/web/_pool.py                            26      0      2      0   100%
+src/taskq/web/_routing.py                         11      0      4      1    93%   26->30
+src/taskq/web/_sse_limit.py                       31      0      4      0   100%
+src/taskq/web/admin/__init__.py                    2      0      0      0   100%
+src/taskq/web/admin/_actor_stats.py               28      0      6      0   100%
+src/taskq/web/admin/_audit.py                      3      0      0      0   100%
+src/taskq/web/admin/_constants.py                 67      1     26      1    98%   136
+src/taskq/web/admin/_factory.py                  269      4     62      5    97%   56->59, 318, 385, 396, 398
+src/taskq/web/admin/_jsonb.py                     13      0      6      0   100%
+src/taskq/web/admin/_listen.py                    62      2     12      2    95%   138, 142
+src/taskq/web/admin/_static.py                    15      0      4      0   100%
+src/taskq/web/admin/_wf_actions.py               224     37     50     12    82%   280, 319-320, 364-375, 395-405, 418-420, 434-435, 543-544, 549-552, 601, 603, 613, 660, 662, 672, 676, 694-700, 734
+src/taskq/web/admin/_wf_rows.py                  128      2     34      1    98%   248-250
+src/taskq/web/admin/actors.py                     71      0      8      0   100%
+src/taskq/web/admin/auth/__init__.py               5      0      0      0   100%
+src/taskq/web/admin/auth/_session.py             105      6     24      6    91%   95, 186, 232, 235, 238, 241
+src/taskq/web/admin/auth/oidc.py                 210     10     42      9    92%   119->123, 227-228, 230, 235, 240, 258, 350, 362, 389, 411
+src/taskq/web/admin/auth/saml.py                 260     20     62     14    88%   99, 120, 177-178, 180, 183, 233, 282, 515, 532-534, 572->571, 579, 604, 645, 657, 671-672, 683-684
+src/taskq/web/admin/auth/token.py                  7      0      0      0   100%
+src/taskq/web/admin/batches.py                    73      3      8      0    96%   112-114
+src/taskq/web/admin/history.py                   121      5     26      2    95%   262, 300-301, 354-355
+src/taskq/web/admin/insights.py                   63      0     16      0   100%
+src/taskq/web/admin/jobs.py                      298     23     84      1    91%   1008->1033, 1060-1114
+src/taskq/web/admin/ops.py                       388      1    126      2    99%   227->220, 781
+src/taskq/web/admin/queues.py                    117      4     28      6    93%   253, 255, 309-310, 320->323, 324->328, 330->329
+src/taskq/web/admin/sse.py                        96      0     18      0   100%
+src/taskq/web/admin/workers.py                    71      2     18      2    96%   81, 89
+src/taskq/web/admin/workflows.py                  91      6     14      3    91%   91, 100, 131, 154-156
+src/taskq/web/health.py                           29      0      0      0   100%
+src/taskq/web/progress.py                        148      1     52      1    99%   403
+src/taskq/worker/__init__.py                      10      0      2      0   100%
+src/taskq/worker/_bootstrap.py                   631     23    238     13    96%   266->260, 270, 344, 1482, 1620->1619, 1622, 1781, 1783, 1785, 1788, 2003->2008, 2006, 2083-2090, 2148-2151, 2187-2196, 2400-2403, 2804, 3047-3052
+src/taskq/worker/_consumer.py                    469      3    144      6    99%   309, 1224->1226, 1318, 2224->2256, 2225->2244, 2287
+src/taskq/worker/_cron_recovery.py                25      0      6      0   100%
+src/taskq/worker/_handlers.py                    228      6     64      3    97%   247, 715-730, 977-983
+src/taskq/worker/_leader_shared.py               298      1     64      5    98%   820->822, 834->836, 908->910, 1075, 1131->1073
+src/taskq/worker/_leader_sweeps.py               621     35    170     11    94%   366->369, 1054, 1103, 1166-1167, 1192-1193, 1320-1334, 1338-1344, 1593-1602, 1612, 1779-1780, 1809, 1948-1949, 1977-1980, 2231-2237, 2682, 2744-2757
+src/taskq/worker/_stall_tally.py                 101      0     22      0   100%
+src/taskq/worker/_transient.py                    27      1      8      1    94%   230
+src/taskq/worker/_watchdog.py                    414     24    122     14    93%   227->226, 229, 277-278, 280, 458-476, 557, 569, 703, 738->691, 777->791, 780-783, 790, 792, 1006, 1009, 1031, 1034, 1056-1057, 1209, 1215-1216
+src/taskq/worker/budget.py                        32      0      0      0   100%
+src/taskq/worker/cancel.py                       207      2     52      3    98%   298, 529, 703->705
+src/taskq/worker/cron_loop.py                    501      5    158      4    99%   1012-1013, 1308, 1778->1780, 1980, 2088
+src/taskq/worker/deps.py                         410     17    100      9    94%   180->190, 182-188, 190->192, 192->exit, 246, 907->exit, 1095->exit, 1373->1375, 1412-1416, 1433->1435, 1497-1503
+src/taskq/worker/dev.py                           79      2     10      2    96%   104-105, 135->exit
+src/taskq/worker/dispatch.py                     209      1     52      2    99%   430->exit, 944
+src/taskq/worker/drain.py                         63      0     16      0   100%
+src/taskq/worker/health.py                       386     25     86      5    94%   193-194, 276-282, 309-310, 389->395, 419-422, 593-595, 661->exit, 759-767, 790-794
+src/taskq/worker/heartbeat.py                    239      1     66      0    99%   776
+src/taskq/worker/leader.py                       548     24    154      9    95%   473, 821, 847, 927, 1069, 1083-1088, 1144->exit, 1299, 1334-1337, 1423->1429, 1504-1505, 1670, 1677-1683, 1726-1728, 1786-1787
+src/taskq/worker/notify.py                       226      5     74      5    97%   139, 270, 655, 713, 737->739, 772
+src/taskq/worker/queue_ops.py                     49      0      8      0   100%
+src/taskq/worker/run.py                          453     28    160     10    93%   335, 661, 665-667, 669, 727-729, 812, 821-839, 935, 1172->1254, 1202-1207, 1210, 1249-1252, 1304, 1310, 1566-1567
+src/taskq/worker/shutdown.py                     202      3     60      5    97%   378->375, 600->617, 611-612, 688->581, 698, 852->861, 861->exit
+src/taskq/worker/startup.py                       77      0     26      0   100%
+src/taskq/worker/workgroup.py                    506     15    198     17    95%   352, 403, 848, 1025, 1027->exit, 1054, 1142-1144, 1194->exit, 1207->1226, 1215, 1245, 1264-1265, 1273->1228, 1284, 1289, 1293, 1325->1323, 1351->1350
+src/taskq/workflows/__init__.py                    9      0      0      0   100%
+src/taskq/workflows/_capture.py                   75      6     36      5    88%   82, 91, 153->166, 161->163, 220-226
+src/taskq/workflows/_cli.py                      116      1     36      1    99%   114
+src/taskq/workflows/_emit.py                      45      0     10      0   100%
+src/taskq/workflows/_fork.py                      31      1     10      1    95%   105
+src/taskq/workflows/_progress.py                 138     13     30      2    91%   169, 258, 360, 378, 394-397, 407-411
+src/taskq/workflows/_progress_read.py            127      4     44      8    93%   159->152, 169->171, 182->181, 257->259, 262->266, 286, 294-295, 352, 365->367
+src/taskq/workflows/_reducers.py                  24      0      6      0   100%
+src/taskq/workflows/_sql.py                       82      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py              24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py                 9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py              12      0      0      0   100%
+src/taskq/workflows/_sql_status.py                 8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py                 11      0      0      0   100%
+src/taskq/workflows/_status.py                    54      0     16      0   100%
+src/taskq/workflows/_sweep.py                    108      3     24      4    95%   176, 177->204, 546, 581
+src/taskq/workflows/_types.py                    107      3      6      2    96%   283-284, 336
+src/taskq/workflows/_version.py                   10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py         108      4     30      4    94%   235, 287, 324, 351
+src/taskq/workflows/api/__init__.py                4      0      0      0   100%
+src/taskq/workflows/api/_app.py                  138      2     36      3    97%   335, 389, 501->500, 503->exit
+src/taskq/workflows/api/_ctx.py                   66      3      4      1    94%   154, 244-245
+src/taskq/workflows/api/_ctx_wait.py              82      8     18      5    85%   145, 169->198, 274, 306->325, 373, 382-399
+src/taskq/workflows/api/_graph.py                119      6     18      6    91%   282, 296, 521, 565, 574, 618
+src/taskq/workflows/api/_hints.py                  4      0      0      0   100%
+src/taskq/workflows/api/_hitl.py                 232     54     80     14    67%   116, 130, 135-136, 147-183, 418, 472, 535-569, 594, 620->633, 631->633, 637, 673->659, 819->834, 830->834, 838, 863->870
+src/taskq/workflows/api/_loop.py                  56      7      8      3    84%   176, 181-182, 207, 212-213, 215
+src/taskq/workflows/api/_mermaid.py               42      1     22      1    97%   76
+src/taskq/workflows/api/_run.py                   28      2      2      1    90%   52, 58, 92->94
+src/taskq/workflows/api/_runner.py               299     11     78      9    95%   313, 315->326, 406->419, 420, 728-729, 740, 838, 845, 943-946, 979, 1068
+src/taskq/workflows/api/_runner_chain.py          26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py          83      9     36      2    86%   109, 115-131
+src/taskq/workflows/api/_runner_errors.py          3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py           85      4     24      6    91%   103->exit, 124->123, 180, 323, 331, 335
+src/taskq/workflows/api/_runner_ladder.py         41      0      6      1    98%   220->exit
+src/taskq/workflows/api/_runner_loop.py          154     13     42      9    89%   119, 217-226, 265-275, 286-295, 425-434, 439, 570->574, 572->574, 597-605
+src/taskq/workflows/api/_sql_loop.py              26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py            34      0      0      0   100%
+src/taskq/workflows/api/_validate.py             214     11    120     10    94%   144->143, 188, 246, 282, 306, 308-320, 322, 342-354, 530, 583
+src/taskq/workflows/chain.py                      63      2     20      3    94%   154->153, 190, 193
+src/taskq/workflows/context.py                    42      2     10      2    92%   95, 143
+src/taskq/workflows/definitions.py                66      1     14      1    98%   112
+src/taskq/workflows/engine.py                    109      6     34      4    92%   272, 338, 345-352, 651
+src/taskq/workflows/ledger.py                     78      1     14      2    97%   113, 291->293
+------------------------------------------------------------------------------------------
+TOTAL                                          31429   1147   8696    646    95%
+Required test coverage of 90% reached. Total coverage: 95.17%
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+SKIPPED [1] tests/test_backend_equivalence.py:670: connection-loss test requires PostgresBackend
+SKIPPED [3] tests/test_atk_upgrade_kill_mid_migration.py:154: boundary beyond this file's statement count
+SKIPPED [1] tests/test_e2e_gate.py:67: e2e dependency group not installed (uv sync --group e2e)
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+FAILED tests/test_enterprise_dsn_surfaces.py::test_ipv6_dsn_pool_connects - a...
+FAILED tests/test_auth_pool_init_integration.py::test_init_hook_registers_codec_on_every_physical_connection
+FAILED tests/test_auth_credential_refresh_integration.py::test_dedicated_conn_factory_refreshes_on_each_open
+FAILED tests/test_auth_credential_refresh_integration.py::test_provider_is_called_for_every_physical_connection
+FAILED tests/test_auth_credential_refresh_integration.py::test_rotated_credential_is_used_by_new_connections
+FAILED tests/test_client_credential_provider.py::test_reload_credentials_swaps_the_pool_everywhere
+FAILED tests/test_client_credential_provider.py::test_pg_provider_authenticates_through_the_credential_path
+7 failed, 13152 passed, 9 skipped, 144 warnings in 2955.27s (0:49:15)

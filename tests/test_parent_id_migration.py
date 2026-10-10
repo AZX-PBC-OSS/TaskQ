@@ -15,10 +15,16 @@ from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 
 MIGRATION_DIR = Path("src/taskq/migrations")
 MIGRATION_NAME = "01.00.23_01_pre_jobs_parent_id.sql"
-# The index is SPLIT from the columns file (the single-lock-class
-# law, the consolidation): ALTERs and CREATE INDEX are different
-# lock classes and may not share a file.
+# The shipped 23_01 is BYTE-FROZEN with the index still in it: the
+# upgrade-path gate builds its base database from the merge base's own
+# chain, whose ledger holds that file's checksum — any rewrite of the
+# version key's bytes (the d24f17b9 consolidation's split attempt
+# included) is checksum drift on every deployed database. The
+# single-lock-class law applies to files not yet shipped; the index's
+# IF NOT EXISTS record rides 23_07.
 INDEX_MIGRATION_NAME = "01.00.23_07_pre_jobs_parent_pending_idx.sql"
+# a3fe4f34e40ec311746dd111dc241b0349a69092e33a98af1cc0784b01acdfe3
+SHIPPED_23_01_SHA256 = "a3fe4f34e40ec311746dd111dc241b0349a69092e33a98af1cc0784b01acdfe3"
 
 
 def _migration_sql() -> str:
@@ -54,12 +60,32 @@ def test_migration_adds_no_foreign_key() -> None:
 def test_migration_index_serves_the_pending_children_count() -> None:
     """The partial index repeats the count's quals verbatim (the 01.00.12_06
     doctrine: a partial index is only a candidate when the planner can
-    prove its predicate from the query's own quals). The index lives in its
-    OWN file since the consolidation (the single-lock-class law: ALTERs and
-    CREATE INDEX are different lock classes, one file, one class)."""
+    prove its predicate from the query's own quals). The shipped 23_01 is
+    byte-frozen WITH the index (the upgrade-path law outranks the split
+    for a file deployed ledgers already applied); 23_07 carries the
+    index's IF NOT EXISTS record — the single-lock-class law's form for
+    files not yet shipped."""
     index_sql = (MIGRATION_DIR / INDEX_MIGRATION_NAME).read_text()
     assert "jobs_parent_pending_idx" in index_sql
     assert "WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL" in index_sql
+    # The shipped file still carries the index too (byte-frozen as
+    # shipped, warts included): the pin holds BOTH sites.
+    assert "jobs_parent_pending_idx" in _migration_sql()
+
+
+def test_shipped_23_01_is_byte_frozen() -> None:
+    """THE UPGRADE-PATH LAW: the merge base's own chain applied this file's
+    exact bytes, and its ledger checksum (bfd0a070b649 at the d24f17b9 CI
+    conviction) refuses any rewrite of the version key. The consolidation's
+    split-to-23_07 attempt edited the shipped file and the migrations gate
+    convicted it — the columns file is frozen to the shipped digest."""
+    import hashlib
+
+    digest = hashlib.sha256(_migration_sql().encode()).hexdigest()
+    assert digest == SHIPPED_23_01_SHA256, (
+        "01.00.23_01 was rewritten in place; a released migration file may "
+        "not be modified — fix forward with a new migration"
+    )
 
 
 def test_migration_creates_index_non_concurrently() -> None:

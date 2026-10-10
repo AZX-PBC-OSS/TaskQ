@@ -1,4 +1,4 @@
-# ruff: noqa: S608, S108  # Why: the schema is a fixture-derived test identifier; the drill's worker logs ride the opencode-scoped pre-created path (not a system tmp), and the worker's env is the fixture's own.
+# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; the drill's dotdir is pytest's own tmp estate (a mktemp dir the fixture created), and the worker's env is the fixture's own.
 """THE FOUR DEMONSTRATIONS (the evidence-matrix's phase-4 demo work
 order): the capabilities the evidence matrix named UN-DEMOED, each with
 a RUNNABLE path + the captured output:
@@ -40,11 +40,22 @@ from typing import Any
 
 import pytest
 
-from tests._wf_fixtures import loaded_scale
-
 pytestmark = pytest.mark.integration
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements" / "demo-legs"
+
+
+@pytest.fixture(scope="module")
+def demo_dotdir(tmp_path_factory: Any) -> Any:
+    """The drill's dotdir, PORTABLE: the worker subprocesses' stdout logs
+    and the empty dotenv dir live in pytest's own tmp estate — a path
+    that exists on EVERY runner (the hardcoded /tmp/opencode dotdir was
+    the local dev loop's pre-created path and died on CI with a
+    FileNotFoundError at the first spawn — the d24f17b9 CI
+    conviction)."""
+    dotdir = tmp_path_factory.mktemp("wf-demo-legs")
+    (dotdir / "empty-dotenv").mkdir()
+    return dotdir
 
 
 def _capture(name: str, content: str) -> Path:
@@ -143,24 +154,8 @@ def demo_module_dsn(module_pg_schema: Any) -> str:
     return module_pg_schema.pg_dsn
 
 
-@pytest.fixture(scope="module")
-def demo_dotenv_dir(tmp_path_factory: Any) -> Path:
-    """THE WORKER'S DOTENV GUARD, derived honestly: an EMPTY directory
-    the FIXTURE creates (``tmp_path_factory``), not a hardcoded path
-    assumed to pre-exist — dotenvmodel's ``load_env_files`` raises
-    ``FileNotFoundError`` for a missing ``DOTENV_DIR``, so the worker
-    subprocess died at settings load on any machine where the hardcoded
-    path had never been made (the green-solo flake's root). Same shape
-    the conftest's hermetic-session fixture uses."""
-    return tmp_path_factory.mktemp("demo-no-dotfiles")
-
-
 async def test_leg2_the_kill_and_resume_drill(
-    module_pg_pool: Any,
-    module_pg_schema: Any,
-    wf_schema: str,
-    wf_conn: Any,
-    demo_dotenv_dir: Path,
+    module_pg_pool: Any, module_pg_schema: Any, wf_schema: str, wf_conn: Any, demo_dotdir: Any
 ) -> None:
     """A PRODUCTION worker claims a node mid-run and is SIGKILLed; a
     fresh worker re-claims it (the lease expiry + the reclaim) and the
@@ -190,7 +185,7 @@ async def test_leg2_the_kill_and_resume_drill(
         # them; the worker must SUBSCRIBE to consume — the demo's
         # chain's queue).
         "TASKQ_QUEUES": "demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default",
-        "DOTENV_DIR": str(demo_dotenv_dir),
+        "DOTENV_DIR": str(demo_dotdir / "empty-dotenv"),
     }
     worker_argv = [
         sys.executable,
@@ -206,21 +201,15 @@ async def test_leg2_the_kill_and_resume_drill(
             worker_argv,
             env=worker_env,
             cwd=str(demo_wd),
-            stdout=open(f"/tmp/opencode/demo-worker-{tag}.log", "wb"),
+            stdout=open(demo_dotdir / f"demo-worker-{tag}.log", "wb"),
             stderr=subprocess.STDOUT,
         )
 
-    # WORKER 1: runs the flow's nodes. THE LOADED BAR's discipline
-    # (finding 3's cure): the poll waits on STATE (each tick re-reads the
-    # row, never a fixed sleep pretending to know when the claim lands)
-    # and its deadline scales with the box's measured load
-    # (condition-not-clock — the census's own record: this drill's
-    # residuals were "green solo x2" on a loaded box).
-    poll_scale = loaded_scale()
+    # WORKER 1: runs the flow's nodes.
     killed = spawn("killed")
-    killed_deadline = time.monotonic() + 90 * poll_scale
+    killed_deadline = time.time() + 90
     saw_running = False
-    while time.monotonic() < killed_deadline:
+    while time.time() < killed_deadline:
         state = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
             "WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'running'",
@@ -238,13 +227,12 @@ async def test_leg2_the_kill_and_resume_drill(
     await asyncio.to_thread(killed.wait)
 
     # WORKER 2: the fresh worker re-claims (the lease expiry + the
-    # reclaim) and the run completes — the same loaded-scaled,
-    # state-not-sleep poll.
+    # reclaim) and the run completes.
     fresh = spawn("fresh")
     try:
-        done_deadline = time.monotonic() + 240 * poll_scale
+        done_deadline = time.time() + 240
         root_status = None
-        while time.monotonic() < done_deadline:
+        while time.time() < done_deadline:
             root_status = await wf_conn.fetchval(
                 f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id_uuid
             )
@@ -285,6 +273,42 @@ async def test_leg2_the_kill_and_resume_drill(
 
 # ── LEG 3: the observability (the live scrape — a REAL one) ─────────────
 
+_SCRAPE_SCRIPT = """
+import json
+import os
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from opentelemetry import metrics as otel_metrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.sdk.metrics import MeterProvider
+from prometheus_client import CollectorRegistry
+
+# THE BOOT ORDER IS THE PIN: the provider is wired at process start,
+# BEFORE the first taskq.obs import — the module-level wf gauge's meter
+# resolves against THIS provider (the shipped serve path's real order;
+# a provider installed mid-process never rebinds a real meter).
+registry = CollectorRegistry()
+reader = PrometheusMetricReader(registry=registry)
+otel_metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+
+from taskq.obs import update_wf_progress_cache  # noqa: E402  # Why: the import ORDER is the pinned boot order.
+
+update_wf_progress_cache(
+    {(workflow, state): count for workflow, state, count in json.loads(os.environ["PROBE_WF_CACHE"])}
+)
+
+from taskq.contrib.prometheus import create_metrics_router  # noqa: E402  # Why: as above.
+
+metrics_app = FastAPI()
+metrics_app.include_router(create_metrics_router(None, registry=registry), prefix="/jobs/health")
+with TestClient(metrics_app) as metrics_client:
+    response = metrics_client.get("/jobs/health/metrics")
+assert response.status_code == 200, response.status_code
+print("SCRAPE_BEGIN")
+print(response.text, end="")
+"""
+
 
 async def test_leg3_the_live_wf_gauge_scrape(
     module_pg_pool: Any, module_pg_schema: Any, wf_conn: Any
@@ -301,7 +325,17 @@ async def test_leg3_the_live_wf_gauge_scrape(
     real sampler can never emit — it collapses every unregistered
     workflow onto ``_other_``). This capture is the endpoint's byte-
     verbatim output; both defects are impossible in it, and the pins
-    below red if either shape ever returns."""
+    below red if either shape ever returns.
+
+    THE SCRAPE RUNS IN A SUBPROCESS — the endpoint e2e's own isolation
+    shape: the wf gauge's instrument binds at import to whatever provider
+    is then process-global, and a provider another test installed FIRST
+    strands it there forever (OTel's own law: real-provider meters never
+    rebind — only the pre-provider proxy does). In a long CI session the
+    scrape then came back EMPTY (the d24f17b9 CI conviction). The
+    subprocess wires the provider at its process start, BEFORE the first
+    ``taskq.obs`` import — the shipped serve path's real boot order,
+    order-immune by construction."""
     pytest.importorskip("fastapi")
     pytest.importorskip("opentelemetry.exporter.prometheus")
     schema = module_pg_schema.schema_name
@@ -321,7 +355,6 @@ async def test_leg3_the_live_wf_gauge_scrape(
     # registered-names collapse the maintenance leader's wf-progress
     # sampler runs at its tick (the sampler's read is the feed; the
     # gauge's cache is its only consumer).
-    from taskq.obs import update_wf_progress_cache
     from taskq.worker._leader_shared import _QUERY_WF_PROGRESS_SQL_TEMPLATE
     from taskq.workflows.definitions import get_registry
 
@@ -334,37 +367,27 @@ async def test_leg3_the_live_wf_gauge_scrape(
             name = "_other_"
         key = (name, str(row["state"]))
         collapsed[key] = collapsed.get(key, 0) + int(row["count"])
-    update_wf_progress_cache(collapsed)
 
-    # THE SCRAPE: the LIVE endpoint (the contrib's /jobs/health/metrics
-    # router over a bridged registry) — the response captured VERBATIM.
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from opentelemetry import metrics as otel_metrics
-    from opentelemetry.exporter.prometheus import PrometheusMetricReader
-    from opentelemetry.sdk.metrics import MeterProvider
-    from prometheus_client import CollectorRegistry
-
-    from taskq.contrib.prometheus import create_metrics_router
-
-    registry = CollectorRegistry()
-    reader = PrometheusMetricReader(registry=registry)
-    otel_metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
-    try:
-        metrics_app = FastAPI()
-        metrics_app.include_router(
-            create_metrics_router(None, registry=registry),  # type: ignore[arg-type]  # Why: the CLI's own pattern — deps is signature parity only; the router reads the process-global provider.
-            prefix="/jobs/health",
-        )
-        with TestClient(metrics_app) as metrics_client:
-            response = metrics_client.get("/jobs/health/metrics")
-        assert response.status_code == 200
-        scrape_text = response.text
-        _capture("leg3-wf-gauge-scrape.prom", scrape_text)
-    finally:
-        from opentelemetry.metrics import NoOpMeterProvider
-
-        otel_metrics.set_meter_provider(NoOpMeterProvider())
+    # THE SCRAPE SUBPROCESS: provider first, then the import, then the
+    # cache feed, then the verbatim scrape (the boot order the shipped
+    # serve path runs).
+    probe_env = {
+        key: value for key, value in os.environ.items() if not key.startswith(("OTEL_", "TASKQ_"))
+    }
+    probe_env["PROBE_WF_CACHE"] = json.dumps(
+        [[workflow, state, count] for (workflow, state), count in collapsed.items()]
+    )
+    result = await asyncio.to_thread(  # Why: the async leg never blocks the loop on the scrape subprocess.
+        subprocess.run,  # Why: fixed argv, no shell - the current interpreter running this file's own literal script; the sampler's collapsed feed arrives via env, not argv.
+        [sys.executable, "-c", _SCRAPE_SCRIPT],
+        env=probe_env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    scrape_text = result.stdout.split("SCRAPE_BEGIN\n", 1)[1]
+    _capture("leg3-wf-gauge-scrape.prom", scrape_text)
 
     # THE CAPTURE'S TRUTH: the LEGAL rendering (dots → underscores), the
     # workflow label carrying a REGISTERED name, and no ghost series.

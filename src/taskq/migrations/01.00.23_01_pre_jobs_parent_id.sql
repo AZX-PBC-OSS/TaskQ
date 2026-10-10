@@ -57,3 +57,7 @@
 ALTER TABLE "{schema}".jobs ADD COLUMN parent_id uuid;
 
 ALTER TABLE "{schema}".jobs_archive ADD COLUMN parent_id uuid;
+
+CREATE INDEX IF NOT EXISTS jobs_parent_pending_idx
+    ON "{schema}".jobs (parent_id)
+    WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL;
