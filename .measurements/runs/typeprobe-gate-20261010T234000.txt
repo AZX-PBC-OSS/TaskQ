@@ -2,4 +2,4 @@
 the type gate holds: every MUST_ERROR marker (34) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
 gate rc=0
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
-SUPERSEDED-BY: runs/typeprobe-gate-20261010T091005.txt
+SUPERSEDED-BY: runs/typeprobe-gate-20261010T085747.txt
