@@ -1,0 +1,3 @@
+# the fast tier x1 at -n 8 (non-integration; the rv3 lane's consolidated proof at the estate's head)
+rc=0
+head: d7f8581f7e47508fd7ffe656fa6667e4e9ab46b0
