@@ -236,10 +236,6 @@ async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
 # ── F-RV3-5: the -m path's dead verbs ───────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIVE FINDING F-RV3-5: the teardown review's conviction at 512f7a91 — the red receipt in test_wf_teardown_rv3_RECEIPTS.md; the cure removes this marker WITH the rule",
-)
 def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
     """``python -m taskq.cli --help`` must advertise EVERY verb the
     imported app registers (the console script's face): the __main__
