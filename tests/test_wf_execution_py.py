@@ -155,7 +155,11 @@ def test_projection_the_split_placement_cohorts() -> None:
 
     @app.workflow("wf-exec-split")
     def _workflow() -> Promise[object]:
-        src = chain_source(chain, _exec_body, key="doc_source")
+        # THE WIRING'S ARITY (E10's own promise): the source body's one
+        # param rides ONE wired data arg — a body param with no wired
+        # source is the build refusal (the projection skips the workflow
+        # loudly, its cohorts unprojected).
+        src = chain_source(chain, _exec_body, ExecIngest(doc_id="d1"), key="doc_source")
         return build(src)
 
     configs = _project_with([app])
