@@ -81,7 +81,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
       resume's cursor diverged from the row history; the re-claim
       re-reads the SAME cursor and collides again);
     * :class:`MapIndexExhaustedError` — the smallint ceiling (the
-      record's identity cannot grow past it on any retry).
+      record's identity cannot grow past it on any retry);
+    * :class:`FanInBoundExceededError` — the fork's fan-in past the
+      declared bound (the rv4 F8 cure: re-running cannot shrink the
+      corpus; the refusal NAMES the child_driven escape — the remedy is
+      a re-wiring, never a retry).
 
     THE ROUTING RULE, per class (the pin drills all three legs):
     ``deterministic = the NAMED terminal`` (finalize immediately, the
@@ -99,11 +103,13 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     """
     from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
     from taskq.workflows._progress import ProgressRefusedError
+    from taskq.workflows.definitions import FanInBoundExceededError
 
     deterministic: tuple[type[BaseException], ...] = (
         ProgressRefusedError,
         PageDivergedError,
         MapIndexExhaustedError,
+        FanInBoundExceededError,
     )
     return isinstance(exc, deterministic)
 

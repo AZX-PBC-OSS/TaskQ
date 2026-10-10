@@ -28,6 +28,7 @@ __all__ = [
     "AggregateFn",
     "DuplicateStepBodyError",
     "DuplicateWorkflowError",
+    "FanInBoundExceededError",
     "StepBody",
     "WorkflowDef",
     "WorkflowRegistry",
@@ -172,21 +173,46 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect", "maybe")
 
 
+class FanInBoundExceededError(ValueError):
+    """The fork's fan-in past :data:`MAX_FAN_IN_PER_JOIN` (the rv4 cure —
+    F8's typed bound): the exceeded bound is the NAMED refusal, the
+    message carrying the ``child_driven`` escape so the remedy is
+    reachable from the refusal's own text.
+
+    A DETERMINISTIC authoring failure (:func:`taskq.workflows.api.
+    _runner_ladder.is_deterministic_authoring_failure`'s fourth class):
+    re-running cannot shrink the corpus — the retry ladder never burns;
+    the node terminal-fails on the first attempt with this class on the
+    record. (The pre-cure raise was the raw ``ValueError`` OUTSIDE the
+    ladder's try — the reclaim re-crashed it forever, the remedy
+    unreachable.)"""
+
+
 def validate_fork(fork: ForkSpec) -> None:
-    """Refuse a malformed fork at build time: an EMPTY fork (zero children)
-    owes a join that can never fire, and a join declared over them counts
-    edges that will never exist — both the 'record healthy, work wrong'
-    class, convicted before any row is written."""
+    """Refuse a malformed fork at build time — the 'record healthy, work
+    wrong' class, convicted before any row is written.
+
+    THE EMPTY-JOIN PRECEDENT (the rv4 cure — F1): a fork over a
+    legitimately-empty corpus STILL declares its join — the join is born
+    ``deps_pending=0``, fires IMMEDIATELY, and packs the EMPTY list (the
+    typed sum's honest value: ``result() == []``, the run terminal,
+    SUCCESS truthful — a night with no documents chunked zero documents,
+    and that is correct). The old blanket refusal ("a join over zero
+    children waits on edges that never exist") convicted the LEGITIMATE
+    shape — the empty join does not wait, it fires; the wedge it left
+    behind was the route/map source over an empty corpus either sticking
+    ``running`` forever with zero error rows or terminalizing with the
+    lying ``result() is None``."""
     if not fork.children:
-        raise ValueError(
-            "an empty fork (zero children) is refused at build time: a join "
-            "declared over zero children waits on edges that never exist — "
-            "the stranded invisible join"
-        )
-    if fork.join is not None and not fork.children:
-        raise ValueError(  # pragma: no cover - unreachable above, stated for the reader
-            "a join over zero children is refused at build time"
-        )
+        if fork.join is None:
+            raise ValueError(
+                "an empty fork (zero children) with no join is refused at "
+                "build time: it carries no work and no collect — the "
+                "stranded invisible join's shape"
+            )
+        # THE EMPTY-JOIN PRECEDENT: the join fires with the empty list.
+        # Fall through — the join's own declared policy and bound still
+        # validate below.
     if fork.join is not None and fork.join.failure_policy not in FAILURE_POLICIES:
         raise ValueError(
             f"join {fork.join.step_key!r} declares unknown failure_policy "
@@ -201,7 +227,7 @@ def validate_fork(fork: ForkSpec) -> None:
         and len(fork.children) > MAX_FAN_IN_PER_JOIN
         and not fork.join.child_driven
     ):
-        raise ValueError(
+        raise FanInBoundExceededError(
             f"join {fork.join.step_key!r} fans in {len(fork.children)} "
             f"children — above the declared maximum fan-in per join "
             f"({MAX_FAN_IN_PER_JOIN}). Use JoinSpec(child_driven=True) "
@@ -250,7 +276,7 @@ def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: 
     # the child-driven join counts its terminal children from the edge
     # ledger at fire time instead of trusting the per-joined-row cache).
     if len(parents) > MAX_FAN_IN_PER_JOIN:
-        raise ValueError(
+        raise FanInBoundExceededError(
             f"join node {step_key!r} declares {len(parents)} parents — above "
             f"the declared maximum fan-in per join ({MAX_FAN_IN_PER_JOIN}). "
             "The declared-edge re-derive cost scales with the edge count per "

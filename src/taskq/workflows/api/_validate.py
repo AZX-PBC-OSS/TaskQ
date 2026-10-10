@@ -153,6 +153,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_arity(compiled)
     diagnostics += _rule_deps_contract(compiled)
     diagnostics += _rule_route_totality(compiled)
+    diagnostics += _rule_union_discriminator(compiled)
     diagnostics += _rule_gate_door(compiled)
     diagnostics += _rule_gate_wiring(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
@@ -480,42 +481,57 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     convicted on a guess)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        if node.body is None:
-            continue
-        hints = body_hints(node.body)
-        if not hints:
-            # THE UNRESOLVABLE ANNOTATIONS (the zero-false-positive
-            # doctrine's own pin: a function-scope model the body's code
-            # never names — the resolved hints are {}): the arity is a
-            # GUESS on an unresolvable signature — skip (a guess is
-            # never convicted; E4's own pin spells the doctrine).
-            continue
-        sig = inspect.signature(node.body)
-        params = [
-            name
-            for name, p in sig.parameters.items()
-            if name not in ("ctx", "return")
-            and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-        ]
-        if len(params) == len(node.args) + 1:
-            # THE DEPS SHAPE: one param beyond the wiring is the deps
-            # contract's opt-in — E12 owns the extra parameter's contract
-            # (the bound instance, the declared type); E10's count is
-            # satisfied by the shape itself.
-            continue
-        if len(params) != len(node.args):
-            diagnostics.append(
-                WorkflowValidationError(
-                    "E10-arity",
-                    "error",
-                    f"{node.key!r}'s body takes {len(params)} param(s) "
-                    f"({', '.join(params)}) but the wiring wired "
-                    f"{len(node.args)} argument(s) — the arity is the "
-                    "wiring's own promise: a body param with no wired "
-                    "source is a TypeError mid-flow (the ladder's "
-                    "discovery of a wiring-time lie)",
+        # THE WALK'S FACES (the rv4 arm-arity cure): every body the
+        # runner can inject into — the node's own body AND the typed
+        # route's arm bodies (each arm runs as its own fork-spawned
+        # child, wired ONE arg — the element). The pre-cure walk read
+        # node.body only: a zero-param/two-param arm built CLEAN and the
+        # raw TypeError died MID-FLOW (the ladder's discovery of a
+        # wiring-time lie — the exact shape E10 exists to refuse), while
+        # E15's own comment claimed "E10/E12's faces own the arity" of
+        # arms those rules never walked.
+        checks: list[tuple[str, Callable[..., object], int]] = []
+        if node.body is not None:
+            checks.append((node.key, node.body, len(node.args)))
+        if node.map_arms is not None:
+            for tag, arm in node.map_arms.items():
+                checks.append((route_child_key(node.key, tag), arm.body, 1))
+        for owner, body, wired in checks:
+            hints = body_hints(body)
+            if not hints:
+                # THE UNRESOLVABLE ANNOTATIONS (the zero-false-positive
+                # doctrine's own pin: a function-scope model the body's
+                # code never names — the resolved hints are {}): the
+                # arity is a GUESS on an unresolvable signature — skip
+                # (a guess is never convicted; E4's own pin spells the
+                # doctrine).
+                continue
+            sig = inspect.signature(body)
+            params = [
+                name
+                for name, p in sig.parameters.items()
+                if name not in ("ctx", "return")
+                and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            ]
+            if len(params) == wired + 1:
+                # THE DEPS SHAPE: one param beyond the wiring is the deps
+                # contract's opt-in — E12 owns the extra parameter's
+                # contract (the bound instance, the declared type); E10's
+                # count is satisfied by the shape itself.
+                continue
+            if len(params) != wired:
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E10-arity",
+                        "error",
+                        f"{owner!r}'s body takes {len(params)} param(s) "
+                        f"({', '.join(params)}) but the wiring wired "
+                        f"{wired} argument(s) — the arity is the "
+                        "wiring's own promise: a body param with no wired "
+                        "source is a TypeError mid-flow (the ladder's "
+                        "discovery of a wiring-time lie)",
+                    )
                 )
-            )
     return diagnostics
 
 
@@ -547,6 +563,15 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     for node in compiled.nodes.values():
         if node.body is not None:
             checks.append((node.key, node.body, len(node.args)))
+        if node.map_arms is not None:
+            # THE ARMS' DEPS CONTRACT (the rv4 arm-arity cure — the walk
+            # covers every body the runner injects into): each arm runs
+            # as its own fork-spawned child, wired ONE arg — the deps
+            # shape reads ONE param beyond it, the same contract the
+            # step bodies own. (The pre-cure walk skipped the arms —
+            # E15's comment claimed this walk covered them.)
+            for tag, arm in node.map_arms.items():
+                checks.append((route_child_key(node.key, tag), arm.body, 1))
         if node.map_item is not None:
             checks.append((f"{node.key}.item", node.map_item, 1))
         if node.loop_body is not None:
@@ -613,8 +638,16 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
     * every arm body declares its arm's MODEL on the item param — the
       decode's target (R3): a DUCK-typed arm (``dict``/unannotated/
       ``Any``) consumes the element UNVALIDATED (E5's own conviction
-      shape at the consumer face), an UNRELATED model is the wiring
-      promising data the arm cannot accept.
+      shape at the consumer face), and the declared model must be the
+      EXACT union member (the rv4 cure — the "related" door tightened):
+      a SUPERCLASS builds clean but the runtime decode drops the
+      subclass's own fields (pydantic's ``extra='ignore'`` default —
+      the silent data loss the sum's reader cannot see), and an
+      UNRELATED model is the wiring promising data the arm cannot
+      accept. The pre-cure "related" check accepted BOTH directions of
+      the issubclass relation — a ``item: DocBase`` arm for a
+      ``DocItem`` member passed the fence and died the silent-field
+      drop at runtime.
 
     An unresolvable source or arm annotation SKIPS (the zero-false-
     positive doctrine — a guess is never convicted). The runtime door
@@ -671,15 +704,25 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
                 duck, related = True, False
             elif isinstance(item_param, type) and issubclass(item_param, BaseModel):
                 duck = False
-                related = (
-                    member_type is item_param
-                    or issubclass(member_type, item_param)
-                    or issubclass(item_param, member_type)
-                )
+                # THE EXACT-MEMBER LAW (the rv4 cure — the "related" door
+                # tightened): the declared type must BE the member — a
+                # superclass passes the old issubclass fence and the
+                # runtime decode drops the subclass's fields
+                # (extra='ignore'), an unrelated model the arm cannot
+                # accept at all.
+                related = member_type is item_param
             else:
                 duck, related = True, False
             if duck or not related:
-                shape = "duck-typed (dict/unannotated/Any)" if duck else "an unrelated model"
+                shape = (
+                    "duck-typed (dict/unannotated/Any)"
+                    if duck
+                    else (
+                        "a NON-EXACT model (a superclass or an unrelated "
+                        f"type — the decode drops every field {member_name} "
+                        "adds beyond it, extra='ignore')"
+                    )
+                )
                 diagnostics.append(
                     WorkflowValidationError(
                         "E15-route-totality",
@@ -688,11 +731,157 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
                         f"({getattr(arm.body, '__name__', '<anon>')!r}) "
                         f"declares its item as {item_param!r} — {shape}: "
                         "the arm's param IS the decode's target (the typed "
-                        f"boundary) and this shape consumes the {member_name} "
-                        "element UNVALIDATED. Annotate the arm's param as "
-                        f"{member_name} (or a related model).",
+                        f"boundary) and it must be the EXACT member "
+                        f"{member_name} — the union member's fields are the "
+                        "contract the decode enforces.",
                     )
                 )
+    return diagnostics
+
+
+def _required_fields_of(model: type[BaseModel]) -> set[tuple[str, object]]:
+    """The model's REQUIRED fields as (name, annotation) pairs — the
+    decode's minimum contract (a payload missing any of them fails the
+    member's validation; a payload carrying all of them may pass)."""
+    return {
+        (name, field.annotation)
+        for name, field in model.model_fields.items()
+        if field.is_required()
+    }
+
+
+def _union_members_of(annotation: object) -> tuple[type[BaseModel], ...] | None:
+    """The annotation's model-union members, when the annotation IS one —
+    a bare union (``A | B``, ``Union[A, B]``) or a LIST of one
+    (``list[A | B]`` — the typed sum's flat shape the join consumer
+    declares). ``None`` when the annotation is not a model union (a
+    single model, a non-model union, a scalar) — nothing to convict."""
+    from types import UnionType
+
+    inner: object = annotation
+    if get_origin(inner) is list:
+        args = get_args(cast("type[object]", inner))
+        if not args:
+            return None
+        inner = args[0]
+    origin = get_origin(inner)
+    if origin is not Union and not isinstance(inner, UnionType):
+        return None
+    members = [
+        m
+        for m in get_args(cast("type[object]", inner))
+        if isinstance(m, type) and issubclass(m, BaseModel)
+    ]
+    models = tuple(dict.fromkeys(members))  # dedupe, order-preserving
+    return models if len(models) >= 2 else None
+
+
+def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E16 (THE CONSUMER DISCRIMINATOR LAW — the rv4 cure): every body
+    param decoded as a UNION of models (the typed sum's consumer face —
+    the join's downstream reads ``list[ImageResult | AudioResult]``) is
+    decoded by the codec's left-to-right smart union: the FIRST member
+    whose required fields the payload satisfies WINS. When two members'
+    required fields stand in the subset relation, the payload of the
+    RICHER member satisfies the THINNER member's contract — the decode
+    picks the first-annotated member and the richer member's own fields
+    silently never surface (the mispick: field-identical members are the
+    guaranteed face — EVERY payload decodes as the first member).
+
+    THE LAW, picked by the reads (the members' declared fields are the
+    only evidence the compile has):
+
+    * field-identical required faces (each member's required fields the
+      other's too) — the mispick is GUARANTEED and SILENT: the hard
+      refusal. The fix is a Literal discriminator field on each member
+      (``kind: Literal["image"]``) — the discriminated union decodes by
+      the tag, never by the field-count luck;
+    * one-directional subset (the richer member's payloads decode as
+      the thinner) — the mispick risk NAMED: the warning. The fix is
+      the same Literal discriminator;
+    * distinct (each member requires a field the other lacks) — clean:
+      the thinner member's validation FAILS on the missing required
+      field, the union falls through to the true member.
+
+    The walk covers every body the runner injects into (the steps, the
+    map's item children, the route's arms, the loop bodies). An
+    unresolvable-annotations body SKIPS (the zero-false-positive
+    doctrine — a guess is never convicted)."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        checks: list[tuple[str, Callable[..., object]]] = []
+        if node.body is not None:
+            checks.append((node.key, node.body))
+        if node.map_item is not None:
+            checks.append((f"{node.key}.item", node.map_item))
+        if node.map_arms is not None:
+            for tag, arm in node.map_arms.items():
+                checks.append((route_child_key(node.key, tag), arm.body))
+        if node.loop_body is not None:
+            checks.append((node.key, node.loop_body))
+        for owner, body in checks:
+            hints = body_hints(body)
+            if not hints:
+                continue  # the unresolvable annotations — a guess is never convicted
+            for pname, annotation in hints.items():
+                if pname in ("return", "ctx"):
+                    continue
+                members = _union_members_of(annotation)
+                if members is None:
+                    continue
+                for i, thinner in enumerate(members):
+                    for richer in members[i + 1 :]:
+                        thin_req = _required_fields_of(thinner)
+                        rich_req = _required_fields_of(richer)
+                        thin_in_rich = thin_req <= rich_req
+                        rich_in_thin = rich_req <= thin_req
+                        if thin_in_rich and rich_in_thin:
+                            diagnostics.append(
+                                WorkflowValidationError(
+                                    "E16-union-discriminator",
+                                    "error",
+                                    f"{owner!r}'s param {pname!r} decodes the "
+                                    f"union {thinner.__name__} | "
+                                    f"{richer.__name__} whose members are "
+                                    "FIELD-IDENTICAL in their required "
+                                    "fields — the decode picks the FIRST "
+                                    f"member ({thinner.__name__}) for EVERY "
+                                    f"payload (the {richer.__name__} "
+                                    "payloads decode as "
+                                    f"{thinner.__name__} and its own fields "
+                                    "silently never surface — the mispick "
+                                    "is guaranteed, never probabilistic). "
+                                    "Add a Literal discriminator field to "
+                                    "each member (e.g. kind: "
+                                    "Literal['image'] / Literal['audio']) "
+                                    "so the union decodes by the tag",
+                                )
+                            )
+                        elif thin_in_rich or rich_in_thin:
+                            first, second = (
+                                (thinner, richer) if thin_in_rich else (richer, thinner)
+                            )
+                            diagnostics.append(
+                                WorkflowValidationError(
+                                    "E16-union-discriminator",
+                                    "warning",
+                                    f"{owner!r}'s param {pname!r} decodes the "
+                                    f"union {thinner.__name__} | "
+                                    f"{richer.__name__} whose required fields "
+                                    f"stand in the subset relation ({first.__name__}'s "
+                                    f"are a subset of {second.__name__}'s) — "
+                                    "the left-to-right decode picks "
+                                    f"{first.__name__} for a "
+                                    f"{second.__name__} payload whenever the "
+                                    "payload satisfies the thinner contract "
+                                    "(the mispick risk: the richer fields "
+                                    "silently never surface). Add a Literal "
+                                    "discriminator field to each member "
+                                    "(e.g. kind: Literal['image'] / "
+                                    "Literal['audio']) so the union decodes "
+                                    "by the tag",
+                                )
+                            )
     return diagnostics
 
 
@@ -814,7 +1003,12 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
 
 def _node_bodies(node: object) -> list[Callable[..., object]]:
     """The node's OWN bodies (the walks' candidate set): the step body,
-    the loop driver's body, the map's item child — whichever exist."""
+    the loop driver's body, the map's item child, AND the typed route's
+    arm bodies (the rv4 cure — the arm-held HITL's face): each arm runs
+    as its own fork-spawned child, so an arm body's ``ctx.wait_signal``
+    is a HOLD the compile surfaces must see (the pre-cure walk skipped
+    the arms — an arm's hold was ROW-real but COMPILE-invisible: no
+    Mermaid hold node, no W1 timeout read)."""
     bodies: list[Callable[..., object]] = []
     for candidate in (
         getattr(node, "body", None),
@@ -823,6 +1017,12 @@ def _node_bodies(node: object) -> list[Callable[..., object]]:
     ):
         if candidate is not None:
             bodies.append(candidate)
+    arms = getattr(node, "map_arms", None)
+    if arms is not None:
+        for arm in arms.values():
+            body = getattr(arm, "body", None)
+            if body is not None:
+                bodies.append(body)
     return bodies
 
 
@@ -854,18 +1054,36 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     the node — a guess is never convicted."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        bodies = _node_bodies(node)
-        if not bodies:
+        # THE BODIES' OWNERS (the rv4 cure — the arm-held HITL's face):
+        # the waits are read PER BODY and the warning names the body's
+        # own address — the arm child's derived key
+        # (``<source>.item:<tag>``) for an arm body, the node's key for
+        # its own. (The pre-cure warning said "node X's body" whatever
+        # body waited — an arm's hold read as the source's own.)
+        owned: list[tuple[str, Callable[..., object]]] = []
+        for candidate, owner in (
+            (node.body, node.key),
+            (node.loop_body, node.key),
+            (node.map_item, f"{node.key}.item"),
+        ):
+            if candidate is not None:
+                owned.append((owner, candidate))
+        if node.map_arms is not None:
+            for tag, arm in node.map_arms.items():
+                owned.append((route_child_key(node.key, tag), arm.body))
+        if not owned:
             continue
+        waiting_owners: list[str] = []
         any_wait = False
         any_unreadable = False
-        for body in bodies:
+        for owner, body in owned:
             sites = _wait_signal_sites(body)
             if sites is None:
                 any_unreadable = True
                 continue
             if sites:
                 any_wait = True
+                waiting_owners.append(owner)
         if node.gates:
             if any_wait or any_unreadable:
                 continue  # a reference exists (or the walk cannot prove the absence) — not the provable case
@@ -892,25 +1110,33 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
             # and the broadcast all work). What is lost is the COMPILE
             # visibility — the Mermaid hold node, W1's timeout read — so
             # this face is the WARNING, never the refusal.
-            diagnostics.append(
-                WorkflowValidationError(
-                    "E14-gate-wiring",
-                    "warning",
-                    f"node {node.key!r}'s body calls ctx.wait_signal but "
-                    "declares NO gate — the hold is ROW-real (the wait site "
-                    "carries the payload models and the timeout) but "
-                    "COMPILE-invisible: no Mermaid hold node, no W1 timeout "
-                    "read. Declare it for the compile surfaces: step(body, …, "
-                    "gates=(GateDecl(name=…, payload_models=(…), "
-                    "timeout_s=…),))",
+            for owner in waiting_owners:
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E14-gate-wiring",
+                        "warning",
+                        f"{owner!r}'s body calls ctx.wait_signal but "
+                        "declares NO gate — the hold is ROW-real (the wait "
+                        "site carries the payload models and the timeout) "
+                        "but COMPILE-invisible: no Mermaid hold node, no W1 "
+                        "timeout read. Declare it for the compile surfaces: "
+                        "step(body, …, gates=(GateDecl(name=…, "
+                        "payload_models=(…), timeout_s=…),))",
+                    )
                 )
-            )
     return diagnostics
 
 
 def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E6: the T07 fan-in bound (the error names the child-driven escape
-    — the same vocabulary the engine's validators use)."""
+    — the same vocabulary the engine's validators use).
+
+    THE MESSAGE NAMES THE REMEDY (the rv4 F8 cure — the refusal's own
+    text must reach it): the bound (MAX_FAN_IN_PER_JOIN) AND the
+    child-driven escape (JoinSpec(child_driven=True) at the engine's
+    door; partitioning the map at the graph wiring's) — the pre-cure
+    message named only the partition, the engine-level escape
+    unreachable from the refusal that demanded it."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if len(node.parents) > MAX_FAN_IN_PER_JOIN:
@@ -920,7 +1146,10 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
                     "error",
                     f"join {node.key!r} fans in {len(node.parents)} parents — "
                     f"above the declared maximum fan-in per join "
-                    f"({MAX_FAN_IN_PER_JOIN}); partition the map",
+                    f"({MAX_FAN_IN_PER_JOIN}). Use the child-driven shape "
+                    "(JoinSpec(child_driven=True) — the fire counts terminal "
+                    "children from the edge ledger, never a per-joined-row "
+                    "edge list) or partition the map.",
                 )
             )
     return diagnostics
@@ -1103,20 +1332,34 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
         return []  # no declared queue universe — nothing to convict
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        if node.queue in compiled.known_queues:
-            continue
-        diagnostics.append(
-            WorkflowValidationError(
-                "W2-unknown-queue",
-                "warning",
-                f"node {node.key!r} projects onto queue {node.queue!r} — no "
-                "workflow actor on this app declares it and TASKQ_QUEUES does "
-                "not name it: the job dispatches onto a queue no worker may "
-                "listen on (declare the queue on an @app.actor, or add it to "
-                "TASKQ_QUEUES); the worker-boot fail-fast remains the runtime "
-                "door",
+        # THE WALK'S FACES (the rv4 cure — the typo'd arm queue): the
+        # node's own queue AND every fork child's EFFECTIVE queue — the
+        # typed route's arms (arm.queue or the map queue) and the map's
+        # own map_queue. The pre-cure walk read node.queue only: a
+        # RouteArm(queue="gp") typo built CLEAN and the arm's children
+        # dispatched onto a queue no worker may listen on.
+        projections: list[tuple[str, str]] = [(node.key, node.queue)]
+        if node.map_queue is not None:
+            projections.append((f"{node.key}.join", node.map_queue))
+        if node.map_arms is not None:
+            for tag, arm in node.map_arms.items():
+                effective = arm.queue or node.map_queue or node.queue
+                projections.append((route_child_key(node.key, tag), effective))
+        for owner, queue in projections:
+            if queue in compiled.known_queues:
+                continue
+            diagnostics.append(
+                WorkflowValidationError(
+                    "W2-unknown-queue",
+                    "warning",
+                    f"node {owner!r} projects onto queue {queue!r} — no "
+                    "workflow actor on this app declares it and TASKQ_QUEUES "
+                    "does not name it: the job dispatches onto a queue no "
+                    "worker may listen on (declare the queue on an "
+                    "@app.actor, or add it to TASKQ_QUEUES); the worker-boot "
+                    "fail-fast remains the runtime door",
+                )
             )
-        )
     return diagnostics
 
 
