@@ -120,7 +120,9 @@ result: approved: True (ship it)
 
 Three things to notice, because the whole pattern hangs on them:
 
-1. **The hold is a row.** `drive(until="held")` returns while the run
+1. **The hold is a row.** The Temporal-style signal and the
+   LangGraph-style interrupt — delivered as ONE CAS'd, slot-releasing
+   row. `drive(until="held")` returns while the run
    waits — no process, thread, or task is parked anywhere. A deploy that
    kills this process mid-hold loses nothing.
 2. **The slot releases.** The held node's `locked_by_worker` is NULL —

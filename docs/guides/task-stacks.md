@@ -106,7 +106,9 @@ terminal replay: claim=existing-terminal status=succeeded
 
 ## The wiring: the edges ARE the arguments
 
-A stack's graph is compiled from the wiring — the promise you pass to a
+A stack's graph is compiled from the wiring — Dagster-style: the unit
+of work is typed, the placement is separate, and the compile refuses
+the wrong shapes. The promise you pass to a
 `step` is the edge; pass two promises and the step has two parents (the
 AND-join):
 
@@ -152,7 +154,8 @@ dropped.
 
 ## Retries across steps: the ladder and the per-item isolation
 
-Every step rides the ladder (`max_attempts`, per-node). The law that
+Every step rides the ladder (`max_attempts`, per-node) — Prefect-style
+retries, scoped to the ITEM, not the flow. The law that
 matters for a stack is the ISOLATION: a map child that fails re-runs
 ALONE — its siblings and every succeeded item never re-run — because
 the step ledger's claim arbiter discriminates children by

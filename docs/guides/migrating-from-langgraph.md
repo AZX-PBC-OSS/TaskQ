@@ -1,10 +1,9 @@
 # Moved — see the graph-checkpoint migration guide
 
-This guide was renamed to put the migration in terms of the PATTERN, not
-any one product: [**Migrating graph-checkpoint
-workflows**](migrating-graph-checkpoints.md)
-(`docs/guides/migrating-graph-checkpoints.md`).
+This page moved to **[Migrating graph-checkpoint
+workflows](migrating-graph-checkpoints.md)**
+(`docs/guides/migrating-graph-checkpoints.md`) and was rewritten in the
+feature-parity shape: the short concept table first, the worked port,
+the honest gaps.
 
-The content is the same port — the worked enrich/review/approve shape,
-the map-reduce port, the honest gaps — with the framing made generic.
 This stub stays so the old path never 404s.

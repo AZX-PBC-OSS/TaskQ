@@ -40,7 +40,9 @@ async def _screen_source_body(ctx: Any) -> None:
         await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})
 ```
 
-The contract, precisely: the cursor value is committed in the SAME
+The contract, precisely (the Kafka consumer's committed-offset
+discipline, in your own database): the cursor value is committed in the
+SAME
 transaction that inserts the page's children. A kill between pages
 leaves the cursor at the last COMMITTED page; the resume continues from
 there and **re-emits exactly the lost page** — the records between the
