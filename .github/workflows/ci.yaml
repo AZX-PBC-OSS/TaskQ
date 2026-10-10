@@ -184,8 +184,16 @@ jobs:
     # +32.8% (per-worker setup duplication), and the coverage leg's tracer
     # taxes density-starved workers +22-55% wall (2026-09-22, below).
     # -n 4 is a win only with a dedicated core per worker.
+    # timeout 55: the suite's honest -n 2 runtime measured 39-41 min
+    # (2026-10-10: 39:16, 40:39, 41:33 across the runs) — the 45-min cap's
+    # 5-minute margin lost to runner variance twice (the runs
+    # 38049228451/38072348161: both test 3.12/3.14 legs cancelled at
+    # ~45:00 mid-suite, no failure inside them). The cap exists to catch
+    # HANGS (faulthandler 300s is the per-test net) — a 15-minute margin
+    # over the honest runtime still catches the hang class without
+    # racing the weather.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     # fail-fast off: the matrix exists to answer "which interpreters still
     # pass" in one run — cancelling the surviving legs on the first red
     # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
