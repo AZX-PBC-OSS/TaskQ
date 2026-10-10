@@ -25,6 +25,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
+    Promise,
     StepContext,
     WorkflowApp,
     build,
@@ -77,7 +78,7 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         return {"ok": True}
 
     @app.workflow("t21_chain")
-    def t21_chain() -> object:
+    def t21_chain() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_chain"), wf_pool, wf_schema)
@@ -138,7 +139,7 @@ async def test_declared_schema_door_refuses_wrong_shape(
         return {"ok": True}
 
     @app.workflow("t21_lying")
-    def t21_lying() -> object:
+    def t21_lying() -> Promise[object]:
         return build(step(lying_body, Ingest(doc_id="d1"), key="lying", progress_schema=Page))
 
     runner = FlowRunner(app.get("t21_lying"), wf_pool, wf_schema)
@@ -219,7 +220,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
         return {"ok": True}
 
     @app.workflow("t21_chatty")
-    def t21_chatty() -> object:
+    def t21_chatty() -> Promise[object]:
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
     runner = FlowRunner(app.get("t21_chatty"), wf_pool, wf_schema)
@@ -365,7 +366,7 @@ async def test_terminal_projection_lands_after_the_finalize(
         raise ValueError("the body failed at 99%")
 
     @app.workflow("t21_boom")
-    def t21_boom() -> object:
+    def t21_boom() -> Promise[object]:
         return build(step(boom, Ingest(doc_id="d1"), key="boom", max_attempts=1))
 
     runner = FlowRunner(app.get("t21_boom"), wf_pool, wf_schema)

@@ -80,6 +80,7 @@ from taskq.workflows import (
     Done,
     FlowRunner,
     HitlClient,
+    Promise,
     Refine,
     StepContext,
     WorkflowApp,
@@ -280,7 +281,7 @@ REVIEW_GATE = GateDecl(
 
 
 @app.workflow("doc_ingest")
-def doc_ingest() -> object:
+def doc_ingest() -> Promise[object]:
     ingested = step(ingest_body, IngestBatch(doc_ids=_BATCH), key="ingest")
     # Shape 4 — the ITEM LADDER's knob, named where the ladder lives:
     # `max_attempts` on the map (each child re-runs ALONE up to this

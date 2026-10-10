@@ -83,7 +83,7 @@ def probe_residual_handle_is_the_error() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_residual")
-    def probe_residual() -> object:
+    def probe_residual() -> Promise[object]:
         terminal = step(_produces_report, Config(key="k"), key="t")
         stray = step(_produces_report, Config(key="k"), key="s")
         return build(
@@ -102,7 +102,7 @@ def probe_consumer_handle_mismatch() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_consumer_handle")
-    def probe_consumer_handle() -> object:
+    def probe_consumer_handle() -> Promise[object]:
         produced = step(_produces_report, Config(key="k"), key="p")
         return _handle_consumer(
             produced
@@ -119,7 +119,7 @@ def probe_gather_element_type_mismatch() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_gather_elem")
-    def probe_gather_elem() -> object:
+    def probe_gather_elem() -> Promise[object]:
         produced = step(_produces_report, Config(key="k"), key="p")
         joined = gather([produced])
         return _list_consumer(
@@ -142,7 +142,7 @@ def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
     app = WorkflowApp()
 
     @app.workflow("probe_wiring_gap")
-    def probe_wiring_gap() -> object:
+    def probe_wiring_gap() -> Promise[object]:
         produced = step(_produces_report, Config(key="k"), key="p")
         return build(
             step(_wants_config, produced, key="c")

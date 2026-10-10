@@ -53,7 +53,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
@@ -91,7 +91,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     foreign_app = WorkflowApp()
 
     @foreign_app.workflow("the-foreign-lanes-own-workflow")
-    def the_foreign_lanes_own_workflow() -> object:
+    def the_foreign_lanes_own_workflow() -> Promise[object]:
         return build(step(_the_foreign_body, TheForeignInput(doc="d1"), key="the_foreign_step"))
 
     foreign_runner = FlowRunner(
@@ -367,7 +367,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     app = WorkflowApp()
 
     @app.workflow("att_demopin_warn_flow")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         gate = GateDecl(name="_Verdict", payload_models=(_Verdict,))  # timeout_s=None → W1
         return build(step(_wait_body, _WarnIn(doc_id="d"), key="review", gates=(gate,)))
 
@@ -393,7 +393,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     error_carrier_app = WorkflowApp()
 
     @error_carrier_app.workflow("att_demopin_error_flow")
-    def _err_wf() -> object:
+    def _err_wf() -> Promise[object]:
         return build(step(_unannotated_body, _WarnIn(doc_id="d"), key="produce"))
 
     with pytest.raises(WorkflowValidationError):

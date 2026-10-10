@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from testcontainers.postgres import PostgresContainer
 
 import taskq.migrate
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 
 VERDICTS: list[tuple[str, bool, str]] = []
 
@@ -55,7 +55,7 @@ app = WorkflowApp()
 
 
 @app.workflow("doc_ingest")
-def doc_ingest_build() -> object:
+def doc_ingest_build() -> Promise[object]:
     enriched = step(enrich_body, DocIn(doc_id="d1"), key="enrich")
     reviewed = step(review_body, enriched, key="review")
     return build(reviewed)
@@ -93,7 +93,7 @@ async def enrich_one_body(ctx: Any, params: DocIn) -> dict:
 
 
 @app.workflow("batch_ingest")
-def batch_build() -> object:
+def batch_build() -> Promise[object]:
     planned = step(plan_body, BatchIn(doc_ids=[f"d{i}" for i in range(7)]), key="plan")
     enriched = map_source(planned, enrich_one_body)
     return build(enriched)

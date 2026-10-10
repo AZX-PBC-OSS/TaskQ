@@ -40,7 +40,7 @@ from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId, JobRow
 from taskq.backend._records import _job_row_from_record
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows import _worker_execution as seam
 
 if TYPE_CHECKING:
@@ -123,7 +123,7 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_projection_flow")
-        def seam_projection_flow() -> object:
+        def seam_projection_flow() -> Promise[object]:
             node = step(
                 _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
             )
@@ -163,7 +163,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_conflict_flow")
-        def seam_conflict_flow() -> object:
+        def seam_conflict_flow() -> Promise[object]:
             node = step(_observed_body, Ingest(doc_id="d"), key="solo", actor="wf-split")
             second = step(_observed_body, node, key="two", actor="wf-split", queue="gpu")
             return build(second)
@@ -184,7 +184,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         healthy = WorkflowApp()
 
         @healthy.workflow("seam_conflict_other")
-        def seam_conflict_other() -> object:
+        def seam_conflict_other() -> Promise[object]:
             third = step(
                 _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q1"
             )
@@ -193,7 +193,7 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
         second_app = WorkflowApp()
 
         @second_app.workflow("seam_conflict_rival")
-        def seam_conflict_rival() -> object:
+        def seam_conflict_rival() -> Promise[object]:
             fourth = step(
                 _observed_body, Ingest(doc_id="d"), key="one", actor="wf-split", queue="q2"
             )
@@ -215,13 +215,13 @@ def test_the_projection_is_deterministically_ordered() -> None:
         app = WorkflowApp()
 
         @app.workflow("seam_order_flow_b")
-        def seam_order_flow_b() -> object:
+        def seam_order_flow_b() -> Promise[object]:
             return build(
                 step(_observed_body, Ingest(doc_id="d"), key="s", actor="wf-b", queue="qb")
             )
 
         @app.workflow("seam_order_flow_a")
-        def seam_order_flow_a() -> object:
+        def seam_order_flow_a() -> Promise[object]:
             return build(
                 step(_observed_body, Ingest(doc_id="d"), key="s", actor="wf-a", queue="qa")
             )
@@ -278,7 +278,7 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
         app = WorkflowApp()
 
         @app.workflow("seam_door_flow")
-        def seam_door_flow() -> object:
+        def seam_door_flow() -> Promise[object]:
             return build(step(_observed_body, Ingest(doc_id="claimed"), key="solo"))
 
         await _project_cohorts_into(wf_conn, wf_schema)

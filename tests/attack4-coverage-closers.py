@@ -45,7 +45,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows.api import GateDecl
 from taskq.workflows.api._hitl import HitlClient
 
@@ -90,11 +90,11 @@ def test_registered_loop_policy_reads_the_declared_policy_and_the_body_fallback(
     app = WorkflowApp()
 
     @app.workflow("attack4_policy_declared")
-    def declared() -> object:
+    def declared() -> Promise[object]:
         return build(loop("review", iteration, initial=0, max_iterations=2, on_exhausted="fail"))
 
     @app.workflow("attack4_policy_escalate")
-    def escalate() -> object:
+    def escalate() -> Promise[object]:
         return build(
             loop("review", iteration, initial=0, max_iterations=2, on_exhausted="escalate")
         )
@@ -135,7 +135,7 @@ def test_escalation_bindings_the_unregistered_worlds_return_none() -> None:
     app = WorkflowApp()
 
     @app.workflow("attack4_no_escalation_body")
-    def no_body() -> object:
+    def no_body() -> Promise[object]:
         return build(step(plain, Ingest(doc_id="d"), key="solo"))
 
     app.get("attack4_no_escalation_body")
@@ -244,7 +244,7 @@ async def held_app(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> Any
             return "done"
 
         @app.workflow("attack4_closer_hold")
-        def closer_hold() -> object:
+        def closer_hold() -> Promise[object]:
             return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
         _HELD_APP_STATE["app"] = app
@@ -375,7 +375,7 @@ async def test_the_cold_boundary_refuses_by_the_rows_schema_alone(
         return "done"
 
     @app.workflow("attack4_cold_refusal")
-    def cold_refusal() -> object:
+    def cold_refusal() -> Promise[object]:
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_cold_refusal"), module_pg_pool, schema)
@@ -546,7 +546,7 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
         return {"n": n}
 
     @app.workflow("attack4_cursor_flow")
-    def cursor_flow() -> object:
+    def cursor_flow() -> Promise[object]:
         from taskq.workflows import map_source
 
         ingested = step(src, Ingest(doc_id="d1"), key="src")
@@ -601,7 +601,7 @@ async def test_the_re_wait_while_a_hold_stands_raises_node_held(
         return "x"
 
     @app.workflow("attack4_rewait")
-    def rewait() -> object:
+    def rewait() -> Promise[object]:
         return build(step(double_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_rewait"), module_pg_pool, schema)
@@ -676,7 +676,7 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
         return str(await ctx.signal("Approval"))
 
     @app.workflow("attack4_signal_reader")
-    def signal_reader() -> object:
+    def signal_reader() -> Promise[object]:
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4_signal_reader"), module_pg_pool, schema)

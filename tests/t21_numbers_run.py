@@ -35,6 +35,7 @@ from taskq._ids import new_uuid
 from taskq.migrate import apply_pending
 from taskq.workflows import (
     FlowRunner,
+    Promise,
     StepContext,
     WorkflowApp,
     build,
@@ -77,11 +78,11 @@ async def main() -> dict[str, Any]:
         return {"ok": True}
 
     @app.workflow("t21_chatty_numbers")
-    def t21_chatty_numbers() -> object:
+    def t21_chatty_numbers() -> Promise[object]:
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
     @app.workflow("t21_quiet_numbers")
-    def t21_quiet_numbers() -> object:
+    def t21_quiet_numbers() -> Promise[object]:
         return build(step(quiet, Ingest(doc_id="d1"), key="quiet"))
 
     t0 = time.perf_counter()
@@ -153,7 +154,7 @@ async def main() -> dict[str, Any]:
         return sum(int(r["risk"]) for r in rows) / len(rows)
 
     @app2.workflow("t21_map_numbers")
-    def t21_map_numbers() -> object:
+    def t21_map_numbers() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         return build(map_source(source, item, aggregate=risk_mean))
 

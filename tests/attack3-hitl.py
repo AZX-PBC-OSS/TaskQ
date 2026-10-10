@@ -18,7 +18,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
     HitlClient,
@@ -59,7 +59,7 @@ async def _held_flow(
     app = WorkflowApp()
 
     @app.workflow(name)
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         return build(step(wait_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)

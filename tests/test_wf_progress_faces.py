@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
+    Promise,
     StepContext,
     WorkflowApp,
     build,
@@ -77,7 +78,7 @@ async def _map_flow(
         return {"risk": value}
 
     @app.workflow(name)
-    def map_flow() -> object:
+    def map_flow() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         items = map_source(source, item, aggregate=aggregate)
         return build(items)
@@ -242,7 +243,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
         raise ValueError("the body failed at 99%")
 
     @app.workflow("t21_liar_display")
-    def t21_liar_display() -> object:
+    def t21_liar_display() -> Promise[object]:
         return build(step(liar, Ingest(doc_id="d1"), key="liar", max_attempts=1))
 
     runner = FlowRunner(app.get("t21_liar_display"), wf_pool, wf_schema)
@@ -481,7 +482,7 @@ async def test_sunk_join_for_progress_warns_at_validate(
         return value
 
     @app.workflow("t21_w2_flow")
-    def w2_flow() -> object:
+    def w2_flow() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         items = map_source(source, item)
         sink(items)  # the display-only reader, declared
@@ -515,7 +516,7 @@ async def test_http_face_streams_display_then_progress(
         return {"ok": True}
 
     @app.workflow("t21_http_flow")
-    def t21_http_flow() -> object:
+    def t21_http_flow() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work"))
 
     runner = FlowRunner(app.get("t21_http_flow"), wf_pool, wf_schema)

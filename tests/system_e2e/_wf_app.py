@@ -44,6 +44,7 @@ from taskq import JobContext, actor
 from taskq.exceptions import SignalTimeoutError
 from taskq.workflows import (
     Done,
+    Promise,
     Refine,
     WorkflowApp,
     build,
@@ -239,7 +240,7 @@ research_app = WorkflowApp()
 
 
 @research_app.workflow("deep_research")
-def deep_research() -> object:
+def deep_research() -> Promise[object]:
     sources = step(kickoff_body, Kickoff(query="the march's query"), key="sources")
     fetched = map_source(sources, fetch_source_body, on_failure="collect")
     triage = step(triage_body, fetched, key="triage")
@@ -264,7 +265,7 @@ def deep_research() -> object:
 
 
 @research_app.workflow("deep_research_cron")
-def deep_research_cron() -> object:
+def deep_research_cron() -> Promise[object]:
     """The CRON-FIRED variant: the SAME graph; the run key IS the cron
     slot (the G3 composition — the fire arm passes the slot as the run
     key, a double-fired slot is ONE run)."""
@@ -335,7 +336,7 @@ march_app = WorkflowApp()
 
 
 @march_app.workflow("triage_chain")
-def triage_chain() -> object:
+def triage_chain() -> Promise[object]:
     src = chain_source(TRIAGE_CHAIN, triage_source, key="triage_source")
     return build(src)
 
@@ -398,7 +399,7 @@ ingest_app = WorkflowApp()
 
 
 @ingest_app.workflow("doc_ingest_march")
-def doc_ingest_march() -> object:
+def doc_ingest_march() -> Promise[object]:
     ingested = step(ingest_body, IngestBatch(doc_ids=["d1", "d2", "d3", "d4"]), key="ingest")
     enriched = map_source(ingested, enrich_body, aggregate=_sum_aggregate)
     summaries = step(summarize_body, enriched, key="summarize")
@@ -431,14 +432,14 @@ matrix_app = WorkflowApp()
 
 
 @matrix_app.workflow("reclaim_target")
-def reclaim_target() -> object:
+def reclaim_target() -> Promise[object]:
     long_node = step(long_node_body, Kickoff(query="30"), key="long", max_attempts=3)
     after = step(downstream_body, long_node, key="after")
     return build(after)
 
 
 @matrix_app.workflow("drain_map")
-def drain_map() -> object:
+def drain_map() -> Promise[object]:
     """The SIGTERM-drain cell's mid-map shape: a map whose child is
     mid-iteration when the drain lands; the retried child's map slot is
     preserved (retry-in-place), the items are applied exactly once."""
@@ -466,7 +467,7 @@ async def drain_loop_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
 
 
 @matrix_app.workflow("drain_loop")
-def drain_loop() -> object:
+def drain_loop() -> Promise[object]:
     carried = loop("carry_loop", drain_loop_iteration, initial=0, max_iterations=5)
     after = step(downstream_body, carried, key="after")
     return build(after)
@@ -480,14 +481,14 @@ async def drain_hold_body(ctx: Any, params: Kickoff) -> str:
 
 
 @matrix_app.workflow("drain_hold")
-def drain_hold() -> object:
+def drain_hold() -> Promise[object]:
     held = step(drain_hold_body, Kickoff(query="hold"), key="hold")
     after = step(downstream_body, held, key="after")
     return build(after)
 
 
 @matrix_app.workflow("drift_target")
-def drift_target() -> object:
+def drift_target() -> Promise[object]:
     """The config-drift cell's flow: the downstream node's queue NOTHING
     serves after the operator re-routes it — the node enters `blocked`
     with the blocking reason naming the unserved queue."""

@@ -33,6 +33,7 @@ from taskq.workflows import (
     Done,
     Exit,
     FlowRunner,
+    Promise,
     Refine,
     StepContext,
     WorkflowApp,
@@ -111,7 +112,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
     app2 = WorkflowApp()
 
     @app2.workflow("a3cure_discriminated_flow")
-    def discriminated() -> object:
+    def discriminated() -> Promise[object]:
         return build(step(discriminated_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app2.get("a3cure_discriminated_flow"), wf_pool, wf_schema)
@@ -149,7 +150,7 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
     app = WorkflowApp()
 
     @app.workflow("a3cure_ambiguous_flow")
-    def ambiguous() -> object:
+    def ambiguous() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("a3cure_ambiguous_flow"), wf_pool, wf_schema)
@@ -202,7 +203,7 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
     app = WorkflowApp()
 
     @app.workflow("a3cure_escalate_flow")
-    def escalate_flow() -> object:
+    def escalate_flow() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
 
     runner = FlowRunner(app.get("a3cure_escalate_flow"), wf_pool, wf_schema)
@@ -285,7 +286,7 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     app = WorkflowApp()
 
     @app.workflow("a3cure_fleet_escalation_flow")
-    def fleet_escalation() -> object:
+    def fleet_escalation() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
 
     runner = FlowRunner(app.get("a3cure_fleet_escalation_flow"), wf_pool, wf_schema)
@@ -394,7 +395,7 @@ async def test_driver_fail_policy_enqueues_nothing(
     app = WorkflowApp()
 
     @app.workflow("a3cure_fail_flow")
-    def fail_flow() -> object:
+    def fail_flow() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=2, on_exhausted="fail"))
 
     runner = FlowRunner(app.get("a3cure_fail_flow"), wf_pool, wf_schema)
@@ -427,7 +428,7 @@ async def test_escalates_to_registers_a_custom_body(
     app = WorkflowApp()
 
     @app.workflow("a3cure_custom_escalation_flow")
-    def custom_escalation() -> object:
+    def custom_escalation() -> Promise[object]:
         return build(
             loop(
                 "counter",
@@ -468,7 +469,7 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
     app = WorkflowApp()
 
     @app.workflow("a3cure_reachable_cap_flow")
-    def reachable_cap() -> object:
+    def reachable_cap() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3))
 
     runner = FlowRunner(app.get("a3cure_reachable_cap_flow"), wf_pool, wf_schema)
@@ -521,7 +522,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     app = WorkflowApp()
 
     @app.workflow("a3cure_exit_flow")
-    def exit_flow() -> object:
+    def exit_flow() -> Promise[object]:
         a = step(head, Ingest(doc_id="d1"), key="a")
         b = step(early_exit, a, key="b")
         return build(step(tail, b, key="tail"))
@@ -581,7 +582,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     app = WorkflowApp()
 
     @app.workflow("a3cure_retry_flow")
-    def retry_flow() -> object:
+    def retry_flow() -> Promise[object]:
         return build(step(fails_always, Ingest(doc_id="d1"), key="lonely", max_attempts=1))
 
     runner = FlowRunner(app.get("a3cure_retry_flow"), wf_pool, wf_schema)
@@ -648,7 +649,7 @@ def test_carrier_type_mismatch_is_convicted() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_carrier_flow")
-    def carrier() -> object:
+    def carrier() -> Promise[object]:
         return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
     # the PROBE SEAM (app._compile): the carrier-mismatch graph is
@@ -673,7 +674,7 @@ def test_carrier_type_match_is_clean() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_carrier_ok_flow")
-    def carrier_ok() -> object:
+    def carrier_ok() -> Promise[object]:
         return build(loop("counter", refines_right, initial=Counter(acc=0), max_iterations=2))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_carrier_ok_flow"))]
@@ -719,7 +720,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     app = WorkflowApp()
 
     @app.workflow("a3cure_map_tail_flow")
-    def map_tail() -> object:
+    def map_tail() -> Promise[object]:
         src = step(_map_items_source, Ingest(doc_id="d1"), key="src")
         mapped = map_source(src, _map_per_item)
         tail = step(_map_tail, mapped, key="tail")
@@ -781,7 +782,7 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_e4_fp_flow")
-    def e4_fp() -> object:
+    def e4_fp() -> Promise[object]:
         return build(step(annotated_body, Ingest(doc_id="d1"), key="a"))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_e4_fp_flow"))]
@@ -799,7 +800,7 @@ def test_e4_still_convicts_the_genuinely_unannotated() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_e4_teeth_flow")
-    def e4_teeth() -> object:
+    def e4_teeth() -> Promise[object]:
         return build(step(unannotated, Ingest(doc_id="d1"), key="a"))
 
     try:
@@ -825,7 +826,7 @@ def test_wiring_key_with_a_dot_is_refused() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_dot_key_flow")
-    def dot_key() -> object:
+    def dot_key() -> Promise[object]:
         return build(step(_refines_wrong, Ingest(doc_id="d1"), key="bad.key"))
 
     with pytest.raises(WorkflowBuildError, match="dot"):
@@ -840,7 +841,7 @@ def test_loop_key_with_a_dot_is_refused() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_dot_loop_flow")
-    def dot_loop() -> object:
+    def dot_loop() -> Promise[object]:
         return build(loop("bad.loop", _refines_wrong, max_iterations=2))
 
     with pytest.raises(WorkflowBuildError, match="dot"):
@@ -859,7 +860,7 @@ def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_smuggle_flow")
-    def smuggle() -> object:
+    def smuggle() -> Promise[object]:
         mine = step(_refines_wrong, Ingest(doc_id="d1"), key="fetch")
         foreign = Promise("fetch", object, BuildGraph())
         return build(
@@ -879,7 +880,7 @@ def test_unknown_queue_is_warned_never_refused() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_queue_flow")
-    def queue_flow() -> object:
+    def queue_flow() -> Promise[object]:
         return build(step(_refines_wrong, Ingest(doc_id="d1"), key="a", queue="no-such-queue"))
 
     compiled = app.get("a3cure_queue_flow")
@@ -913,7 +914,7 @@ def test_default_escalation_body_is_registered_once_per_workflow() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3cure_two_loops_flow")
-    def two_loops() -> object:
+    def two_loops() -> Promise[object]:
         return build(
             loop("l1", body_one, max_iterations=1, on_exhausted="escalate", escalates_to=esc_a),
         )
@@ -925,7 +926,7 @@ def test_default_escalation_body_is_registered_once_per_workflow() -> None:
     app2 = WorkflowApp()
 
     @app2.workflow("a3cure_two_custom_flow")
-    def two_custom() -> object:
+    def two_custom() -> Promise[object]:
         return build(
             loop("l1", body_one, max_iterations=1, on_exhausted="escalate", escalates_to=esc_a),
             loop("l2", body_two, max_iterations=1, on_exhausted="escalate", escalates_to=esc_b),
@@ -945,7 +946,7 @@ def test_default_escalation_body_is_registered_once_per_workflow() -> None:
     app3 = WorkflowApp()
 
     @app3.workflow("a3cure_default_esc_flow")
-    def default_esc() -> object:
+    def default_esc() -> Promise[object]:
         return build(loop("l1", body_one, max_iterations=1, on_exhausted="escalate"))
 
     app3.get("a3cure_default_esc_flow")

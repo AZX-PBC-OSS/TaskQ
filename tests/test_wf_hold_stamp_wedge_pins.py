@@ -23,7 +23,7 @@ import structlog.testing
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._sql_sweep import HOLD_STAMP_RECONCILE_SQL
 from taskq.workflows._sweep import sweep_hold_stamps
 from taskq.workflows.api._hitl import HitlClient
@@ -44,7 +44,7 @@ def _wedge_app(name: str) -> WorkflowApp:
     app = WorkflowApp()
 
     @app.workflow(name)
-    def wedge_flow() -> object:
+    def wedge_flow() -> Promise[object]:
         async def review(ctx: StepContext, params: Ingest) -> object:
             return await ctx.wait_signal(Approval, timeout_s=120.0)
 

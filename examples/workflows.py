@@ -39,6 +39,7 @@ from taskq import actor as vanilla_actor
 from taskq.workflows import (
     Done,
     FlowRunner,
+    Promise,
     Refine,
     WorkflowApp,
     build,
@@ -301,7 +302,7 @@ async def publish_body(
 
 
 @wf_app.workflow("doc_screen_router")
-def doc_screen_router() -> object:
+def doc_screen_router() -> Promise[object]:
     """LEG 4's workflow: the chain source fans each record's chain; the
     ROUTE (the conditional edge map) sends the readable docs to index,
     the unreadable to the dead-letter — the conditional routing LIVE."""
@@ -332,7 +333,7 @@ REVIEW_GATE = GateDecl(
 
 
 @wf_app.workflow("doc_ingest")
-def doc_ingest() -> object:
+def doc_ingest() -> Promise[object]:
     # THE SPLIT PLACEMENT: the map's children inherit the SOURCE's actor —
     # the enrich queue's actor rides the ingest step (one actor, one queue).
     ingested = step(

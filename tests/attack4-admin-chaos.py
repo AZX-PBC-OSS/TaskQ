@@ -57,7 +57,7 @@ from fastapi import FastAPI
 
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = pytest.mark.integration
@@ -104,16 +104,16 @@ def _module() -> types.ModuleType:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("attack4a_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("attack4a_plain_flow")
-    def plain_flow() -> object:
+    def plain_flow() -> Promise[object]:
         return build(step(_plain, Ingest(doc_id="d1"), key="solo"))
 
     @app_obj.workflow("attack4a_map_flow")
-    def map_flow() -> object:
+    def map_flow() -> Promise[object]:
         ingested = step(_items, Ingest(doc_id="d1"), key="ingest")
         children = map_source(ingested, _per_item)
         return build(step(_map_tail, children, key="tail"))

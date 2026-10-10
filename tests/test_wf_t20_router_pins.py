@@ -29,7 +29,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
-from taskq.workflows import StepContext
+from taskq.workflows import Promise, StepContext
 from taskq.workflows.chain import (
     DONE,
     Chain,
@@ -535,7 +535,7 @@ async def test_t20_chain_end_to_end_through_the_runner(
     app = WorkflowApp()
 
     @app.workflow("t20_chain_e2e")
-    def t20_chain_e2e() -> object:
+    def t20_chain_e2e() -> Promise[object]:
         src = chain_source(T20_CHAIN, t20_source, key="t20_source")
         return build(src)
 
@@ -617,7 +617,7 @@ async def test_t20_router_not_total_through_the_runner(
     app = WorkflowApp()
 
     @app.workflow("t20_router_not_total_e2e")
-    def t20_router_not_total_e2e() -> object:
+    def t20_router_not_total_e2e() -> Promise[object]:
         src = chain_source(T20_LYING_CHAIN, t20_lying_source, key="t20_lying_source")
         return build(src)
 

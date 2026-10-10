@@ -45,7 +45,7 @@ from fastapi import FastAPI
 
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = pytest.mark.integration
@@ -83,16 +83,16 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     app_obj = WorkflowApp()
 
     @app_obj.workflow("admin_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("admin_plain_flow")
-    def plain_flow() -> object:
+    def plain_flow() -> Promise[object]:
         return build(step(_plain_body, Ingest(doc_id="d1"), key="solo"))
 
     @app_obj.workflow("admin_map_flow")
-    def map_flow() -> object:
+    def map_flow() -> Promise[object]:
         src = step(_map_source_body, Ingest(doc_id="d1"), key="ingest")
         items = map_source(src, _map_item_body, max_attempts=3)
         return build(items)
@@ -566,7 +566,7 @@ def test_the_cli_gate_models_the_key_error_path() -> None:
     app = WorkflowApp()
 
     @app.workflow("gate_key_err")
-    def gate_key_err() -> object:
+    def gate_key_err() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d"), key="solo"))
 
     from taskq.workflows._cli import gate_models_for

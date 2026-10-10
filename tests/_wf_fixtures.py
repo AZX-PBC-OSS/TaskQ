@@ -20,10 +20,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import (
     uuid4,  # noqa: TID251  # Why: the redlog RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
 )
@@ -33,10 +33,27 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.workflows import Promise
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
+
+
+def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[object]]:
+    """THE NEGATIVE PROBE'S NAMED SEAM (the typed door's runtime face):
+    the ``@app.workflow`` decorator takes ``Callable[[], Promise[R]]`` —
+    a build function whose runtime return is NOT a promise (a bare dict,
+    a bare ``None``) is refused STATICALLY at the decoration site (the
+    probe corpus pins that refusal). The RUNTIME refusals those lying
+    declarations used to reach — the build door's "the return IS the
+    terminal promise" ``TypeError``, the E2 produced-never-consumed
+    verdict — are still runtime behavior worth pinning: the probes
+    construct the static-impossible shape through THIS seam, one cast,
+    named and commented, so the checker sees the lie typed and the
+    runtime door keeps its pin."""
+    return cast("Callable[[], Promise[object]]", fn)
+
 
 
 def source_changes_since(head_sha_value: str) -> bool:

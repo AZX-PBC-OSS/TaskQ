@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import StepContext, WorkflowApp, build, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows.api._validate import WorkflowValidationError
 
 
@@ -58,7 +58,7 @@ def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
         return Report(ref=params.doc_id)  # type: ignore[return-value]  # Why: the lie's body reads nothing.
 
     @app.workflow("e9_lying_ctx")
-    def e9_lying_ctx() -> object:
+    def e9_lying_ctx() -> Promise[object]:
         return build(step(lying_body, Ingest(doc_id="d1"), key="solo"))
 
     # the PROBE SEAM (app._compile): the door (app.get) raises on the
@@ -84,7 +84,7 @@ def test_e9_the_honest_annotation_greens() -> None:
         return Report(ref=params.doc_id)
 
     @app.workflow("e9_honest_ctx")
-    def e9_honest_ctx() -> object:
+    def e9_honest_ctx() -> Promise[object]:
         return build(step(honest_body, Ingest(doc_id="d1"), key="solo"))
 
     compiled = app.get("e9_honest_ctx")
@@ -103,7 +103,7 @@ def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
         return Report(ref=params.doc_id)
 
     @app.workflow("e10_over_arity")
-    def e10_over_arity() -> object:
+    def e10_over_arity() -> Promise[object]:
         return build(step(over_arity, Ingest(doc_id="d1"), key="solo"))
 
     # the PROBE SEAM (app._compile): the door would raise — the pin's
@@ -122,7 +122,7 @@ def test_e10_the_exact_arity_greens() -> None:
         return Report(ref=params.doc_id)
 
     @app.workflow("e10_exact")
-    def e10_exact() -> object:
+    def e10_exact() -> Promise[object]:
         return build(step(exact, Ingest(doc_id="d1"), key="solo"))
 
     app.get("e10_exact").validate()
@@ -145,7 +145,7 @@ def test_e5_the_legitimate_mixed_signature_greens() -> None:
         return f"{item.ref}:{page}"
 
     @app.workflow("e5_mixed")
-    def e5_mixed() -> object:
+    def e5_mixed() -> Promise[object]:
         p = step(source_body, Ingest(doc_id="d1"), key="src")
         return build(step(mixed_body, p, 3, key="tail"))
 
@@ -165,7 +165,7 @@ def test_e5_the_genuine_mismatch_still_refuses() -> None:
         return item.n.__str__()
 
     @app.workflow("e5_mismatch")
-    def e5_mismatch() -> object:
+    def e5_mismatch() -> Promise[object]:
         p = step(source_body, Ingest(doc_id="d1"), key="src")
         return build(step(mismatched, p, key="tail"))
 

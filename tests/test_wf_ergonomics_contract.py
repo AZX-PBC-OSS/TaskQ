@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from taskq.workflows import (
+    Promise,
     StepContext,
     WorkflowApp,
     build,
@@ -150,7 +151,7 @@ def test_bar_walk() -> None:
     app = WorkflowApp()
 
     @app.workflow("bar_walk_doc_ingest")
-    def doc_ingest() -> object:
+    def doc_ingest() -> Promise[object]:
         fetched = step(_fetch, DocIngest(doc_id="d1"))  # Promise[Report]
         embed_p = step(_embed, fetched)  # Promise[Vec] — sequenced
         sink(embed_p)  # the explicit fire-and-forget (recorded, never silent)
@@ -183,7 +184,7 @@ def test_paper_cut_1_join_user_body() -> None:
     app = WorkflowApp()
 
     @app.workflow("join_body_walk")
-    def join_body() -> object:
+    def join_body() -> Promise[object]:
         a = step(_stage_a, DocIngest(doc_id="d1"), key="stage_a")
         b = step(_stage_b, DocIngest(doc_id="d1"), key="stage_b")
         reducer = step(_reduce_join, a, b, key="reducer")
@@ -213,7 +214,7 @@ def test_paper_cut_7_create_flow_takes_input() -> None:
     app = WorkflowApp()
 
     @app.workflow("input_walk")
-    def input_walk() -> object:
+    def input_walk() -> Promise[object]:
         return build(step(_tail, step(_stage_a, DocIngest(doc_id="d"), key="a"), key="tail"))
 
     compiled = app.get("input_walk")
@@ -239,7 +240,7 @@ def test_paper_cut_4_dispatch_time_predicate() -> None:
     app = WorkflowApp()
 
     @app.workflow("dispatch_guard_walk")
-    def dispatch_guard() -> object:
+    def dispatch_guard() -> Promise[object]:
         pick = step(_chooser, DocIngest(doc_id="d"), key="pick")
         guarded = step(
             _branch_a,
@@ -279,7 +280,7 @@ def test_promise_type_story() -> None:
     app = WorkflowApp()
 
     @app.workflow("promise_types")
-    def promise_types() -> object:
+    def promise_types() -> Promise[object]:
         fetched = step(_fetch, DocIngest(doc_id="d"), key="fetch")
         assert fetched.key == "fetch"
         # The DECLARATION is the annotation's spelling; the RESOLVED type

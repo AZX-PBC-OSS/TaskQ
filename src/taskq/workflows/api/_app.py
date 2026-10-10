@@ -278,27 +278,35 @@ class WorkflowApp:
             return decorate(fn)
         return decorate
 
-    def workflow(
+    def workflow[R](
         self,
         name: str,
         *,
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
-    ) -> Callable[[Callable[[], object]], Callable[[], object]]:
+    ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
         """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
         — the per-workflow declaration (§10.3's policies). The
         declaration is what T04's capture writer and every export surface
         consume; ``redact=fn`` POST-COMPOSES on the default chain's
         output (it can only redact more, never less — TORS-REV-0.16 §G1).
 
-        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round): the
-        build function is SYNC and PURE (``get``'s docstring — the
-        recorder's verbs never await), so the decorator takes
-        ``Callable[[], object]``, NOT ``Callable[..., Awaitable[object]]``
-        — the old annotation red every honest sync builder under a strict
-        config (the probe corpus's unmarked decorator reds). An async fn
-        ALSO satisfies ``Callable[[], object]`` — nothing is refused.
+        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round, then the
+        TYPED-DOOR round): the build function is SYNC and PURE
+        (``get``'s docstring — the recorder's verbs never await), and its
+        return IS the terminal promise — so the decorator takes
+        ``Callable[[], Promise[R]]``, NOT ``Callable[[], object]``.
+        :class:`Promise` is COVARIANT, so every ``Promise[X]`` is a
+        ``Promise[object]`` — the whole fleet's builders satisfy the door,
+        R carried intact through the generic (the registry's root keeps
+        the terminal's own type). And the OLD declaration face — a build
+        function annotated ``-> object`` (or left unannotated, or
+        ``async``) — is a STATIC ERROR at the decoration site: the
+        decorator's parameter refuses it (the probe corpus's
+        ``wf_workflow_decl_negative_types.py`` pins the refusal on both
+        checkers). The type story no longer dies at the first line the
+        user writes: the builder's own signature is the typed door.
 
         THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
@@ -317,7 +325,7 @@ class WorkflowApp:
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
-        def decorate(build_fn: Callable[[], object]) -> Callable[[], object]:
+        def decorate(build_fn: Callable[[], Promise[R]]) -> Callable[[], Promise[R]]:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
             build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]

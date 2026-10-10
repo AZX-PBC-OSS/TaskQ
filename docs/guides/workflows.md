@@ -349,7 +349,7 @@ CHAIN = Chain(
 
 
 @app.workflow("ingest")
-def ingest() -> object:
+def ingest() -> Promise[object]:
     src = chain_source(CHAIN, source_body, key="doc_source")  # actor 'wf', queue 'default'
     return build(src)
 ```
@@ -607,7 +607,7 @@ cascade downstream — is spelled (never glued):
 ```python
 from pydantic import BaseModel
 
-from taskq.workflows import StepContext, WorkflowApp, build, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
 
 app = WorkflowApp()
 
@@ -643,7 +643,7 @@ async def tail(ctx: StepContext, total: Stats) -> Stats:
 
 
 @app.workflow("doc_ingest")
-def doc_ingest() -> object:
+def doc_ingest() -> Promise[object]:
     a = step(stage_a, Ingest(doc_id="d1"), key="a")
     b = step(stage_b, Ingest(doc_id="d1"), key="b")
     reducer = step(reduce, a, b, key="reducer")  # the fan-in: TWO parents
@@ -872,7 +872,7 @@ CHAIN = Chain(
 
 # the SOURCE is the paged generator — each yield = ONE emit tx:
 @app.workflow("application_sync")
-def application_sync() -> object:
+def application_sync() -> Promise[object]:
     return build(chain_source(CHAIN, source_body, key="source"))
 ```
 

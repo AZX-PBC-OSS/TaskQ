@@ -56,7 +56,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 
 pytestmark = pytest.mark.integration
 
@@ -75,7 +75,7 @@ def _one_step_runner(wf_pool: asyncpg.Pool, wf_schema: str, name: str) -> FlowRu
     app = WorkflowApp()
 
     @app.workflow(name)
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(step(_runkey_body, _RunkeyIn(doc_id="d1"), key="only"))
 
     return FlowRunner(app.get(name), wf_pool, wf_schema)

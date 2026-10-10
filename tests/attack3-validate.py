@@ -13,8 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import StepContext, WorkflowApp, build, gather, step
-from taskq.workflows.api._graph import NodeDecl, Promise
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, gather, step
+from taskq.workflows.api._graph import NodeDecl
 from taskq.workflows.api._validate import _run_rules
 
 
@@ -52,7 +52,7 @@ def test_a3_e3_rule_is_dead_code() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3_e3_dead")
-    def a3_e3() -> object:
+    def a3_e3() -> Promise[object]:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         return build(produced)
 
@@ -82,7 +82,7 @@ def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
     app_b = WorkflowApp()
 
     @app_b.workflow("a3_b")
-    def a3_b() -> object:
+    def a3_b() -> Promise[object]:
         foreign = step(_annotated, Ingest(doc_id="d"), key="fetch")  # the SAME key
         return build(step(_consumer, foreign, key="consume"))
 
@@ -90,7 +90,7 @@ def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
     smuggled_key = compiled_b.nodes["consume"].args[0][1]  # 'fetch'
 
     @app_a.workflow("a3_a")
-    def a3_a() -> object:
+    def a3_a() -> Promise[object]:
         mine = step(_annotated, Ingest(doc_id="d"), key="fetch")
         forged = Promise(smuggled_key, Report, _a3_discard_graph())  # the foreign handle
         consume_mine = step(_consumer, mine, key="consume")
@@ -126,7 +126,7 @@ def test_a3_mermaid_byte_stable_across_compiles_and_wiring_order() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3_mermaid")
-    def a3_mermaid() -> object:
+    def a3_mermaid() -> Promise[object]:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         produced2 = step(_annotated, Ingest(doc_id="d"), key="produce2")
         joined = gather([produced, produced2])
@@ -137,7 +137,7 @@ def test_a3_mermaid_byte_stable_across_compiles_and_wiring_order() -> None:
     app2 = WorkflowApp()
 
     @app2.workflow("a3_mermaid")
-    def a3_mermaid2() -> object:
+    def a3_mermaid2() -> Promise[object]:
         produced2 = step(_annotated, Ingest(doc_id="d"), key="produce2")
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         joined2 = gather([produced, produced2])
@@ -158,7 +158,7 @@ def test_a3_actor_on_a_nonexistent_queue_is_not_refused_at_build() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3_queue")
-    def a3_queue() -> object:
+    def a3_queue() -> Promise[object]:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce", queue="no-such-queue")
         return build(produced)
 
@@ -189,7 +189,7 @@ def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3_e5_blind")
-    def a3_e5() -> object:
+    def a3_e5() -> Promise[object]:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         return build(step(_untyped_consumer, produced, key="consume"))
 

@@ -37,7 +37,7 @@ from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows.api import GateDecl
 
 pytestmark = pytest.mark.integration
@@ -72,12 +72,12 @@ def _module() -> Any:
         return up
 
     @app_obj.workflow("attack4b_hold_flow")
-    def hold_flow() -> object:
+    def hold_flow() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
         return build(step(_wait, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     @app_obj.workflow("attack4b_stuck_flow")
-    def stuck_flow() -> object:
+    def stuck_flow() -> Promise[object]:
         doomed = step(_explode, Ingest(doc_id="d1"), key="doomed", max_attempts=1)
         return build(step(_downstream, doomed, key="downstream"))
 

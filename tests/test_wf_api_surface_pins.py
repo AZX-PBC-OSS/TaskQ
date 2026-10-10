@@ -15,8 +15,9 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import StepContext, WorkflowApp, build, sink, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, sink, step
 from taskq.workflows.api._graph import GateDecl
+from tests._wf_fixtures import runtime_refusal_builder
 
 
 class Ingest(BaseModel):
@@ -91,13 +92,13 @@ def test_duplicate_declaration_refused() -> None:
     app = WorkflowApp()
 
     @app.workflow("dup")
-    def first() -> object:
+    def first() -> Promise[object]:
         return build(step(_body, Ingest(doc_id="d"), key="a"))
 
     with pytest.raises(Exception, match="already declared"):
 
         @app.workflow("dup")
-        def second() -> object:
+        def second() -> Promise[object]:
             return build(step(_body, Ingest(doc_id="d"), key="b"))
 
 
@@ -114,10 +115,11 @@ def test_non_promise_build_return_refused() -> None:
     (the closure-shaped mistake) is the loud build error."""
     app = WorkflowApp()
 
-    @app.workflow("bad_return")
     def bad_return() -> object:
         step(_body, Ingest(doc_id="d"), key="a")
         return {"not": "a promise"}
+
+    app.workflow("bad_return")(runtime_refusal_builder(bad_return))
 
     with pytest.raises(TypeError, match="terminal promise"):
         app.get("bad_return")
@@ -150,7 +152,7 @@ def test_gate_declaration_rides_the_compile() -> None:
     app = WorkflowApp()
 
     @app.workflow("gated")
-    def gated_wf() -> object:
+    def gated_wf() -> Promise[object]:
         gate = GateDecl(
             name="Approval",
             payload_models=(Approval, Escalate),
@@ -182,7 +184,7 @@ def test_mermaid_shape_vocabulary() -> None:
     app = WorkflowApp()
 
     @app.workflow("shapes")
-    def shapes() -> object:
+    def shapes() -> Promise[object]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=None)
         plain = step(_body, Ingest(doc_id="d"), key="plain")
         sink(plain)

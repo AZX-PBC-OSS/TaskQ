@@ -44,6 +44,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.workflows import Promise
 from taskq.workflows._emit import (
     EMIT_MAX_IN_FLIGHT_DEFAULT,
     EmitBackpressureTimeoutError,
@@ -415,7 +416,7 @@ async def test_t20_max_in_flight_is_declared_at_the_workflow(
     app = WorkflowApp()
 
     @app.workflow("t20_bp_flow", max_in_flight=3)
-    def t20_bp_flow() -> object:
+    def t20_bp_flow() -> Promise[object]:
         # the source's ladder budget: the stalls are the loud refusal's
         # re-pends (one per page that can't fit) — budget the ladder for
         # them (the declaration's max_attempts).

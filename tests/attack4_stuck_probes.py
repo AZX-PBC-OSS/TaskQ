@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows.api._hitl import HitlClient
 
 
@@ -54,7 +54,7 @@ async def test_the_retry_cycle_terminates_the_ladder_is_the_bound(
         raise RuntimeError("the permanent failure")
 
     @app.workflow("attack4_cycle")
-    def attack4_cycle() -> object:
+    def attack4_cycle() -> Promise[object]:
         return build(step(always_fails, Ingest(doc_id="d1"), key="solo", max_attempts=3))
 
     runner = FlowRunner(app.get("attack4_cycle"), wf_pool, wf_schema)
@@ -92,7 +92,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
         return doc_id
 
     @app.workflow("attack4_deadlock")
-    def attack4_deadlock() -> object:
+    def attack4_deadlock() -> Promise[object]:
         first = step(holds_then_works, Ingest(doc_id="d1"), key="gate")
         mapped = map_source(first, item)
         return build(mapped)
@@ -156,7 +156,7 @@ async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
         return "done"
 
     @app.workflow("attack4_race")
-    def attack4_race() -> object:
+    def attack4_race() -> Promise[object]:
         return build(step(holds, Ingest(doc_id="d1"), key="review"))
 
     runner = FlowRunner(app.get("attack4_race"), wf_pool, wf_schema)

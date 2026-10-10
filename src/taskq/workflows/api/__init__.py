@@ -11,7 +11,7 @@ taskq`` NEVER imports this package). The wiring:
     async def fetch(ctx, params: Ingest) -> Report: ...
 
     @app.workflow("doc_ingest")
-    async def doc_ingest() -> object:
+    def doc_ingest() -> Promise[object]:
         fetched = step(fetch, Ingest(doc_id="d1"))   # Promise[Report]
         both = gather([fetched])                      # the ALL-upstream join
         return build(consume(both))                   # the completeness point

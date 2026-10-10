@@ -91,7 +91,7 @@ re-implemented by every client; nothing type-checks the channel merges.
 ```python
 # AFTER — TaskQflow: rows are the durability, the hold is a slot-releasing row
 from pydantic import BaseModel
-from taskq.workflows import FlowRunner, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
 from taskq.workflows import HitlClient
 
 
@@ -108,7 +108,7 @@ app = WorkflowApp()
 
 
 @app.workflow("doc_ingest")
-def doc_ingest_build() -> object:
+def doc_ingest_build() -> Promise[object]:
     enriched = step(enrich_body, DocIn(doc_id="d1"), key="enrich")
     reviewed = step(review_body, enriched, key="review")
     return build(reviewed)
@@ -159,11 +159,11 @@ promise arguments; `interrupt` → `wait_signal`; `MemorySaver` → nothing
 
 # AFTER — TaskQflow: the SAME dynamic cardinality, the join proven by
 # construction (the transactional outbox: at most one fire per join):
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 
 
 @app.workflow("batch_ingest")
-def batch_build() -> object:
+def batch_build() -> Promise[object]:
     planned = step(plan_body, BatchIn(doc_ids=DOCS), key="plan")
     enriched = map_source(planned, enrich_one_body)  # the join: <key>.join
     return build(enriched)  # the join collects list[dict] — ALL children

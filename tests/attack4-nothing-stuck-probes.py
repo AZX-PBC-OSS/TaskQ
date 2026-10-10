@@ -33,7 +33,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows import FlowRunner, WorkflowApp, build, map_source, step
+from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
 from taskq.workflows.api._hitl import HitlClient
 
@@ -84,7 +84,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
         return {"n": item.n}
 
     @app.workflow("attack4c_self_cancel")
-    def self_cancel() -> object:
+    def self_cancel() -> Promise[object]:
         ingested = step(suicidal_source, Ingest(doc_id="d1"), key="src")
         children = map_source(ingested, per_item)
         return build(children)
@@ -133,7 +133,7 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
         return "done"
 
     @app.workflow("attack4c_late_resolve")
-    def late_resolve() -> object:
+    def late_resolve() -> Promise[object]:
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_late_resolve"), module_pg_pool, schema)
@@ -197,7 +197,7 @@ async def test_a_hold_without_payload_schema_meets_the_typed_door(
         return "done"
 
     @app.workflow("attack4c_cold_gate")
-    def cold_gate() -> object:
+    def cold_gate() -> Promise[object]:
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_cold_gate"), module_pg_pool, schema)
@@ -260,7 +260,7 @@ async def test_a_hold_with_payload_schema_in_the_warm_process_still_refuses_garb
         return "done"
 
     @app.workflow("attack4c_gate_control")
-    def gate_control() -> object:
+    def gate_control() -> Promise[object]:
         return build(step(holds, Ingest(doc_id="d1"), key="review", gates=(gate,)))
 
     runner = FlowRunner(app.get("attack4c_gate_control"), module_pg_pool, schema)
@@ -361,7 +361,7 @@ async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
         return up + "!"
 
     @app.workflow("attack4c_restart_round")
-    def restart_round() -> object:
+    def restart_round() -> Promise[object]:
         return build(step(_child, step(_parent, Ingest(doc_id="d1"), key="up"), key="down"))
 
     compiled = app.get("attack4c_restart_round")

@@ -43,7 +43,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
-from taskq.workflows import FlowRunner, StepContext, WorkflowApp, build, step
+from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     PROGRESS_RING_BOUND,
@@ -267,7 +267,7 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
     app = WorkflowApp()
 
     @app.workflow("attack_prog_refusal")
-    def _wf() -> object:
+    def _wf() -> Promise[object]:
         return build(step(violating, key="violating", progress_schema=_Decl))
 
     runner = FlowRunner(app.get("attack_prog_refusal"), wf_pool, wf_schema)

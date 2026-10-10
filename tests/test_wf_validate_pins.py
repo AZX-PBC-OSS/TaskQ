@@ -25,6 +25,7 @@ from taskq.workflows import (
 )
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._validate import WorkflowValidationError
+from tests._wf_fixtures import runtime_refusal_builder
 
 # ── the clean corpus (the SHARED graph — one mutation per pin) ──────────
 
@@ -50,7 +51,7 @@ def _clean_app() -> tuple[WorkflowApp, str]:
     app = WorkflowApp()
 
     @app.workflow("clean")
-    def clean() -> object:
+    def clean() -> Promise[object]:
         produced = step(_annotated_body, Ingest(doc_id="d1"), key="produce")
         consumed = step(_consumer_body, produced, key="consume")
         return build(consumed)
@@ -88,7 +89,7 @@ def test_cycle_mutation_flips_only_acyclicity() -> None:
     app = WorkflowApp()
 
     @app.workflow("cyclic")
-    def cyclic() -> object:
+    def cyclic() -> Promise[object]:
         a = step(_annotated_body, Ingest(doc_id="d"), key="a")
         b = step(_consumer_body, a, key="b")
         return build(b)
@@ -106,7 +107,7 @@ def test_unconsumed_residual_mutation() -> None:
     app = WorkflowApp()
 
     @app.workflow("residual")
-    def residual() -> object:
+    def residual() -> Promise[object]:
         step(_annotated_body, Ingest(doc_id="d"), key="orphan")  # nobody consumes it
         fed = step(_annotated_body, Ingest(doc_id="d"), key="fed")
         return build(step(_consumer_body, fed, key="consumer"))
@@ -121,7 +122,7 @@ def test_sink_clears_the_residual() -> None:
     app = WorkflowApp()
 
     @app.workflow("sunk")
-    def sunk() -> object:
+    def sunk() -> Promise[object]:
         orphaned = step(_annotated_body, Ingest(doc_id="d"), key="orphan")
         sink(orphaned)
         fed = step(_annotated_body, Ingest(doc_id="d"), key="fed")
@@ -147,7 +148,7 @@ def test_unannotated_step_mutation() -> None:
     app = WorkflowApp()
 
     @app.workflow("unannotated")
-    def unannotated_wf() -> object:
+    def unannotated_wf() -> Promise[object]:
         produced = step(unannotated, Ingest(doc_id="d"), key="produce")
         return build(produced)
 
@@ -173,7 +174,7 @@ def test_incompatible_consumer_mutation() -> None:
     app = WorkflowApp()
 
     @app.workflow("incompatible")
-    def incompatible() -> object:
+    def incompatible() -> Promise[object]:
         produced = step(_annotated_body, Ingest(doc_id="d"), key="produce")
         consumed = step(_unrelated_consumer, produced, key="consume")
         return build(consumed)
@@ -190,7 +191,7 @@ def test_fan_in_bound_mutation() -> None:
     app = WorkflowApp()
 
     @app.workflow("overbound")
-    def overbound() -> object:
+    def overbound() -> Promise[object]:
         promises = [
             step(_annotated_body, Ingest(doc_id=f"d{i}"), key=f"p{i}")
             for i in range(MAX_FAN_IN_PER_JOIN + 1)
@@ -212,7 +213,7 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     app = WorkflowApp()
 
     @app.workflow("eternal")
-    def eternal() -> object:
+    def eternal() -> Promise[object]:
         produced = step(
             gated_body,
             Ingest(doc_id="d"),
@@ -234,11 +235,12 @@ def test_error_report_names_every_error() -> None:
     """The report carries EVERY error, not the first alone."""
     app = WorkflowApp()
 
-    @app.workflow("multi_error")
-    def multi_error() -> object:
+    def multi_error() -> None:
         step(_annotated_body, Ingest(doc_id="d"), key="orphan1")
         step(_annotated_body, Ingest(doc_id="d"), key="orphan2")
         return None
+
+    app.workflow("multi_error")(runtime_refusal_builder(multi_error))
 
     with pytest.raises(WorkflowValidationError) as excinfo:
         _compiled("multi_error", app).validate()
@@ -262,7 +264,7 @@ def test_differing_redefinition_refused() -> None:
     app2 = WorkflowApp()
 
     @app2.workflow("shadow")
-    def shadow() -> object:
+    def shadow() -> Promise[object]:
         return build(step(shadow_body, Ingest(doc_id="d"), key="produce"))
 
     app2.get("shadow")

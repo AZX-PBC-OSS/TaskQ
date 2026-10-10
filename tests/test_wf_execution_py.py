@@ -46,6 +46,7 @@ from taskq.workflows import (
     DONE,
     Chain,
     FlowRunner,
+    Promise,
     Route,
     Step,
     WorkflowApp,
@@ -95,7 +96,7 @@ def _exec_app(workflow_name: str) -> WorkflowApp:
     app = WorkflowApp()
 
     @app.workflow(workflow_name)
-    def _workflow() -> object:
+    def _workflow() -> Promise[object]:
         return build(step(_exec_body, ExecIngest(doc_id="d1"), key="only"))
 
     app.get(workflow_name)
@@ -153,7 +154,7 @@ def test_projection_the_split_placement_cohorts() -> None:
     )
 
     @app.workflow("wf-exec-split")
-    def _workflow() -> object:
+    def _workflow() -> Promise[object]:
         src = chain_source(chain, _exec_body, key="doc_source")
         return build(src)
 
@@ -173,7 +174,7 @@ def test_projection_broken_build_fn_skips_loudly_the_healthy_boots() -> None:
     broken = WorkflowApp()
 
     @broken.workflow("wf-exec-broken")
-    def _broken_build() -> object:
+    def _broken_build() -> Promise[object]:
         raise RuntimeError("the broken build fn (the F2-3 fixture)")
 
     healthy = _exec_app("wf-exec-healthy")
@@ -204,7 +205,7 @@ def test_projection_the_workflows_own_conflict_skips_the_workflow_loudly() -> No
     conflicting = WorkflowApp()
 
     @conflicting.workflow("wf-exec-conflicted")
-    def _conflicted() -> object:
+    def _conflicted() -> Promise[object]:
         a = step(_exec_body, ExecIngest(doc_id="d"), key="a", actor="wf", queue="default")
         b = step(_exec_body, a, key="b", actor="wf", queue="gpu")
         return build(b)
@@ -225,7 +226,7 @@ def test_projection_cross_app_conflict_refuses() -> None:
     app_gpu = WorkflowApp()
 
     @app_gpu.workflow("wf-exec-xb")
-    def _wb() -> object:
+    def _wb() -> Promise[object]:
         return build(step(_exec_body, ExecIngest(doc_id="d"), key="only", actor="wf", queue="gpu"))
 
     with pytest.raises(WorkflowActorQueueConflictError, match="across workflows/apps"):

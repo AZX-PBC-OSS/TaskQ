@@ -10,7 +10,7 @@ extra carries no requirements of its own.
 
 ```python
 from pydantic import BaseModel
-from taskq.workflows import StepContext, WorkflowApp, build, gather, sink, step
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, gather, sink, step
 
 app = WorkflowApp()
 
@@ -34,7 +34,7 @@ async def summarize(ctx: StepContext, reports: list[Report]) -> dict[str, int]:
 
 
 @app.workflow("doc_ingest")  # the per-workflow declaration
-def doc_ingest() -> object:  # SYNC and PURE — the compile-time wiring
+def doc_ingest() -> Promise[object]:  # SYNC and PURE — the compile-time wiring
     fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
     both = gather([fetched])  # the ALL-upstream join
     return build(step(summarize, both))  # the completeness point

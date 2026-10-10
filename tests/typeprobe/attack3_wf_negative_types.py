@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskq.workflows import WorkflowApp, build, loop, step
+from taskq.workflows import Promise, WorkflowApp, build, loop, step
 
 
 class Ingest(BaseModel):
@@ -44,7 +44,7 @@ def probe_exhaustion_policy_literal() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3t1")
-    def a3t1() -> object:
+    def a3t1() -> Promise[object]:
         return build(
             loop("l1", _body, on_exhausted="abort")
         )  # MUST_ERROR(reportArgumentType, invalid-argument-type): "abort" is not in Literal["escalate", "fail"]
@@ -59,7 +59,7 @@ def probe_sync_until_predicate() -> None:
         return True
 
     @app.workflow("a3t2")
-    def a3t2() -> object:
+    def a3t2() -> Promise[object]:
         return build(
             loop("l2", _body, until=sync_until)
         )  # MUST_ERROR(reportArgumentType, invalid-argument-type): a sync bool-returning closure is not Awaitable[bool]
@@ -83,7 +83,7 @@ def probe_awaiting_a_promise_again() -> None:
     app = WorkflowApp()
 
     @app.workflow("a3t4")
-    def a3t4() -> object:
+    def a3t4() -> Promise[object]:
         produced = step(_body, Ingest(doc_id="d"), key="produce")
         _pending = asyncio.ensure_future(
             produced
@@ -104,7 +104,7 @@ def probe_loop_body_wrong_union() -> None:
         return Report(n=1)
 
     @app.workflow("a3t5")
-    def a3t5() -> object:
+    def a3t5() -> Promise[object]:
         return build(loop("l5", raw_body, max_iterations=2))
 
 

@@ -13,7 +13,17 @@ import asyncio
 import asyncpg
 from pydantic import BaseModel
 
-from taskq.workflows import Done, FlowRunner, Refine, StepContext, WorkflowApp, build, loop, step
+from taskq.workflows import (
+    Done,
+    FlowRunner,
+    Promise,
+    Refine,
+    StepContext,
+    WorkflowApp,
+    build,
+    loop,
+    step,
+)
 
 
 class Counter(BaseModel):
@@ -55,7 +65,7 @@ async def test_a3_driver_exhaustion_never_enqueues_the_escalation(
     app = WorkflowApp()
 
     @app.workflow("a3_escalate_flow")
-    def a3_escalate() -> object:
+    def a3_escalate() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="escalate"))
 
     runner = await _runner_of(app, "a3_escalate_flow", wf_pool, wf_schema)
@@ -90,7 +100,7 @@ async def test_a3_fail_policy_escalates_anyway(
     app = WorkflowApp()
 
     @app.workflow("a3_fail_policy_flow")
-    def a3_fail_policy() -> object:
+    def a3_fail_policy() -> Promise[object]:
         return build(loop("counter", refine_forever, max_iterations=3, on_exhausted="fail"))
 
     runner = await _runner_of(app, "a3_fail_policy_flow", wf_pool, wf_schema)
@@ -140,7 +150,7 @@ async def test_a3_poison_body_escapes_both_walls(
     app = WorkflowApp()
 
     @app.workflow("a3_poison_flow")
-    def a3_poison() -> object:
+    def a3_poison() -> Promise[object]:
         return build(loop("counter", poison, max_iterations=5))
 
     runner = await _runner_of(app, "a3_poison_flow", wf_pool, wf_schema)
@@ -186,7 +196,7 @@ async def test_a3_cursor_replay_through_a_retry(
     app = WorkflowApp()
 
     @app.workflow("a3_cursor_flow")
-    def a3_cursor() -> object:
+    def a3_cursor() -> Promise[object]:
         return build(step(body, Ingest(doc_id="d1"), key="review"))
 
     runner = await _runner_of(app, "a3_cursor_flow", wf_pool, wf_schema)
@@ -240,7 +250,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     app = WorkflowApp()
 
     @app.workflow("a3_mixed_flow")
-    def a3_mixed() -> object:
+    def a3_mixed() -> Promise[object]:
         return build(loop("counter", fails_once, max_iterations=3))
 
     runner = await _runner_of(app, "a3_mixed_flow", wf_pool, wf_schema)
@@ -281,7 +291,7 @@ async def test_a3_cap_bounds_spawns_through_the_memo_replay(
     app = WorkflowApp()
 
     @app.workflow("a3_cap_flow")
-    def a3_cap() -> object:
+    def a3_cap() -> Promise[object]:
         return build(loop("counter", counting, max_iterations=4))
 
     runner = await _runner_of(app, "a3_cap_flow", wf_pool, wf_schema)
