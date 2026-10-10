@@ -1,0 +1,3 @@
+# the wf battery — LEG 2 (the cures' second count, head a858272b18c66e28a69cfebaa664279568ca6d30)
+327 passed, 1 warning in 99.49s (0:01:39)
+head: a858272b18c66e28a69cfebaa664279568ca6d30

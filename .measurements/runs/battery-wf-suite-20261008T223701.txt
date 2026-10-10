@@ -161,6 +161,6 @@ TOTAL                                        2908    123    736    100    93%
 [gate] head 4bf53c869f87 (dirty=False)
 [gate] wf-scoped branch coverage 93.50% vs floor 90.0% — green
 [gate] recorded: /tmp/opencode/wt-evidence-fix/.measurements/runs/wf-scoped-coverage-20261008T223815.json
-SUPERSEDED-BY: runs/wf-battery-cov-20261010T013533.txt
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T062906.txt
 # the mark's reason: (the battery's own run-scoped capture superseded this older battery capture; the substance re-recorded green at the head)
 head: 64a2cc435073a3b083f36167494eb2a288411556

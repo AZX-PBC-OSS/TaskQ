@@ -5,29 +5,30 @@
 # CLAIM UNDER TEST: the pre-union checker could not force the fail-close arm —
 # a body that BARE-UNWRAPS the wait's outcome (outcome.verdict) compiled CLEAN,
 # because wait_signal's pre-union face was '-> Any' (the declared face at
-# a9a3810f). The union's landing is the flip.
+# 1a32451f). The union's landing is the flip.
 #
 # METHOD: the union probe corpus (tests/typeprobe/wf_wait_expired_negative_types.py)
 # typed with wait_signal's PRE-UNION face ('-> Any' — exactly what the checker
-# was handed then), run against the pre-union tree.
-# pre-union head: a9a3810f
+# was handed then), run against a worktree at the pre-union head.
+# pre-union head: 1a32451f
 #
 == pyright on the PRE-UNION tree, the Any-typed probe ==
-0 errors, 0 warnings, 0 informations
+0 errors, 0 warnings, 0 informations  (the bare unwrap SILENT)
 == ty on the PRE-UNION tree, the Any-typed probe ==
-  error[invalid-return-type]: Function can implicitly return `None`, which is not assignable to return type `Approval`
-  error[unresolved-reference]: Name `Expired` used when not defined
-  Found 2 diagnostics
-  (the ONLY diagnostics: the fall-through's implicit-None — which PREDATES the
-   union, it fires on any non-total match; and Expired's unresolved-reference —
-   the member's ABSENCE. THE BARE UNWRAP IS SILENT ON BOTH CHECKERS: the exact
-   shape that hangs an operator compiled clean.)
+  error[invalid-return-type]: Function can implicitly return `None` — the
+    fall-through's implicit-None (PREDATES the union: it fires on any
+    non-total match; not the union's forcing)
+  error[unresolved-reference]: Name `Expired` used when not defined — the
+    member's ABSENCE pre-union
+  (THE BARE UNWRAP IS SILENT ON BOTH CHECKERS: the exact shape that hangs an
+   operator compiled clean. The exception face could never force anything.)
 #
-== THE FLIP — the type gate at the cure head (1a32451f08676cc1ede25fd755e1738ff193be08) ==
-# head: 1a32451f08676cc1ede25fd755e1738ff193be08
+== THE FLIP — the type gate at the cure head (a858272b18c66e28a69cfebaa664279568ca6d30) ==
   the type gate holds: every MUST_ERROR marker (36) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+  gate rc=0
 #
 # The bare-unwrap marker now REDS on both checkers with its declared rule-id
 # (reportAttributeAccessIssue / unresolved-attribute): Expired carries no verdict —
 # the fail-close arm is FORCED. The fall-through marker reds through the body's
 # own declared return. The union is the forcing; the gate is the receipt.
+# head: a858272b18c66e28a69cfebaa664279568ca6d30
