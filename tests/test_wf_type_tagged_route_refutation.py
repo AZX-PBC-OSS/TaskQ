@@ -347,8 +347,8 @@ async def test_the_misroute_is_loud_not_silent(
     app = WorkflowApp()
 
     @app.workflow("misroute_chain")
-    def misroute_chain() -> Promise[object]:
-        return build(chain_source(misroute_chain, source, key="misroute_source"))
+    def misroute_wf() -> Promise[object]:
+        return build(chain_source(the_misroute_chain, source, key="misroute_source"))
 
     runner = FlowRunner(app.get("misroute_chain"), module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
