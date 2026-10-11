@@ -14,7 +14,9 @@ The subcommand groups: `taskq worker`, `taskq migrate`, `taskq doctor`,
 engine's runs — `taskq flows` (`list` / `status` / `holds` / `signal` /
 `resolve` / `cancel` / `retry`; the workflows' operator surface, documented
 with examples in the [CLI reference's `taskq flows` section](../guides/cli.md#taskq-flows)
-and the [workflow guide's diagnosis runbook](../guides/workflows.md)).
+and the [workflow guide's diagnosis runbook](../guides/workflows.md)) and
+`taskq wf cache` (`list` / `evict` — the cross-run step cache's
+operator face, documented in the [workflow guide's cache section](../guides/workflows.md#operating-the-cache-the-eviction-face)).
 
 ## Module reference
 

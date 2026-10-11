@@ -3969,6 +3969,276 @@ async def _flows_pool(settings: TaskQSettings) -> AsyncGenerator[asyncpg.Pool, N
         await close_pool_bounded(pool, "flows", CLOSE_TIMEOUT_SECS)
 
 
+# The cross-run step cache's operator surface (T25 — the cache-cures
+# round's CURE 5, THE POISON PILL DOOR): a well-shaped lie at a known
+# address serves every future run until TTL — with no verb, no endpoint,
+# and no hit log, the operator's only face was the lie itself. This is
+# the door: `taskq wf cache list` shows the rows AND the hits' receipts
+# (the observability), `taskq wf cache evict` takes rows out (DRY-RUN by
+# default — the operator sees what WOULD go before it goes).
+wf_app = typer.Typer(
+    no_args_is_help=True,
+    help="Operate on the workflow engine's cross-run state (the step cache).",
+)
+cache_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and evict the cross-run step cache (the T25 surface).",
+)
+wf_app.add_typer(cache_app, name="cache")
+app.add_typer(wf_app, name="wf")
+
+
+def _cache_row_select_sql(where: str) -> str:
+    """The cache rows' SELECT with the caller's WHERE arm (the schema is
+    the identifier-validated settings boundary; every value is $-bound)."""
+    return f"""
+        SELECT content_address, result, run_id, created_at, expires_at,
+               expires_at > clock_timestamp() AS fresh
+        FROM "{{schema}}".wf_step_cache
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ${{limit}}
+    """  # noqa: S608
+
+
+async def _cache_matching_addresses(
+    conn: asyncpg.Connection, schema: str, *, step_key: str | None, flow: str | None
+) -> list[str]:
+    """The addresses the filters name: --step reads the step's OWN
+    wf_cache_hit receipts (the node rows' metadata — the only place the
+    address ↔ step-key pairing exists), --flow the producing run's rows
+    (the cache row's run_id IS the producing run's id)."""
+    if step_key is not None:
+        rows = await conn.fetch(
+            f"""
+            SELECT DISTINCT metadata->'wf_cache_hit'->>'address' AS address
+            FROM "{schema}".jobs
+            WHERE metadata ? 'wf_cache_hit'
+              AND step_key = $1
+              AND metadata->'wf_cache_hit'->>'address' IS NOT NULL
+            """,  # noqa: S608
+            step_key,
+        )
+        return [str(r["address"]) for r in rows]
+    if flow is not None:
+        rows = await conn.fetch(
+            # S608: the schema identifier is the settings boundary the
+            # guard re-checked; the value is $-bound.
+            f'SELECT content_address FROM "{schema}".wf_step_cache WHERE run_id = $1::uuid',  # noqa: S608
+            flow,
+        )
+        return [str(r["content_address"]) for r in rows]
+    return []
+
+
+@cache_app.command("list")
+def cache_list(
+    address_prefix: Annotated[
+        str,
+        typer.Option("--address-prefix", help="Only rows whose address starts with this prefix."),
+    ] = "",
+    limit: Annotated[int, typer.Option("--limit", help="How many rows to show.")] = 50,
+) -> None:
+    """The step cache's rows AND the hits' receipts — the cache's
+    observability face (the poison-pill door's first half)."""
+    if limit < 1:
+        typer.echo(f"invalid --limit {limit}: the limit counts rows and must be >= 1", err=True)
+        raise typer.Exit(code=1)
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    schema = settings.schema_name
+    asyncio.run(_cache_list(str(settings.pg_dsn), schema, address_prefix, limit))
+
+
+async def _cache_list(dsn: str, schema: str, address_prefix: str, limit: int) -> None:
+    conn = await asyncpg.connect(dsn)
+    try:
+        where = ""
+        params: list[Any] = []
+        if address_prefix:
+            where = f"WHERE content_address LIKE ${len(params) + 1}"
+            params.append(address_prefix + "%")
+        rows = await conn.fetch(
+            _cache_row_select_sql(where).format(schema=schema, limit=len(params) + 1),
+            *params,
+            limit,
+        )
+        receipts = await conn.fetch(
+            f"""
+            SELECT id, step_key, metadata->'wf_cache_hit'->>'address' AS address,
+                   metadata->'wf_cache_hit'->>'run_id' AS produced_by,
+                   metadata->'wf_cache_hit'->>'stored_at' AS stored_at
+            FROM "{schema}".jobs
+            WHERE metadata ? 'wf_cache_hit'
+              AND ($1::text = '' OR metadata->'wf_cache_hit'->>'address' LIKE $1)
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,  # noqa: S608
+            address_prefix + "%" if address_prefix else "",
+            limit,
+        )
+    except asyncpg.exceptions.UndefinedTableError:
+        typer.echo(
+            f"the schema {schema!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        await close_conn_bounded(conn, "wf-cache-list", CLOSE_TIMEOUT_SECS)
+
+    if not rows and not receipts:
+        typer.echo("(no cache rows, no hit receipts)")
+        return
+    typer.echo(f"cache rows ({len(rows)}):")
+    for row in rows:
+        state = "fresh" if row["fresh"] else "EXPIRED"
+        typer.echo(
+            f"  {row['content_address']}  {state}  produced_by={row['run_id']}  "
+            f"stored_at={row['created_at']}  expires_at={row['expires_at']}"
+        )
+    typer.echo(f"hit receipts ({len(receipts)}):")
+    for row in receipts:
+        typer.echo(
+            f"  run {row['id']}  step {row['step_key']}  address={row['address']}  "
+            f"produced_by={row['produced_by']}  stored_at={row['stored_at']}"
+        )
+
+
+@cache_app.command("evict")
+def cache_evict(
+    address_prefix: Annotated[
+        str,
+        typer.Option("--address-prefix", help="Evict rows whose address starts with this prefix."),
+    ] = "",
+    flow: Annotated[
+        str | None,
+        typer.Option("--flow", help="Evict the rows the producing run (its id) filled."),
+    ] = None,
+    step_key: Annotated[
+        str | None,
+        typer.Option(
+            "--step",
+            help="Evict the addresses the step's wf_cache_hit receipts name.",
+        ),
+    ] = None,
+    all_rows: Annotated[
+        bool, typer.Option("--all", help="Evict EVERY row (fresh and expired).")
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Delete. Without this flag the command is a DRY RUN."),
+    ] = False,
+) -> None:
+    """Evict cache rows — DRY-RUN by default: the command prints what
+    WOULD go and touches nothing; pass --yes to delete. The poison-pill
+    door: a well-shaped lie at a known address serves every future run
+    until TTL — this is the way it comes out early."""
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    if not (address_prefix or flow or step_key or all_rows):
+        typer.echo(
+            "refusing to evict with no selector: pass --address-prefix, --flow, "
+            "--step, or --all (a bare evict that deletes everything is a footgun)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if flow is not None:
+        _parse_run_id(flow)
+    asyncio.run(
+        _cache_evict(
+            str(settings.pg_dsn),
+            settings.schema_name,
+            address_prefix,
+            flow,
+            step_key,
+            all_rows,
+            yes,
+        )
+    )
+
+
+async def _cache_evict(
+    dsn: str,
+    schema: str,
+    address_prefix: str,
+    flow: str | None,
+    step_key: str | None,
+    all_rows: bool,
+    yes: bool,
+) -> None:
+    conn = await asyncpg.connect(dsn)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    def bind(clause: str, value: Any) -> str:
+        params.append(value)
+        return clause.replace("$N", f"${len(params)}")
+
+    try:
+        if all_rows:
+            pass
+        else:
+            if address_prefix:
+                clauses.append(bind("content_address LIKE $N", address_prefix + "%"))
+            if step_key is not None:
+                addresses = await _cache_matching_addresses(
+                    conn, schema, step_key=step_key, flow=None
+                )
+                if not addresses:
+                    typer.echo(
+                        f"no wf_cache_hit receipts name step {step_key!r} — nothing "
+                        "known to evict for it (the receipts are the only address "
+                        "↔ step pairing); use --address-prefix for a manual target",
+                        err=True,
+                    )
+                    raise typer.Exit(code=1)
+                placeholders = ", ".join(f"${len(params) + 1 + i}" for i in range(len(addresses)))
+                params.extend(addresses)
+                clauses.append(f"content_address IN ({placeholders})")
+            if flow is not None:
+                clauses.append(bind("run_id = $N::uuid", flow))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        count_rows = await conn.fetch(
+            f"""
+            SELECT content_address, expires_at > clock_timestamp() AS fresh, run_id
+            FROM "{schema}".wf_step_cache
+            {where}
+            ORDER BY content_address
+            """,  # noqa: S608
+            *params,
+        )
+        if not count_rows:
+            typer.echo("(nothing matches — no rows would be evicted)")
+            return
+        for row in count_rows:
+            state = "fresh" if row["fresh"] else "expired"
+            typer.echo(f"  {row['content_address']}  {state}  produced_by={row['run_id']}")
+        if not yes:
+            typer.echo(
+                f"DRY RUN — {len(count_rows)} row(s) WOULD be evicted; pass --yes to evict them"
+            )
+            return
+        deleted = await conn.execute(
+            # S608: the schema identifier is the settings boundary the
+            # guard re-checked; the WHERE's values are $-bound.
+            f'DELETE FROM "{schema}".wf_step_cache {where}',  # noqa: S608
+            *params,
+        )
+        typer.echo(f"evicted: {deleted.split('=')[-1]} row(s)")
+    except asyncpg.exceptions.UndefinedTableError:
+        typer.echo(
+            f"the schema {schema!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        await close_conn_bounded(conn, "wf-cache-evict", CLOSE_TIMEOUT_SECS)
+
+
 @flows_app.command("list")
 def flows_list(
     limit: Annotated[

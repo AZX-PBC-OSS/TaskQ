@@ -19,7 +19,7 @@ import typing
 from collections.abc import Callable
 from typing import cast, overload
 
-__all__ = ["body_hints", "inner_fn", "own_source"]
+__all__ = ["body_hints", "ctx_input_reads", "inner_fn", "own_source"]
 
 
 @overload
@@ -88,6 +88,56 @@ def own_source(body: object) -> str | None:
         tokenize.TokenError,
     ):
         return None
+
+
+def ctx_input_reads(body: object) -> bool | None:
+    """THE BODY'S STATIC ``ctx.input`` READ (the cross-run cache's
+    address-scope fence): an AST walk over the body's own source —
+    ``True`` when any ``<ctx>.input`` attribute chain appears (the ctx
+    parameter's own name read first: the runner invokes the body
+    ``body(ctx, …)`` first-positional), ``False`` when none does,
+    ``None`` when the source is NOT readable (a builtin, a partial, an
+    exec'd fragment — the caller SKIPS: the zero-false-positive
+    doctrine, a guess is never convicted).
+
+    THE SCAN IS CRUDE, ON PURPOSE (the declared boundary): it reads the
+    body's OWN source only — a helper the body calls may read
+    ``ctx.input`` unseen (the same closure boundary the address's
+    helper-closure law states), and an aliased ctx (``c = ctx`` then
+    ``c.input``) reads unseen. The wiring refusal names the cure
+    regardless of the scan's blind spots: wire the value as a PARAM so
+    it enters the address. Both the wiring verb (:func:`taskq.workflows.step`)
+    and the validator's E18 re-proof read THIS walk — one home."""
+    source = own_source(body)
+    if source is None:
+        return None
+    fn = inner_fn(body)
+    ctx_name = "ctx"
+    try:
+        sig = inspect.signature(cast("Callable[..., object]", fn))
+    except (TypeError, ValueError):
+        pass
+    else:
+        params = [
+            p
+            for p in sig.parameters.values()
+            if p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        if params:
+            ctx_name = params[0].name
+    found = False
+
+    def walk(node: ast.AST) -> None:
+        nonlocal found
+        if isinstance(node, ast.Attribute) and node.attr == "input":
+            value = node.value
+            if isinstance(value, ast.Name) and value.id == ctx_name:
+                found = True
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    walk(ast.parse(source))
+    return found
 
 
 def body_hints(body: Callable[..., object]) -> dict[str, object]:
