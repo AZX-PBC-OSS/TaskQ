@@ -426,7 +426,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
-        await sweep_due_timers(self.pool, schema=self.schema)
+        # THE DRAIN (the timer-cures lane's cure 4): the dev loop's
+        # timer arm mirrors the leader's — the due set empties per tick.
+        await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
 
     async def _claimable(self, flow_id: JobId) -> list[dict[str, Any]]:

@@ -146,13 +146,29 @@ class CtxTimerOps(WaitHost):
         consumed answer (a replay/retry re-consumes it from the answer
         queue — the operator's re-run never re-sleeps).
 
-        *when* is a :class:`~datetime.datetime` (the absolute instant;
-        naive means UTC — the DB never re-bases it) or a *float* of
-        seconds (the DB clock owns the base — the estate's clock
-        doctrine; the row's ``expires_at`` is that clock's reading).
+        *when* is a :class:`~datetime.datetime` (the absolute instant)
+        or a *float* of seconds (the DB clock owns the base — the
+        estate's clock doctrine; the row's ``expires_at`` is that
+        clock's reading).
+
+        THE NAIVE-DATETIME LAW (read this before you pass a bare
+        datetime): a NAIVE datetime — no ``tzinfo`` — is interpreted as
+        UTC. The coercion is silent (``when.replace(tzinfo=UTC)``): no
+        error, no local-zone reading — ``17:00`` naive means ``17:00
+        UTC``, NOT your server's 17:00. THE DB never re-bases the
+        instant: the row's ``expires_at`` is exactly the coerced value,
+        the wake fires at that UTC instant, and the wake's ``scheduled``
+        stamp reads it back unchanged. Pass a tz-AWARE datetime
+        (``datetime.now(timezone.utc) + timedelta(...)``) to mean what
+        you said; a naive one is accepted for continuity and READS AS
+        UTC.
+
         *key* names the timer (the wake's ``key``; timers and signals
         of one node share the answer queue's cursor — the loop's
-        ONE-wait-per-iteration shape law reads both the same way).
+        ONE-wait-per-iteration shape law reads both the same way). A
+        key beginning with the reserved ``__timer__`` prefix is the
+        typed E17 refusal (the reserved namespace is the clock's own —
+        no caller names a timer inside it).
 
         THE DURABILITY (the row's the truth): a worker death mid-wait
         is invisible to the timer — the hold row's expiry arms the
@@ -171,10 +187,19 @@ class CtxTimerOps(WaitHost):
             TIMER_SIGNAL_PREFIX,
             TIMER_WAKE_SCHEMA_NAME,
             mark_awaited,
+            refuse_reserved_timer_name,
             register_timer_hold,
         )
 
         absolute, relative = normalize_timer_when(when)
+        # E17 — THE CALLER'S KEY (the timer-cures lane's cure 1): a key
+        # beginning with the reserved prefix would mint a DOUBLE-prefixed
+        # row (this method composes the prefix itself) whose wake's
+        # key-strip mis-names it — the caller's key stays outside the
+        # reserved namespace, the same typed refusal the human mint
+        # carries.
+        if key is not None:
+            refuse_reserved_timer_name(key, mint="ctx.wait_until")
         signal_name = TIMER_SIGNAL_PREFIX + (key or "")
 
         # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row

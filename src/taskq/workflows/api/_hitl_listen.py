@@ -439,7 +439,16 @@ class HitlListener:
         announces its own death)."""
         rows = await conn.fetch(
             f"SELECT id, workflow_id, node_key, signal_name, created_at "  # noqa: S608  # Why: the f-string's ONLY interpolation is the require_schema-validated schema identifier — values never interpolate.
-            f"FROM \"{self._schema}\".wf_signals WHERE status = 'held' ORDER BY id"
+            f"FROM \"{self._schema}\".wf_signals WHERE status = 'held' "
+            # THE TIMER'S EXCLUSION (the timer-cures lane's cure 2 — the
+            # reserved prefix's ONE mechanism, applied at this face too):
+            # the snapshot is the pending-APPROVALS read — a timer hold
+            # is the clock's, never a human's decision (the SAME split
+            # HitlClient.list's SQL keeps; the create broadcast skips
+            # the prefix at the source, this filter covers the rows that
+            # predate any listener).
+            "AND NOT starts_with(signal_name, '__timer__') "
+            "ORDER BY id"
         )
         # The dedup set is PER-CONNECTION (the LISTEN→snapshot race's
         # witness): reset on every (re)backfill — a previous

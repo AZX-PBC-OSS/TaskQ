@@ -4108,15 +4108,27 @@ def _dsn_of(settings: TaskQSettings) -> str:
 @flows_app.command("status")
 def flows_status(
     run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+    app_ref: Annotated[
+        str | None,
+        typer.Option(
+            "--app",
+            help="The WorkflowApp module (module:attr) to check the run's "
+            "nodes against — the current registry's graph; without it no "
+            "versioning-drift line renders.",
+        ),
+    ] = None,
 ) -> None:
     """What happened / where is it blocked / what happens next."""
     settings = TaskQSettings.load()
-    asyncio.run(_flows_status(settings, run_id))
+    asyncio.run(_flows_status(settings, run_id, app_ref=app_ref))
 
 
-async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
+async def _flows_status(
+    settings: TaskQSettings, run_id: str, *, app_ref: str | None = None
+) -> None:
     from taskq.workflows._cli import FlowNodeRow, format_flow_status
     from taskq.workflows._sql import WorkflowSql
+    from taskq.workflows.api._validate import WorkflowValidationError
 
     _flows_guard(settings)
     parsed = _parse_run_id(run_id)
@@ -4168,12 +4180,44 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
         )
         for row in node_rows
     ]
+    # THE VERSIONING-WEDGE SURFACE (the timer-cures lane's cure 5): with
+    # --app, the run's node inventory is checked against the CURRENT
+    # registry's compiled graph — a node the current code no longer
+    # declares is a zombie's home, and the status NAMES it (the drift
+    # the docs' §6 wedge paragraph teaches). Without --app, no drift
+    # check runs (the honest absence: nothing to compare against).
+    registry_node_keys: list[str] | None = None
+    if app_ref is not None and root["workflow"]:
+        app_obj = _load_flows_app(app_ref)
+        try:
+            compiled = app_obj.get(str(root["workflow"]))
+        except KeyError:
+            typer.echo(
+                f"versioning drift: the run's workflow {str(root['workflow'])!r} "
+                "is not declared on this app at all (the --app module predates "
+                "or postdates the run — every node of this run is stranded on "
+                "THIS app; pass the module that declares the run's workflow, "
+                "or cancel + re-run)",
+                err=True,
+            )
+            compiled = None
+        except WorkflowValidationError as exc:
+            typer.echo(
+                f"the run's workflow {str(root['workflow'])!r} does not validate on "
+                f"this app — {exc} (fix the definition and redeploy; the drift "
+                "check cannot run on an invalid graph)",
+                err=True,
+            )
+            compiled = None
+        if compiled is not None:
+            registry_node_keys = list(compiled.nodes)
     for line in format_flow_status(
         run_id=run_id,
         workflow=root["workflow"] or root["actor"],
         root_status=root["status"],
         nodes=nodes,
         cancel_in_flight=root["cancel_requested_at"] is not None,
+        registry_node_keys=registry_node_keys,
     ):
         typer.echo(line)
 

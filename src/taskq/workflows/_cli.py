@@ -34,7 +34,7 @@ from pydantic import BaseModel
 
 from taskq._json import loads as _json_loads
 from taskq.workflows._status import NodeView, WorkflowStatus, derive_workflow_status
-from taskq.workflows.api._hitl import HoldContext
+from taskq.workflows.api._hitl import TIMER_SIGNAL_PREFIX, HoldContext, starts_with_timer
 
 __all__ = [
     "FLOW_ROOT_STEP_KEY",
@@ -46,6 +46,7 @@ __all__ = [
     "format_holds",
     "gate_models_for",
     "parse_decision",
+    "stranded_lines",
     "stuck_lines",
 ]
 
@@ -140,6 +141,28 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
     REASON wins the read, and each reason's remedy derives from the
     reason (truthful per state), never from the shape it resembles."""
     if node.hold is not None:
+        # THE TIMER'S BRANCH (the timer-cures lane's cure 3 — the same
+        # reserved-prefix split the template keeps): a hold under the
+        # reserved ``__timer__`` prefix is the CLOCK's — the resolve
+        # remedy is a lie the boundary would refuse. The line names the
+        # timer AS a timer: the key, the scheduled instant, the wake's
+        # own face (no resolve, no expiry fail-close — the wake fires).
+        if starts_with_timer(node.hold.signal_name):
+            timer_key = node.hold.signal_name[len(TIMER_SIGNAL_PREFIX) :] or "(anonymous)"
+            scheduled = (
+                f" · scheduled {node.hold.expires_at}"
+                if node.hold.expires_at is not None
+                else " · NO scheduled instant (a timer whose row carries no deadline — "
+                "a hand-written row; the wake cannot fire)"
+            )
+            return [
+                f"  {node.step_key}: HELD — waiting on: durable timer '{timer_key}'"
+                f" · hold {node.hold.hold_id}{scheduled} "
+                "(source: the wf_signals hold row's reserved __timer__ prefix)",
+                "       remedy: none — the clock is the only resolver; the wake "
+                "fires itself at/after the scheduled instant (the timer's "
+                "deadline-pass is the continuation, never a fail-close)",
+            ]
         deadline = (
             f" · deadline {node.hold.expires_at}"
             if node.hold.expires_at is not None
@@ -208,6 +231,60 @@ def _counts_by_status(nodes: Sequence[FlowNodeRow]) -> list[tuple[str, int]]:
     return sorted(counts.items())
 
 
+def _registry_family_key(step_key: str) -> str:
+    """The run node key's REGISTRY family (the fork's own shape): a
+    map/fork child runs under ``<source>.item…`` — the CURRENT
+    registry's compiled graph declares the SOURCE only (the children
+    are runtime-forked, never compiled nodes). The family key is what
+    the stranded-check compares."""
+    if ".item" in step_key:
+        return step_key.split(".item", 1)[0]
+    return step_key
+
+
+def stranded_lines(
+    run_node_keys: Sequence[str],
+    registry_node_keys: Sequence[str],
+    *,
+    workflow: str,
+) -> list[str]:
+    """THE VERSIONING WEDGE'S SURFACE (the timer-cures lane's cure 5 —
+    the surface, not the semantics): the run's node inventory vs the
+    CURRENT registry's compiled graph — a run node the current registry
+    does not declare can never claim a body again, so an in-flight run
+    at it is a ZOMBIE (never terminal, nothing fails it — the
+    rename/remove redeploy wedge). The lines NAME the stranded nodes,
+    state the zombie law AND the mid-map mixing read (a redeploy
+    mid-map provably mixes v1+v2 results in one run — the
+    registry-is-truth contract; the per-node ``jobs.code_version``
+    stamps name which side each attempt ran), and give the remedy (the
+    cancel-then-restart path §6 teaches).
+
+    THE OUTPUT CONTRACT: every line names its evidence source (the run's
+    node rows vs the --app module's compiled graph); the healthy zero is
+    the EMPTY list (no line — a drift-free run renders no section)."""
+    registry = set(registry_node_keys)
+    stranded = sorted({key for key in run_node_keys if _registry_family_key(key) not in registry})
+    if not stranded:
+        return []
+    shown = ", ".join(stranded[:8])
+    if len(stranded) > 8:
+        shown += f" … (+{len(stranded) - 8} more)"
+    return [
+        f"versioning drift: {len(stranded)} node(s) of this run are NOT in the "
+        f"current registry's graph for workflow {workflow!r}: {shown} "
+        "(source: the run's node rows vs the --app module's compiled graph)",
+        "  a node the current registry does not declare can never claim a body "
+        "again — an in-flight run stuck at it is a ZOMBIE: never terminal, "
+        "nothing fails it (the rename/remove redeploy wedge — the guide's §6)",
+        "  a mid-map redeploy also MIXES code versions in one run (the "
+        "registry-is-truth contract): the per-node stamps (jobs.code_version) "
+        "name which side of the drift each attempt ran",
+        "  remedy: cancel the run — taskq flows cancel <run_id> — and re-run on "
+        "the current code under a new run key",
+    ]
+
+
 def format_flow_status(
     *,
     run_id: str,
@@ -215,12 +292,15 @@ def format_flow_status(
     root_status: str,
     nodes: Sequence[FlowNodeRow],
     cancel_in_flight: bool = False,
+    registry_node_keys: Sequence[str] | None = None,
 ) -> list[str]:
     """`flows status <run_id>`'s report lines.
 
     The order is: the header (the run's identity + THE DERIVED status),
     the counts (with their source), the stuck nodes' why-stuck lines
-    (the explain seam), the remedy footer. The root row's OWN status is
+    (the explain seam), the versioning-drift lines (the stranded-node
+    surface — only when *registry_node_keys* is given: the ``--app``
+    door), the remedy footer. The root row's OWN status is
     reported as the cache it is (G7's law: the rows are the truth, the
     root row is a cache)."""
     derived = derive_flow_status(nodes) if nodes else "pending"
@@ -230,6 +310,14 @@ def format_flow_status(
         f"status: {derived}  (derived from the node rows — §17.5; "
         f"the root row caches {root_status!r})",
     ]
+    if registry_node_keys is not None and nodes:
+        lines.extend(
+            stranded_lines(
+                [n.step_key for n in nodes],
+                registry_node_keys,
+                workflow=workflow,
+            )
+        )
     if cancel_in_flight:
         lines.append("cancel: IN FLIGHT (the row's cancel_requested_at is set)")
     if not nodes:

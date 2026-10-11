@@ -140,6 +140,7 @@ from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
     progress_redlog,  # pyright: ignore[reportUnusedImport]
     propagation_redlog,  # pyright: ignore[reportUnusedImport]
     t20_redlog,  # pyright: ignore[reportUnusedImport]
+    timer_cures_redlog,  # pyright: ignore[reportUnusedImport]
     timer_redlog,  # pyright: ignore[reportUnusedImport]
     versioning_redlog,  # pyright: ignore[reportUnusedImport]
     wedge_redlog,  # pyright: ignore[reportUnusedImport]

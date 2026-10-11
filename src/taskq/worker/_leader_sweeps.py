@@ -604,6 +604,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         fired = await sweep_due_timers(
             ctx.deps.dispatcher_pool,
             schema=ctx.deps.settings.schema_name,
+            # THE DRAIN (the timer-cures lane's cure 4): the leader's
+            # arm empties the due set per tick (batch-bounded per
+            # iteration) — the one-batch-per-pass face measured a
+            # ~50-minute worst-case tail at 10k due timers.
+            drain=True,
         )
         return expired + fired
 

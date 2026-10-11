@@ -1724,6 +1724,18 @@ The machinery, and the laws each piece carries:
   queue's cursor — the ONE-wait-per-iteration shape law (E13) reads a
   conditional timer exactly as a conditional `wait_signal`.
 
+**THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
+face): a naive `datetime` — no `tzinfo` — passed to `wait_until` is
+interpreted as UTC. The coercion is silent (`when.replace(tzinfo=UTC)`):
+no error, no local-zone reading — `17:00` naive means `17:00 UTC`, not
+your server's 17:00. The DB never re-bases the instant: the hold row's
+`expires_at` is exactly the coerced value, the wake fires at that UTC
+instant, and the wake's `scheduled` stamp reads it back unchanged. Pass
+a tz-aware `datetime` (`datetime.now(timezone.utc) + timedelta(...)`)
+to mean what you said; a naive one is accepted for continuity and reads
+as UTC. (A `float` of seconds keeps the relative face — the DB clock's
+own `now` is its base.)
+
 ## §5 — Progress: the nodes report (T21)
 
 A workflow body reports its own progress: `await ctx.progress(75, "page
@@ -1894,6 +1906,28 @@ the compile-time registry discipline and is recorded in
 shipped. Until it lands, the registry-is-truth contract above is THE
 behavior — rely on the stamps to see it, and on cancel-restart to
 escape it.
+
+**THE WEDGE, NAMED** (the versioning wedge — know it before you
+rename): because the CURRENT registry is the only body source, a
+redeploy that RENAMES or REMOVES a node wedges every in-flight run
+sitting at it: the run's node row still exists (the create-time
+structure snapshot), but the current graph no longer declares the key,
+so the node can never claim a body again — the run is a ZOMBIE: never
+terminal, nothing fails it, and nothing else in the CLI or the admin
+surface said so. The drift is now VISIBLE: `taskq flows status <run_id>
+--app yourapp.workflows:app` compares the run's node inventory against
+the current registry's compiled graph and names the stranded nodes (a
+node the current registry does not declare), the zombie law, and the
+remedy (cancel + re-run). Related, and equally entailed by the
+contract: a mid-map redeploy provably MIXES v1+v2 results in one run —
+the fan-out's children claim the body one at a time, and the code
+changed between claims (the registry-is-truth contract IS the mixing;
+this is not a defect to fix but a fact to see). The per-node stamps
+(`jobs.code_version`) are the read that says which side of the drift
+each attempt ran; the map's summary row can carry mixed versions by
+design. Escape hatches, both: the cancel-then-restart path above, or
+re-deploy the old definition to let the run finish before re-deploying
+the new one.
 
 ---
 

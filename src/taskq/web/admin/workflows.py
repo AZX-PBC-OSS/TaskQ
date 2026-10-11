@@ -275,6 +275,15 @@ def register(router: APIRouter) -> None:
                 "args": _field_of(h["payload"], "args"),
                 "created_at": _iso(h["created_at"]),
                 "expires_at": _iso(h["expires_at"]),
+                "resolved_at": _iso(h["resolved_at"]),
+                # THE TIMER'S BRANCH (the timer-cures lane's cure 3): the
+                # normalized row's own timer mark (the reserved prefix's
+                # derivation) rides the projection — the template branches
+                # on the ROW's truth: a timer renders AS a timer, no
+                # resolve affordance.
+                "is_timer": h.get("is_timer", False),
+                "timer_key": h.get("timer_key"),
+                "timer_fired_by": h.get("timer_fired_by"),
             }
             for h in view.holds
         ]

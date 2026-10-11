@@ -381,6 +381,16 @@ def versioning_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
+@pytest.fixture
+def timer_cures_redlog() -> Iterator[RedLog]:
+    """The red sink for the timer-cures lane's pins (the six cures' reds:
+    the trojan prefix, the broadcast leak, the explorer's template, the
+    10k tail, the versioning wedge's surface, the naive-datetime doc)."""
+    log = RedLog("timer-cures-pin-reds.json")
+    yield log
+    log.flush()
+
+
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in

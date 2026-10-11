@@ -1464,3 +1464,18 @@ class SignalPayloadAmbiguousError(SignalPayloadError):
     instead. The gate's escape is the explicit ``discriminator=`` on the
     wait site; the operator's escape is a payload whose shape names one
     model unambiguously."""
+
+
+class ReservedTimerNamespaceError(TaskQError):
+    """E17 — THE RESERVED TIMER NAMESPACE (the timer-cures lane's cure
+    1): a HAND-facing mint named its hold inside the durable timer's
+    reserved ``__timer__`` signal prefix — a payload model named
+    ``__timer__Approval``, or a ``wait_until`` key beginning with the
+    prefix. The minted row is one every reader mis-identifies as the
+    CLOCK's: invisible to ``HitlClient.list()``, unanswerable (the
+    boundary refuses every hand delivery as a timer forgery), never
+    fail-closing (the expiry arm never abandons the prefix), and fired
+    at the deadline into a ``SignalPayloadError`` death (the wake cannot
+    fit a human payload model). The refusal is at the MINT — no row is
+    written; the fix is named in the message (rename the payload model /
+    choose a key outside the reserved namespace)."""

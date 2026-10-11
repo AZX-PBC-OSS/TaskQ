@@ -230,9 +230,21 @@ class CtxWaitOps(WaitHost):
         signal_name = names[0] if len(names) == 1 else "|".join(names)
         from taskq.workflows.api._hitl import (
             mark_awaited,
+            refuse_reserved_timer_name,
             register_hold,
             register_signal_models,
         )
+
+        # E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-cures
+        # lane's cure 1): a payload model NAMED inside the durable
+        # timer's reserved ``__timer__`` prefix would mint a hold every
+        # reader mis-identifies as the CLOCK's (invisible to
+        # HitlClient.list(), unanswerable, never fail-closing, fired at
+        # the deadline into a SignalPayloadError death). The refusal is
+        # HERE — LOUD, typed, the fix named, BEFORE anything registers
+        # or writes.
+        for model_name in names:
+            refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
 
         # THE CATALOG (the typed door's runtime registry): this process
         # ran the wait site — the deliver boundary validates against
