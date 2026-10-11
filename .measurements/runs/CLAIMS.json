@@ -7414,6 +7414,72 @@
       "file": "pin2-partial-index-20261010T171759-d51d.json",
       "head_sha": "c90f9d686f9acdd83098d2578f37770d321e2cfe",
       "captured_at": "2026-10-10T17:17:59"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "timers-deslop-packs.txt",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:32:28"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T173255-bf79.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:32:55"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T173301-0f11.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:33:01"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T173302-3c52.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:33:02"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T173307-9e53.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:33:07"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T173410-bafe.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:34:10"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T173410-e00e.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:34:10"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T173415-34b4.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:34:15"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T173415-8fb2.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:34:15"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T173425-2aa9.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:34:25"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261010T173741.json",
+      "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
+      "captured_at": "2026-10-10T17:37:41"
     }
   ]
 }
