@@ -281,6 +281,7 @@ def _make_deps(pool: Any, sweep_interval: str = "5.0", **overrides: str) -> Work
         LOCK_LEASE="3.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
         WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
+        WATCHDOG_CHECK_INTERVAL="0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
