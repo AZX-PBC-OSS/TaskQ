@@ -8548,6 +8548,72 @@
       "file": "wf-rollup-band-20261011T043128-d1a7.json",
       "head_sha": "37147ad2690cbbf5cf2773100c8c4d456c880c48",
       "captured_at": "2026-10-11T04:31:28"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261011T111652Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:03"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261011T111656Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:03"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261011T111742Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:03"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261011T111801Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:03"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-20261011T111817Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:17"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-20261011T111822Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:17"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-20261011T111831Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:17"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-20261011T111936Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:17"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-20261011T112042Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T04:33:17"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261011T113332Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T11:33:32"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261011T113332Z.txt",
+      "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
+      "captured_at": "2026-10-11T11:33:32"
     }
   ]
 }
