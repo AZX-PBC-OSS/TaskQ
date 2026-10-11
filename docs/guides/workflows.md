@@ -897,6 +897,63 @@ The barrier's semantics, stated exactly:
     junk slot the decode cannot honor), and the flow lives (the
     derivation reads the absorption record, never a heuristic).
 
+**The single-value disposition — the degenerate map.** A homogeneous
+corpus (every element the SAME type) routes to ONE arm keyed by that
+type: the dict face degenerated to one entry, and everything the
+multi-arm route guarantees survives — per-element jobs with their own
+ledger identity, the arm's placement, the join's typed sum. The
+totality fence is the same fence at its degenerate arm: the keys must
+cover the union's members EXACTLY, and a one-member union covered by
+one arm is exactly total — a second arm would be the UNKNOWN-member
+refusal, a missing arm the silent drop (verified — this fence executes
+under the docs-example harness, `make test-docs-examples`):
+
+```python
+from pydantic import BaseModel
+
+from taskq.workflows import Promise, RouteArm, StepContext, WorkflowApp, build, route, step
+
+app = WorkflowApp()
+
+
+class Verse(BaseModel):
+    line: str
+
+
+class Scored(BaseModel):
+    line: str
+    score: int
+
+
+@app.actor(queue="cpu")
+async def scrape_verses(ctx: StepContext) -> list[Verse]:
+    return [Verse(line="the dense water wall")]  # the homogeneous corpus
+
+
+@app.actor(queue="cpu")
+async def score_verse(ctx: StepContext, verse: Verse) -> Scored:
+    return Scored(line=verse.line, score=len(verse.line))
+
+
+@app.actor(queue="cpu")
+async def best(ctx: StepContext, scored: list[Scored]) -> Scored:
+    return max(scored, key=lambda s: s.score)
+
+
+@app.workflow("verse_score")
+def verse_score() -> Promise[object]:
+    verses = step(scrape_verses, key="verses")
+    scored = route(  # the degenerate map: ONE arm, keyed by the element's type
+        verses,
+        {Verse: RouteArm(body=score_verse, queue="cpu")},
+    )
+    return build(step(best, scored, key="best"))  # the join fans into a normal step
+
+
+compiled = app.get("verse_score")
+compiled.validate()  # the totality fence: one member, one arm — exactly covered
+```
+
 The typed boundary (cut #8's cure): the body's param annotations are
 the payload codec — the runner re-validates the jsonb round-trip into
 the DECLARED model; a body sees the type it declared, never a raw

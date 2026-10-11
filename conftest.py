@@ -18,6 +18,31 @@ from pathlib import Path
 
 import pytest
 
+# ── THE BYTECODE TRAP (the estate-cures round, cure 2) ──────────────────
+# The tracked-bytecode defect's ROOT: the repo's own runs WROTE bytecode
+# into the source tree (1,428 .pyc were once tracked under src/ and
+# tests/ — every pytest leg, verifier script and docs-example fence
+# compiles the package it imports, and nothing said don't). Untracking
+# cured the symptom; this roots it. Two doors, one job:
+#
+# * the ENV VAR is for the SUBPROCESSES: a run shells out constantly
+#   (the verifier scripts, the docs-example fences, the xdist workers,
+#   the containerized tiers' child interpreters) and every child
+#   inherits this environment — setdefault so an operator's explicit
+#   export is never clobbered;
+# * ``sys.dont_write_bytecode`` is for THIS interpreter: CPython reads
+#   the env var only at process start, so the setdefault above can never
+#   affect the running pytest's own imports — the flag does. (The
+#   conftest's own compilation happens before this line runs; that one
+#   file's .pyc is the Makefile export's job — every make-launched run
+#   starts pytest with the variable already set.)
+#
+# The pin (tests/test_no_bytecode_writes.py) runs a battery-leg-shaped
+# interpreter against a cold copy of the package and asserts ZERO
+# bytecode written — the env hole cannot quietly reopen.
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+sys.dont_write_bytecode = True
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(

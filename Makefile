@@ -51,6 +51,18 @@ help:
 UVRUN := uv run --no-sync
 SYNC_ARGS := --locked --all-extras --group dev --group e2e
 
+# THE BYTECODE TRAP (the estate-cures round, cure 2): every gate target
+# shells out through $(UVRUN), and everything those recipes spawn
+# inherits THIS export — so a gate run writes ZERO bytecode into the
+# source tree. The 1,428 tracked .pyc were untracked; their ROOT was
+# the runs' own interpreters compiling the package they import. (The
+# root conftest sets the same variable for pytest-spawned subprocesses
+# and `sys.dont_write_bytecode` for the pytest process itself; this
+# export additionally covers the interpreters make launches cold —
+# pytest's own conftest.py compile included.) The pin:
+# tests/test_no_bytecode_writes.py.
+export PYTHONDONTWRITEBYTECODE := 1
+
 # `--locked`, never `--frozen`: both refuse to re-resolve, so neither can
 # install a version uv.lock never described. They differ on what happens when
 # pyproject.toml and uv.lock disagree -- `--frozen` ignores it and installs a
