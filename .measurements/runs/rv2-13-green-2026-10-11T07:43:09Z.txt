@@ -1,0 +1,2 @@
+# rv2-13-green at head 3af85243cb4f58262646001071c69c96402100ba — rc=0 — captured 2026-10-11T07:43:18Z — F-RV2-13's pin greens on the committed estate
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-syncfriction/.measurements/runs is recorded at THIS head (3af85243cb4f) or explicitly superseded
