@@ -1,0 +1,4 @@
+# wf-bands-rv4 at head 2b9503da6402c24a01e6c173575facc14a0e61e4 — rc=0 — captured 2026-10-10T23:20:47Z
+the bands leg (tests/test_wf_perf_bands.py): 5 passed — the stamped writers appended their own claims (the band jsons, head-stamped at this head)
+.....                                                                    [100%]
+5 passed in 14.97s

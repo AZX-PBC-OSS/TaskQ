@@ -1,0 +1,5 @@
+# estate-slice at head 2b9503da6402c24a01e6c173575facc14a0e61e4 — rc=0 — captured 2026-10-10T23:20:47Z
+the estate regression slice (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) x3: 41 passed x3, slice rc=0
+41 passed in 3.45s
+41 passed in 3.41s
+41 passed in 3.44s
