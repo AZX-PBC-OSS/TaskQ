@@ -7939,6 +7939,12 @@
       "file": "fast-tier-n8-childcures.txt",
       "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
       "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-childcures.txt",
+      "head_sha": "7cb8d52fe357bc029ab9c6c3f2dcbce80e71b658",
+      "captured_at": "2026-10-11T01:36:20"
     }
   ]
 }
