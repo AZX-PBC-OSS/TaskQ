@@ -1,0 +1,5 @@
+# pyright-full at head f3feba2ac0f5bded8e765593e6d8c3188796d40c — captured 2026-10-11T03:06:01Z
+# pyright src/taskq tests — 0 errors, 0 warnings, 0 informations
+
+0 errors, 0 warnings, 0 informations
+rc=0

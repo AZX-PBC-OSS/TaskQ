@@ -8728,6 +8728,24 @@
       "file": "evidence-heads-verify-2026-10-11T100659Z.txt",
       "head_sha": "30f4c3e0f01f10197feb9dafe1cb88c444cca329",
       "captured_at": "2026-10-11T10:06:59Z"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T030903-96c7.json",
+      "head_sha": "48a2b4169f22820d8c881aa7d0b360e73402a414",
+      "captured_at": "2026-10-11T03:09:03"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T030904-59f6.json",
+      "head_sha": "48a2b4169f22820d8c881aa7d0b360e73402a414",
+      "captured_at": "2026-10-11T03:09:04"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T030908-22d9.json",
+      "head_sha": "48a2b4169f22820d8c881aa7d0b360e73402a414",
+      "captured_at": "2026-10-11T03:09:08"
     }
   ]
 }
