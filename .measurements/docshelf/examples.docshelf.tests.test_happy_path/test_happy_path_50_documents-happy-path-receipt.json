@@ -1,7 +1,7 @@
 {
   "child_flows_spawned": 38,
   "chunks_extracted_first_success": 276,
-  "delivery_id": "happy-839b4de2",
+  "delivery_id": "happy-a9742d65",
   "digest": {
     "child_flows_spawned": 38,
     "contracts_published": [
@@ -23,7 +23,7 @@
       "happy-0045",
       "happy-0048"
     ],
-    "delivery_id": "happy-839b4de2",
+    "delivery_id": "happy-a9742d65",
     "expired_children": [],
     "failed_children": [],
     "ledger_entries": [
@@ -66,8 +66,8 @@
     "total_chunks": 276,
     "total_docs": 50
   },
-  "fanout_sum_seconds": 116.224,
-  "fanout_union_seconds": 9.56,
-  "flow_id": "01a12ab3-3442-7e40-a158-ec6caf1e0c05",
-  "measured_fanout_concurrency": 12.16
+  "fanout_sum_seconds": 117.918,
+  "fanout_union_seconds": 9.516,
+  "flow_id": "01a12ac0-52be-7e81-a15e-3e9fa2201841",
+  "measured_fanout_concurrency": 12.39
 }

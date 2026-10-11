@@ -5,10 +5,10 @@
   "extraction_attempts_total": 172,
   "failed_children": [],
   "flakes_injected": 31,
-  "flow_id": "01a12ab2-2ee0-72f2-aa7c-39343c12e98d",
+  "flow_id": "01a12abe-effd-7a70-a46b-eabb142bcae8",
   "iteration": 1,
   "kill_delay_s": 0.8,
   "timeouts_injected": 17,
-  "wall_seconds": 34.6,
+  "wall_seconds": 41.7,
   "worker_killed_alive": true
 }

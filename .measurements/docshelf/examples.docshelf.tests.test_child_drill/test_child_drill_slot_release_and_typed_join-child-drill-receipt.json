@@ -1,30 +1,30 @@
 {
-  "delivery_id": "child-de960c7a",
+  "delivery_id": "child-1e8b8303",
   "failed_children": [
     "poison-0004"
   ],
-  "flow_id": "01a12ab8-dac1-78a0-a429-9fbd1ab2be65",
+  "flow_id": "01a12abc-c7b8-70e0-ac86-6f05cb20a9b2",
   "hold_and_child_windows": [
     {
-      "child_exec_seconds": 1.84,
-      "child_run_id": "01a12ab8-ff74-7aa0-a162-8f0646f7c5e2",
+      "child_exec_seconds": 1.838,
+      "child_run_id": "01a12abc-ec55-7f11-850b-55fcfd82f64e",
       "doc_id": "child-0007",
-      "hold_seconds": 6.305,
-      "overlap_seconds": 1.84
+      "hold_seconds": 6.312,
+      "overlap_seconds": 1.838
     },
     {
-      "child_exec_seconds": 1.244,
-      "child_run_id": "01a12ab8-ff7c-7de1-975d-38245a3f0c0c",
+      "child_exec_seconds": 1.245,
+      "child_run_id": "01a12abc-ec5d-7140-aa9e-f9ce94834f41",
       "doc_id": "child-0027",
-      "hold_seconds": 6.305,
-      "overlap_seconds": 1.244
+      "hold_seconds": 6.312,
+      "overlap_seconds": 1.245
     },
     {
-      "child_exec_seconds": 0.005,
-      "child_run_id": "01a12ab8-ff7f-7d11-a0b8-12e0a160616d",
+      "child_exec_seconds": 0.008,
+      "child_run_id": "01a12abc-ec60-7050-aa7d-ec407e767247",
       "doc_id": "poison-0004",
-      "hold_seconds": 6.305,
-      "overlap_seconds": 0.005
+      "hold_seconds": 6.312,
+      "overlap_seconds": 0.008
     }
   ],
   "joined_children": [
