@@ -8296,6 +8296,60 @@
       "file": "pin5-dispatch-band-20261011T031419-e470.json",
       "head_sha": "0e2f5cc096727adc5d373d1f7dd813d10b10d331",
       "captured_at": "2026-10-11T03:14:19"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T031756-3079.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:17:56"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T031756-4ca5.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:17:56"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T031758-2f23.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:17:58"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T031758-0884.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:17:58"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T031800-d791.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:18:00"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T031801-02b5.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:18:01"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T031806-50bb.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:18:06"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T031809-37e6.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:18:09"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T031809-ec99.json",
+      "head_sha": "1528719d2fc697f6aec705595be95df16532a54b",
+      "captured_at": "2026-10-11T03:18:09"
     }
   ]
 }
