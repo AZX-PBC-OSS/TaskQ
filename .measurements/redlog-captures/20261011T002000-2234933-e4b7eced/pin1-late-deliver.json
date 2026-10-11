@@ -1,0 +1,10 @@
+{
+  "mutation": "the deliver WITHOUT the CAS predicate (the mutation drill \u2014 the zombie wake)",
+  "observed": {
+    "conviction": "the shipped CAS refuses; the drill red is recorded",
+    "zombie_wake": true
+  },
+  "pin": "pin1-late-deliver",
+  "run": "20261011T002000-2234933-e4b7eced",
+  "ts": "2026-10-11T00:20:00"
+}
