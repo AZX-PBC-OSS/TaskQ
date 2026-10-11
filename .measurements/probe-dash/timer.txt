@@ -1,0 +1,32 @@
+[2026-10-11T06:32:47.027+00:00] bootstrapped: migrations applied, example tables reset, worker up
+[2026-10-11T06:32:47.027+00:00] 
+[2026-10-11T06:32:47.027+00:00] == TIMER + ESCALATION: the clock holds the door ==
+[2026-10-11T06:32:47.644+00:00]   PASS: the control tick recorded the threshold breach
+[2026-10-11T06:32:47.651+00:00]   PASS: the escalation job sits HELD in scheduled (scheduled_at=2026-10-11 06:32:55.579735+00:00) — the operator's held-timer view
+[2026-10-11T06:32:47.651+00:00] the operator approved the breach within its window
+[2026-10-11T06:32:56.100+00:00]   PASS: approved in window -> the timer arm SUCCEEDED
+[2026-10-11T06:32:56.101+00:00]   PASS: no escalation row for the approved breach (the expired arm did not run)
+[2026-10-11T06:32:56.707+00:00] escalation job 01a129aa-1c47-78c1-bcea-5ff0d4bd4b64 HELD in scheduled (window closes 2026-10-11 06:33:04.646449+00:00); capturing the mid-flight admin view, then killing the worker
+[2026-10-11T06:32:57.266+00:00] `taskq job show 01a129aa-1c47-78c1-bcea-5ff0d4bd4b64` (mid-flight):
+id: 01a129aa-1c47-78c1-bcea-5ff0d4bd4b64
+actor: gauge_approval_escalate
+queue: gaugefleet
+status: scheduled
+priority: 0
+attempt: 0
+max_attempts: 5
+retry_kind: transient
+created_at: 2026-10-11 06:32:56.648157+00:00
+scheduled_at: 2026-10-11 06:33:04.646449+00:00
+started_at: None
+finished_at: None
+idempotency_key: gaugefleet-approval:breach-r13c787-46f3352c-tim-bad
+[2026-10-11T06:32:59.275+00:00]   PASS: the timer SURVIVED the worker death: still held in scheduled (the clock holds the door while no worker exists)
+[2026-10-11T06:32:59.276+00:00] restarted a worker; the held timer wakes the fleet when its window closes
+[2026-10-11T06:33:14.958+00:00]   PASS: the escalation fired NO EARLIER than scheduled (started 2026-10-11 06:33:14.758623+00:00 >= scheduled 2026-10-11 06:33:04.646449+00:00)
+[2026-10-11T06:33:14.958+00:00]   PASS: the EXPIRED arm ran fail-close: terminal failed with typed ApprovalWindowExpiredError (status=failed, error_class=ApprovalWindowExpiredError)
+[2026-10-11T06:33:14.958+00:00]   PASS: the typed escalation was terminal at attempt ONE (non-retryable fail-close)
+[2026-10-11T06:33:14.959+00:00]   PASS: the durable escalation record was written before the raise: 'gauge tim-bad breached at 999.0 and was not approved within its window (closed 2'
+[2026-10-11T06:33:14.982+00:00]   quiesce: cancelled leftover active jobs: ['(bulk cancel_where)']
+[2026-10-11T06:33:14.994+00:00] 
+[2026-10-11T06:33:14.994+00:00] DRILL timer: PASS (0 failed claim(s))

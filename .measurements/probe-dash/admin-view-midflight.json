@@ -1,0 +1,92 @@
+[
+  {
+    "job_id": "01a12995-7422-79e3-9ebd-19eba935669f",
+    "actor": "gauge_approval_escalate",
+    "status": "cancelled",
+    "attempt": 0,
+    "idempotency_key": "gaugefleet-approval:breach-tim-ok",
+    "scheduled_at": "2026-10-11T06:10:30.881602+00:00",
+    "started_at": null
+  },
+  {
+    "job_id": "01a1299e-7d87-7b81-ae5c-065e18deb465",
+    "actor": "gauge_approval_escalate",
+    "status": "cancelled",
+    "attempt": 0,
+    "idempotency_key": "gaugefleet-approval:breach-r113e51-321fc033-tim-ok",
+    "scheduled_at": "2026-10-11T06:20:23.110199+00:00",
+    "started_at": null
+  },
+  {
+    "job_id": "01a129a1-6ef6-7182-ae0d-bb9b95a1a5ee",
+    "actor": "gauge_approval_escalate",
+    "status": "succeeded",
+    "attempt": 1,
+    "idempotency_key": "gaugefleet-approval:breach-r1181f6-402a482f-tim-ok",
+    "scheduled_at": "2026-10-11T06:23:35.989358+00:00",
+    "started_at": "2026-10-11T06:24:08.487708+00:00"
+  },
+  {
+    "job_id": "01a129a2-102c-7800-8876-ff9de835ac22",
+    "actor": "gauge_approval_escalate",
+    "status": "failed",
+    "attempt": 1,
+    "idempotency_key": "gaugefleet-approval:breach-r1181f6-402a482f-tim-bad",
+    "scheduled_at": "2026-10-11T06:24:17.259795+00:00",
+    "started_at": "2026-10-11T06:24:51.462165+00:00"
+  },
+  {
+    "job_id": "01a129a4-9ee8-7751-ab2a-10df797e47b8",
+    "actor": "gauge_approval_escalate",
+    "status": "cancelled",
+    "attempt": 0,
+    "idempotency_key": "gaugefleet-approval:breach-r121d8b-3016dbd7-ov-singleton",
+    "scheduled_at": "2026-10-11T06:27:26.872715+00:00",
+    "started_at": null
+  },
+  {
+    "job_id": "01a129a6-83c2-74c2-8351-92ccd268c929",
+    "actor": "gauge_approval_escalate",
+    "status": "succeeded",
+    "attempt": 1,
+    "idempotency_key": "gaugefleet-approval:breach-r121d8b-3e9df295-tim-ok",
+    "scheduled_at": "2026-10-11T06:29:08.993214+00:00",
+    "started_at": "2026-10-11T06:29:09.306479+00:00"
+  },
+  {
+    "job_id": "01a129a6-a669-7a13-aed1-d985bd8f67bd",
+    "actor": "gauge_approval_escalate",
+    "status": "failed",
+    "attempt": 1,
+    "idempotency_key": "gaugefleet-approval:breach-r121d8b-3e9df295-tim-bad",
+    "scheduled_at": "2026-10-11T06:29:17.864445+00:00",
+    "started_at": "2026-10-11T06:29:51.830633+00:00"
+  },
+  {
+    "job_id": "01a129a9-3e06-7203-922c-34f0a3386426",
+    "actor": "gauge_approval_escalate",
+    "status": "cancelled",
+    "attempt": 0,
+    "idempotency_key": "gaugefleet-approval:breach-r13c787-e28977c4-ov-singleton",
+    "scheduled_at": "2026-10-11T06:32:29.750013+00:00",
+    "started_at": null
+  },
+  {
+    "job_id": "01a129a9-f8dc-7121-b61b-6264884ab4c0",
+    "actor": "gauge_approval_escalate",
+    "status": "succeeded",
+    "attempt": 1,
+    "idempotency_key": "gaugefleet-approval:breach-r13c787-46f3352c-tim-ok",
+    "scheduled_at": "2026-10-11T06:32:55.579735+00:00",
+    "started_at": "2026-10-11T06:32:55.977499+00:00"
+  },
+  {
+    "job_id": "01a129aa-1c47-78c1-bcea-5ff0d4bd4b64",
+    "actor": "gauge_approval_escalate",
+    "status": "scheduled",
+    "attempt": 0,
+    "idempotency_key": "gaugefleet-approval:breach-r13c787-46f3352c-tim-bad",
+    "scheduled_at": "2026-10-11T06:33:04.646449+00:00",
+    "started_at": null
+  }
+]

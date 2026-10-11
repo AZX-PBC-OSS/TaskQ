@@ -1,0 +1,16 @@
+[2026-10-11T06:31:34.445+00:00] bootstrapped: migrations applied, example tables reset, worker up
+[2026-10-11T06:31:34.445+00:00] 
+[2026-10-11T06:31:34.445+00:00] == OVERLAP GUARD: a slow tick must not stack ==
+[2026-10-11T06:31:34.660+00:00]   PASS: the guard row shows the cycle RUNNING (status=running, claimed_at=2026-10-11 06:31:34.478290+00:00)
+[2026-10-11T06:31:39.483+00:00]   PASS: the chain's own successor PARKED (outcome=parked), not stacked
+[2026-10-11T06:31:39.483+00:00]   PASS: the parked successor left the running cycle's guard claim untouched
+[2026-10-11T06:31:39.486+00:00] manual trigger enqueued while a cycle runs (job 01a129a8-eedc-71c2-a750-2850fb3ad3f6)
+[2026-10-11T06:31:39.687+00:00]   PASS: the manual trigger PARKED (refused/parked, skip-not-raise) — measured
+[2026-10-11T06:31:59.743+00:00] slow tick finished: {'tick_index': 201, 'outcome': 'succeeded', 'cursor_before': datetime.datetime(1, 1, 1, 0, 0), 'cursor_after': datetime.datetime(2026, 10, 11, 6, 31, 34, 445879, tzinfo=TzInfo(0)), 'processed': 2, 'fan_out': 0, 'breaches': []}
+[2026-10-11T06:31:59.743+00:00]   PASS: the slow cycle completed exactly (processed=2)
+[2026-10-11T06:31:59.748+00:00]   PASS: an idle-time manual trigger is ADMITTED (empty increment, processed=0)
+[2026-10-11T06:31:59.753+00:00] double-trigger refused with: SingletonCollisionError: BackpressureError: actor=gauge_approval_escalate, pending=0, max_pending=None
+[2026-10-11T06:31:59.753+00:00]   PASS: double-trigger of the singleton actor refused with SingletonCollisionError
+[2026-10-11T06:31:59.797+00:00]   quiesce: cancelled leftover active jobs: ['(bulk cancel_where)']
+[2026-10-11T06:31:59.811+00:00] 
+[2026-10-11T06:31:59.811+00:00] DRILL overlap: PASS (0 failed claim(s))

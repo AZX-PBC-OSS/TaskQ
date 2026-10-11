@@ -1,0 +1,13 @@
+id: 01a129aa-1c47-78c1-bcea-5ff0d4bd4b64
+actor: gauge_approval_escalate
+queue: gaugefleet
+status: scheduled
+priority: 0
+attempt: 0
+max_attempts: 5
+retry_kind: transient
+created_at: 2026-10-11 06:32:56.648157+00:00
+scheduled_at: 2026-10-11 06:33:04.646449+00:00
+started_at: None
+finished_at: None
+idempotency_key: gaugefleet-approval:breach-r13c787-46f3352c-tim-bad

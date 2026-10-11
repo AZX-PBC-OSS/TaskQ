@@ -1,0 +1,17 @@
+[2026-10-11T06:32:14.460+00:00] bootstrapped: migrations applied, example tables reset, worker up
+[2026-10-11T06:32:14.460+00:00] 
+[2026-10-11T06:32:14.460+00:00] == CURSOR PROOF: kill mid-increment, restart, no rewind ==
+[2026-10-11T06:32:14.673+00:00] SIGKILLing the worker mid-increment (tick 301 is mid-work)
+[2026-10-11T06:32:14.680+00:00]   PASS: mid-kill: the durable cursor did NOT move (still 0001-01-01 00:00:00)
+[2026-10-11T06:32:14.680+00:00]   PASS: mid-kill: the digest holds nothing from the killed attempt
+[2026-10-11T06:32:14.682+00:00]   PASS: mid-kill: the killed attempt's receipt row does not exist (atomic commit)
+[2026-10-11T06:32:14.682+00:00] restarted the worker; waiting for the chain to recover the increment
+[2026-10-11T06:32:32.362+00:00] cycle log after recovery:
+[2026-10-11T06:32:32.362+00:00]   tick 302 attempt 1 succeeded processed=3 before=2026-10-11 06:32:14.461520+00:00 after=2026-10-11 06:32:14.461520+00:00
+[2026-10-11T06:32:32.362+00:00]   PASS: every committed receipt shows a non-rewinding cursor
+[2026-10-11T06:32:32.362+00:00]   PASS: the increment was digested exactly once, by the RECOVERY tick (digested_by_tick={'cur-0': 302, 'cur-1': 302, 'cur-2': 302})
+[2026-10-11T06:32:32.362+00:00]   PASS: the digest holds exactly 3 rows — no reprocessing, no duplicates
+[2026-10-11T06:32:32.362+00:00]   PASS: the cursor sits past every committed reading: a re-attempt of the killed job resumes to an EMPTY increment (nothing to reprocess)
+[2026-10-11T06:32:32.387+00:00]   quiesce: cancelled leftover active jobs: ['(bulk cancel_where)']
+[2026-10-11T06:32:32.397+00:00] 
+[2026-10-11T06:32:32.397+00:00] DRILL cursor: PASS (0 failed claim(s))

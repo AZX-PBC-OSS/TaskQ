@@ -1,0 +1,139 @@
+[2026-10-11T06:30:57.778+00:00] bootstrapped: migrations applied, example tables reset, worker up
+[2026-10-11T06:30:57.778+00:00] 
+[2026-10-11T06:30:57.778+00:00] == MULTI-CYCLE: five consecutive ticks, exact state after each ==
+[2026-10-11T06:30:57.793+00:00] seeded tick 101 (the chain schedules its own successors)
+[2026-10-11T06:30:59.002+00:00] cycle 1: tick 101 outcome=succeeded processed=3 fan_out=0
+[2026-10-11T06:30:59.002+00:00]   PASS: cycle 1: outcome == succeeded
+[2026-10-11T06:30:59.002+00:00]   PASS: cycle 1: counts exact (processed=3, fan_out=0, injected=3)
+[2026-10-11T06:30:59.002+00:00]   PASS: cycle 1: the increment was exactly the injected gauges
+[2026-10-11T06:30:59.003+00:00]   PASS: cycle 1: digest state exact (3 gauges, each digested by its own cycle)
+[2026-10-11T06:30:59.010+00:00] cycle 1: progress_seq=6 progress_state={"data": {"tick": 101, "fan_out": 0, "processed": 3}, "step": 5, "detail": "cycle complete", "percent": 100.0}
+[2026-10-11T06:30:59.010+00:00]   PASS: cycle 1: SUCCESS receipt — the tick's job row is terminal-succeeded
+[2026-10-11T06:31:02.629+00:00] cycle 2: tick 102 outcome=succeeded processed=3 fan_out=0
+[2026-10-11T06:31:02.629+00:00]   PASS: cycle 2: outcome == succeeded
+[2026-10-11T06:31:02.629+00:00]   PASS: cycle 2: counts exact (processed=3, fan_out=0, injected=3)
+[2026-10-11T06:31:02.629+00:00]   PASS: cycle 2: the increment was exactly the injected gauges
+[2026-10-11T06:31:02.629+00:00]   PASS: cycle 2: cursor never rewound (before=2026-10-11 06:30:59.010499+00:00 >= previous after=2026-10-11 06:30:57.779512+00:00)
+[2026-10-11T06:31:02.630+00:00]   PASS: cycle 2: digest state exact (6 gauges, each digested by its own cycle)
+[2026-10-11T06:31:02.630+00:00] cycle 2: progress_seq=6 progress_state={"data": {"tick": 102, "fan_out": 0, "processed": 3}, "step": 5, "detail": "cycle complete", "percent": 100.0}
+[2026-10-11T06:31:02.630+00:00]   PASS: cycle 2: SUCCESS receipt — the tick's job row is terminal-succeeded
+[2026-10-11T06:31:07.653+00:00] cycle 3: tick 103 outcome=succeeded processed=3 fan_out=0
+[2026-10-11T06:31:07.653+00:00]   PASS: cycle 3: outcome == succeeded
+[2026-10-11T06:31:07.653+00:00]   PASS: cycle 3: counts exact (processed=3, fan_out=0, injected=3)
+[2026-10-11T06:31:07.653+00:00]   PASS: cycle 3: the increment was exactly the injected gauges
+[2026-10-11T06:31:07.653+00:00]   PASS: cycle 3: cursor never rewound (before=2026-10-11 06:31:02.630999+00:00 >= previous after=2026-10-11 06:30:59.010499+00:00)
+[2026-10-11T06:31:07.653+00:00]   PASS: cycle 3: digest state exact (9 gauges, each digested by its own cycle)
+[2026-10-11T06:31:07.654+00:00] cycle 3: progress_seq=6 progress_state={"data": {"tick": 103, "fan_out": 0, "processed": 3}, "step": 5, "detail": "cycle complete", "percent": 100.0}
+[2026-10-11T06:31:07.654+00:00]   PASS: cycle 3: SUCCESS receipt — the tick's job row is terminal-succeeded
+[2026-10-11T06:31:12.678+00:00] cycle 4: tick 104 outcome=succeeded processed=3 fan_out=0
+[2026-10-11T06:31:12.678+00:00]   PASS: cycle 4: outcome == succeeded
+[2026-10-11T06:31:12.678+00:00]   PASS: cycle 4: counts exact (processed=3, fan_out=0, injected=3)
+[2026-10-11T06:31:12.678+00:00]   PASS: cycle 4: the increment was exactly the injected gauges
+[2026-10-11T06:31:12.678+00:00]   PASS: cycle 4: cursor never rewound (before=2026-10-11 06:31:07.654534+00:00 >= previous after=2026-10-11 06:31:02.630999+00:00)
+[2026-10-11T06:31:12.679+00:00]   PASS: cycle 4: digest state exact (12 gauges, each digested by its own cycle)
+[2026-10-11T06:31:12.680+00:00] cycle 4: progress_seq=6 progress_state={"data": {"tick": 104, "fan_out": 0, "processed": 3}, "step": 5, "detail": "cycle complete", "percent": 100.0}
+[2026-10-11T06:31:12.680+00:00]   PASS: cycle 4: SUCCESS receipt — the tick's job row is terminal-succeeded
+[2026-10-11T06:31:17.706+00:00] cycle 5: tick 105 outcome=succeeded processed=0 fan_out=20
+[2026-10-11T06:31:17.706+00:00]   PASS: cycle 5: outcome == succeeded
+[2026-10-11T06:31:17.706+00:00]   PASS: cycle 5: counts exact (processed=0, fan_out=20, injected=20)
+[2026-10-11T06:31:17.706+00:00]   PASS: cycle 5: the increment was exactly the injected gauges
+[2026-10-11T06:31:17.706+00:00]   PASS: cycle 5: cursor never rewound (before=2026-10-11 06:31:12.680395+00:00 >= previous after=2026-10-11 06:31:07.654534+00:00)
+[2026-10-11T06:31:17.707+00:00]   PASS: cycle 5: all 20 fan-out children landed in the digest
+[2026-10-11T06:31:17.708+00:00] cycle 5: progress_seq=6 progress_state={"data": {"tick": 105, "fan_out": 20, "processed": 0}, "step": 5, "detail": "cycle complete", "percent": 100.0}
+[2026-10-11T06:31:17.708+00:00]   PASS: cycle 5: SUCCESS receipt — the tick's job row is terminal-succeeded
+[2026-10-11T06:31:17.708+00:00]   PASS: the seed enqueue was not a dedup hit (a fresh run starts a fresh chain)
+[2026-10-11T06:31:17.708+00:00] cycle 1 live progress events (JobHandle.progress_stream()):
+[2026-10-11T06:31:17.708+00:00]   seq=2 step=1 percent=10.0 status=running detail='claim cycle guard'
+[2026-10-11T06:31:17.708+00:00]   seq=6 step=5 percent=100.0 status=succeeded detail='cycle complete'
+[2026-10-11T06:31:17.708+00:00]   PASS: cycle 1: the refresh pushed observable progress while it ran (>=2 events, terminal at 100%)
+[2026-10-11T06:31:17.713+00:00] terminal admin view (the run's cycle ticks, listed by the client API):
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-7c2c-7761-b3a6-ae0e5b72717e status=succeeded attempt=1 key=gaugefleet-tick:101 scheduled=2026-10-11T06:09:19.410167+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-7c4e-72f2-aac9-e36ebf8a74e7 status=succeeded attempt=1 key=gaugefleet-tick:102 scheduled=2026-10-11T06:09:23.437600+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-8f3e-7c90-9d60-b3a26ce7e1f7 status=succeeded attempt=1 key=gaugefleet-tick:103 scheduled=2026-10-11T06:09:28.286826+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-9ee9-7b31-9def-e8e6a064795a status=succeeded attempt=1 key=gaugefleet-tick:104 scheduled=2026-10-11T06:09:32.296957+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-b27b-7b63-844e-eef2d3e49c42 status=succeeded attempt=1 key=gaugefleet-tick:105 scheduled=2026-10-11T06:09:37.307088+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-c379-7683-b063-879d65814a3a status=succeeded attempt=1 key=gaugefleet-tick:201 scheduled=2026-10-11T06:09:37.663429+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-c227-7943-b2ca-7d7a35df3f46 status=cancelled attempt=0 key=gaugefleet-tick:106 scheduled=2026-10-11T06:09:41.319229+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12994-c4f7-78c1-bff6-1f673ed270ae status=cancelled attempt=0 key=gaugefleet-tick:202 scheduled=2026-10-11T06:09:42.038483+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12995-56c8-72e2-ae13-bdfa9f3b8f94 status=succeeded attempt=1 key=gaugefleet-tick:301 scheduled=2026-10-11T06:10:15.373425+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12995-585b-7ef0-bca3-141c0b740b0f status=succeeded attempt=1 key=gaugefleet-tick:302 scheduled=2026-10-11T06:10:19.769823+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12995-7097-7960-bb77-5690fb7935b2 status=succeeded attempt=1 key=gaugefleet-tick:401 scheduled=2026-10-11T06:10:21.981410+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12995-6bcf-7260-889e-74d8208162dd status=cancelled attempt=0 key=gaugefleet-tick:303 scheduled=2026-10-11T06:10:24.751136+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12995-7224-7d61-9301-0ce280373062 status=cancelled attempt=0 key=gaugefleet-tick:402 scheduled=2026-10-11T06:10:26.371547+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12997-2851-76b0-9f6e-352c83c4ecdb status=succeeded attempt=1 key=probe-tick:7001 scheduled=2026-10-11T06:12:14.550701+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12997-2874-76a1-bc38-a47b65baaed2 status=succeeded attempt=1 key=gaugefleet-tick:7002 scheduled=2026-10-11T06:12:18.578991+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12997-396d-7b83-a0d0-fe2b23d85261 status=succeeded attempt=1 key=gaugefleet-tick:7003 scheduled=2026-10-11T06:12:22.925386+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a12997-4918-71d1-8f21-c34607ffbaf8 status=cancelled attempt=0 key=gaugefleet-tick:7004 scheduled=2026-10-11T06:12:26.935505+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-91da-76f3-87a8-8549a0044a07 status=succeeded attempt=1 key=gaugefleet-tick:r113e51-79000b04:101 scheduled=2026-10-11T06:19:14.783446+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-938d-74d0-b4ce-79d0498311c9 status=succeeded attempt=1 key=gaugefleet-tick:r113e51-79000b04:102 scheduled=2026-10-11T06:19:19.212325+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-a6f8-7ac2-ac7d-0be9c2fcaea1 status=succeeded attempt=1 key=gaugefleet-tick:r113e51-79000b04:103 scheduled=2026-10-11T06:19:24.184401+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-b6a3-76b0-af17-0323e52d9a2e status=succeeded attempt=1 key=gaugefleet-tick:r113e51-79000b04:104 scheduled=2026-10-11T06:19:28.194647+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-c64c-7be0-abed-795f193e573d status=succeeded attempt=1 key=gaugefleet-tick:r113e51-79000b04:105 scheduled=2026-10-11T06:19:32.204859+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-d70b-7082-b52d-2b93ce19a32a status=succeeded attempt=1 key=gaugefleet-tick:r113e51-e9bcc6a6:201 scheduled=2026-10-11T06:19:32.497292+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-d5fb-7912-a21e-8627975edba6 status=cancelled attempt=0 key=gaugefleet-tick:r113e51-79000b04:106 scheduled=2026-10-11T06:19:36.217888+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299d-d8b0-76e1-967c-f4ab70aeabbc status=cancelled attempt=0 key=gaugefleet-tick:r113e51-e9bcc6a6:202 scheduled=2026-10-11T06:19:36.910761+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299e-4fdf-74f1-ae5c-869d9929cd04 status=cancelled attempt=1 key=gaugefleet-tick:r113e51-d9339476:301 scheduled=2026-10-11T06:20:03.427320+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299e-517f-75b0-8c48-43870485f521 status=succeeded attempt=1 key=gaugefleet-tick:r113e51-d9339476:302 scheduled=2026-10-11T06:20:07.837938+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299e-790b-7051-8986-df9f572457b2 status=succeeded attempt=1 key=gaugefleet-tick:r113e51-321fc033:401 scheduled=2026-10-11T06:20:13.972651+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299e-773c-7f31-b750-60f9139ba2cd status=cancelled attempt=0 key=gaugefleet-tick:r113e51-d9339476:303 scheduled=2026-10-11T06:20:17.494397+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299e-7b84-74f1-a317-8d4d7d796ccf status=cancelled attempt=0 key=gaugefleet-tick:r113e51-321fc033:402 scheduled=2026-10-11T06:20:18.593592+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299f-e1c5-72e0-8dc7-86a5dd5fb0df status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-10ae9e8e:101 scheduled=2026-10-11T06:21:46.315672+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299f-e1f9-7c00-872b-a780d860a525 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-10ae9e8e:102 scheduled=2026-10-11T06:21:50.360352+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a1299f-f55c-76a1-8f18-6c78849e845f status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-10ae9e8e:103 scheduled=2026-10-11T06:21:55.324405+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-08f5-7a33-9559-f41201bcdb0d status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-10ae9e8e:104 scheduled=2026-10-11T06:22:00.340602+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-1c86-7900-9dad-1f00fe9bcb47 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-10ae9e8e:105 scheduled=2026-10-11T06:22:05.349420+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-2d56-7162-bc6c-e400fb6459b4 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-a262ae8d:201 scheduled=2026-10-11T06:22:05.662289+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-2c32-7ee1-8ccc-12526944d846 status=cancelled attempt=0 key=gaugefleet-tick:r1181f6-10ae9e8e:106 scheduled=2026-10-11T06:22:09.361940+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-2f8a-7673-849a-eeed43ab0f1d status=cancelled attempt=0 key=gaugefleet-tick:r1181f6-a262ae8d:202 scheduled=2026-10-11T06:22:10.216219+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-c756-7b33-893e-d42bedf4d35d status=cancelled attempt=1 key=gaugefleet-tick:r1181f6-4b7d4267:301 scheduled=2026-10-11T06:22:45.083673+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a0-c777-74d2-9b33-864481361acf status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-4b7d4267:302 scheduled=2026-10-11T06:22:49.110282+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a1-6b63-74b1-93a6-869ca466aa7b status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-402a482f:401 scheduled=2026-10-11T06:23:27.080677+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a1-6a12-7713-bdaa-126a8f8df01b status=cancelled attempt=0 key=gaugefleet-tick:r1181f6-4b7d4267:303 scheduled=2026-10-11T06:23:30.737223+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a1-6cf5-7382-8961-f509586fde49 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-402a482f:402 scheduled=2026-10-11T06:23:31.476668+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a2-0e20-7af3-9313-7f30eeb75776 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-402a482f:501 scheduled=2026-10-11T06:24:08.737869+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a2-0d2c-7c11-9b8e-d316f9630562 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-402a482f:403 scheduled=2026-10-11T06:24:12.490975+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a2-0e30-7ef0-abb1-8aca31028358 status=succeeded attempt=1 key=gaugefleet-tick:r1181f6-402a482f:502 scheduled=2026-10-11T06:24:12.751942+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a2-b52d-7c02-b676-efcca801dada status=cancelled attempt=0 key=gaugefleet-tick:r1181f6-402a482f:404 scheduled=2026-10-11T06:24:55.499840+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a2-b530-7e52-ad4f-2974a36eb139 status=cancelled attempt=0 key=gaugefleet-tick:r1181f6-402a482f:503 scheduled=2026-10-11T06:24:55.503931+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-4f56-77a1-aee2-eea767e1e95a status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-b8fb9f7a:101 scheduled=2026-10-11T06:25:30.973048+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-4f7e-7530-88a2-0006e81a2310 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-b8fb9f7a:102 scheduled=2026-10-11T06:25:35.005524+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-6231-7112-ad0f-d3f569ad844e status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-b8fb9f7a:103 scheduled=2026-10-11T06:25:39.793559+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-75c3-7e33-97b6-6ff9df326ec5 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-b8fb9f7a:104 scheduled=2026-10-11T06:25:44.803164+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-8958-7a02-9c00-6b54c5317434 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-b8fb9f7a:105 scheduled=2026-10-11T06:25:49.814882+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a3-9cec-7e01-b51f-ffbaff0d5a55 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-b8fb9f7a:106 scheduled=2026-10-11T06:25:54.827238+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-3c04-7810-a28f-99f85475624d status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:201 scheduled=2026-10-11T06:26:31.562865+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-3c34-7a13-ac5f-be2f4f2c26f6 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:202 scheduled=2026-10-11T06:26:35.602470+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-4fb1-7083-b03d-72f56f7075f2 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:manual-901 scheduled=2026-10-11T06:26:36.593984+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-4fa6-79e2-baae-5e10bb83115b status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:203 scheduled=2026-10-11T06:26:40.582415+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-4fd1-7050-a99b-e013720024b2 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:902 scheduled=2026-10-11T06:26:40.624513+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-6338-73c3-bcb4-57408d4bd7fb status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:204 scheduled=2026-10-11T06:26:45.592535+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-634a-7dc3-bde6-4e0c5bc3ce94 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:903 scheduled=2026-10-11T06:26:45.609929+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-76c9-79d1-b7d0-a4631a44270f status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:904 scheduled=2026-10-11T06:26:50.600214+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-76c9-79d1-b7d0-a47343a9d88e status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:205 scheduled=2026-10-11T06:26:50.601771+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-8a5d-7d10-bade-c921e532ba69 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:206 scheduled=2026-10-11T06:26:55.612401+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-8a5d-7d10-bade-c935fae40d4f status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:905 scheduled=2026-10-11T06:26:55.612950+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-9ee3-79d2-82f6-fcfc618a1960 status=running attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:manual-902 scheduled=2026-10-11T06:26:56.868182+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-9ee5-7c60-a484-093eaef32e2f status=running attempt=1 key=gaugefleet-tick:r121d8b-3016dbd7:manual-903 scheduled=2026-10-11T06:26:56.870357+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-9a08-7880-96df-d9b421acd089 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-3016dbd7:906 scheduled=2026-10-11T06:26:59.624111+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a4-9a08-7880-96df-d9c303f80822 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-3016dbd7:207 scheduled=2026-10-11T06:26:59.624928+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a5-3eb2-7852-ad2d-1926e96af6ef status=running attempt=1 key=gaugefleet-tick:r121d8b-3e243501:301 scheduled=2026-10-11T06:27:37.783563+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a5-3ed0-73f0-9771-aba27031f989 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e243501:302 scheduled=2026-10-11T06:27:41.806556+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a5-e199-7090-ad27-dce79d11aa56 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-3e243501:303 scheduled=2026-10-11T06:28:23.479794+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-819e-7040-a5a5-e2395f74fc86 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:401 scheduled=2026-10-11T06:29:00.452619+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-81c0-7233-816e-15732657be57 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:402 scheduled=2026-10-11T06:29:04.478620+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-9497-7591-82d4-a868f1d80877 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:403 scheduled=2026-10-11T06:29:09.303521+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-a441-79f0-ab8a-047fc26ef5df status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:501 scheduled=2026-10-11T06:29:09.313863+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-a46f-71c1-87a6-08b47470506e status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:502 scheduled=2026-10-11T06:29:13.359197+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a6-a828-78a0-a12d-1f1ff65a31e1 status=succeeded attempt=1 key=gaugefleet-tick:r121d8b-3e9df295:404 scheduled=2026-10-11T06:29:14.312905+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a7-4a7c-7e32-8f53-114ea71e6072 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-3e9df295:503 scheduled=2026-10-11T06:29:55.864805+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a7-4a7c-7e32-8f53-115e82da0383 status=cancelled attempt=0 key=gaugefleet-tick:r121d8b-3e9df295:405 scheduled=2026-10-11T06:29:55.868614+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-4bf6-7573-89ce-ed765db4f7c7 status=succeeded attempt=1 key=gaugefleet-tick:r13c787-2e23a64d:101 scheduled=2026-10-11T06:30:57.790846+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-4c22-76f1-b2cb-a280df6ba592 status=succeeded attempt=1 key=gaugefleet-tick:r13c787-2e23a64d:102 scheduled=2026-10-11T06:31:01.825392+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-5ed6-7ca0-9f4b-1f70142874e7 status=succeeded attempt=1 key=gaugefleet-tick:r13c787-2e23a64d:103 scheduled=2026-10-11T06:31:06.614584+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-7269-76a2-8b52-87b40ac3f8a5 status=succeeded attempt=1 key=gaugefleet-tick:r13c787-2e23a64d:104 scheduled=2026-10-11T06:31:11.625231+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-85fa-7543-9891-026ec5a5ad17 status=succeeded attempt=1 key=gaugefleet-tick:r13c787-2e23a64d:105 scheduled=2026-10-11T06:31:16.634197+00:00
+[2026-10-11T06:31:17.713+00:00]   job 01a129a8-9992-7b82-8822-ca51315f3981 status=scheduled attempt=0 key=gaugefleet-tick:r13c787-2e23a64d:106 scheduled=2026-10-11T06:31:21.649548+00:00
+[2026-10-11T06:31:17.713+00:00]   PASS: terminal admin view: every cycle's tick is listed and succeeded
+[2026-10-11T06:31:17.753+00:00]   quiesce: cancelled leftover active jobs: ['(bulk cancel_where)']
+[2026-10-11T06:31:17.774+00:00] 
+[2026-10-11T06:31:17.774+00:00] DRILL multicycle: PASS (0 failed claim(s))
