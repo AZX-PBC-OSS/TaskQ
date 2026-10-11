@@ -7486,6 +7486,318 @@
       "file": "timers-ehv.txt",
       "head_sha": "cfc529734fd7936f6ccf26a31afe26a48f95bb21",
       "captured_at": "2026-10-10T17:37:51"
+    },
+    {
+      "stem": "lint-format",
+      "file": "timer-cures-lint.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:06"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "timer-cures-pyright.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:06"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "timer-cures-typegate.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:06"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "timer-cures-mkdocs.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:06"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T233834-a873.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:34"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T233838-e933.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:38"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T233850-d96b.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:50"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T233850-27ab.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:50"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T233850-91d0.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:50"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T233852-9ada.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:52"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T233856-71bc.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:38:56"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T233909-156e.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:39:09"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T233909-e0a8.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:39:09"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T233909-8e3b.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:39:09"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "timer-cures-bands-rv4.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:39:45"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "timer-cures-wf-perf-bands.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:39:45"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "timer-cures-estate-slice.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:40:04"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "timer-cures-attack-rounds.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:48:56"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "timer-cures-deslop-packs.txt",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:48:56"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T234938-c2c3.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:49:38"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T234938-a0e6.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:49:38"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T234944-df13.json",
+      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
+      "captured_at": "2026-10-10T23:49:44"
+    },
+    {
+      "stem": "lint-format",
+      "file": "timer-cures-lint.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:08:50"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "timer-cures-pyright.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:08:50"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "timer-cures-typegate.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:08:50"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "timer-cures-mkdocs.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:08:50"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T010929-463c.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:29"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T010932-649d.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:32"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T010932-7ba9.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:32"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T010932-f85a.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:32"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T010932-f50c.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:32"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T010938-5a5c.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:38"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T010948-77a7.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:48"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T010948-0522.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:48"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T010951-6b1b.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:51"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T010951-4600.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:09:51"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "timer-cures-bands-rv4.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:10:32"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "timer-cures-wf-perf-bands.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:10:32"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "timer-cures-estate-slice.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:10:32"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "timer-cures-attack-rounds.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:19:11"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "timer-cures-deslop-packs.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:19:11"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T011951-df4c.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:19:51"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T011952-2517.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:19:52"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T011957-63db.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:19:57"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T012042.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:20:42"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "timer-cures-wfbatt-leg1.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:20:47"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T012042.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:20:47"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T012106-7658.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:21:06"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T012106-894c.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:21:06"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T012112-204d.json",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:21:12"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "timer-cures-wfbatt-leg2.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:22:03"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "timer-cures-wfbatt-leg2.txt",
+      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
+      "captured_at": "2026-10-11T01:22:03"
     }
   ]
 }
