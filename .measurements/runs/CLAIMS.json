@@ -8614,6 +8614,114 @@
       "file": "evidence-heads-verify-20261011T113332Z.txt",
       "head_sha": "1bc074842ccdf4da24ce3b289abf4fd884f684c2",
       "captured_at": "2026-10-11T11:33:32"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T043443-ff93.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:43"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T043443-e28b.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:43"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T043444-2b22.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:44"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T043444-0310.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:44"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T043446-3ad0.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:46"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T043455-841b.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:34:55"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T043508-b95b.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:35:08"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T043508-ec27.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:35:08"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T043513-1d72.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:35:13"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T043558-4e77.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:35:58"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T043558-9f79.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:35:58"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T043604-9b14.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:04"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T043604-4897.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:04"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T043604-756a.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:04"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T043605-cf48.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:05"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T043607-ffae.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:07"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T043616-edc5.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:16"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T043624-aebe.json",
+      "head_sha": "a8a5e15fa565d6c8a2a3e7fdb74b80b243e74d37",
+      "captured_at": "2026-10-11T04:36:24"
     }
   ]
 }
