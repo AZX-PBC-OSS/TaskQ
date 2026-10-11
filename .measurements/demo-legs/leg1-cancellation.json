@@ -1,10 +1,9 @@
 {
   "leg": "1 \u2014 the cancellation",
-  "run_id": "01a12949-f448-74f0-a792-920c7f2bb89d",
+  "run_id": "01a129a7-b594-7070-b5e1-26f067faeae3",
   "root_status": "cancelled",
   "derived_status": "cancelled",
   "nodes": {
-    "ingest": "succeeded",
     "classify": "cancelled",
     "extract_entities": "cancelled",
     "gather": "cancelled",
@@ -12,9 +11,10 @@
     "publish": "cancelled",
     "route": "cancelled",
     "summarize": "cancelled",
-    "review": "cancelled",
+    "ingest": "succeeded",
     "ingest.item": "cancelled",
-    "ingest.join": "cancelled"
+    "ingest.join": "cancelled",
+    "review": "cancelled"
   },
   "audit_row": {
     "principal": "cli:demo",
