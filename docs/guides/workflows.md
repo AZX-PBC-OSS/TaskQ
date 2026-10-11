@@ -326,6 +326,21 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
+**THE SUBSTEP HOLDS NO CONNECTION ACROSS THE BODY** (the LedgerWatch F4
+cure — the measured tax, stated so nobody re-pays it): the claim and the
+terminal write are ~1 ms statements, each on its OWN pool acquisition;
+between them the body runs with NO connection held. The pre-cure shape
+held ONE connection from the claim to the terminal — and the workflow
+execution door runs bodies on the DISPATCHER pool (4 connections at the
+shipped default), so a hot map fan-out's concurrent substeps collapsed
+to the conn count: the team's A/B measured a 300-child fan-out drop
+from 32 in-flight to 4 (10.1 s → 27.1 s at their profile; 11.1 s →
+42.2 s at 0.5 s/call on the cure tree's red run). The exactly-once law
+never needed the held connection — the claim arbiter linearizes the
+grant, and the terminal keys the claim's OWN row id. Substep the calls
+that cannot tolerate a re-run freely: the replay face is now
+throughput-free.
+
 Run-level idempotency claims against
 the same composite arbiter with the scope `workflow-run:<flow name>` — a
 conflict returns the EXISTING run's TYPED claim (`RunClaim`: `created` /
@@ -812,6 +827,17 @@ and PURE — that SPELLS the graph by dataflow:
   step (the barrier, §1's barrier section below).
   `map_source(source, {A: fn_a, B: fn_b})` is the same verb's dict
   form — one machinery, two spellings;
+  **THE ROUTE ATTACHES TO A WIRED SOURCE NODE** (the LedgerWatch F1
+  cure — the constraint stated where the verb is taught, not only in
+  the error): a route's source must be a node with a BODY — the route
+  dispatches the source's own return. A map's derived join
+  (`<source>.join`) declares no body (it is the default identity
+  packer), so `route(enriched, arms)` over a map's collect is REFUSED
+  at build. The natural enrich-then-branch pipeline spells the
+  identity pass-through step between the map and the route — the
+  honest one-liner: `enriched = step(branch_seam, mapped, key="branch")`,
+  `route(enriched, arms)` (the pass-through's body returns its
+  argument; the route's source is then the enriched collect, named);
 - `sink(...)` is the explicit fire-and-forget (RECORDED in the compiled
   metadata — never silent); `build(result, *residuals)` is the terminal
   completeness point (the `Promise[Never]` residuals are the static
@@ -1091,6 +1117,26 @@ the join's key is DERIVED (`<source-key>.join` — the engine's fork
 addresses it), so naming the node means naming the SOURCE. (An earlier
 revision shipped a `key=` param whose every value was refused — the
 trap is gone; see the changelog.)
+
+**THE ITEM LADDER HONORS THE STAMPED `max_attempts`** (the LedgerWatch
+F3 cure — the knob is the operator's, the record keeps it): a
+transient-failing item ladders to the `max_attempts` wired on the
+`map_source` — the SAME knob a plain `step` honors, stamped on every
+child row by the fork. The pre-cure ladder capped items at the bare 3
+regardless (the row LIED — the team's probe: a plain step wired 7
+laddered 7; a map item wired 7 died at 3 — and every adoption
+re-implemented the ladder client-side). The deterministic-failure and
+`permanent` routes are unchanged (they never ride the ladder).
+
+**THE LADDER'S BACKOFF CURVE** (the LedgerWatch F5 cure — the plan-ahead
+numbers): a laddered attempt's re-pend waits
+`0.05 × 2^(failed_count)` seconds — 50 ms after the first failure, then
+100 ms, 200 ms, 400 ms, 800 ms, 1.6 s, 3.2 s… doubling with no cap
+inside the ladder (the vanilla actors' retry curve has its own
+documented jitter and caps — `docs/guides/retries.md`; the workflow
+node's ladder is this plain doubling). A drill's worst-case wall
+budget for `max_attempts=N` is therefore the sum of the first N−1
+doublings plus each attempt's own run time.
 
 ## §9 — Loops & back-edges (T19)
 
@@ -1438,6 +1484,40 @@ reference — `HitlClient.resolve(id, decision)` addresses ONE hold; the
 resolve is IDEMPOTENT (an already-resolved hold is the DEFINED no-op)
 and AUDITED (G4: "who resolved this" is a ROW, not a log line).
 
+**MAP SIBLINGS HOLD CONCURRENTLY, AS DISTINCT ROWS** (the LedgerWatch
+F2 cure — the per-item approval is the machinery's OWN shape): the hold
+identity is
+`(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
+hold_epoch)` — the map index rides the identity, so two items of one
+`map_source` holding on the same signal name are TWO hold rows
+(`HitlClient.list(run=…)` lists BOTH; each `HoldContext` carries its
+`map_index` — the UI renders the item it addresses). Each resolve wakes
+exactly the hold it names: the resume addresses the hold's OWN node by
+the hold id stamped into that node's metadata — one hold, one node,
+one answer consumed by its own sibling. The pre-cure shape (one shared
+identity per node key) collided the siblings — the second sibling
+wedged `running` forever in-process, or its hold INSERT died of the
+unique arbiter into the ladder and its retry STOLE the first sibling's
+delivered answer. A per-item review workflow (one hold per item, all
+concurrent) is spelled directly on the map — no per-item run keys, no
+side table.
+
+**THE HOLD ROW'S STATUS VOCABULARY** (the LedgerWatch F8 cure — the
+four spellings the ROWS carry, in one table; the guides previously said
+"pending" for the wait and "abandoned" for the expiry while the rows
+say `held`):
+
+| `status` | how a hold gets there | what the wait site does on resume |
+| --- | --- | --- |
+| `held` | the wait site registered it (the live hold) | the wait site re-reads it (the idempotent re-hold) |
+| `delivered` | a resolve/deliver won the CAS | the answer queue replays its payload |
+| `abandoned` | the expiry sweep fired past `expires_at` | the wait returns the `Expired` member (the fail-close) |
+| `cancelled` | the run's cancel cascade swept it | the flow is terminal — the body does not resume |
+
+All four live on `wf_signals.status` (partial-unique over the
+UNRESOLVED holds only — `resolved_at IS NULL`); `resolved_at` is set
+by every non-`held` transition.
+
 **THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
 schema (what a UI renders from), the author-supplied
 reason/tool/args, the provenance (run id, node key, gate name, epoch,
@@ -1746,3 +1826,19 @@ A workflow is stuck. The order of questions:
 3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
 4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
 5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.
+
+**THE WORKFLOW TABLES (the LedgerWatch F10 cure — the operator's SQL is
+sanctioned, and the tables are named where the runbook can find them):**
+the rows-alone reads above are served by five `wf_*` tables in the
+estate's schema, stable names, no foreign keys (the graph is the
+engine's, never the schema's):
+
+| table | what it holds |
+| --- | --- |
+| `jobs` | the node rows (the root is `step_key = '__flow__'`; the map children's step keys are `<source>.item` / `<source>.item:<tag>`; `metadata.flow_id` names the run) |
+| `wf_edge` | the edge ledger — the parent→child wiring, each row carrying the join's declared `failure_policy` |
+| `wf_step_ledger` | the attempt ledger — the claim arbiter `(flow_id, step_key, COALESCE(map_index, -1), attempt)`; `awaited` rows are holds, `failed` rows are the ladder's count |
+| `wf_signals` | the HITL holds — the status vocabulary is the table in §4; the reply handle is `id` |
+| `wf_outbox` | the fired joins' delivery queue (the consumer rows the drain inserts) |
+| `wf_join_fire` | the exactly-once fire receipt (at most one row per joined node) |
+| `wf_node_progress` | the progress state channel's durable rows (the SSE replay's source) |

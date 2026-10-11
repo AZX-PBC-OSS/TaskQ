@@ -281,9 +281,9 @@ def delivery_refused(reason: str) -> DeliveryResult:
 
 _HOLD_INSERT_SQL = """\
 INSERT INTO {schema}.wf_signals
-    (id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+    (id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
      payload, payload_schema, status, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'held', $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'held', $10)
 RETURNING created_at
 """
 
@@ -321,8 +321,19 @@ WHERE id = $1
 RETURNING id
 """
 
+# THE HELD NODE'S ADDRESS (the F2 cure's resume leg): the hold id the
+# register stamped into the node's metadata — ONE hold, ONE node. The
+# pre-cure lookup matched `metadata ? 'hold'` alone, which EVERY
+# holding sibling satisfied: a resolve woke an arbitrary one (the map
+# siblings' shared step key made the match ambiguous).
+_HELD_NODE_BY_HOLD_SQL = """\
+SELECT id FROM {schema}.jobs WHERE step_key = $1 \
+AND (metadata->>'flow_id')::uuid = $2 \
+AND metadata->>'hold' = $3 \
+"""
+
 _LIST_SQL = """\
-SELECT id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+SELECT id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
        payload, payload_schema, status, created_at, expires_at
 FROM {schema}.wf_signals
 WHERE workflow_id = $1
@@ -331,7 +342,7 @@ ORDER BY id
 """
 
 _GET_SQL = """\
-SELECT id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+SELECT id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
        payload, payload_schema, status, created_at, expires_at, resolved_at
 FROM {schema}.wf_signals
 WHERE id = $1
@@ -435,6 +446,7 @@ async def register_hold(
     timeout_s: float | None,
     context: dict[str, object] | None = None,
     redact: Callable[[str], str] | None = None,
+    map_index: int | None = None,
 ) -> JobId:
     """Register ONE hold: a NEW epoch mints a NEW row (multi-hold — the
     same signal name can hold again; the stale-payload dragon dies
@@ -442,6 +454,18 @@ async def register_hold(
     ``scheduled_at`` = deadline + the signal row as truth — the worker
     releases, no slot held); a LOOP node's budget PAUSES (the wall is
     blind while the loop waits on a human).
+
+    THE IDENTITY CARRIES THE MAP INDEX (the LedgerWatch F2 cure): the
+    unresolved-uniqueness arbiter is
+    ``(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
+    hold_epoch)`` — MAP SIBLINGS of one source hold CONCURRENTLY as
+    DISTINCT rows (the per-item approval — the natural
+    moderation/approval pipeline shape — is the machinery's own shape,
+    never a workaround). A plain step's hold carries ``map_index=None``
+    and keeps the pre-cure identity exactly. The resume addresses the
+    hold's OWN node by the hold id stamped into that node's metadata —
+    one hold, one node, one resume; a resolve can never wake a
+    sibling.
 
     THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (attack-3 H3's cure
     — the crash-window's closure): reason/tool/args pass the redact
@@ -499,6 +523,7 @@ async def register_hold(
             node_key,
             signal_name,
             hold_epoch,
+            map_index,
             call_id,
             dumps_jsonb_str(
                 payload_doc
@@ -707,15 +732,15 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
+            # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id THIS
+            # register stamped — one hold, one node, one resume (the
+            # pre-cure lookup matched every holding sibling and woke an
+            # arbitrary one).
             node_id = await conn.fetchval(
-                _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 "
-                    "AND metadata ? 'hold'",
-                    schema,
-                ),
+                _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 cas["node_key"],
                 workflow_id,
+                str(hold_id),
             )
             if node_id is not None:
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, schema), node_id)
@@ -757,13 +782,10 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # error (the re-execution doctrine: the body re-runs from
             # the top; pre-wait side effects are ctx.step-ledgered).
             node_id = await conn.fetchval(
-                _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
-                    schema,
-                ),
+                _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 row["node_key"],
                 row["workflow_id"],
+                str(row["id"]),
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
@@ -806,6 +828,10 @@ class HoldContext:
     node_key: str
     signal_name: str
     hold_epoch: int
+    #: The map item's index (the F2 cure's face): a MAP SIBLING's hold
+    #: carries its item index — the operator's UI addresses the item it
+    #: renders; a plain step's hold carries ``None``.
+    map_index: int | None
     call_id: str
     payload: Any
     payload_schema: Any
@@ -843,7 +869,12 @@ class HitlClient:
     async def list(self, run: JobId | str) -> list[HoldContext]:
         """The pending holds for ONE run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
-        workflow property: the filter is BY RUN, resolves never cross."""
+        workflow property: the filter is BY RUN, resolves never cross.
+        THE MAP SIBLINGS INCLUDED (the F2 cure): two map items of one
+        source holding on one signal name are TWO rows — the hold
+        identity carries the map index, each sibling's hold is
+        addressable (its own ``hold_id``) and resolvable
+        INDIVIDUALLY."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(_render(_LIST_SQL, self._schema), run)
         return [self._context(r) for r in rows]
@@ -948,15 +979,15 @@ class HitlClient:
             )
             resumed = None
             if cas["node_key"]:
+                # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id —
+                # one hold, one node, one resume (the pre-cure lookup
+                # matched every holding sibling and woke an arbitrary
+                # one).
                 node_id = await conn.fetchval(
-                    _render(
-                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                        "AND (metadata->>'flow_id')::uuid = $2 "
-                        "AND metadata ? 'hold'",
-                        self._schema,
-                    ),
+                    _render(_HELD_NODE_BY_HOLD_SQL, self._schema),
                     cas["node_key"],
                     cas["workflow_id"],
+                    str(hold_id),
                 )
                 if node_id is not None:
                     resumed = await conn.fetchval(
@@ -1015,6 +1046,7 @@ class HitlClient:
             node_key=row["node_key"],
             signal_name=row["signal_name"],
             hold_epoch=row["hold_epoch"],
+            map_index=row["map_index"],
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,

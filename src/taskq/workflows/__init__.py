@@ -26,7 +26,12 @@ their homes WITHOUT the tax:
   its concern modules (``_sql_runner``/``_runner_codec``/
   ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
   ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
-  own create/drive/result; ``api._loop`` owns the loop verbs.
+  own create/drive/result; ``api._loop`` owns the loop verbs; the
+  progress READ surface (``run_display``/``keyed_display`` — the
+  operator's display contract, the progress guide's taught import) is
+  re-exported HERE from ``_progress_read`` (the LedgerWatch F7 cure:
+  the docs' path said "private" while the docs blessed it — the public
+  re-export is the one tax paid, the private module stays the home).
 * ``chain`` owns the chain surface; ``context`` owns ``ctx.step``;
   ``definitions`` owns the registered-definition registry;
   ``ledger`` the step-ledger claim + the run-key arbiter; ``engine`` the
@@ -35,6 +40,7 @@ their homes WITHOUT the tax:
   progress plumbing; ``_status`` the derivation.
 """
 
+from taskq.workflows._progress_read import keyed_display, run_display
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
@@ -122,11 +128,13 @@ __all__ = [
     "chain_source",
     "chain_start",
     "gather",
+    "keyed_display",
     "loop",
     "map_source",
     "retry_workflow_node",
     "route",
     "run",
+    "run_display",
     "sink",
     "step",
 ]

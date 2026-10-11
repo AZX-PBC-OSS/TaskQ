@@ -135,6 +135,24 @@ class LadderOps(_LadderHost):
 
     __slots__ = ()
 
+    def _map_child_ladder_terms(self, node_key: str) -> tuple[int, str]:
+        """The fork-spawned map child's LADDER TERMS (the F3 cure): the
+        SOURCE's ``map_max_attempts`` + ``retry_kind`` — the same
+        inheritance the progress schema's read carries
+        (:meth:`_progress_schema`: the ``.item`` / ``.item:`` derived
+        namespaces have no decl of their own). A step key that is no
+        map child (an outbox consumer, the escalation step) keeps the
+        engine's defaults (3 / transient) — the pre-cure fallback,
+        correct for every key the fork never spawned."""
+        source: Any = None
+        if node_key.endswith(".item"):
+            source = self.compiled.nodes.get(node_key[: -len(".item")])
+        elif ".item:" in node_key:
+            source = self.compiled.nodes.get(node_key.split(".item:", 1)[0])
+        if source is not None:
+            return source.map_max_attempts, source.retry_kind if source.retry_kind else "transient"
+        return 3, "transient"
+
     async def _ladder_or_fail(
         self,
         flow_id: JobId,
@@ -150,14 +168,27 @@ class LadderOps(_LadderHost):
         terminal-fails (T06's propagation takes over). ``permanent`` retry
         kinds fail immediately (cut #12's classifier knob).
 
+        THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 cure): a
+        fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)
+        has NO compiled decl of its own — the ladder reads the SOURCE's
+        ``map_max_attempts`` (the knob the operator wired onto the
+        map_source, stamped on the child rows by the fork). The
+        pre-cure fallback (the bare 3) made the ROW LIE: the record
+        carried the operator's budget, the death came at the hardcoded
+        ceiling (the team's probe: a plain step wired 7 laddered 7; a
+        map item wired 7 died at 3).
+
         THE DETERMINISTIC ROUTE (the failure-class routing rule —
         :func:`is_deterministic_authoring_failure`): a DETERMINISTIC
         authoring failure finalizes immediately with the named class, the
         ladder unburned — whatever the declared ``retry_kind`` (the rule
         outranks the knob: a retry budget spent on a deterministic death
         is the record's lie)."""
-        max_attempts = node.max_attempts if node is not None else 3
-        retry_kind = node.retry_kind if node is not None else "transient"
+        if node is not None:
+            max_attempts = node.max_attempts
+            retry_kind = node.retry_kind
+        else:
+            max_attempts, retry_kind = self._map_child_ladder_terms(row["step_key"])
         # THE DETERMINISTIC ROUTE: the ladder (the count read + the
         # re-pend) is skipped entirely for a deterministic authoring
         # failure — the finalizer below runs on the first attempt.
