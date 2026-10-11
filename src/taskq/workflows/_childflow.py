@@ -520,7 +520,11 @@ CHILD_RECEIPTS_SQL_TEMPLATE = _CHILD_RECEIPTS_SQL_TEMPLATE
 
 #: The descendants' drive (the dev-loop driver's face — the child is a
 #: REAL flow and its rows need a claimer): the recursive CTE walks the
-#: receipts; the UNION's dedup terminates it.
+#: receipts; the UNION's dedup terminates it; the seed itself is
+#: EXCLUDED (``fid <> $1`` — the parent's own claim pass is tick's
+#: first half, never the descendants' walk; re-including it would
+#: re-claim the parent's rows and the fork's fresh children in the
+#: same pass — the mid-flight world the progress pins stage).
 DESCENDANT_FLOWS_SQL_TEMPLATE = """
 WITH RECURSIVE tree AS (
     SELECT $1::uuid AS fid
@@ -531,7 +535,7 @@ WITH RECURSIVE tree AS (
     CROSS JOIN LATERAL jsonb_array_elements_text(j.metadata->'child_flows') AS e(val)
     WHERE j.metadata ? 'child_flows'
 )
-SELECT fid FROM tree
+SELECT fid FROM tree WHERE fid <> $1
 """
 
 #: The child root's workflow name (the descendant runner's resolution —

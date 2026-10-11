@@ -222,6 +222,50 @@ the wf battery ×2 + the fast tier ×1 at `-n 8` (full capture) +
 mkdocs strict (the guide's child-flows section — the sub-investigations
 snippet VERIFIED by the docs-examples harness, exec fence).
 
+## THE LANDED FACE (the signatures, verbatim from the built tree)
+
+```python
+# src/taskq/workflows/_childflow.py
+type ChildOutcome[G: BaseModel] = ChildOk[G] | ChildFailed | ChildCancelled
+@dataclass(frozen=True, slots=True)
+class ChildOk[G: BaseModel]:  flow_id: str; result: G
+@dataclass(frozen=True, slots=True)
+class ChildFailed:            flow_id: str; error_class: str; error_message: str
+@dataclass(frozen=True, slots=True)
+class ChildCancelled:         flow_id: str
+@dataclass(frozen=True, slots=True)
+class JoinSite:  pool; wsql; flow_id; job_id; node_key; attempt; ledger_id
+class ChildHandle[G: BaseModel]:
+    flow_id: JobId
+    async def wait(self, *, timeout_s: float | None = None
+                  ) -> ChildOutcome[G] | Expired
+class ChildWorkflowUnknownError(RuntimeError)
+class CtxSpawnOps(_SpawnHost):        # composed into StepContext
+    async def spawn_flow[G: BaseModel](self, name: str, *, input: object = None,
+                                       result: type[G], key: str | None = None
+                                       ) -> ChildHandle[G]
+
+# src/taskq/workflows/api/_hitl.py
+CHILD_JOIN_SIGNAL_PREFIX = "__child__:"
+CHILD_TERMINAL_CHANNEL   = "taskq_wf_child_terminal"
+async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql,
+                            *, batch_size: int = 100) -> int
+
+# src/taskq/workflows/api/_runner.py
+async def create_flow(self, *, input=None, run_key=None,
+                      root_metadata_extra: dict[str, object] | None = None) -> RunClaim
+async def _drive_descendants(self, flow_id, *, execute: bool) -> bool
+
+# src/taskq/workflows/ledger.py
+async def insert_flow_run(conn, wsql, *, entry, run_key,
+                          extra_metadata: dict[str, object] | None = None) -> RunClaim
+
+# src/taskq/workflows/api/_runner_exit.py
+async def cancel_workflow_run(...):  # + the receipt walk: each child cancels recursively
+# src/taskq/workflows/api/_runner.py  cancel_workflow(): the same cascade (two faces, one law)
+# src/taskq/worker/_leader_sweeps.py  the wf_child_join_wake _SweepSpec (the fleet cadence)
+```
+
 ## AMENDMENT (the build's honest deviation, recorded per the house law)
 
 The ticket's slot law said a LOOP-kind node's spawn slot reads the
