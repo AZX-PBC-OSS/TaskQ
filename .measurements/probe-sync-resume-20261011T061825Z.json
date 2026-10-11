@@ -1,0 +1,24 @@
+{
+  "drill": "resume",
+  "run_id": "res-20261011T061703Z",
+  "expected_rows": 400,
+  "rows_after_restart": 400,
+  "distinct_readings_touched": 400,
+  "content_hash_matches_source": true,
+  "max_attempt_seen": 2,
+  "terminal_batch_counts": {
+    "total": 400,
+    "pending": 0,
+    "succeeded": 400,
+    "failed": 0,
+    "dead": 0
+  },
+  "final_receipt": {
+    "run_id": "res-20261011T061703Z",
+    "expected": 400,
+    "stored": 360,
+    "flagged": 40,
+    "review_rows": 40
+  },
+  "ok": true
+}

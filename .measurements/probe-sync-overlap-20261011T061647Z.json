@@ -1,0 +1,22 @@
+{
+  "drill": "overlap",
+  "run_id": "ovl-20261011T061642Z",
+  "first_consumed_at": "2026-10-11 06:16:43.602711+00:00",
+  "producer_finished_at": "2026-10-11 06:16:44.363145+00:00",
+  "overlap_seconds": 0.7604,
+  "overlaps": true,
+  "final_receipt": {
+    "run_id": "ovl-20261011T061642Z",
+    "expected": 600,
+    "stored": 540,
+    "flagged": 60,
+    "review_rows": 60
+  },
+  "mid_run_admin_nodes_visible": 100,
+  "mid_run_node_statuses": [
+    "pending",
+    "running"
+  ],
+  "progress_events_captured": 3,
+  "ok": true
+}

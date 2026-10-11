@@ -1,0 +1,43 @@
+{
+  "drill": "admin-view",
+  "run_id": "adm-20261011T061835Z",
+  "mid_run": {
+    "moment": "mid-run",
+    "batch_id": "4d65a320-d106-5a96-8f27-d5356b2f8dc2",
+    "sample_nodes": [
+      {
+        "id": "01a1299c-fc6b-7741-84b0-366e932122c9",
+        "actor": "process_reading",
+        "status": "running",
+        "attempt": 1,
+        "queue": "ingest"
+      }
+    ]
+  },
+  "terminal": {
+    "moment": "terminal",
+    "batch_id": "4d65a320-d106-5a96-8f27-d5356b2f8dc2",
+    "status_counts": [
+      {
+        "status": "succeeded",
+        "n": 600
+      }
+    ],
+    "finalizer": [
+      {
+        "actor": "finalize_sync",
+        "status": "succeeded",
+        "attempt": 1
+      }
+    ],
+    "receipt": {
+      "run_id": "adm-20261011T061835Z",
+      "expected": 600,
+      "stored": 540,
+      "flagged": 60,
+      "review_rows": 60
+    }
+  },
+  "progress_events_captured": 3,
+  "ok": true
+}

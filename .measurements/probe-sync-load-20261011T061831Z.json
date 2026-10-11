@@ -1,0 +1,15 @@
+{
+  "drill": "load",
+  "run_id": "load-20261011T061825Z",
+  "items": 3000,
+  "wall_seconds": 6.311,
+  "throughput_items_per_second": 475.3,
+  "final_receipt": {
+    "run_id": "load-20261011T061825Z",
+    "expected": 3000,
+    "stored": 2700,
+    "flagged": 300,
+    "review_rows": 300
+  },
+  "ok": true
+}

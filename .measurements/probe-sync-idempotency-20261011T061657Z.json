@@ -1,0 +1,27 @@
+{
+  "drill": "idempotency",
+  "run_id": "idem-20261011T061653Z",
+  "expected_rows": 300,
+  "rows_after_first_run": 300,
+  "rows_after_second_run": 300,
+  "hash_after_first_run": "503fe97f283fea05d9e2dc243a84711403aa26f2f5a6d3e91443f98af6f876ff",
+  "hash_after_second_run": "503fe97f283fea05d9e2dc243a84711403aa26f2f5a6d3e91443f98af6f876ff",
+  "source_hash": "503fe97f283fea05d9e2dc243a84711403aa26f2f5a6d3e91443f98af6f876ff",
+  "worker_touches_after_first_run": 300,
+  "worker_touches_after_second_run": 300,
+  "first_receipt": {
+    "run_id": "idem-20261011T061653Z",
+    "expected": 300,
+    "stored": 270,
+    "flagged": 30,
+    "review_rows": 30
+  },
+  "second_receipt": {
+    "run_id": "idem-20261011T061653Z",
+    "expected": 300,
+    "stored": 270,
+    "flagged": 30,
+    "review_rows": 30
+  },
+  "ok": true
+}

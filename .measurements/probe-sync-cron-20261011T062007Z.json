@@ -1,0 +1,6 @@
+{
+  "drill": "cron",
+  "tick_fires": 7,
+  "cron_readings": 24,
+  "ok": true
+}
