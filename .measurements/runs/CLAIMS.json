@@ -8050,6 +8050,66 @@
       "file": "timer-cures-wfbatt-leg2.txt",
       "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
       "captured_at": "2026-10-11T01:53:08"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T020254-a71b.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:02:54"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T020255-84e4.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:02:55"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T020255-5ed4.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:02:55"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T020258-148a.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:02:58"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T020306-a494.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:03:06"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T020402-c939.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:04:02"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T020403-2bbc.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:04:03"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T020403-d655.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:04:03"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T020409-ed32.json",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:04:09"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "timer-cures-fasttier-n8.txt",
+      "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
+      "captured_at": "2026-10-11T02:06:05"
     }
   ]
 }

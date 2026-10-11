@@ -1,0 +1,5 @@
+# THE FAST TIER x1 (the whole default suite) at -n 8 at the timer-cures head fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3 — THE ZERO-FAILURES CAPTURE (the rv2-13 chain: the phase-2 estate's claims went fresh at the measurement commit; the css fix landed)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+FAILED tests/test_enterprise_dsn_surfaces.py::test_ipv6_dsn_pool_connects - a...
+2 failed, 13514 passed, 9 skipped, 1 xfailed, 150 warnings in 704.67s (0:11:44)
+fasttier rc=0
