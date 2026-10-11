@@ -62,8 +62,22 @@ def source_changes_since(head_sha_value: str) -> bool:
     touched anything OUTSIDE the measurements estate. A claim recorded
     on H is fresh at H2 when H2 is H plus measurement-only changes —
     the source tree the claim verifies is content-identical. An
-    unresolvable claimed head (not an ancestor) = stale by definition."""
+    unresolvable claimed head (not an ancestor) = stale by definition.
+
+    THE PER-RUN MEMO (the estate's scale — 18k+ sink records across
+    ~100 distinct claimed heads): the verdict is a pure function of the
+    claimed sha and THIS RUN's HEAD — and HEAD cannot move mid-run
+    (a test process never commits; the run's git world is fixed), so
+    each distinct claimed sha is resolved AT MOST ONCE per process.
+    The guard's walk over every sink record collapses from
+    O(records) git subprocesses (18k+ — the per-test timeout's knife
+    edge at 300 s, convicted: the wf battery's redlog-guard timeout)
+    to O(distinct heads)."""
     import subprocess
+
+    cached = _SOURCE_CHANGES_MEMO.get(head_sha_value)
+    if cached is not None:
+        return cached
 
     proc = subprocess.run(
         [
@@ -80,9 +94,16 @@ def source_changes_since(head_sha_value: str) -> bool:
         text=True,
         check=False,
     )
-    if proc.returncode != 0:
-        return True
-    return bool(proc.stdout.strip())
+    verdict = True
+    if proc.returncode == 0:
+        verdict = bool(proc.stdout.strip())
+    _SOURCE_CHANGES_MEMO[head_sha_value] = verdict
+    return verdict
+
+
+#: The memo's store (see :func:`source_changes_since` — the verdict is
+#: pure in (claimed sha, the run's fixed HEAD)).
+_SOURCE_CHANGES_MEMO: dict[str, bool] = {}
 
 
 def head_sha() -> str:
