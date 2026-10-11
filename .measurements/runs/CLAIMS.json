@@ -8146,6 +8146,66 @@
       "file": "evidence-heads-verify-2026-10-11T04:47:16Z.txt",
       "head_sha": "9510623e878d811e497faf1d4092606160f685a7",
       "captured_at": "2026-10-10T21:47:17"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T214847-9cd1.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:48:47"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T214848-7a4c.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:48:48"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T214855-6623.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:48:55"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T215014-6dc2.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:50:14"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T215640-7c3b.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:56:40"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T215640-3bf2.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:56:40"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T215643-7bdf.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:56:43"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T215652-b593.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:56:52"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T215653-1276.json",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T21:56:53"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T05:04:22Z.txt",
+      "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
+      "captured_at": "2026-10-10T22:04:22"
     }
   ]
 }
