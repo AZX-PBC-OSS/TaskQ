@@ -8686,6 +8686,18 @@
       "file": "fast-tier-n8-2026-10-11T06:56:00Z.txt",
       "head_sha": "9126f995c7668634d6ddbd6181fde96f265e2e5c",
       "captured_at": "2026-10-11T07:32:30Z"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-2026-10-11T07:05:00Z.txt",
+      "head_sha": "657b9472eff03b9d4db6db95e1b2f2fc039589d4",
+      "captured_at": "2026-10-11T07:32:59Z"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-2026-10-11T07:05:00Z.txt",
+      "head_sha": "657b9472eff03b9d4db6db95e1b2f2fc039589d4",
+      "captured_at": "2026-10-11T07:32:59Z"
     }
   ]
 }
