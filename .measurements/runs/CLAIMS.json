@@ -7945,6 +7945,42 @@
       "file": "evidence-heads-verify-childcures.txt",
       "head_sha": "7cb8d52fe357bc029ab9c6c3f2dcbce80e71b658",
       "captured_at": "2026-10-11T01:36:20"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T014244-4cce.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:42:44"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T014244-a776.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:42:44"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T014250-9c19.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:42:50"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T014346-c757.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:43:46"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T014351-8556.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:43:51"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T014351-c83e.json",
+      "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
+      "captured_at": "2026-10-11T01:43:51"
     }
   ]
 }
