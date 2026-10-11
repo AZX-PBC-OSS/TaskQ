@@ -1,0 +1,9 @@
+{
+  "mutation": "a has_unresolved predicate WITHOUT the blocked-stamp exclusion \u2014 every pending row (a resolved-blocked join row included) would hold the run: the original H1 wedge returns (the root wedges 'running' forever over a stamped row nothing will ever terminalize)",
+  "observed": {
+    "root_status": "failed"
+  },
+  "pin": "t20-failed-arm-blocked-stamp",
+  "run": "20261011T021822-3983041-b61b8d39",
+  "ts": "2026-10-11T02:18:22"
+}

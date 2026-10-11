@@ -260,3 +260,6 @@
 {"run": "0985b54f", "hold_to_resume_ms": 3.938, "band_ms": 50}
 {"run": "3ec29db0", "hold_to_resume_ms": 2.066, "band_ms": 50}
 {"run": "76a5e450", "hold_to_resume_ms": 1.683, "band_ms": 50}
+{"run": "dd0ed664", "hold_to_resume_ms": 3.189, "band_ms": 50}
+{"run": "307cab8f", "hold_to_resume_ms": 4.059, "band_ms": 50}
+{"run": "ff82ab34", "hold_to_resume_ms": 2.049, "band_ms": 50}
