@@ -8698,6 +8698,114 @@
       "file": "evidence-heads-verify-2026-10-11T07:05:00Z.txt",
       "head_sha": "657b9472eff03b9d4db6db95e1b2f2fc039589d4",
       "captured_at": "2026-10-11T07:32:59Z"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T003335-5c42.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:35"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T003342-5598.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:42"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T003342-85f3.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:42"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T003342-658c.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:42"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T003345-8583.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:45"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T003355-0c41.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:33:55"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T003400-a0e7.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:00"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T003400-5714.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:00"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T003407-3692.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:07"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T003437-4301.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:37"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T003440-47e8.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:40"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T003440-c032.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:40"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T003446-e3b6.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:46"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T003447-cf44.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:47"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T003449-e540.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:49"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T003450-997b.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:50"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T003454-d5ab.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:54"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T003454-8f64.json",
+      "head_sha": "72e341183c3d309722c9a25f6ae0357055391869",
+      "captured_at": "2026-10-11T00:34:54"
     }
   ]
 }
