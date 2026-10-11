@@ -1,6 +1,6 @@
 {
   "leg": "1 \u2014 the cancellation",
-  "run_id": "01a129d5-3d13-73c3-8f42-2548d5a9f594",
+  "run_id": "01a129db-c66f-70a2-8432-eb13aa8f970b",
   "root_status": "cancelled",
   "derived_status": "cancelled",
   "nodes": {
@@ -12,9 +12,9 @@
     "publish": "cancelled",
     "route": "cancelled",
     "summarize": "cancelled",
+    "review": "cancelled",
     "ingest.item": "cancelled",
-    "ingest.join": "cancelled",
-    "review": "cancelled"
+    "ingest.join": "cancelled"
   },
   "audit_row": {
     "principal": "cli:demo",

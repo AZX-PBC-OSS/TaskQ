@@ -8404,6 +8404,42 @@
       "file": "typeprobe-gate-20261011T072612Z.txt",
       "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
       "captured_at": "2026-10-11T00:26:24"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T003142-64f7.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:42"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T003142-363f.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:42"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T003148-9728.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:48"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T07:26:59Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:38:13"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-2026-10-11T07:43:09Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:43:09"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-2026-10-11T07:43:09Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:43:09"
     }
   ]
 }
