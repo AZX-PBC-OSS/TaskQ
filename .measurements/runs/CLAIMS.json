@@ -8704,6 +8704,30 @@
       "file": "wf-battery-rv4-20261011T030601-docsfaces.txt",
       "head_sha": "f3feba2ac0f5bded8e765593e6d8c3188796d40c",
       "captured_at": "2026-10-11T03:06:01Z"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "PLACEHOLDER",
+      "head_sha": "30f4c3e0f01f10197feb9dafe1cb88c444cca329",
+      "captured_at": "2026-10-11T10:06:39Z"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "PLACEHOLDER",
+      "head_sha": "30f4c3e0f01f10197feb9dafe1cb88c444cca329",
+      "captured_at": "2026-10-11T10:06:39Z"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-2026-10-11T100659Z.txt",
+      "head_sha": "30f4c3e0f01f10197feb9dafe1cb88c444cca329",
+      "captured_at": "2026-10-11T10:06:59Z"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-2026-10-11T100659Z.txt",
+      "head_sha": "30f4c3e0f01f10197feb9dafe1cb88c444cca329",
+      "captured_at": "2026-10-11T10:06:59Z"
     }
   ]
 }
