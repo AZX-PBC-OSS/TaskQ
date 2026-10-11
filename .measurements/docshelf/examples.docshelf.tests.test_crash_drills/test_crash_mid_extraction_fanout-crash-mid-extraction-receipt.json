@@ -1,0 +1,7 @@
+{
+  "at_least_once_boundary": "exactly-once rows; at-least-once bodies",
+  "chunks": 178,
+  "chunks_re_extracted_after_the_kill": 0,
+  "documents": 40,
+  "flow_id": "01a12ab4-8edd-73a3-aa69-eda2ee8030a4"
+}

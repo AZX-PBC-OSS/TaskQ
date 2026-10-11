@@ -1,0 +1,19 @@
+{
+  "chunks": 2335,
+  "chunks_that_needed_a_retry": 586,
+  "delivery_id": "flake-453056bb",
+  "documents": 500,
+  "flow_ids": [
+    "01a12ab6-52bd-72f3-a42c-1843bc13a240",
+    "01a12ab6-ca2f-72b0-babc-46fc6e59379c",
+    "01a12ab7-4199-7841-82ee-95930e214a68",
+    "01a12ab7-c4cc-7510-acca-ca55533ca5f8",
+    "01a12ab8-3e30-7200-97d0-f46102fcd99f"
+  ],
+  "max_attempts_observed": 6,
+  "terminal_failed_nodes": 0,
+  "timeouts_injected": 180,
+  "total_extraction_attempts": 3140,
+  "transient_failures_injected": 625,
+  "wall_seconds": 0.0
+}

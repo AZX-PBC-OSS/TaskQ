@@ -1,0 +1,11 @@
+{
+  "arm_children_total": 15,
+  "delivery_id": "route-fad36e6e",
+  "documents": 15,
+  "flow_id": "01a12ab0-2460-7b10-bbb6-5649f5c6a106",
+  "per_class_receipts": {
+    "contract": 5,
+    "invoice": 5,
+    "unknown": 5
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "api_calls_cold": 10,
+  "api_calls_warm": 10,
+  "cache_hits_measured": 1,
+  "chunks_indexed": 4,
+  "hit_run": "01a12ab5-be27-7b41-abca-bbc484b5fc44",
+  "producing_run": "01a12ab5-b643-7263-b4a3-9bb0055beafe",
+  "receipt_on_row": "01a12ab5-b643-7263-b4a3-9bb0055beafe"
+}
