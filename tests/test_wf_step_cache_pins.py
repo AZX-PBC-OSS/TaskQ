@@ -325,11 +325,37 @@ async def test_concurrent_miss_one_winner(
 
     # The loser's re-read: the NEXT run's lookup picks the WINNER's
     # payload (the winner's receipt rides it).
-    run_c = await _run_flow(compiled, wf_pool, wf_schema, run_key="cas:c")
-    assert CALLS["ocr"] == 2, (
-        f"the third run re-executed the body (calls={CALLS['ocr']}) — the "
-        "loser's re-read never picked up the winner's payload"
+    #
+    # THE BODY-COUNT DISCRIMINATION READS STATE, NOT THE CLOCK (the
+    # CI cure): the pin's `calls == 2` assumed BOTH concurrent bodies
+    # ran — the two-claims law's own premise — but the lookup-before-
+    # body is not atomic with the OTHER run's store: on a slow runner
+    # the winner's body+store can complete INSIDE the loser's
+    # claim-to-lookup window, and the loser HITS (the temporal dedup
+    # firing early — the cache's OTHER face, working). The INVARIANT
+    # is unconditional below (ONE row, the receipt naming a racing
+    # run, C's hit carrying the winner's payload + receipt); the body
+    # COUNT is state-conditional: 2 when the loser's own row shows a
+    # body run, 1 when it shows the hit receipt — either face, never a
+    # third.
+    loser_row = await _node_row(
+        wf_conn,
+        wf_schema,
+        claim_a.flow_id if str(rows[0]["run_id"]) == str(claim_b.flow_id) else claim_b.flow_id,
+        "ocr",
     )
+    loser_hit = _meta(loser_row).get("wf_cache_hit")
+    run_c = await _run_flow(compiled, wf_pool, wf_schema, run_key="cas:c")
+    if loser_hit is not None:
+        assert CALLS["ocr"] == 1, (
+            f"the loser hit the winner's store yet the body ran {CALLS['ocr']}x — "
+            "the third run re-executed the body: the temporal dedup's hit face is dead"
+        )
+    else:
+        assert CALLS["ocr"] == 2, (
+            f"the third run re-executed the body (calls={CALLS['ocr']}) — the "
+            "loser's re-read never picked up the winner's payload"
+        )
     row_c = await _node_row(wf_conn, wf_schema, run_c, "ocr")
     receipt = _meta(row_c).get("wf_cache_hit")
     assert isinstance(receipt, dict) and receipt.get("run_id") == str(winner_run), (

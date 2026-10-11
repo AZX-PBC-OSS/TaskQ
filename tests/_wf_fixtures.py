@@ -56,21 +56,37 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
+_source_changes_cache: dict[tuple[str, str], bool] = {}
+
+
 def source_changes_since(head_sha_value: str) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
     touched anything OUTSIDE the measurements estate. A claim recorded
     on H is fresh at H2 when H2 is H plus measurement-only changes —
     the source tree the claim verifies is content-identical. An
-    unresolvable claimed head (not an ancestor) = stale by definition."""
+    unresolvable claimed head (not an ancestor) = stale by definition.
+
+    THE MEMO (the redlog guard's timeout cure): the answer depends only
+    on the (claimed head, HEAD) pair, but the sinks hold THOUSANDS of
+    records sharing a handful of distinct heads — the guard's
+    per-record check was one git subprocess per RECORD (the merged
+    estate's growth crossed the suite's 300s timeout), now one per
+    DISTINCT pair. The verdict is bit-identical; the recomputation is
+    what died."""
     import subprocess
 
+    head = head_sha()
+    key = (head_sha_value, head)
+    cached = _source_changes_cache.get(key)
+    if cached is not None:
+        return cached
     proc = subprocess.run(
         [
             "git",
             "diff",
             "--name-only",
-            f"{head_sha_value}..HEAD",
+            f"{head_sha_value}..{head}",
             "--",
             ".",
             ":(exclude).measurements",
@@ -80,9 +96,9 @@ def source_changes_since(head_sha_value: str) -> bool:
         text=True,
         check=False,
     )
-    if proc.returncode != 0:
-        return True
-    return bool(proc.stdout.strip())
+    result = True if proc.returncode != 0 else bool(proc.stdout.strip())
+    _source_changes_cache[key] = result
+    return result
 
 
 def head_sha() -> str:
