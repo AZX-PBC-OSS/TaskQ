@@ -8746,6 +8746,30 @@
       "file": "pin2-partial-index-20261011T030908-22d9.json",
       "head_sha": "48a2b4169f22820d8c881aa7d0b360e73402a414",
       "captured_at": "2026-10-11T03:09:08"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T030946-6f4e.json",
+      "head_sha": "37da03f1eeeba2f450ed5d146e242896f9131ed9",
+      "captured_at": "2026-10-11T03:09:46"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T030946-0903.json",
+      "head_sha": "37da03f1eeeba2f450ed5d146e242896f9131ed9",
+      "captured_at": "2026-10-11T03:09:46"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T030952-17a4.json",
+      "head_sha": "37da03f1eeeba2f450ed5d146e242896f9131ed9",
+      "captured_at": "2026-10-11T03:09:52"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T101129Z-docsfaces.txt",
+      "head_sha": "37da03f1eeeba2f450ed5d146e242896f9131ed9",
+      "captured_at": "2026-10-11T10:11:29Z"
     }
   ]
 }
