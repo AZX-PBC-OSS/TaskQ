@@ -94,8 +94,6 @@ from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
-    CANCEL_NODES_SQL_TEMPLATE,
-    CANCEL_ROOT_SQL_TEMPLATE,
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
     FLOW_FAILURE_SQL_TEMPLATE,
@@ -452,6 +450,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         from taskq.workflows.api._hitl import sweep_child_joins
 
         await sweep_child_joins(self.pool, self.wsql)
+        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
+        # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
+        # a DEV DRIVE fires the ``Expired`` member exactly as it does
+        # under the leader's belt — the pre-cure dev face parked on the
+        # hold until ``max_ticks`` (the deadline inert, the dev loop a
+        # different engine from the fleet's).
+        from taskq.workflows.api._hitl import sweep_expired_signals
+
+        await sweep_expired_signals(self.pool, schema=self.schema)
         await drain_outbox(self.pool, self.wsql)
         return ran
 
@@ -1150,66 +1157,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         reason: str | None = None,
         principal: Any = None,
     ) -> int:
-        """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
-        the linearization point; every non-terminal node + held signal
-        resolves in the same snapshot; running children take the
+        """P3 rule 4's cancel (T10): ONE transaction per run — the flow
+        flip is the linearization point; every non-terminal node + held
+        signal resolves in the same snapshot; running children take the
         existing two-phase cooperative cancel; terminal rows untouched;
         IDEMPOTENT (cancel twice = one cancel — a terminal root updates
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
-        log line."""
-        # THE REASON'S SHAPE PIN AT THE WRITE (finding 10's cure): the
-        # root flip binds the reason into `jobs.error_message` — a raw
-        # NUL byte refused THAT bind and rolled back the WHOLE cancel.
-        # One law, both binds: `taskq.audit.bound_reason`.
-        from taskq.audit import bound_reason
-        from taskq.workflows.api._hitl import cancel_run_signals
+        log line.
 
-        bounded_reason = bound_reason(reason or "cancel_workflow", 500)
+        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        the id-addressed verb carries): the worklist walk, never Python
+        recursion (a 1200-deep cascade cancels clean), and the children
+        are read from the ROWS' crash-safe ``parent_flow_id`` direction
+        FIRST (the receipts the accelerator, the rows the law — the
+        crash between create and receipt-write no longer orphans a
+        child from the cascade)."""
+        from taskq.workflows.api._runner_exit import cancel_cascade
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            flipped = await conn.fetchval(
-                render_sql(CANCEL_ROOT_SQL_TEMPLATE, self.schema),
-                flow_id,
-                bounded_reason,
-            )
-            if flipped is None:
-                return 0  # already terminal — idempotent
-            await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, self.schema), flow_id)
-            held = await cancel_run_signals(conn, schema=self.schema, workflow_id=flow_id)
-            # THE AUDIT ROW (the caller owns the tx — the same-tx
-            # guarantee; the lazy import keeps the layering).
-            from taskq.audit import record_admin_action
-
-            await record_admin_action(
-                conn,
-                schema=self.schema,
-                principal=principal,
-                action="workflow.cancel",
-                target_type="workflow_run",
-                target_id=str(flow_id),
-                reason=reason,
-                detail={"held_signals_cancelled": held},
-            )
-
-        # THE CANCEL CASCADE (T28 — the same walk _runner_exit's
-        # id-addressed form carries): the parent's receipts name its
-        # child flows; each child cancels through the SAME verb
-        # recursively (each child's cancel atomic in its own tx — the
-        # cascade is eventually-consistent per child, idempotent by the
-        # terminal-refusal).
-        from taskq.workflows._childflow import CHILD_RECEIPTS_SQL_TEMPLATE
-
-        async with self.pool.acquire() as conn:
-            receipt_rows = await conn.fetch(
-                render_sql(CHILD_RECEIPTS_SQL_TEMPLATE, self.schema), flow_id
-            )
-        for receipt in receipt_rows:
-            held += await self.cancel_workflow(
-                JobId(receipt["child_id"]),
-                reason=f"cascaded from {flow_id}: {reason or 'cancel_workflow'}",
-                principal=principal,
-            )
-        return held + 1
+        return await cancel_cascade(
+            self.pool, schema=self.schema, flow_id=flow_id, reason=reason, principal=principal
+        )
 
     async def _finalize_success(
         self,

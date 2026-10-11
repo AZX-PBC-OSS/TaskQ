@@ -43,10 +43,27 @@
     </div>
 </div>
 
-{# THE GRAPH: rendered ONCE by the vendored mermaid from the boot JSON's
-   rows-alone emission; every later update is a classList/text patch on
-   data-node-key — zero re-renders. Keyboard operability: each node is
-   tab-focusable and Enter opens the panel. #}
+{# THE FLOW FAMILY (rv5-C5b's cure — the admin is not child-blind):
+   the parent↔child links are ROW facts (the child flows' receipts on
+   the parent's node rows; the parent pointer on the child's root) —
+   the identity faces the child line landed, surfaced: the operator can
+   walk the family, cancel the right run, see whose join waits. #}
+{% if run.parent_flow_id or run.child_flows %}
+<div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6" data-wf="flow-family">
+    <h3 class="text-sm font-semibold mb-2">Flow family</h3>
+    {% if run.parent_flow_id %}
+    <div class="text-sm"><span class="text-xs uppercase text-slate-500 dark:text-slate-400">Parent flow:</span>
+        <a class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline" href="{{ base_path }}/workflows/{{ run.parent_flow_id }}" data-wf="parent-link">{{ run.parent_flow_id }}</a></div>
+    {% endif %}
+    {% if run.child_flows %}
+    <div class="text-sm mt-1"><span class="text-xs uppercase text-slate-500 dark:text-slate-400">Child flows ({{ run.child_flows | length }}):</span>
+        <span class="font-mono text-xs space-x-2">
+        {% for c in run.child_flows %}<a class="text-blue-600 dark:text-blue-400 hover:underline" href="{{ base_path }}/workflows/{{ c }}" data-wf="child-link">{{ c[:8] }}</a>{% endfor %}
+        </span></div>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold">Run graph</h3>

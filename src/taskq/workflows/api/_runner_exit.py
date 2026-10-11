@@ -253,27 +253,19 @@ SELECT count(*) FROM flipped
 # once per shape.
 
 
-async def cancel_workflow_run(
+async def _cancel_one_run(
     pool: asyncpg.Pool,
     *,
     schema: str,
     flow_id: JobId,
-    reason: str | None = None,
-    principal: Any = None,
+    reason: str | None,
+    principal: Any,
 ) -> int:
-    """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
+    """ONE run's cancel (the tx the two verbs share): the root flip is
     the linearization point; every non-terminal node + held signal
-    resolves in the same snapshot; running children take the
-    existing two-phase cooperative cancel; terminal rows untouched;
-    IDEMPOTENT (cancel twice = one cancel — a terminal root updates
-    nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
-    log line."""
-    # THE REASON'S SHAPE PIN AT THE WRITE (finding 10's cure): the root
-    # flip binds the reason into `jobs.error_message` — a raw NUL byte
-    # refused THAT bind and rolled back the WHOLE cancel (the audit
-    # leg's own leaf bound never got to speak). One law, both binds:
-    # `taskq.audit.bound_reason` (the escape + the cap) rides here and
-    # the audit leaf below.
+    resolves in the same snapshot; terminal rows untouched; IDEMPOTENT.
+    Returns the held signals cancelled (0 when the run was already
+    terminal — the idempotent no-op)."""
     from taskq.audit import bound_reason
     from taskq.workflows.api._hitl import cancel_run_signals
 
@@ -303,27 +295,82 @@ async def cancel_workflow_run(
             reason=reason,
             detail={"held_signals_cancelled": held},
         )
+    return int(held) + 1
 
-    # THE CANCEL CASCADE (T28 — the reverse-edge walk's extension): the
-    # parent's receipts name its child flows; each child cancels
-    # through THIS SAME verb recursively (each child's cancel atomic in
-    # its own tx — the cascade is eventually-consistent per child,
-    # idempotent by the terminal-refusal above). The tx committed first:
-    # the parent's cancel is the linearization point, the children's
-    # cancels follow it.
-    from taskq.workflows._childflow import CHILD_RECEIPTS_SQL_TEMPLATE
 
-    async with pool.acquire() as conn:
-        receipt_rows = await conn.fetch(render_sql(CHILD_RECEIPTS_SQL_TEMPLATE, schema), flow_id)
-    for receipt in receipt_rows:
-        held += await cancel_workflow_run(
+async def cancel_cascade(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    flow_id: JobId,
+    reason: str | None,
+    principal: Any,
+) -> int:
+    """THE CANCEL CASCADE (rv5-C2b/C4's cure): the WORKLIST WALK, never
+    Python recursion (the pre-cure shape recursed per child — a
+    1200-deep cascade raised ``RecursionError`` at the operator and
+    left hundreds of runs running), and the children are read from the
+    ROWS' crash-safe ``parent_flow_id`` direction FIRST — the receipts
+    are the accelerator, the rows the law (the pre-cure shape walked
+    the receipts alone: a child created but never receipted — the crash
+    between create and receipt-write — ESCAPED the cascade forever, the
+    orphan window). Each run's cancel is atomic in its own tx
+    (eventually-consistent per child, idempotent by the terminal
+    refusal); the walk is bounded by the run tree's own size."""
+    from taskq.workflows._childflow import CHILD_FLOWS_OF_RUN_SQL_TEMPLATE
+
+    frontier: list[JobId] = [flow_id]
+    seen: set[str] = set()
+    held = 0
+    while frontier:
+        current = frontier.pop()
+        current_key = str(current)
+        if current_key in seen:
+            continue
+        seen.add(current_key)
+        cascaded = current_key != str(flow_id)
+        held += await _cancel_one_run(
             pool,
             schema=schema,
-            flow_id=JobId(receipt["child_id"]),
-            reason=f"cascaded from {flow_id}: {reason or 'cancel_workflow'}",
+            flow_id=current,
+            reason=(
+                f"cascaded from {flow_id}: {reason or 'cancel_workflow'}" if cascaded else reason
+            ),
             principal=principal,
         )
-    return held + 1
+        # THE CHILDREN (both directions — the rows' law + the receipts'
+        # accelerator), collected AFTER the run's own cancel committed:
+        # the parent's cancel is the linearization point, the children's
+        # cancels follow it.
+        async with pool.acquire() as conn:
+            child_rows = await conn.fetch(
+                render_sql(CHILD_FLOWS_OF_RUN_SQL_TEMPLATE, schema), current
+            )
+        frontier.extend(JobId(row["cid"]) for row in child_rows)
+    return held
+
+
+async def cancel_workflow_run(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    flow_id: JobId,
+    reason: str | None = None,
+    principal: Any = None,
+) -> int:
+    """P3 rule 4's cancel (T10): the flow flip is the linearization
+    point; every non-terminal node + held signal resolves in the same
+    snapshot; the CASCADE walks the children ITERATIVELY (the worklist
+    — rv5-C2b: depth 1200 cancels clean, no RecursionError) from the
+    ROWS' parent links first (rv5-C4: the orphan window is closed —
+    the crash-safe direction is the law, the receipts the accelerator).
+    Running children take the existing two-phase cooperative cancel;
+    terminal rows untouched; IDEMPOTENT (cancel twice = one cancel — a
+    terminal root updates nothing). THE AUDIT (G4): "who cancelled
+    this" is a ROW, not a log line."""
+    return await cancel_cascade(
+        pool, schema=schema, flow_id=flow_id, reason=reason, principal=principal
+    )
 
 
 async def retry_workflow_node(

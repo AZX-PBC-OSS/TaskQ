@@ -38,12 +38,15 @@ their homes WITHOUT the tax:
 """
 
 from taskq.workflows._childflow import (
+    DEFAULT_SPAWN_MAX_DEPTH,
     ChildCancelled,
     ChildFailed,
+    ChildFlowLostError,
     ChildHandle,
     ChildOk,
     ChildOutcome,
     ChildWorkflowUnknownError,
+    SpawnDepthExceededError,
 )
 from taskq.workflows.api import (
     CompiledWorkflow,
@@ -93,11 +96,13 @@ from taskq.workflows.chain import (
 from taskq.workflows.ledger import RunClaim
 
 __all__ = [
+    "DEFAULT_SPAWN_MAX_DEPTH",
     "DONE",
     "Backfilled",
     "Chain",
     "ChildCancelled",
     "ChildFailed",
+    "ChildFlowLostError",
     "ChildHandle",
     "ChildOk",
     "ChildOutcome",
@@ -126,6 +131,7 @@ __all__ = [
     "RouteArm",
     "RouterNotTotal",
     "RunClaim",
+    "SpawnDepthExceededError",
     "Step",
     "StepContext",
     "WorkflowApp",

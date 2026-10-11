@@ -1229,10 +1229,72 @@ The identity runs BOTH directions: the parent's node row carries the
 child's flow id (`metadata.child_flows` — the receipt), the child's
 root row carries the parent's (`parent_flow_id` / `parent_node_id` /
 `parent_step_key` — the provenance). The cancel cascade: cancelling the
-parent's run walks the receipts and cancels each child's rows
-recursively. The fan-out is the body's own loop: spawn K handles (each
+parent's run walks the family from the rows' parent links (the
+receipts the accelerator) and cancels each child's rows — the worklist
+walk below. The fan-out is the body's own loop: spawn K handles (each
 slot a distinct, retry-stable key) and join each — the fork's
 all-members semantics at the flow level.
+
+**THE SPAWN'S ATOMICITY FACE (the gather dragon's cure).** The default
+slot is CLAIMED in one atomic statement (the per-attempt cursor's
+increment and the returned slot are one row-CAS), so K CONCURRENT
+spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
+natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
+children, each carrying its own input. The pre-cure shape raced the
+cursor's read and write: all K spawns adopted the same slot, minted ONE
+child, and every caller received tenant-0's verdict wearing K labels —
+silent fabricated results, zero errors, green pins. A SAME-key
+concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
+every caller receives THAT child's handle — the honest shared face.
+One discipline applies: a concurrent fan-out that must join STABLY
+across the resume passes `key=` (the slot's allocation order is the
+scheduler's; the author's identity is the caller's — a resumed body
+re-executes the gather and the adoption follows the KEYS).
+
+**THE DEPTH BOUND.** A self-spawning flow (a workflow that spawns
+itself, directly or through a cycle of children) cannot mint a
+generation per sweep tick forever: the spawn walks the ancestor chain
+from the ROWS' `parent_flow_id` links — capped at the declared max
+depth, `DEFAULT_SPAWN_MAX_DEPTH` (32) — and past the bound the typed
+`SpawnDepthExceededError` (`FanInBoundExceededError`'s sibling)
+terminal-fails the node, the retry ladder unburned (re-running cannot
+shrink the ancestor chain). The same walk detects a CYCLE in the parent
+links (a corrupted/operator-written link cannot run the walk forever —
+the same bound fires, the message names it). A fan-out that genuinely
+needs more depth declares `max_depth=` at the spawn site.
+
+**THE RETENTION INTERPLAY (the operator's law).** The cancel cascade
+cancels the family; the retention purge must WALK THE PARENT LINKS the
+same way — purging a child's rows while its parent still runs leaves a
+DANGLING child pointer on the parent's row. The parent's resume now
+FAILS CLOSE on it: the dangling pointer raises the typed
+`ChildFlowLostError` and the run terminal-fails with the class on the
+record. It is NEVER a silent respawn — the pre-cure shape re-minted a
+fresh child on the resume (the purge took the arbiter's row with it),
+the child's side effects ran twice, and the parent SUCCEEDED.
+
+**THE CASCADE WALKS THE ROWS.** The cancel cascade collects children
+from the ROWS' crash-safe `parent_flow_id` direction first — the
+receipts (`metadata.child_flows`) are the accelerator, the rows the
+law. A child created but never receipted (the crash between
+child-create and receipt-write) is STILL collected: the orphan window
+— the crash-then-cancel that let a child escape the cascade forever —
+is unrepresentable. The cascade itself is a WORKLIST WALK, never
+Python recursion: a 1200-deep family cancels clean (the recursive walk
+raised `RecursionError` at the operator and left hundreds of runs
+running).
+
+**THE DEV-DRIVES PARITY.** The dev-loop driver's tick runs the expiry
+arm, so a `timeout_s` wait — including a child join's — fires the
+`Expired` member in a dev drive exactly as it does under the leader's
+sweep belt. The pre-cure dev face parked on the hold until
+`max_ticks`: the deadline inert, the dev loop a different engine from
+the fleet's.
+
+**THE ADMIN SEES THE FAMILY.** The run explorer renders the
+parent↔child links the rows carry: the parent's page links each child
+flow's run page, a child's page links its parent — the identity faces
+the child line landed, surfaced.
 
 ## §9 — Loops & back-edges (T19)
 

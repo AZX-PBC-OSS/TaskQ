@@ -72,7 +72,7 @@ bare-unwraps reds the attribute.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from pydantic import BaseModel
 
@@ -89,8 +89,10 @@ if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
+    "DEFAULT_SPAWN_MAX_DEPTH",
     "ChildCancelled",
     "ChildFailed",
+    "ChildFlowLostError",
     "ChildHandle",
     "ChildOk",
     "ChildOutcome",
@@ -109,6 +111,45 @@ class ChildWorkflowUnknownError(RuntimeError):
     """``ctx.spawn_flow`` named a workflow the registry does not carry —
     the typed refusal (the registration door — ``app.get(name)`` — is
     the only body source, D1)."""
+
+
+class ChildFlowLostError(RuntimeError):
+    """THE RETENTION-RESPAWN FAIL-CLOSE (rv5-C3's typed arm): the
+    parent's resume found a DANGLING child pointer — the parent's row
+    still names a child flow whose rows are GONE (the retention purge's
+    own law: the purge must walk the parent links first).
+
+    The pre-cure shape SILENTLY RE-MINTED a fresh child on the resume —
+    the child's side effects (emails, payments) ran twice while the
+    parent run SUCCEEDED (the worst face: the fabricated health). The
+    spawn now REFUSES: the dangling pointer is the failure, the run
+    terminal-fails with this class on the record — never a silent
+    respawn. A DETERMINISTIC death (re-running cannot restore the
+    purged rows — the deterministic-authoring-failure ladder's own
+    routing)."""
+
+
+class SpawnDepthExceededError(ValueError):
+    """THE DEPTH BOUND (rv5-C2's typed arm — ``FanInBoundExceededError``'s
+    sibling): the spawn's ancestor walk (the rows' ``parent_flow_id``
+    links, the cycle detection folded into the same walk) reached the
+    declared max depth — a self-spawning flow can no longer mint a
+    generation per sweep tick forever, and a corrupted (cyclic) parent
+    link cannot run the walk forever either.
+
+    A DETERMINISTIC authoring failure (the ladder's fourth class' own
+    law): re-running cannot shrink the ancestor chain — the retry ladder
+    never burns; the node terminal-fails with this class on the record.
+    The remedy: bound the fan-out (raise ``max_depth=`` at the spawn
+    site, or flatten the recursion into a loop over a ledgered step)."""
+
+
+#: THE DECLARED MAX DEPTH (the spawn's default bound — rv5-C2): the
+#: ancestor chain the spawn walks is bounded HERE; a deeper fan-out is
+#: the typed refusal's, never an unbounded generation machine. A spawn
+#: site that genuinely needs more depth declares ``max_depth=`` — the
+#: author's identity, recorded on the spawn.
+DEFAULT_SPAWN_MAX_DEPTH: Final[int] = 32
 
 
 # ── the typed outcome (the closed union's members) ──────────────────────
@@ -375,6 +416,7 @@ class CtxSpawnOps(_SpawnHost):
         input: object = None,
         result: type[G],
         key: str | None = None,
+        max_depth: int | None = None,
     ) -> ChildHandle[G]:
         """THE SPAWN (T28): ``handle = await ctx.spawn_flow("child_name",
         input=…, result=ChildResult)`` — the child is a REAL flow (its
@@ -387,7 +429,26 @@ class CtxSpawnOps(_SpawnHost):
         refuses a terminal-less child (the join could never read a
         result). ``key=`` overrides the slot (the author's identity);
         the default slot is the per-attempt spawn cursor (stable across
-        retries)."""
+        retries). ``max_depth=`` raises the spawn's default depth bound
+        (:data:`DEFAULT_SPAWN_MAX_DEPTH`) for a fan-out that genuinely
+        needs it — the bound's typed arm is
+        :class:`SpawnDepthExceededError` (rv5-C2).
+
+        THE SPAWN'S ATOMICITY FACE (rv5-C1 — the gather dragon's cure):
+        the default slot's read+write is ONE atomic claim at the row
+        (an ``UPDATE … RETURNING`` increment), so K CONCURRENT spawns
+        (``asyncio.gather(*[ctx.spawn_flow(...) …])`` — the natural
+        fan-out spelling) take K DISTINCT slots and mint K DISTINCT
+        children — the pre-cure shape raced the cursor's read and
+        write, all K spawns adopted the same slot (run key), minted ONE
+        child, and every caller received tenant-0's verdict wearing K
+        labels (the silent fabricated result). A SAME-key concurrent
+        spawn ADOPTS the same child (the arbiter's CAS — the run-key
+        claim at the row) and every caller receives THAT child's
+        handle: the honest shared face, never a fabricated per-caller
+        verdict. A CONCURRENT fan-out that must join STABLY across the
+        resume passes ``key=`` (the slot's allocation order is the
+        scheduler's, the author's identity is the caller's)."""
         from taskq.workflows._worker_execution import get_compiled_workflow
 
         try:
@@ -407,22 +468,65 @@ class CtxSpawnOps(_SpawnHost):
                 "terminal-less child (the join could never read a result)"
             )
 
-        # THE SLOT: the per-attempt spawn cursor (the hold-cursor's
-        # pattern) — a fresh attempt re-derives the same slots; the
-        # arbiter adopts.
-        cursor_key = f"spawn_cursor_{self.attempt}"
+        # THE FAIL-CLOSE (rv5-C3): a dangling child pointer on the
+        # parent's own receipts — a receipt whose child rows are GONE —
+        # is the TYPED refusal, never a silent respawn. The pre-cure
+        # shape re-minted a fresh child on the resume (the purge took
+        # the arbiter's row with it): the child's side effects ran
+        # twice, the parent SUCCEEDED.
         async with self._pool.acquire() as conn:
-            raw = await conn.fetchval(
-                render_sql(
-                    "SELECT metadata->>$2 FROM {schema}.jobs WHERE id = $1",
-                    self._wsql.schema,
-                ),
-                self.job_id,
-                cursor_key,
+            dangling = await conn.fetchval(
+                render_sql(_DANGLING_RECEIPT_SQL, self._wsql.schema), self.flow_id
             )
-            slot = int(raw) if raw is not None else 0
+            if dangling is not None:
+                raise ChildFlowLostError(
+                    f"the parent flow {self.flow_id} still names child flow "
+                    f"{dangling} and that child's rows are GONE (the retention "
+                    "purge). The spawn REFUSES to re-execute the child — a "
+                    "silent respawn runs the child's side effects twice. The "
+                    "purge must walk the parent links (the operator's law); "
+                    "to proceed, clear the dangling receipt from the parent's "
+                    "row and re-run the flow on the current code."
+                )
 
-        spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{key if key is not None else slot}"
+        # THE DEPTH BOUND + THE CYCLE CHECK (rv5-C2): the ancestor chain
+        # read from the rows' parent links — ONE walk serves both (a
+        # cycle's walk reaches the cap and fires the same bound).
+        bound = DEFAULT_SPAWN_MAX_DEPTH if max_depth is None else max_depth
+        async with self._pool.acquire() as conn:
+            chain_depth = await conn.fetchval(
+                render_sql(_ANCESTOR_DEPTH_SQL, self._wsql.schema), self.flow_id, bound
+            )
+        if int(chain_depth) >= bound:
+            raise SpawnDepthExceededError(
+                f"spawn under flow {self.flow_id} exceeds the declared max "
+                f"spawn depth ({bound}): the ancestor chain walked the rows' "
+                "parent links to the cap (or a CYCLE in the parent links — "
+                "the same walk detects it). The remedy: bound the fan-out "
+                "(flatten the recursion into a loop over a ledgered step), "
+                "or declare max_depth= at the spawn site."
+            )
+
+        # THE SLOT (rv5-C1's atomic face): the per-attempt spawn cursor
+        # is CLAIMED in one atomic statement — the increment and the
+        # returned slot are one row-CAS, so concurrent spawns take
+        # distinct slots. A fresh attempt re-derives the same slots (the
+        # cursor is per-attempt; the arbiter adopts).
+        if key is not None:
+            # The author's identity IS the key: no slot claimed (the
+            # parent row's counter never moves for a keyed site).
+            spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{key}"
+        else:
+            cursor_key = f"spawn_cursor_{self.attempt}"
+            async with self._pool.acquire() as conn:
+                slot = await conn.fetchval(
+                    render_sql(_SPAWN_SLOT_CLAIM_SQL, self._wsql.schema),
+                    self.job_id,
+                    cursor_key,
+                )
+            assert slot is not None  # the claim's UPDATE hit the executing node's row
+            spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{int(slot)}"
+
         from taskq.workflows.api._runner import FlowRunner
 
         child_runner = FlowRunner(compiled_obj, self._pool, self._wsql.schema)
@@ -450,20 +554,13 @@ class CtxSpawnOps(_SpawnHost):
             terminal_key=compiled_obj.terminal,
         )
 
-        # THE RECEIPT + THE CURSOR (the parent's row): the ensure-append
-        # is dedup'd (an adoption re-run never duplicates); the cursor
-        # write consumes the slot (the create's verdict does not matter
-        # — the site ran either way).
+        # THE RECEIPT (the parent's row): the ensure-append is dedup'd
+        # (an adoption re-run never duplicates).
         async with self._pool.acquire() as conn:
             await conn.execute(
                 render_sql(_CHILD_RECEIPT_ENSURE_SQL, self._wsql.schema),
                 self.job_id,
                 str(claim.flow_id),
-            )
-            await conn.execute(
-                render_sql(_SPAWN_CURSOR_WRITE_SQL, self._wsql.schema),
-                self.job_id,
-                dumps_jsonb_str({cursor_key: slot + 1}),
             )
         return handle
 
@@ -491,8 +588,59 @@ SET metadata = jsonb_set(
 WHERE id = $1
 """
 
-_SPAWN_CURSOR_WRITE_SQL = """
-UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1
+#: THE SPAWN'S ATOMIC SLOT CLAIM (rv5-C1 — the gather dragon's cure):
+#: the per-attempt cursor's read+write is ONE statement — the row's
+#: jsonb counter increments IN the UPDATE and the allocated slot
+#: RETURNS from it. Concurrent claims serialize on the row lock and
+#: each receives a DISTINCT slot; a same-key spawn never reaches this
+#: statement (the explicit key bypasses the slot).
+_SPAWN_SLOT_CLAIM_SQL = """
+UPDATE {schema}.jobs
+SET metadata = jsonb_set(
+    metadata,
+    ARRAY[$2::text],
+    to_jsonb(COALESCE((metadata->>$2)::int, -1) + 1)
+)
+WHERE id = $1
+RETURNING (metadata->>$2)::int
+"""
+
+#: THE DANGLING-RECEIPT READ (rv5-C3 — the retention-respawn's
+#: fail-close): a receipt on the parent's rows whose child's ROOT row
+#: is gone. ONE id is enough to refuse the spawn (the purge's own law:
+#: it must walk the parent links — a purge that leaves a pointer is
+#: this read's catch).
+_DANGLING_RECEIPT_SQL = """
+SELECT r.cid FROM (
+    SELECT DISTINCT jsonb_array_elements_text(metadata->'child_flows') AS cid
+    FROM {schema}.jobs
+    WHERE (metadata->>'flow_id')::uuid = $1
+      AND metadata ? 'child_flows'
+) r
+WHERE NOT EXISTS (
+    SELECT 1 FROM {schema}.jobs j
+    WHERE j.id = r.cid::uuid AND j.step_key = '__flow__'
+)
+LIMIT 1
+"""
+
+#: THE ANCESTOR WALK (rv5-C2 — the depth bound + the cycle check, ONE
+#: walk): the chain of the parent flow's OWN ancestors read from the
+#: rows' ``parent_flow_id`` links, capped at the declared bound (the
+#: cap is what makes a cycle's walk terminate — the bound fires on it).
+#: The result is the parent's ancestor count $depth$; the child would
+#: be depth+1, so a walk that reaches the bound IS the refusal.
+_ANCESTOR_DEPTH_SQL = """
+WITH RECURSIVE chain AS (
+    SELECT 0 AS depth, (metadata->>'parent_flow_id')::uuid AS parent
+    FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__'
+    UNION ALL
+    SELECT c.depth + 1, (r.metadata->>'parent_flow_id')::uuid
+    FROM chain c
+    JOIN {schema}.jobs r ON r.id = c.parent AND r.step_key = '__flow__'
+    WHERE c.depth < $2
+)
+SELECT COALESCE(MAX(depth), 0) FROM chain
 """
 
 _CHILD_ROOT_STATUS_SQL = """
@@ -517,6 +665,35 @@ LIMIT 1
 #: the reverse-edge walk's extension reads the parent's OWN receipt, the
 #: one direction that names the children).
 CHILD_RECEIPTS_SQL_TEMPLATE = _CHILD_RECEIPTS_SQL_TEMPLATE
+
+#: THE CANCEL CASCADE'S COLLECTION (rv5-C2b/C4's cure — the ROWS' LAW
+#: + the receipts' ACCELERATOR): the children of one run read BOTH
+#: directions — the crash-unsafe receipts (the parent's node rows'
+#: ``child_flows``) AND the crash-safe ``parent_flow_id`` direction the
+#: child's root rows carry from the CREATE transaction. The receipts
+#: accelerate the common case; the rows are the law: a child created
+#: but never receipted (the crash between create and receipt-write)
+#: is STILL collected — the orphan window is unrepresentable.
+CHILD_FLOWS_OF_RUN_SQL_TEMPLATE = """
+WITH receipt_children AS (
+    SELECT DISTINCT (e.val)::uuid AS cid
+    FROM {schema}.jobs j
+    CROSS JOIN LATERAL jsonb_array_elements_text(j.metadata->'child_flows') AS e(val)
+    WHERE (j.metadata->>'flow_id')::uuid = $1
+      AND j.metadata ? 'child_flows'
+), row_children AS (
+    SELECT (metadata->>'flow_id')::uuid AS cid
+    FROM {schema}.jobs
+    WHERE step_key = '__flow__'
+      AND (metadata->>'parent_flow_id')::uuid = $1
+      AND metadata ? 'flow_id'
+)
+SELECT DISTINCT cid FROM (
+    SELECT cid FROM receipt_children
+    UNION
+    SELECT cid FROM row_children
+) u
+"""
 
 #: The descendants' drive (the dev-loop driver's face — the child is a
 #: REAL flow and its rows need a claimer): the recursive CTE walks the
