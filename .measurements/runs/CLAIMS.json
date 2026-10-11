@@ -7822,6 +7822,12 @@
       "file": "evidence-heads-verify-2026-10-11T03:09:23Z.txt",
       "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
       "captured_at": "2026-10-10T20:09:23"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-2026-10-11T03:10:03Z.txt",
+      "head_sha": "7a775772c8eea667260dedb628775bb09988e460",
+      "captured_at": "2026-10-10T20:10:04"
     }
   ]
 }
