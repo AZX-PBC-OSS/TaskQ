@@ -7753,6 +7753,192 @@
       "file": "pin2-partial-index-20261011T010421-1e1f.json",
       "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
       "captured_at": "2026-10-11T01:04:21"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T011330-ac3b.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:13:30"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T011330-b874.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:13:30"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T011336-a36f.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:13:36"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T011446-d535.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:14:46"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T011446-98ea.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:14:46"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T011451-64c3.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:14:51"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T011517-8471.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:17"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T011520-45c9.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:20"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T011520-d304.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:20"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T011520-9fff.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:20"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T011521-0f4c.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:21"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T011522-0f2b.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:15:22"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T011612-852c.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:16:12"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T011613-42a1.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:16:13"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T011618-adbc.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:16:18"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T012044.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:20:44"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T013131-7244.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:31:31"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T013132-155b.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:31:32"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T013137-8f80.json",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:31:37"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-childcures-leg1.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-childcures-leg2.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "attack-rounds-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-childcures-leg1.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-childcures.txt",
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     }
   ]
 }
