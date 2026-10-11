@@ -1,0 +1,36 @@
+# deslop-pin-packs at head abf645fc761011a6eaee0e908622fb0942a8047e — rc=1 — captured 2026-10-11T02:21:30Z
+bringing up nodes...
+bringing up nodes...
+
+.........................................F.............................. [ 94%]
+....                                                                     [100%]
+=================================== FAILURES ===================================
+[gw2] linux -- Python 3.13.15 /tmp/opencode/wt-land/.venv/bin/python
+E   AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+      THE HEAD-STAMP LAW REDS (head abf645fc7610):
+        deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T221440Z.txt is stale — recorded on 1c561135b530, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T191404-9173.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T231459Z.txt is stale — recorded on 406546d4fb29, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T191401-aede.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        fast-tier-n8: the LIVE CLAIM fast-tier-n8-20261010T221700Z.txt is stale — recorded on cdb3f11fc783, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T191412-5776.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        lint-format: the LIVE CLAIM lint-format-20261010T221420Z.txt is stale — recorded on 1c561135b530, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T221430Z.txt is stale — recorded on 1c561135b530, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T191436-0026.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T191435-795c.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T191443-a1ff.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T191401-c30e.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T191412-94f7.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pyright-full: the LIVE CLAIM pyright-full-20261010T221400Z.txt is stale — recorded on 1c561135b530, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261010T221410Z.txt is stale — recorded on 1c561135b530, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261010T221200Z.txt is stale — recorded on 11e3e187f5b8, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261010T221055Z.txt is stale — recorded on 11e3e187f5b8, the head is abf645fc7610. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T191444-8f36.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T191812.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+      
+    assert 1 == 0
+     +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-land/.venv/bin/python', '/tmp/opencode/wt-land/scripts/verify_evidence_heads....es a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)\n', stderr='').returncode
+/tmp/opencode/wt-land/tests/test_wf_attack_rv2.py:1053: AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 75 passed in 6.95s
