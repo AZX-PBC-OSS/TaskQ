@@ -8248,6 +8248,12 @@
       "file": "timer-cures-fasttier-n8-zero.txt",
       "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
       "captured_at": "2026-10-11T02:22:53"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "timer-cures-ehv-final.txt",
+      "head_sha": "8f59978fea6278d00212f92ff8a14638e3461038",
+      "captured_at": "2026-10-11T02:22:57"
     }
   ]
 }
