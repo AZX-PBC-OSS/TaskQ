@@ -7480,6 +7480,12 @@
       "file": "wf-scoped-coverage-20261010T173741.json",
       "head_sha": "55895e1ebd309e1efd00b4a07cdb88080a4e4f5e",
       "captured_at": "2026-10-10T17:37:41"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "timers-ehv.txt",
+      "head_sha": "cfc529734fd7936f6ccf26a31afe26a48f95bb21",
+      "captured_at": "2026-10-10T17:37:51"
     }
   ]
 }
