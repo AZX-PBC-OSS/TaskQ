@@ -7798,6 +7798,12 @@
       "file": "timer-cures-wfbatt-leg2.txt",
       "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
       "captured_at": "2026-10-11T01:22:03"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T012315-e223.json",
+      "head_sha": "04ddbaf54192b6d8287f7266bec9e6dae5892de9",
+      "captured_at": "2026-10-11T01:23:15"
     }
   ]
 }

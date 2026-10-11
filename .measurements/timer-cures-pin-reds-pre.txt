@@ -1,0 +1,961 @@
+FFFFFFFFF                                                                [100%]
+=================================== FAILURES ===================================
+__________ test_the_naive_datetime_law_is_documented_at_the_api_face ___________
+
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f0660b9f380>
+
+    def test_the_naive_datetime_law_is_documented_at_the_api_face(
+        timer_cures_redlog: Any,
+    ) -> None:
+        """CURE 6: the silent UTC coercion is documented AT THE API FACE —
+        the ``wait_until`` docstring carries the exact law (a naive datetime
+        is interpreted as UTC; the DB never re-bases it) and the guide's
+        timer section carries the same paragraph. Red-first: at the base
+        tree the docstring carried a clause, not the law (the expanded
+        paragraph is the cure)."""
+        import inspect
+    
+        from pathlib import Path
+    
+        doc = inspect.getdoc(CtxTimerOps.wait_until) or ""
+>       assert "interpreted as UTC" in doc, (
+            "the wait_until docstring does not carry the naive-datetime law "
+            "(a naive datetime is interpreted as UTC — the coercion is silent)"
+        )
+E       AssertionError: the wait_until docstring does not carry the naive-datetime law (a naive datetime is interpreted as UTC — the coercion is silent)
+E       assert 'interpreted as UTC' in 'THE DURABLE TIMER (T28): hold until the clock says *when* —\n``await ctx.wait_until(when, key="remind")``. The body\'...e boundary\'s strict schema fit\nrefuses any hand-delivered payload — the clock is the only\nresolver this hold takes.'
+
+tests/test_wf_timer_cures_pins.py:725: AssertionError
+________________ test_the_backfill_never_surfaces_a_timer_hold _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a32080>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f0660a62850>
+
+    async def test_the_backfill_never_surfaces_a_timer_hold(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 2, the backfill's face: the listener's snapshot is the
+        pending-APPROVALS read — a standing timer hold is announced as
+        NEITHER a ``HoldCreated`` NOR an open id in the ``Backfilled``
+        reconcile; the HUMAN hold beside it is (the control: the filter
+        never ate the leg). Red-first: at the base tree the backfill
+        surfaced the timer (the drill's receipt:
+        ``HoldCreated(signal='__timer__leak')``)."""
+        compiled = WorkflowApp()
+        # (bodies are module-level; the same names as the demo module)
+    
+        @compiled.workflow("c2_timer_flow")
+        def c2_timer_flow() -> Promise[object]:
+            return build(step(timer_body, Nudge(), key="timer_node"))
+    
+        @compiled.workflow("c2_human_flow")
+        def c2_human_flow() -> Promise[object]:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=30.0)
+            return build(step(human_body, Nudge(), key="human_node", gates=(gate,)))
+    
+        timer_runner = FlowRunner(compiled.get("c2_timer_flow"), wf_pool, wf_schema)
+        timer_flow = (await timer_runner.create_flow()).flow_id
+        await timer_runner.drive(timer_flow, until="held")
+        human_runner = FlowRunner(compiled.get("c2_human_flow"), wf_pool, wf_schema)
+        human_flow = (await human_runner.create_flow()).flow_id
+        await human_runner.drive(human_flow, until="held")
+    
+        # BOTH holds stand (the timer's and the human's).
+        timer_row = await wf_pool.fetchrow(
+            f"SELECT id, signal_name FROM \"{wf_schema}\".wf_signals "  # noqa: S608
+            "WHERE workflow_id = $1 AND status = 'held'",
+            timer_flow,
+        )
+        human_row = await wf_pool.fetchrow(
+            f"SELECT id, signal_name FROM \"{wf_schema}\".wf_signals "  # noqa: S608
+            "WHERE workflow_id = $1 AND status = 'held'",
+            human_flow,
+        )
+        assert timer_row is not None and human_row is not None, "the drives never held"
+        assert timer_row["signal_name"].startswith(TIMER_SIGNAL_PREFIX)
+    
+        listener = HitlListener(wf_pool, wf_schema)
+        await listener.start()
+        try:
+            events: list[Any] = []
+    
+            async def collect() -> None:
+                async for event in listener.events():
+                    events.append(event)
+                    if isinstance(event, Backfilled):
+                        return
+    
+            await asyncio.wait_for(collect(), timeout=10)
+        finally:
+            await listener.stop()
+    
+        created = [e for e in events if isinstance(e, HoldCreated)]
+        timer_created = [e for e in created if e.signal.startswith(TIMER_SIGNAL_PREFIX)]
+>       assert not timer_created, (
+            f"the backfill surfaced the TIMER as a pending approval: {timer_created}"
+        )
+E       AssertionError: the backfill surfaced the TIMER as a pending approval: [HoldCreated(event='hold_created', hold_id='01a129a3-a7e1-7d32-af7d-734b557aeced', run_id='01a129a3-a7ce-7101-a19f-aba0dc37eeec', signal='__timer__cures-timer', node_key='timer_node', created_at='2026-10-11T06:25:53.633590+00:00', source='backfill')]
+E       assert not [HoldCreated(event='hold_created', hold_id='01a129a3-a7e1-7d32-af7d-734b557aeced', run_id='01a129a3-a7ce-7101-a19f-aba...ignal='__timer__cures-timer', node_key='timer_node', created_at='2026-10-11T06:25:53.633590+00:00', source='backfill')]
+
+tests/test_wf_timer_cures_pins.py:395: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 23:25:53 [info     ] node.held                      hold_id=01a129a3-a7e1-7d32-af7d-734b557aeced node=timer_node run_id=01a129a3-a7ce-7101-a19f-aba0dc37eeec signals=['__timer__cures-timer']
+2026-10-10 23:25:53 [info     ] node.held                      hold_id=01a129a3-a7f3-7ff2-937b-7f1511253eb8 node=human_node run_id=01a129a3-a7ec-7492-96df-f56687fcbd25 signals=['Approval']
+_________ test_e17_wait_until_refuses_a_key_in_the_reserved_namespace __________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a33880>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f0660a63890>
+
+    async def test_e17_wait_until_refuses_a_key_in_the_reserved_namespace(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 1, the caller's key: ``wait_until(…, key='__timer__…')``
+        collides with the reserved namespace the same way (the mint would
+        double-prefix the row into a mis-named wake) — the same typed E17
+        refusal, the fix named."""
+        probe = MintProbe(wf_pool, wf_schema)
+        with pytest.raises(ReservedTimerNamespaceError) as exc_info:
+>           await probe.wait_until(1.0, key=f"{TIMER_SIGNAL_PREFIX}evil")
+
+tests/test_wf_timer_cures_pins.py:321: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.test_wf_timer_cures_pins.MintProbe object at 0x7f066091cc20>
+when = 1.0, key = '__timer__evil'
+
+    async def wait_until(
+        self,
+        when: datetime | float,
+        *,
+        key: str | None = None,
+    ) -> TimerWake:
+        """THE DURABLE TIMER (T28): hold until the clock says *when* —
+        ``await ctx.wait_until(when, key="remind")``. The body's node
+        takes the HELD REPRESENTATION (the slot is released — no lease,
+        no claim, no attempt burned; a LOOP node's budget pauses), the
+        hold row stands (``wf_signals`` under the reserved
+        ``__timer__`` signal prefix), and the SWEEP's timer arm fires
+        the wake at the first pass at-or-after the deadline: the clock
+        itself resolves the hold (``fired_by='timer'``) with its own
+        receipt, the node re-claims, and THE BODY RESUMES.
+    
+        THE INVERTED FACE (vs ``wait_signal``'s expiry): a deadline
+        pass here is THE WAKE, never the fail-close — the continuation
+        is the timer's point. There is NO ``Expired`` arm and no
+        automatic re-arm: the hold fires exactly once, the wake is the
+        consumed answer (a replay/retry re-consumes it from the answer
+        queue — the operator's re-run never re-sleeps).
+    
+        *when* is a :class:`~datetime.datetime` (the absolute instant;
+        naive means UTC — the DB never re-bases it) or a *float* of
+        seconds (the DB clock owns the base — the estate's clock
+        doctrine; the row's ``expires_at`` is that clock's reading).
+        *key* names the timer (the wake's ``key``; timers and signals
+        of one node share the answer queue's cursor — the loop's
+        ONE-wait-per-iteration shape law reads both the same way).
+    
+        THE DURABILITY (the row's the truth): a worker death mid-wait
+        is invisible to the timer — the hold row's expiry arms the
+        successor's sweep, the wake fires, the body resumes (the
+        re-execution doctrine: from the top; the pre-timer substeps
+        replay). THE CANCEL INTERPLAY: the flow's cancel cascades the
+        held timer row to ``cancelled`` — the hold dies with the flow,
+        the wake never fires (the sweep arm only resolves 'held' rows).
+    
+        THE TIMER IS NOT A HUMAN HOLD: ``HitlClient.list()`` never
+        enumerates it (the reserved prefix), the expiry arm never
+        abandons it, and the resolve boundary's strict schema fit
+        refuses any hand-delivered payload — the clock is the only
+        resolver this hold takes."""
+        from taskq.workflows.api._hitl import (
+            TIMER_SIGNAL_PREFIX,
+            TIMER_WAKE_SCHEMA_NAME,
+            mark_awaited,
+            register_timer_hold,
+        )
+    
+        absolute, relative = normalize_timer_when(when)
+        signal_name = TIMER_SIGNAL_PREFIX + (key or "")
+    
+        # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row
+        # records 'awaited' (never 'failed') — the timer's resume burns
+        # no attempt, exactly as the human hold's does.
+        if self._ledger_id is not None:
+            async with self._pool.acquire() as conn:
+                await mark_awaited(conn, self._wsql.schema, self._ledger_id)
+    
+        async with self._pool.acquire() as conn:
+            # The cursor/kind read — the wait machinery's own shape (the
+            # answer queue + the per-attempt cursor are SHARED with
+            # wait_signal: one node, one queue, one cursor; the loop's
+            # counter is the ADVANCE statement's own write).
+            row_meta = await conn.fetchrow(
+                render_sql(
+                    "SELECT (metadata ->> $2)::int AS cursor, "
+                    "metadata->>'kind' AS kind, "
+                    "(metadata->>'iteration')::int AS iteration "
+                    "FROM {schema}.jobs WHERE id = $1",
+                    self._wsql.schema,
+                ),
+                self.job_id,
+                f"hold_cursor_{self.attempt}",
+            )
+            is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
+            row_cursor = (
+                int(row_meta["cursor"])
+                if row_meta is not None and row_meta["cursor"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
+            row_iteration = (
+                int(row_meta["iteration"])
+                if row_meta is not None and row_meta["iteration"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
+            cursor = row_iteration if is_loop_kind else row_cursor
+            queue = await conn.fetch(
+                render_sql(
+                    "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "AND status = 'delivered' ORDER BY hold_epoch ",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                signal_name,
+            )
+            if is_loop_kind and cursor > len(queue):
+                # THE E13 RULE, the timer's leg: the same uniform-wait
+                # law the human hold takes (the cursor is shared; a
+                # conditional TIMER in a loop strands answers exactly
+                # as a conditional signal-wait does).
+                raise LoopWaitShapeError(
+                    f"E13-uniform-loop-wait: this loop body's timer is CONDITIONAL "
+                    f"(the iteration cursor {cursor} runs past the {len(queue)}-wake "
+                    f"queue on {signal_name}) — a loop body must declare ONE wait per "
+                    "iteration: the answer-queue cursor IS the iteration counter. "
+                    "Wait unconditionally each iteration (branch on the RESULT), or "
+                    "move the timer out of the loop"
+                )
+            if cursor < len(queue):
+                # THE WAKE'S REPLAY/CONSUME: the delivered receipt IS
+                # the answer (the per-attempt cursor advances — the
+                # loop's counter is the ADVANCE statement's own write,
+                # never this one).
+                wake_row = queue[cursor]
+                payload = (
+                    _json_loads(wake_row["payload"])
+                    if isinstance(wake_row["payload"], str)
+                    else wake_row["payload"]
+                )
+                if not is_loop_kind:
+                    await conn.execute(
+                        render_sql(
+                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
+                            self._wsql.schema,
+                        ),
+                        self.job_id,
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                    )
+                self._runtime["hold_epoch"] = int(wake_row["hold_epoch"])
+                return TimerWake.model_validate(payload)
+            # PAST THE QUEUE: the standing timer hold is THIS wait's
+            # wait — the held row stands (idempotent re-hold, never a
+            # second registration of one wait).
+            held_row = await conn.fetchrow(
+                render_sql(
+                    "SELECT id FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                signal_name,
+            )
+            if held_row is not None:
+                raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
+            # THE TIMER HOLDS ARE NEVER ABANDONED (the inverted face's
+            # other half): no 'abandoned' arm here — the expiry sweep
+            # excludes the reserved prefix by law, so a past-due timer
+            # is a due timer (the arm fires it), never a fail-close.
+            # A NEW HOLD: a NEW epoch (the count of this name's holds).
+            epoch = await conn.fetchval(
+                render_sql(
+                    "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+            )
+            hold_id = await register_timer_hold(
+                conn,
+                schema=self._wsql.schema,
+                workflow_id=self.flow_id,
+                node_id=self.job_id,
+                node_key=self.node_key,
+                signal_name=signal_name,
+                hold_epoch=int(epoch),  # pyright: ignore[reportAny, reportArgumentType]
+                absolute=absolute,
+                relative=relative,
+                payload_schema={TIMER_WAKE_SCHEMA_NAME: TimerWake.model_json_schema()},
+            )
+>       raise NodeHeldError(hold_id=str(hold_id), signal_names=(signal_name,))
+E       taskq.workflows.api._ctx_wait.NodeHeldError: node held on ('__timer____timer__evil',) (hold 01a129a3-a8b4-7480-98d8-95e16815eb92)
+
+src/taskq/workflows/api/_ctx_timer.py:303: NodeHeldError
+________ test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint _________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a33a00>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f0660946520>
+
+    async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 1, the mint's direct face: a payload model whose NAME collides
+        with the reserved ``__timer__`` namespace is the typed E17 refusal at
+        the mint — LOUDLY, with the fix named, and NO hold row written (the
+        invisible/unanswerable/unfail-closing/deadly hold is
+        unrepresentable).
+    
+        Red-first: at the base tree the mint SUCCEEDED (the drill's receipt:
+        the hold minted, ``HitlClient.list()`` empty, the human's answer
+        refused as a forgery, the run dead at the deadline)."""
+        probe = MintProbe(wf_pool, wf_schema)
+        with pytest.raises(ReservedTimerNamespaceError) as exc_info:
+>           await probe.wait_signal((__timer__Approval,), timeout_s=1.0)
+
+tests/test_wf_timer_cures_pins.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.test_wf_timer_cures_pins.MintProbe object at 0x7f0660a63d90>
+signals = (<class 'tests.test_wf_timer_cures_pins.__timer__Approval'>,)
+timeout_s = 1.0, reason = None, tool = None, args = None, discriminator = None
+
+    async def wait_signal[M: BaseModel](
+        self,
+        signals: type[M] | tuple[type[M], ...],
+        *,
+        timeout_s: float | None = None,
+        reason: str | None = None,
+        tool: str | None = None,
+        args: dict[str, object] | None = None,
+        discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
+    ) -> M | Expired:
+        """THE TYPED WAIT (T10), THE EXPIRY IS A VALUE (T26's amendment):
+        the TUPLE FORM is the typed wait — ``await ctx.wait_signal((Approval,
+        Escalate))``; the single-payload form is the one-member overload.
+        The return is the CLOSED UNION of the declared models joined with
+        :class:`Expired` — ``Decision | Expired`` — and the CHECKER
+        forces the fail-close arm:
+    
+        >>> outcome = await ctx.wait_signal((ContinueApproval,), timeout_s=120.0)
+        >>> match outcome:
+        ...     case ContinueApproval() as approval: ...
+        ...     case Expired(): ...  # the fail-close: finish with what you have
+    
+        A body that matches only the decision arm falls through (implicit
+        ``None`` against the body's declared ``Done | Refine`` return — the
+        checker reds it); a body that bare-unwraps reds the attribute
+        (``Expired`` carries no decision fields). The type-probe corpus
+        holds both markers (``tests/typeprobe/wf_wait_expired_negative_types.py``).
+    
+        THE ESCALATION LADDER'S OWN USE: a body that WANTS the timeout as
+        a FAILURE raises :class:`taskq.exceptions.SignalTimeoutError`
+        ITSELF off the ``Expired`` member — the machinery never raises it
+        (the exception face cannot be forced; the union face can).
+    
+        No unresolved signal row → the node HOLDS (the held
+        representation: pending + the deadline + the signal row as
+        truth; the worker releases — no slot held; a LOOP node's budget
+        PAUSES). A DELIVERED row (the resume) returns the payload.
+        ``timeout=None`` must be EXPLICIT — the bare form is the W1
+        validate warning ("a workflow that waits forever on a human is
+        a support ticket").
+    
+        THE TIMEOUT'S ARM (the union face's runtime half — the
+        declaration's docstring carries the split): THIS ``timeout_s=``
+        arms the RUNTIME deadline (the hold's expiry — the DB-clock
+        wall the sweep fires); a matching ``GateDecl.timeout_s`` on the
+        node feeds the COMPILE surfaces only (the Mermaid face, W1)
+        and never arms the runtime. Where both are statically readable
+        and they disagree, validate() names the drift (W4).
+    
+        THE TIMEOUT FACE (attack-3 B1's cure, the union amendment): an
+        ABANDONED hold (the expiry sweep fired on this wait site, no
+        held row stands) RETURNS the :class:`Expired` member — the
+        fail-close arm the checker forces. The re-execution NEVER
+        automatically mints a new epoch — hold → expire → re-hold → ∞
+        is the convicted dragon: the face fires ONCE per abandoned row
+        per attempt (the face marker below); a DELIBERATE re-wait (the
+        body MATCHED the expiry member and waits again within the same
+        attempt) is a NEW body decision: it registers a NEW hold with a
+        NEW epoch.
+    
+        ``discriminator=`` (attack-3 B2's small honest API): when the
+        payload fits MORE than one declared model, the gate's explicit
+        picker resolves the union — its pick must be one of the fitting
+        candidates. Without one, an ambiguous payload is the typed
+        refusal at the deliver boundary.
+    
+        THE DOUBLE-TIMEOUT PRECEDENCE (C8's law — BOTH faces declare a
+        timeout): THIS parameter arms the expiry sweep — the hold row's
+        ``expires_at`` is written from THIS ``timeout_s`` (the DB clock
+        plus it). The gate's ``GateDecl(timeout_s=…)`` is the
+        COMPILE-VISIBLE declaration (the Mermaid face, the W1 warning)
+        — never a second runtime clock. Keep them equal on purpose; when
+        they disagree, THE WAIT'S VALUE WINS, on the rows."""
+        models: tuple[type[BaseModel], ...] = cast(
+            tuple[type[BaseModel], ...],
+            signals if isinstance(signals, tuple) else (signals,),
+        )
+        if not models:
+            # THE CONTRACT IS MANDATORY AT HOLD TIME (attack-4
+            # F-P4-UNTYPED-COLD-DOOR's cure, the authoring half): a hold
+            # minted without a declared payload schema is the audit hole —
+            # ANY payload delivers to it from a fresh process (the row's
+            # payload_schema is the cold process's only witness). The
+            # declaration is one tuple at the wait site; the hold never
+            # ships contract-less. (Static face: the new signature refuses
+            # an empty tuple at the checker — the guard keeps the runtime
+            # seam's teeth: a cast-seam caller passes an empty tuple.)
+            raise TypeError(
+                "ctx.wait_signal requires at least one declared payload "
+                "model — a hold without a declared contract is the audit "
+                "hole (the typed door refuses to mint one)"
+            )
+        names = tuple(m.__name__ for m in models)
+        signal_name = names[0] if len(names) == 1 else "|".join(names)
+        from taskq.workflows.api._hitl import (
+            mark_awaited,
+            register_hold,
+            register_signal_models,
+        )
+    
+        # THE CATALOG (the typed door's runtime registry): this process
+        # ran the wait site — the deliver boundary validates against
+        # THESE models (D1's discipline, the deliver path's face).
+        register_signal_models(
+            self._workflow_name, self.node_key, signal_name, models, discriminator
+        )
+    
+        # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row
+        # records 'awaited' (never 'failed' — the ladder counts failed
+        # only).
+        if self._ledger_id is not None:
+            async with self._pool.acquire() as conn:
+                await mark_awaited(conn, self._wsql.schema, self._ledger_id)
+    
+        # THE STALE-PAYLOAD DRAGON'S KILL SITES (two, both structural):
+        # (1) THE ANSWER QUEUE — the delivered holds are the node's
+        # durable answers, consumed IN EPOCH ORDER by each attempt's wait
+        # sequence (the per-attempt CURSOR): a RETRY replays the answers
+        # (they are the attempt's inputs — the operator never
+        # re-answers, the retry is deterministic); a wait past the
+        # queue's end registers a NEW hold (a NEW epoch — multi-hold).
+        # (2) the CONSUMED hold can never answer twice.
+        #
+        # THE LOOP'S ITERATION INDEX IS THE CURSOR (the deploy matrix's
+        # multi-HITL cure): a LOOP resume is a CONTINUATION of the
+        # iteration sequence, never a replay of it — the per-attempt
+        # cursor restarts at 0 on every resume (a new attempt), so the
+        # resumed loop's later iterations re-consumed the EARLIER
+        # answers (the deep-research march's third iteration received
+        # the second refine, the carry ran past the cap, the loop
+        # exhausted without the operator's third decision ever landing).
+        # For a loop-kind node the queue position IS the row's iteration
+        # counter (the ADVANCE statement's own write — the derived value
+        # has exactly one writer): iteration k's wait consumes the k-th
+        # answer — a hold-resume continues, a retry of a failed
+        # iteration replays ITS OWN answer (the same k-th), both laws
+        # one mechanism. A loop body declares ONE wait per iteration
+        # (the loop's shape); the plain steps keep the per-attempt
+        # cursor.
+        async with self._pool.acquire() as conn:
+            row_meta = await conn.fetchrow(
+                render_sql(
+                    "SELECT (metadata ->> $2)::int AS cursor, "
+                    "metadata->>'kind' AS kind, "
+                    "(metadata->>'iteration')::int AS iteration "
+                    "FROM {schema}.jobs WHERE id = $1",
+                    self._wsql.schema,
+                ),
+                self.job_id,
+                f"hold_cursor_{self.attempt}",
+            )
+            is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
+            row_cursor = (
+                int(row_meta["cursor"])
+                if row_meta is not None and row_meta["cursor"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
+            row_iteration = (
+                int(row_meta["iteration"])
+                if row_meta is not None and row_meta["iteration"] is not None
+                else 0
+            )  # pyright: ignore[reportIndexType,reportArgumentType]
+            cursor = row_iteration if is_loop_kind else row_cursor
+            queue = await conn.fetch(
+                render_sql(
+                    "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'delivered' ORDER BY hold_epoch ",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if is_loop_kind and cursor > len(queue):
+                # THE E13 RULE (the loop's uniform-wait law — C9's cure):
+                # the iteration cursor may never run PAST the answer
+                # queue. The aligned states are: cursor == len (the
+                # continuation's wait — a fresh hold next) and cursor <
+                # len (a retry's replay). cursor > len means earlier
+                # iterations did not wait — the conditional-wait shape:
+                # answers stranded (unconsumable — the cursor indexes
+                # BY ITERATION) and retries replaying the wrong slot.
+                # Named, loud, at the wait site: never a silent
+                # mis-index.
+                raise LoopWaitShapeError(
+                    f"E13-uniform-loop-wait: this loop body's wait is CONDITIONAL "
+                    f"(the iteration cursor {cursor} runs past the {len(queue)}-answer "
+                    f"queue on {signal_name}) — a loop body must declare ONE wait per "
+                    "iteration: the answer-queue cursor IS the iteration counter, so a "
+                    "wait on only some iterations strands earlier answers (never "
+                    "consumable again) and replays the wrong slot on retry. Wait "
+                    "unconditionally each iteration (branch on the RESULT), or move "
+                    "the wait out of the loop"
+                )
+            if cursor < len(queue):
+                # THE REPLAY/CONSUME: this wait takes the queue's next
+                # answer (the per-attempt cursor advances — the same
+                # hold can never answer the same attempt twice; the
+                # loop's counter is the ADVANCE statement's own write,
+                # never this one).
+                answer = queue[cursor]
+                payload = (
+                    _json_loads(answer["payload"])
+                    if isinstance(answer["payload"], str)
+                    else answer["payload"]
+                )
+                if not is_loop_kind:
+                    await conn.execute(
+                        render_sql(
+                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb WHERE id = $1",
+                            self._wsql.schema,
+                        ),
+                        self.job_id,
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                    )
+                # THE CONTEXT CONTRACT: the resumed body's answer
+                # identity — the epoch of the hold THIS wait consumed
+                # (the body asserting on ctx sees which answer it got).
+                self._runtime["hold_epoch"] = int(answer["hold_epoch"])
+                return cast("M", self._coerce_signal(models, payload, discriminator=discriminator))
+            # PAST THE QUEUE: the node's PENDING hold (if any) is THIS
+            # wait's wait — the held row stands (idempotent re-hold,
+            # never a second registration of one wait).
+            held_row = await conn.fetchrow(
+                render_sql(
+                    "SELECT id FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if held_row is not None:
+                raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
+            # THE TIMEOUT FACE (attack-3 B1's cure, the union
+            # amendment): the sweep marked THIS wait site's hold
+            # 'abandoned' and no held row stands — the wait site RETURNS
+            # the union's ``Expired`` MEMBER (the fail-close arm the
+            # checker forces; the body that wants the FAILURE raises the
+            # glossary exception ITSELF off the member). NO automatic
+            # new epoch:
+            # a re-execution after abandonment never re-holds (the
+            # hold→expire→re-hold→∞ dragon's kill site). The DELIBERATE
+            # re-wait — the body caught the face and waits again within
+            # THIS attempt — is a NEW body decision: the face marker
+            # (per-attempt, beside the answer cursor) lets it register a
+            # NEW hold with a NEW epoch.
+            abandoned_row = await conn.fetchrow(
+                render_sql(
+                    "SELECT id, hold_epoch FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+                [*names, "|".join(names)],
+            )
+            if abandoned_row is not None:
+                face_key = f"timeout_face_{self.attempt}"
+                face_seen = await conn.fetchval(
+                    render_sql(
+                        "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
+                        self._wsql.schema,
+                    ),
+                    self.job_id,
+                    face_key,
+                )
+                if face_seen != int(abandoned_row["hold_epoch"]):
+                    await conn.execute(
+                        render_sql(
+                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb "
+                            "WHERE id = $1",
+                            self._wsql.schema,
+                        ),
+                        self.job_id,
+                        dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
+                    )
+                    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the
+                    # EXPIRY MEMBER returns — the closed union's second
+                    # arm, the fail-close the checker forces. The body
+                    # that wants the FAILURE raises SignalTimeoutError
+                    # ITSELF off this member (the escalation ladder's own
+                    # use); the body that matches it is the fail-close.
+                    return Expired(
+                        signal=signal_name,
+                        node_key=self.node_key,
+                        hold_id=str(abandoned_row["id"]),
+                    )
+            # A NEW HOLD: a NEW epoch (the count of this name's holds —
+            # the identity's mint).
+            epoch = await conn.fetchval(
+                render_sql(
+                    "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
+                    "WHERE workflow_id = $1 AND node_key = $2",
+                    self._wsql.schema,
+                ),
+                self.flow_id,
+                self.node_key,
+            )
+            schema_ref: dict[str, object] = {
+                m.__name__: m.model_json_schema()
+                for m in models  # pyright: ignore[reportAttributeAccessIssue]
+            }
+            hold_id = await register_hold(
+                conn,
+                schema=self._wsql.schema,
+                workflow_id=self.flow_id,
+                node_id=self.job_id,
+                node_key=self.node_key,
+                signal_name=signal_name,
+                hold_epoch=int(epoch),  # pyright: ignore[reportAny, reportArgumentType]
+                call_id=f"call:{new_uuid()}",
+                payload_schema=schema_ref,
+                timeout_s=timeout_s,
+                context={"reason": reason, "tool": tool, "args": args},
+                redact=self._redact,
+            )
+>       raise NodeHeldError(hold_id=str(hold_id), signal_names=names)
+E       taskq.workflows.api._ctx_wait.NodeHeldError: node held on ('__timer__Approval',) (hold 01a129a3-a959-7662-b0c6-50eb137164cf)
+
+src/taskq/workflows/api/_ctx_wait.py:458: NodeHeldError
+____________ test_the_zombie_run_s_status_names_the_stranded_nodes _____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a322c0>
+wf_schema = 'tq_d68bfdbaf1'
+module_pg_schema = ModulePgSchema(schema_name='tq_d68bfdbaf1', pg_dsn='postgresql://postgres:taskq@localhost:5806/tq_db_d68bfdbaf16f')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f066098b8c0>
+demo_app_module = <module 'timer_cures_demo_flows'>
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f0660947100>
+
+    async def test_the_zombie_run_s_status_names_the_stranded_nodes(
+        wf_pool: asyncpg.Pool,
+        wf_schema: str,
+        module_pg_schema: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        demo_app_module: Any,
+        timer_cures_redlog: Any,
+    ) -> None:
+        """CURE 5: the wedge's surface. A run mid-flight at a node the
+        CURRENT registry no longer declares (a rename/remove redeploy) is a
+        ZOMBIE: never terminal, nothing fails it — and the pre-cure ``flows
+        status`` showed NOTHING. The cure makes the drift VISIBLE: the
+        status names the stranded nodes, the zombie law, and the remedy.
+    
+        Red-first: at the base tree ``flows status`` took no ``--app`` (the
+        command exits 2 on the option — the surface did not exist) and no
+        drift line existed anywhere."""
+        from taskq.cli import app as cli_app
+    
+        monkeypatch.setenv("TASKQ_PG_DSN", module_pg_schema.pg_dsn)
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", module_pg_schema.schema_name)
+    
+        # THE RUN: first → second; the first node runs v1, the second never
+        # claims (its parent's success re-pends it mid-run). The OLD compile
+        # (the create-time snapshot) declares 'second'.
+        old_app = WorkflowApp()
+        name = "c5_zombie_flow"
+    
+        @old_app.workflow(name)
+        def zombie_flow_old() -> Promise[object]:
+            p = step(_c5_first, Nudge(), key="first")
+            return build(step(_c5_renamed, p, key="second"))
+    
+        compiled = old_app.get(name)
+        runner = FlowRunner(compiled, wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the pin stops the driver mid-flow — the claim loop's seam is the behavior under test.
+        assert [r["step_key"] for r in rows] == ["first"], rows
+        await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]
+    
+        # THE CLI's STATUS, WITH THE CURRENT REGISTRY (--app): the run's
+        # node 'second' is stranded — the current graph declares
+        # {'first', 'renamed'}. The drift is VISIBLE.
+        result = await asyncio.to_thread(
+>           runner.invoke,
+            ^^^^^^^^^^^^^
+            cli_app,
+            [
+                "flows",
+                "status",
+                str(flow_id),
+                "--app",
+                f"{MODULE_NAME}:app",
+            ],
+        )
+E       AttributeError: 'FlowRunner' object has no attribute 'invoke'
+
+tests/test_wf_timer_cures_pins.py:674: AttributeError
+____________ test_the_create_broadcast_never_announces_a_timer_hold ____________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a33d00>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f06609aa7b0>
+
+    async def test_the_create_broadcast_never_announces_a_timer_hold(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 2, the create leg's face: the T26 create-broadcast is the
+        APPROVAL broadcast — a timer hold minted UNDER a live listener
+        announces NOTHING on it (the human control minted beside it does).
+        Red-first: at the base tree the leg fired unconditionally."""
+        listener = HitlListener(wf_pool, wf_schema)
+        await listener.start()
+        try:
+            # Drain the start-up backfill (an empty schema — nothing open).
+            async def drain_snapshot() -> None:
+                async for event in listener.events():
+                    if isinstance(event, Backfilled):
+                        return
+    
+            await asyncio.wait_for(drain_snapshot(), timeout=10)
+    
+            compiled = WorkflowApp()
+    
+            @compiled.workflow("c2_live_timer_flow")
+            def c2_live_timer_flow() -> Promise[object]:
+                return build(step(timer_body, Nudge(), key="timer_node"))
+    
+            @compiled.workflow("c2_live_human_flow")
+            def c2_live_human_flow() -> Promise[object]:
+                gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=30.0)
+                return build(step(human_body, Nudge(), key="human_node", gates=(gate,)))
+    
+            live: list[Any] = []
+    
+            async def collect_live() -> None:
+                async for event in listener.events():
+                    if isinstance(event, Backfilled):
+                        continue
+                    live.append(event)
+                    if len(live) >= 1:
+                        return
+    
+            collector = asyncio.create_task(collect_live())
+            timer_runner = FlowRunner(compiled.get("c2_live_timer_flow"), wf_pool, wf_schema)
+            timer_flow = (await timer_runner.create_flow()).flow_id
+            await timer_runner.drive(timer_flow, until="held")
+            human_runner = FlowRunner(compiled.get("c2_live_human_flow"), wf_pool, wf_schema)
+            human_flow = (await human_runner.create_flow()).flow_id
+            await human_runner.drive(human_flow, until="held")
+            try:
+                await asyncio.wait_for(collector, timeout=10)
+            except TimeoutError:
+                pass
+            timer_created = [
+                e
+                for e in live
+                if isinstance(e, HoldCreated) and e.signal.startswith(TIMER_SIGNAL_PREFIX)
+            ]
+>           assert not timer_created, (
+                f"the create broadcast announced the TIMER as a pending approval: {timer_created}"
+            )
+E           AssertionError: the create broadcast announced the TIMER as a pending approval: [HoldCreated(event='hold_created', hold_id='01a129a3-a7e1-7d32-af7d-734b557aeced', run_id='01a129a3-a7ce-7101-a19f-aba0dc37eeec', signal='__timer__cures-timer', node_key='timer_node', created_at='2026-10-11T06:25:53.633590+00:00', source='backfill')]
+E           assert not [HoldCreated(event='hold_created', hold_id='01a129a3-a7e1-7d32-af7d-734b557aeced', run_id='01a129a3-a7ce-7101-a19f-aba...ignal='__timer__cures-timer', node_key='timer_node', created_at='2026-10-11T06:25:53.633590+00:00', source='backfill')]
+
+tests/test_wf_timer_cures_pins.py:476: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 23:25:54 [info     ] node.held                      hold_id=01a129a3-aad8-7582-8847-448194791da7 node=timer_node run_id=01a129a3-aac6-7290-81b6-110aa849d522 signals=['__timer__cures-timer']
+2026-10-10 23:25:54 [info     ] node.held                      hold_id=01a129a3-aae9-7a93-8519-e9cf53118155 node=human_node run_id=01a129a3-aae1-78e0-a7db-70e893623324 signals=['Approval']
+_________________ test_the_explorer_renders_a_timer_as_a_timer _________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f06609e5900>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f06610f0490>
+
+    async def test_the_explorer_renders_a_timer_as_a_timer(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 3: the run explorer's hold card branches — a timer hold
+        renders AS a timer (the key, the scheduled instant, the clock as the
+        resolver) with NO Resolve affordance (the boundary is refuse-only:
+        the form was a lie the operator answered into). Red-first: at the
+        base tree the page rendered the Resolve form on the timer (the
+        conviction's template repro)."""
+        app = WorkflowApp()
+    
+        @app.workflow("c3_timer_flow")
+        def c3_timer_flow() -> Promise[object]:
+            return build(step(timer_body, Nudge(), key="timer_node"))
+    
+        runner = FlowRunner(app.get("c3_timer_flow"), wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        await runner.drive(flow_id, until="held")
+    
+        admin = _make_admin_app(wf_pool, wf_schema)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=admin), base_url="http://test"
+        ) as http:
+            page = await http.get(f"/workflows/{flow_id}")
+        assert page.status_code == 200, f"the run page never rendered: {page.status_code}"
+        text = page.text
+>       assert "durable timer" in text.lower(), (
+            "the timer renders as an unnamed hold card — the template has no timer "
+            "branch (the key, the scheduled instant, the clock's resolver mark are "
+            "the card's own truth)"
+        )
+E       AssertionError: the timer renders as an unnamed hold card — the template has no timer branch (the key, the scheduled instant, the clock's resolver mark are the card's own truth)
+E       assert 'durable timer' in '<!doctype html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createicons();\n        });\n    </script>\n</body>\n</html>'
+E        +  where '<!doctype html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createicons();\n        });\n    </script>\n</body>\n</html>' = <built-in method lower of str object at 0x158ceae0>()
+E        +    where <built-in method lower of str object at 0x158ceae0> = '<!DOCTYPE html>\n<html lang="en" class="">\n<head>\n    <meta charset="utf-8">\n    <meta name="viewport" content="wi...ap", function () {\n            if (window.lucide) lucide.createIcons();\n        });\n    </script>\n</body>\n</html>'.lower
+
+tests/test_wf_timer_cures_pins.py:527: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 23:25:54 [info     ] node.held                      hold_id=01a129a3-abba-7ad0-a328-40fbcb42b105 node=timer_node run_id=01a129a3-aba6-78b1-aacc-eb3b1d9753b9 signals=['__timer__cures-timer']
+2026-10-10 23:25:54 [warning  ] admin-ui-no-auth               detail='admin UI is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. Every admin route is reachable by anyone who can reach this port. This is unsafe if the process is actually serving production traffic: a production deployment mislabeled as dev disables this check and the health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at the same time. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+2026-10-10 23:25:54 [warning  ] progress-router-no-auth        detail='the progress router is being served with no authentication: TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run. The SSE stream and per-job state endpoints are reachable by anyone who can reach this port, and each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected. Pass auth_dependency to create_router, or set TASKQ_ENVIRONMENT to the real environment so startup fails closed.' environment=dev
+________________ test_the_drain_empties_the_due_set_in_one_tick ________________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a31d80>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f065e5ae140>
+
+    async def test_the_drain_empties_the_due_set_in_one_tick(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 4: the leader's signal-sweep arm DRAINS — 10k due timers
+        empty in ONE call (batch-bounded per iteration, cap-bounded per
+        drain), where the pre-cure one-batch-per-pass face measured
+        100-fires-per-pass ⇒ 100 passes × the 30 s cadence ≈ 50 minutes
+        worst-case late (the drill's receipt). The lateness is MEASURED for
+        the report (the wall time printed, never a band-flake assert); the
+        PINNED semantics are the drain-until-empty + the index's plan.
+    
+        Red-first: at the base tree ``sweep_due_timers`` had no ``drain=``
+        (the call is a TypeError — the surface did not exist) and one pass
+        fired exactly 100 of the 10k."""
+        n = 10000
+        await wf_pool.execute(
+            f"""INSERT INTO "{wf_schema}".wf_signals
+                (id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+                 payload, payload_schema, status, expires_at)
+            SELECT gen_random_uuid(), gen_random_uuid(), 'n', '{TIMER_SIGNAL_PREFIX}bulk', 1,
+                   'timer:x', '{{}}'::jsonb,
+                   '{{"TimerWake": {{"type": "object"}}}}'::jsonb, 'held',
+                   now() - interval '1 second'
+            FROM generate_series(1, $1) g""",
+            n,
+        )
+        due_before = await wf_pool.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_signals '  # noqa: S608
+            f"WHERE status = 'held' AND signal_name = '{TIMER_SIGNAL_PREFIX}bulk'"
+        )
+        assert due_before == n, f"the seed failed: {due_before}"
+    
+        # THE INDEX'S PLAN (the EXPLAIN receipt): the due-scan is index-led —
+        # the partial index consumes the prefix + the status, orders by
+        # (expires_at, id) with NO sort and NO seq scan.
+        plan_rows = await wf_pool.fetch(
+            f"EXPLAIN (COSTS OFF) SELECT s.id FROM \"{wf_schema}\".wf_signals s "  # noqa: S608
+            "WHERE s.status = 'held' "
+            f"AND starts_with(s.signal_name, '{TIMER_SIGNAL_PREFIX}') "
+            "AND s.expires_at IS NOT NULL AND s.expires_at <= clock_timestamp() "
+            "ORDER BY s.expires_at, s.id LIMIT 100"
+        )
+        plan = "\n".join(r[0] for r in plan_rows)
+>       assert "Seq Scan" not in plan, f"the due-scan is a SEQ SCAN (the 10k-tail's shape):\n{plan}"
+E       AssertionError: the due-scan is a SEQ SCAN (the 10k-tail's shape):
+E         Limit
+E           ->  Sort
+E                 Sort Key: expires_at, id
+E                 ->  Seq Scan on wf_signals s
+E                       Filter: ((expires_at IS NOT NULL) AND starts_with(signal_name, '__timer__'::text) AND (status = 'held'::text) AND (expires_at <= clock_timestamp()))
+E       assert 'Seq Scan' not in 'Limit\n  ->...imestamp()))'
+E         
+E         'Seq Scan' is contained here:
+E                 ->  Seq Scan on wf_signals s
+E         ?           ++++++++
+E                         Filter: ((expires_at IS NOT NULL) AND starts_with(signal_name, '__timer__'::text) AND (status = 'held'::text) AND (expires_at <= clock_timestamp()))
+
+tests/test_wf_timer_cures_pins.py:595: AssertionError
+___________ test_e17_the_run_dies_named_and_no_trojan_hold_is_minted ___________
+
+wf_pool = <asyncpg.pool.Pool object at 0x7f0660a32bc0>
+wf_schema = 'tq_d68bfdbaf1'
+timer_cures_redlog = <tests._wf_fixtures.RedLog object at 0x7f065e624950>
+
+    async def test_e17_the_run_dies_named_and_no_trojan_hold_is_minted(
+        wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
+    ) -> None:
+        """CURE 1, the runner's face (the conviction's own shape): the trojan
+        flow's node terminal-fails with the E17 class on the record — the
+        run DIES NAMED (never silent, never hanging, never firing a trojan
+        wake), and NO trojan hold is ever minted."""
+        app = WorkflowApp()
+    
+        @app.workflow("cures_trojan_flow")
+        def cures_trojan_flow() -> Promise[object]:
+            return build(step(trojan_body, TrojannParams(), key="trojan_node"))
+    
+        runner = FlowRunner(app.get("cures_trojan_flow"), wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        await runner.tick(flow_id)  # ONE tick: the claim + the E17 death
+        node = await wf_pool.fetchrow(
+            f"SELECT status, error_class, error_message FROM \"{wf_schema}\".jobs "  # noqa: S608
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'trojan_node'",
+            flow_id,
+        )
+        assert node is not None, "the trojan node never claimed"
+>       assert node["error_class"] == "ReservedTimerNamespaceError", (
+            f"the run must die NAMED (the deterministic authoring route), got "
+            f"{node['error_class']}: {node['error_message']}"
+        )
+E       AssertionError: the run must die NAMED (the deterministic authoring route), got None: None
+E       assert None == 'ReservedTimerNamespaceError'
+
+tests/test_wf_timer_cures_pins.py:290: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-10-10 23:25:55 [info     ] node.held                      hold_id=01a129a3-ae14-7b61-b63d-a87e51653333 node=trojan_node run_id=01a129a3-ae06-7153-aff7-a6a0ff9ba597 signals=['__timer__Approval']
+2026-10-10 23:25:55 [info     ] timer.wake_fired               fired=100 first_node=n
+=========================== short test summary info ============================
+FAILED tests/test_wf_timer_cures_pins.py::test_the_naive_datetime_law_is_documented_at_the_api_face
+FAILED tests/test_wf_timer_cures_pins.py::test_the_backfill_never_surfaces_a_timer_hold
+FAILED tests/test_wf_timer_cures_pins.py::test_e17_wait_until_refuses_a_key_in_the_reserved_namespace
+FAILED tests/test_wf_timer_cures_pins.py::test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint
+FAILED tests/test_wf_timer_cures_pins.py::test_the_zombie_run_s_status_names_the_stranded_nodes
+FAILED tests/test_wf_timer_cures_pins.py::test_the_create_broadcast_never_announces_a_timer_hold
+FAILED tests/test_wf_timer_cures_pins.py::test_the_explorer_renders_a_timer_as_a_timer
+FAILED tests/test_wf_timer_cures_pins.py::test_the_drain_empties_the_due_set_in_one_tick
+FAILED tests/test_wf_timer_cures_pins.py::test_e17_the_run_dies_named_and_no_trojan_hold_is_minted
+9 failed in 2.43s

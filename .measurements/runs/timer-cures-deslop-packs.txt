@@ -1,0 +1,4 @@
+# the pin packs (rv2+rv3+pubsub+route) at the timer-cures head c9582f79e556c74fc07f9da8401b407fbca70a4f
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 61 passed in 16.12s

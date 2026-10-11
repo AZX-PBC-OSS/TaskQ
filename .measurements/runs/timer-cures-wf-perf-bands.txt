@@ -1,0 +1,4 @@
+# the bands leg (test_wf_perf_bands.py + tests/perf + test_tors_nul_perf.py; the stamped writers; serial; quiet box) at the timer-cures head c9582f79e556c74fc07f9da8401b407fbca70a4f
+.............                                                            [100%]
+13 passed in 41.76s
+bands rc=0
