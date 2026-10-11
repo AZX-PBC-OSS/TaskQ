@@ -481,10 +481,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "receipt — the dedup'd ensure-append; the write set is the ONE "
         "row the attempt claims)",
     ),
-    "_SPAWN_CURSOR_WRITE_SQL": (
+    "_SPAWN_SLOT_CLAIM_SQL": (
         "WHERE id = $1",
         "keyed single node row (the spawning node's own spawn-cursor "
-        "slot write; the write set is the ONE row the attempt claims)",
+        "slot claim — the ATOMIC increment-and-return, rv5-C1's cure; the "
+        "write set is the ONE row the attempt claims)",
     ),
     "_HOLD_AWAITED_LEDGER_SQL": (
         "WHERE id = $1",

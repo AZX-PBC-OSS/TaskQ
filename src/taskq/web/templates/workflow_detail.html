@@ -57,7 +57,7 @@
     {% endif %}
     {% if run.child_flows %}
     <div class="text-sm mt-1"><span class="text-xs uppercase text-slate-500 dark:text-slate-400">Child flows ({{ run.child_flows | length }}):</span>
-        <span class="font-mono text-xs space-x-2">
+        <span class="font-mono text-xs">
         {% for c in run.child_flows %}<a class="text-blue-600 dark:text-blue-400 hover:underline" href="{{ base_path }}/workflows/{{ c }}" data-wf="child-link">{{ c[:8] }}</a>{% endfor %}
         </span></div>
     {% endif %}
