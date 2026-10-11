@@ -8110,6 +8110,12 @@
       "file": "timer-cures-fasttier-n8.txt",
       "head_sha": "fe9ccf739c05c145e8626d2ee43e0f3536dc0bc3",
       "captured_at": "2026-10-11T02:06:05"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "timer-cures-ehv.txt",
+      "head_sha": "4bd98f0f167bb4114f54d9d317c70f8f4cb75434",
+      "captured_at": "2026-10-11T02:06:09"
     }
   ]
 }
