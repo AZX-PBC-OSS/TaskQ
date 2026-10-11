@@ -33,6 +33,15 @@ from uuid import UUID
 import asyncpg
 import structlog
 import typer
+from asyncpg.exceptions import InvalidPasswordError
+
+# Why: typer >=0.27 vendors click under typer._click and its group classes
+# raise/annotate against the vendored module, not any site-packages click.
+# _WorkerCommandGroup overrides resolve_command, so it must use the SAME
+# Context/Command/UsageError objects the base class does.
+from typer._click.core import Command, Context
+from typer._click.exceptions import UsageError
+from typer.core import TyperGroup
 
 from taskq import migrate as migrate_mod
 from taskq._advisory import DEADLINE_ERRORS
@@ -160,10 +169,41 @@ app = typer.Typer(
     no_args_is_help=True,
     help="TaskQ, async Postgres-backed background jobs.",
 )
+
+
+class _WorkerCommandGroup(TyperGroup):
+    """Teach the ``--queues`` contract when a bare token reaches command
+    resolution.
+
+    ``taskq worker`` declares no subcommands, so any bare token left after
+    option parsing is a mis-parsed option value — overwhelmingly the
+    space-separated queue list a fresh dev writes first
+    (``--queues ingest review``). The default click error ("No such
+    command 'review'") points at subcommands that do not exist; the
+    replacement names the flag's real contract, repeat the flag once per
+    queue, the same contract ``--queues``' own help and the CLI guide
+    state.
+    """
+
+    def resolve_command(
+        self,
+        ctx: Context,  # Why: matches TyperGroup.resolve_command's vendored-click signature
+        args: list[str],
+    ) -> tuple[str | None, Command | None, list[str]]:
+        stray = next((a for a in args if not a.startswith("-")), None)
+        if stray is not None:
+            raise UsageError(
+                f"unexpected argument {stray!r} — `taskq worker` takes no subcommands."
+                " Queue names go on the repeatable --queues flag, once per queue:"
+                " --queues=ingest --queues=review (or TASKQ_QUEUES=ingest,review)."
+            )
+        return super().resolve_command(ctx, args)
+
+
 migrate_app = typer.Typer(no_args_is_help=True, help="Apply or inspect schema migrations.")
 app.add_typer(migrate_app, name="migrate")
 
-worker_app = typer.Typer(help="Run a TaskQ worker.")
+worker_app = typer.Typer(help="Run a TaskQ worker.", cls=_WorkerCommandGroup)
 app.add_typer(worker_app, name="worker")
 
 health_app = typer.Typer(no_args_is_help=True, help="Probe the worker's health endpoints.")
@@ -338,6 +378,19 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         )
         raise typer.Exit(code=1)
     return registry
+
+
+_DSN_PASSWORD_RE = re.compile(r"(://[^:/@\s]+):([^@\s]+)@")
+
+
+def _redacted_dsn(settings: WorkerSettings) -> str:
+    """The resolved Postgres DSN with the password masked, for error faces.
+
+    ``postgres://user:password@host:port/db`` renders as
+    ``postgres://user:***@host:port/db``. A DSN without a password passes
+    through unchanged.
+    """
+    return _DSN_PASSWORD_RE.sub(r"\1:***@", str(settings.pg_dsn))
 
 
 _PROVIDER_EXAMPLE: Final[str] = "myapp.auth:make_provider"
@@ -623,6 +676,20 @@ def worker(
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__
         # itself (see exceptions.py), don't print it a second time here.
         typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from None
+    except InvalidPasswordError as e:
+        # The default DSN points at localhost:5432 (quick-start.md); a
+        # worker that forgot TASKQ_PG_DSN on a machine where something
+        # else (or nothing) listens there crashes with asyncpg's
+        # "password authentication failed" — which teaches "wrong
+        # password", not "wrong server". Name the resolved DSN (password
+        # redacted) and the env var that fixes it.
+        typer.echo(
+            f"{e}\nThe worker connected to the resolved DSN: {_redacted_dsn(settings)}."
+            " If that host/port is not your TaskQ database, set TASKQ_PG_DSN"
+            " (default postgresql://taskq:taskq@localhost:5432/taskq).",
+            err=True,
+        )
         raise typer.Exit(code=1) from None
     # The loop is closed (asyncio restored SIG_DFL on close), but the
     # process is not gone yet: the exit path, interpreter teardown, atexit

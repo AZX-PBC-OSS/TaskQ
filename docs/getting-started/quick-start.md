@@ -79,6 +79,16 @@ cp .env.example .env
 
 No env var is strictly required: `TASKQ_PG_DSN` defaults to `postgresql://taskq:taskq@localhost:5432/taskq`. For any real deployment, set it to your actual database.
 
+> **The default DSN is a footgun on a custom port.** The default points at
+> `localhost:5432`. If your Postgres listens elsewhere and the worker's
+> environment forgot `TASKQ_PG_DSN`, the worker connects to whatever is on
+> 5432 and fails with `InvalidPasswordError` ("password authentication
+> failed") — which reads as a wrong password when the real problem is a
+> wrong server. `taskq worker` prints the resolved (password-masked) DSN
+> with that error and names the variable; on a machine with nothing on
+> 5432 the failure is a connect refusal instead. Set the DSN explicitly in
+> every environment the worker runs in.
+
 ```dotenv
 # Direct PG DSN: sessions, LISTEN/NOTIFY, and advisory locks require this.
 TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
@@ -211,6 +221,17 @@ settings = WorkerSettings.load()
 # Passing actor_registry=None runs stub consumers only: not for production use.
 exit_code = worker_main(settings, actor_registry={"send_email": send_email})
 ```
+
+To run a worker until the queue is **drained, then exit** — the shape a
+demo, test harness, or CI step wants — pass `until_idle=True` (or
+`--until-idle` on the CLI): the worker exits 0 when every job succeeded, 3
+when some failed, 4 when `--idle-max-runtime` was exceeded.
+
+```python no-exec — not executed: continues the user-local module the guide is building
+exit_code = worker_main(settings, actor_registry={"send_email": send_email}, until_idle=True)
+```
+
+See [Worker: Until-idle mode](../guides/workers.md#until-idle-mode) for the settle window and the scheduled-jobs caveat.
 
 See [Worker](../guides/workers.md) for pool sizing, heartbeat configuration, and graceful shutdown.
 
